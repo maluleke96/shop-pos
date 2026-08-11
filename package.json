@@ -1,0 +1,100 @@
+{
+  "name": "shop-pos",
+  "version": "2.9.41",
+  "description": "Shop POS — Railway app + Supabase database (Web, Electron, Android)",
+  "main": "electron/main.js",
+  "author": "Happy",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "electron .",
+    "start:web": "node server.js",
+    "dev": "electron . --dev",
+    "dev:web": "node server.js",
+    "build": "electron-builder --win --x64 --arm64",
+    "build:portable": "electron-builder --win portable --x64",
+    "build:tablet": "electron-builder --win portable --arm64",
+    "build:release": "electron-builder --win --x64 --arm64 && node scripts/create-release-zip.js && node scripts/create-source-zip.js",
+    "build:mobile-www": "node scripts/build-mobile-www.js",
+    "build:android": "npm run build:mobile-www && npx cap sync android && node scripts/run-gradle-android.js && node scripts/copy-android-apk.js",
+    "postinstall": "echo Skipping native rebuild",
+    "supabase:inventory": "node scripts/inventory-sqlite.js",
+    "supabase:schema": "node scripts/generate-supabase-schema.js",
+    "supabase:export": "node scripts/export-sqlite-for-supabase.js",
+    "supabase:import": "node scripts/import-to-supabase.js",
+    "supabase:import:pg": "node scripts/import-to-supabase-pg.js",
+    "supabase:reset-sequences": "node scripts/reset-pg-sequences.js",
+    "netlify:env": "node scripts/netlify-build-env.js",
+    "rpc:dev": "node scripts/rpc-dev-server.js",
+    "supabase:verify": "node scripts/verify-supabase-counts.js",
+    "supabase:link-auth": "node scripts/link-auth-users.js",
+    "package:source": "node scripts/package-source.js",
+    "package:railway": "node scripts/package-railway-source.js",
+    "package:netlify-manual": "node scripts/package-netlify-manual.js",
+    "smoke:rpc": "node scripts/smoke-rpc.js"
+  },
+
+  "build": {
+    "appId": "com.shoppos.offline",
+    "productName": "Shop POS",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "electron/**/*",
+      "src/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": true,
+      "allowToChangeInstallationDirectory": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "artifactName": "Shop POS Setup ${arch}.${ext}"
+    },
+    "portable": {
+      "artifactName": "ShopPOS-Portable-${arch}.${ext}"
+    }
+  },
+  "dependencies": {
+    "@capacitor/camera": "^6.1.3",
+    "@capacitor/filesystem": "^6.0.4",
+    "@capacitor/share": "^6.0.4",
+    "@supabase/supabase-js": "^2.112.3",
+    "bcryptjs": "^2.4.3",
+    "jspdf": "^2.5.2",
+    "jspdf-autotable": "^3.8.4",
+    "pg": "^8.23.0",
+    "sql.js": "^1.12.0",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@capacitor/android": "^6.2.0",
+    "@capacitor/app": "^6.0.3",
+    "@capacitor/cli": "^6.2.0",
+    "@capacitor/core": "^6.2.0",
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8",
+    "esbuild": "^0.24.2"
+  }
+}

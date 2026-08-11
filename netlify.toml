@@ -1,0 +1,39 @@
+# Shop POS — Netlify static hosting + serverless RPC (Supabase Postgres)
+
+[build]
+  publish = "src"
+  command = "node scripts/netlify-build-env.js"
+  functions = "netlify/functions"
+
+[functions]
+  node_bundler = "nft"
+  included_files = [
+    "electron/**",
+    "mobile/**",
+    "package.json",
+    "node_modules/sql.js/**",
+    "node_modules/bcryptjs/**",
+    "node_modules/pg/**"
+  ]
+
+[[redirects]]
+  from = "/rpc"
+  to = "/.netlify/functions/rpc"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/api/rpc"
+  to = "/.netlify/functions/rpc"
+  status = 200
+  force = true
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "DENY"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+
+[build.environment]
+  NODE_VERSION = "20"

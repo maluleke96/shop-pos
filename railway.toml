@@ -1,0 +1,13 @@
+# Shop POS on Railway
+# Start command: node server.js
+# Builder: Nixpacks (Node)
+
+[build]
+builder = "NIXPACKS"
+
+[deploy]
+startCommand = "node server.js"
+healthcheckPath = "/health"
+healthcheckTimeout = 120
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5
