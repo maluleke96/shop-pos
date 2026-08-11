@@ -1,0 +1,3415 @@
+const bcrypt = require('bcryptjs');
+const fs = require('fs');
+const deviceSettings = require('./deviceSettings');
+const { hashPin, verifyPin, verifyPinWithUpgrade } = require('./pin');
+const { getDb } = require('../database/db');
+const session = require('./session');
+const { assertUserActor } = require('./authz');
+const staff = require('./staff');
+const hrContracts = require('./hr-contracts');
+const staffSelfies = require('./staff-selfies');
+const ownerSalary = require('./owner-salary');
+const bookkeeping = require('./bookkeeping');
+const features = require('./features');
+const auditSvc = require('./audit');
+const inventory = require('./inventory');
+const syncSvc = require('./sync');
+const branchesSvc = require('./branches');
+const donationsSvc = require('./donations');
+const opsComplianceSvc = require('./operations-compliance');
+const promoRequestsSvc = require('./promo-requests');
+const combosSvc = require('./combos');
+const flyersSvc = require('./flyers');
+const marketingAgentSvc = require('./marketing-agent');
+const whatsappSvc = require('./whatsapp');
+const documentHubSvc = require('./document-hub');
+const customerRewardsSvc = require('./customer-rewards');
+const employeeOfMonthSvc = require('./employee-of-month');
+const hrTrainingSvc = require('./hr-training');
+const recruitmentSvc = require('./recruitment');
+
+const {
+  getDocuments: getEmployeeDocuments,
+  saveDocument: saveEmployeeDocument,
+  ...staffExports
+} = staff;
+const {
+  getDocument: getDonationDocument,
+  ...donationsExports
+} = donationsSvc;
+const {
+  getTemplates: getFlyerTemplates,
+  ...flyersExports
+} = flyersSvc;
+const {
+  getTemplates: getWhatsAppTemplates,
+  ...whatsappExports
+} = whatsappSvc;
+const {
+  getDocuments: getHubDocuments,
+  getDocument: getHubDocument,
+  saveDocument: saveHubDocument,
+  deleteDocument: deleteHubDocument,
+  processScheduledDocuments: _documentHubProcessScheduled,
+  ...documentHubExports
+} = documentHubSvc;
+
+function audit(userId, username, action, entityType, entityId, details) {
+  getDb().prepare(`
+    INSERT INTO audit_log (user_id, username, action, entity_type, entity_id, details)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(userId, username, action, entityType, entityId, details ? JSON.stringify(details) : null);
+}
+
+function nextReceiptNumber() {
+  const db = getDb();
+  const settings = getSettingsParsed();
+  const rd = settings.receipt_design || {};
+  const prefix = (rd.receipt_prefix || 'RCP').trim() || 'RCP';
+  const pad = Math.max(1, parseInt(rd.receipt_number_pad, 10) || 5);
+  const includeDate = rd.receipt_include_date !== false;
+  const row = db.prepare('SELECT last_number FROM receipt_counter WHERE id = 1').get();
+  const next = (row?.last_number || 0) + 1;
+  db.prepare('UPDATE receipt_counter SET last_number = ? WHERE id = 1').run(next);
+  const numPart = String(next).padStart(pad, '0');
+  if (includeDate) {
+    const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    return `${prefix}-${date}-${numPart}`;
+  }
+  return `${prefix}-${numPart}`;
+}
+
+/** Customer-facing order number (admin-configured) — printed on receipts, KDS, customer board, WhatsApp */
+function nextOrderNumber() {
+  const db = getDb();
+  const settings = getSettingsParsed();
+  const rd = settings.receipt_design || {};
+  const prefix = (rd.order_prefix || 'ORD').trim() || 'ORD';
+  const pad = Math.max(1, parseInt(rd.order_number_pad, 10) || 4);
+  const includeDate = rd.order_include_date !== false;
+  let row;
+  try {
+    row = db.prepare('SELECT last_number FROM order_counter WHERE id = 1').get();
+  } catch (_) {
+    db.prepare(`CREATE TABLE IF NOT EXISTS order_counter (
+      id INTEGER PRIMARY KEY CHECK (id = 1), last_number INTEGER DEFAULT 0)`).run();
+    db.prepare('INSERT OR IGNORE INTO order_counter (id, last_number) VALUES (1, 0)').run();
+    row = { last_number: 0 };
+  }
+  const next = (row?.last_number || 0) + 1;
+  db.prepare('UPDATE order_counter SET last_number = ? WHERE id = 1').run(next);
+  const numPart = String(next).padStart(pad, '0');
+  if (includeDate) {
+    const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    return `${prefix}-${date}-${numPart}`;
+  }
+  return `${prefix}-${numPart}`;
+}
+
+function money(n) {
+  return Math.round((Number(n) || 0) * 100) / 100;
+}
+
+function calcTaxInclusiveTotals(grossTotal, discount, taxRatePct) {
+  const afterDiscount = money(Math.max(0, (Number(grossTotal) || 0) - Math.max(0, Number(discount) || 0)));
+  const rate = Number(taxRatePct) || 0;
+  if (!rate) return { subtotal: afterDiscount, tax_amount: 0, total: afterDiscount };
+  const tax_amount = money(afterDiscount - afterDiscount / (1 + rate / 100));
+  const total = afterDiscount;
+  const subtotal = money(total - tax_amount);
+  return { subtotal, tax_amount, total };
+}
+
+/** Active sales that still contribute to revenue (excludes fully returned / voided). */
+const SALE_REVENUE_STATUSES_SQL = `s.status IN ('completed', 'partial_return')`;
+
+function restoreProductStockAfterSale(productId, quantity, note, actorId, refType, refId, selectedMods) {
+  const db = getDb();
+  const prodMeta = db.prepare('SELECT has_recipe, production_mode FROM products WHERE id = ?').get(productId);
+  if (!prodMeta) {
+    adjustStock(productId, quantity, 'return', note, actorId, refType, refId);
+    return;
+  }
+  const makeToStock = prodMeta.production_mode === 'make_to_stock';
+  // Mirror completeSale: make-to-stock adjusts finished goods; make-to-order restores ingredients
+  if (makeToStock || !prodMeta.has_recipe) {
+    adjustStock(productId, quantity, 'return', note, actorId, refType, refId);
+    return;
+  }
+  const recipeRestored = inventory.restoreRecipeIngredients(
+    productId, quantity, `${note} (recipe)`, actorId, refType, refId, adjustStock, selectedMods || []
+  );
+  if (!recipeRestored) {
+    adjustStock(productId, quantity, 'return', note, actorId, refType, refId);
+  }
+}
+
+function nextPONumber() {
+  const count = getDb().prepare('SELECT COUNT(*) as c FROM purchase_orders').get().c;
+  return `PO-${String(count + 1).padStart(5, '0')}`;
+}
+
+// ─── Auth ───────────────────────────────────────────────────────────────────
+
+function login(username, password, pin) {
+  const userAny = getDb().prepare('SELECT * FROM users WHERE username = ?').get(username);
+  if (!userAny) return { success: false, error: 'Invalid username or password' };
+  if (!userAny.is_active) {
+    session.clearAll();
+    return { success: false, error: 'Account deactivated — system access is frozen. Contact the administrator.' };
+  }
+  const user = userAny;
+
+  const passOk = bcrypt.compareSync(password, user.password_hash);
+  if (!passOk) return { success: false, error: 'Invalid username or password' };
+  if (user.pin) {
+    if (!pin) return { success: false, error: 'Invalid PIN' };
+    const pinCheck = verifyPinWithUpgrade(user.pin, pin);
+    if (!pinCheck.ok) return { success: false, error: 'Invalid PIN' };
+    if (pinCheck.needsUpgrade && pinCheck.hash) {
+      try { getDb().prepare('UPDATE users SET pin = ? WHERE id = ?').run(pinCheck.hash, user.id); } catch (_) { /* ignore */ }
+    }
+  }
+
+  const shiftBlock = checkCashierShiftAccess(user);
+  if (!shiftBlock.ok) return { success: false, error: shiftBlock.error };
+
+  audit(user.id, user.username, 'login', 'user', user.id, null);
+  try { staff.recordUserLoginEvent(user, 'login'); } catch (_) { /* ignore */ }
+  const { password_hash, pin: _pin, ...safe } = user;
+  session.setUserSession(safe);
+  session.clearEmployeeSession();
+  return { success: true, user: safe };
+}
+
+function logout() {
+  const user = session.getUserSession();
+  if (user) {
+    audit(user.id, user.username, 'logout', 'user', user.id, null);
+    try { staff.recordUserLoginEvent(user, 'logout'); } catch (_) { /* ignore */ }
+  }
+  session.clearAll();
+  return { success: true };
+}
+
+function checkCashierShiftAccess(user) {
+  if (['owner', 'manager', 'supervisor', 'assistant_manager'].includes(user.role)) return { ok: true };
+  const sec = getSecuritySettingsRaw();
+  if (!sec.shift_login_enforcement) return { ok: true };
+  const emp = getDb().prepare('SELECT id FROM employees WHERE user_id = ? AND status = ?').get(user.id, 'Active');
+  if (!emp) return { ok: true };
+  const today = new Date().toLocaleDateString('en-CA');
+  const onLeave = getDb().prepare(`
+    SELECT 1 FROM employee_leave WHERE employee_id = ? AND status = 'approved'
+    AND date(?) BETWEEN date(start_date) AND date(COALESCE(end_date, start_date))`).get(emp.id, today);
+  if (onLeave) return { ok: false, error: 'You are on approved leave and cannot sign in until you return.' };
+  const sched = getDb().prepare(`
+    SELECT 1 FROM employee_schedules WHERE employee_id = ? AND shift_date = ? AND is_rest_day = 0`).get(emp.id, today);
+  if (!sched) return { ok: false, error: 'You are not scheduled for a shift today. Contact your manager.' };
+  return { ok: true };
+}
+
+let bookkeepingUnlockUntil = 0;
+
+function verifyBookkeepingPassword(password) {
+  const sec = getSecuritySettingsRaw();
+  if (!sec.bookkeeping_password_hash) {
+    bookkeepingUnlockUntil = Date.now() + 30 * 60 * 1000;
+    return { required: false, unlocked: true };
+  }
+  if (!password) throw new Error('Bookkeeping password required');
+  if (!bcrypt.compareSync(String(password), sec.bookkeeping_password_hash)) {
+    throw new Error('Incorrect bookkeeping password');
+  }
+  bookkeepingUnlockUntil = Date.now() + 30 * 60 * 1000;
+  return { required: true, unlocked: true };
+}
+
+function isBookkeepingUnlocked() {
+  const sec = getSecuritySettingsRaw();
+  if (!sec.bookkeeping_password_hash) return true;
+  return Date.now() < bookkeepingUnlockUntil;
+}
+
+function requireBookkeepingAccess(actor) {
+  const user = requireActor(actor || session.getUserSession(), ['owner', 'manager']);
+  if (!isBookkeepingUnlocked()) throw new Error('Bookkeeping password required');
+  return user;
+}
+
+function setBookkeepingPassword(password, actorId, actorName) {
+  if (password && String(password).length < 6) throw new Error('Password must be at least 6 characters');
+  const hash = password ? bcrypt.hashSync(String(password), 10) : null;
+  patchSecuritySettings({ bookkeeping_password_hash: hash }, actorId, actorName);
+  return true;
+}
+
+const RECOVERY_MAX_ATTEMPTS = 5;
+const RECOVERY_LOCKOUT_MS = 30 * 60 * 1000;
+
+function getSecuritySettingsRaw() {
+  const row = getDb().prepare('SELECT security_settings FROM shop_settings WHERE id = 1').get();
+  return parseJsonField(row?.security_settings, {});
+}
+
+function getAllowOversell() {
+  return getSecuritySettingsRaw().allow_oversell === true;
+}
+
+function isVoidedStatus(status) {
+  return status === 'voided' || status === 'void';
+}
+
+function requireActor(actor, allowedRoles = ['owner']) {
+  return assertUserActor(actor, allowedRoles);
+}
+
+function sanitizeSettingsResponse(s) {
+  if (!s) return s;
+  const copy = { ...s };
+  let security = parseJsonField(copy.security_settings, {});
+  if (security.recovery_secret_hash) {
+    security = { ...security, recovery_configured: true };
+    delete security.recovery_secret_hash;
+  }
+  if (security.bookkeeping_password_hash) {
+    security = { ...security, bookkeeping_password_configured: true };
+    delete security.bookkeeping_password_hash;
+  }
+  copy.security_settings = typeof s.security_settings === 'string'
+    ? JSON.stringify(security)
+    : security;
+  return copy;
+}
+
+function patchSecuritySettings(partial, actorId, actorName) {
+  const merged = { ...getSecuritySettingsRaw(), ...partial };
+  saveJsonSetting('security_settings', merged, actorId, actorName);
+  return merged;
+}
+
+function hasRecoverySecret() {
+  return !!getSecuritySettingsRaw().recovery_secret_hash;
+}
+
+function setRecoverySecret(secret, actorId, actorName) {
+  if (!secret || String(secret).trim().length < 8) {
+    throw new Error('Private recovery phrase must be at least 8 characters');
+  }
+  const hash = bcrypt.hashSync(String(secret).trim(), 12);
+  patchSecuritySettings({
+    recovery_secret_hash: hash,
+    recovery_failed_attempts: 0,
+    recovery_lock_until: null
+  }, actorId, actorName || 'system');
+  audit(actorId, actorName || 'system', 'set_recovery_secret', 'security', 1, null);
+  return { success: true };
+}
+
+function assertRecoveryNotLocked(sec) {
+  if (!sec.recovery_lock_until) return;
+  const lockUntil = new Date(sec.recovery_lock_until);
+  if (lockUntil > new Date()) {
+    const mins = Math.max(1, Math.ceil((lockUntil - new Date()) / 60000));
+    throw new Error(`Too many failed attempts. Try again in ${mins} minute(s).`);
+  }
+}
+
+function verifyRecoverySecret(secret) {
+  const sec = getSecuritySettingsRaw();
+  if (!sec.recovery_secret_hash) {
+    throw new Error('Recovery is not set up. The shop owner must configure a Private Recovery Phrase in Admin → Security.');
+  }
+  assertRecoveryNotLocked(sec);
+  if (!bcrypt.compareSync(String(secret).trim(), sec.recovery_secret_hash)) {
+    const attempts = (sec.recovery_failed_attempts || 0) + 1;
+    const patch = { recovery_failed_attempts: attempts };
+    if (attempts >= RECOVERY_MAX_ATTEMPTS) {
+      patch.recovery_lock_until = new Date(Date.now() + RECOVERY_LOCKOUT_MS).toISOString();
+      patch.recovery_failed_attempts = 0;
+    }
+    patchSecuritySettings(patch, null, 'system');
+    audit(null, 'unknown', 'recovery_failed', 'security', 1, { attempts });
+    throw new Error('Incorrect private recovery phrase');
+  }
+  patchSecuritySettings({ recovery_failed_attempts: 0, recovery_lock_until: null }, null, 'system');
+  return true;
+}
+
+function getUsernamesForRecovery(secret) {
+  verifyRecoverySecret(secret);
+  audit(null, 'recovery', 'recovery_verify_ok', 'security', 1, null);
+  return getDb().prepare(`
+    SELECT username, full_name, role FROM users WHERE is_active = 1
+    ORDER BY CASE role WHEN 'owner' THEN 0 WHEN 'manager' THEN 1 ELSE 2 END, username
+  `).all();
+}
+
+function resetPasswordViaRecovery(secret, username, newPassword) {
+  verifyRecoverySecret(secret);
+  if (!username?.trim()) throw new Error('Username is required');
+  if (!newPassword || newPassword.length < 6) throw new Error('New password must be at least 6 characters');
+  const user = getDb().prepare('SELECT id, username FROM users WHERE username = ? AND is_active = 1').get(username.trim());
+  if (!user) throw new Error('User not found');
+  getDb().prepare(`UPDATE users SET password_hash = ?, updated_at = datetime('now') WHERE id = ?`)
+    .run(bcrypt.hashSync(newPassword, 10), user.id);
+  audit(user.id, user.username, 'password_recovery', 'user', user.id, { method: 'recovery_phrase' });
+  return { success: true, username: user.username };
+}
+
+async function clearOperationalData(password, actorId, actorName) {
+  const user = getDb().prepare('SELECT * FROM users WHERE id = ?').get(actorId);
+  if (!user || user.role !== 'owner') throw new Error('Only the owner can clear operational data');
+  if (!password || !bcrypt.compareSync(String(password), user.password_hash)) {
+    throw new Error('Incorrect administrator password');
+  }
+  const { getDbPathForBackup } = require('../database/db');
+  const autoBackup = getDbPathForBackup().replace(/\.db$/, `-auto-before-clear-${Date.now()}.db`);
+  fs.copyFileSync(getDbPathForBackup(), autoBackup);
+
+  const db = getDb();
+  const operationalTables = [
+    'sale_items', 'sale_payments', 'sales', 'returns', 'return_items',
+    'held_orders', 'quotes', 'quote_items', 'layby_payments', 'laybyes',
+    'gift_card_transactions', 'customer_credit_ledger', 'customer_loyalty',
+    'cash_drawer_log', 'cash_ups', 'kitchen_orders', 'online_orders_local',
+    'notifications', 'audit_log', 'system_logs', 'stock_movements',
+    'purchase_order_items', 'purchase_orders', 'supplier_payments',
+    'expenses', 'bookkeeping_transactions', 'shifts', 'shop_operating_log',
+    'user_login_events', 'employee_attendance', 'employee_payroll',
+    'employee_payroll_deductions', 'stock_counts', 'stock_count_lines', 'waste_records'
+  ];
+  const run = db.transaction(() => {
+    for (const table of operationalTables) {
+      try { db.exec(`DELETE FROM ${table}`); } catch (_) {}
+    }
+    try { db.exec('UPDATE receipt_counter SET last_number = 0 WHERE id = 1'); } catch (_) {}
+    try { db.exec('UPDATE quote_counter SET last_number = 0 WHERE id = 1'); } catch (_) {}
+  });
+  run();
+  saveSettings({ last_backup: new Date().toISOString() }, actorId, actorName);
+  audit(actorId, actorName, 'clear_operational_data', 'system', null, { backup: autoBackup });
+  return { success: true, backup_path: autoBackup };
+}
+
+async function factoryResetBusiness(recoverySecret, confirmText) {
+  verifyRecoverySecret(recoverySecret);
+  const shopName = (getSettings()?.shop_name || '').trim();
+  const typed = (confirmText || '').trim();
+  if (typed !== 'DELETE' && typed !== shopName) {
+    throw new Error('Type DELETE or your exact shop name to confirm erasure');
+  }
+  const { resetDatabaseFile } = require('../database/db');
+  await resetDatabaseFile();
+  try {
+    deviceSettings.clear();
+  } catch (_) {}
+  return { success: true };
+}
+
+const VALID_USER_ROLES = ['owner', 'manager', 'assistant_manager', 'supervisor', 'marketing_agent', 'cashier'];
+
+function createUser(data, actorId, actorName) {
+  requireActor({ id: actorId }, ['owner']);
+  if (!VALID_USER_ROLES.includes(data.role)) throw new Error('Invalid role');
+  if (!data.password || data.password.length < 6) throw new Error('Password must be at least 6 characters');
+  const hash = bcrypt.hashSync(data.password, 10);
+  const pinHash = data.pin ? hashPin(data.pin) : null;
+  const result = getDb().prepare(`
+    INSERT INTO users (username, password_hash, pin, full_name, role, permissions, branch_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(data.username, hash, pinHash, data.full_name, data.role, JSON.stringify(data.permissions || {}), data.branch_id || null);
+  audit(actorId, actorName, 'create_user', 'user', result.lastInsertRowid, { username: data.username, role: data.role });
+  return result.lastInsertRowid;
+}
+
+function updateUser(id, data, actorId, actorName) {
+  requireActor({ id: actorId }, ['owner']);
+  const userId = Number(id);
+  const existing = getDb().prepare('SELECT id, role, is_active FROM users WHERE id = ?').get(userId);
+  if (!existing) throw new Error('User not found');
+  const fields = [];
+  const values = [];
+  if (data.full_name) { fields.push('full_name = ?'); values.push(data.full_name.trim()); }
+  if (data.username) {
+    const dup = getDb().prepare('SELECT id FROM users WHERE username = ? AND id != ?').get(data.username.trim(), userId);
+    if (dup) throw new Error('Username already in use');
+    fields.push('username = ?'); values.push(data.username.trim());
+  }
+  if (data.role) {
+    if (!VALID_USER_ROLES.includes(data.role)) throw new Error('Invalid role');
+    if (existing.role === 'owner' && data.role !== 'owner') {
+      const owners = getDb().prepare(`SELECT COUNT(*) AS c FROM users WHERE role = 'owner' AND is_active = 1 AND id != ?`).get(userId).c;
+      if (owners < 1) throw new Error('Cannot change role — at least one active owner is required');
+    }
+    fields.push('role = ?'); values.push(data.role);
+  }
+  if (data.clear_pin) {
+    fields.push('pin = ?'); values.push(null);
+  } else if (data.pin !== undefined && data.pin !== null && data.pin !== '') {
+    fields.push('pin = ?'); values.push(hashPin(data.pin));
+  }
+  if (data.is_active !== undefined) {
+    if (userId === actorId && !data.is_active) throw new Error('You cannot deactivate your own account');
+    if (existing.role === 'owner' && !data.is_active) {
+      const owners = getDb().prepare(`SELECT COUNT(*) AS c FROM users WHERE role = 'owner' AND is_active = 1 AND id != ?`).get(userId).c;
+      if (owners < 1) throw new Error('Cannot deactivate the last active owner');
+    }
+    fields.push('is_active = ?'); values.push(data.is_active ? 1 : 0);
+  }
+  if (data.password) {
+    if (data.password.length < 6) throw new Error('Password must be at least 6 characters');
+    fields.push('password_hash = ?'); values.push(bcrypt.hashSync(data.password, 10));
+  }
+  if (data.permissions) { fields.push('permissions = ?'); values.push(JSON.stringify(data.permissions)); }
+  if (data.branch_id !== undefined) { fields.push('branch_id = ?'); values.push(data.branch_id || null); }
+  if (fields.length === 0) throw new Error('No changes to save');
+  fields.push("updated_at = datetime('now')");
+  values.push(userId);
+  getDb().prepare(`UPDATE users SET ${fields.join(', ')} WHERE id = ?`).run(...values);
+  audit(actorId, actorName, 'update_user', 'user', userId, data);
+}
+
+function deleteUser(id, actorId, actorName) {
+  requireActor({ id: actorId }, ['owner']);
+  const userId = Number(id);
+  if (userId === actorId) throw new Error('You cannot deactivate your own account');
+  const user = getDb().prepare('SELECT id, role, is_active FROM users WHERE id = ?').get(userId);
+  if (!user) throw new Error('User not found');
+  if (user.role === 'owner') {
+    const owners = getDb().prepare(`SELECT COUNT(*) AS c FROM users WHERE role = 'owner' AND is_active = 1 AND id != ?`).get(userId).c;
+    if (owners < 1) throw new Error('Cannot deactivate the last active owner');
+  }
+  getDb().prepare(`UPDATE users SET is_active = 0, updated_at = datetime('now') WHERE id = ?`).run(userId);
+  audit(actorId, actorName, 'delete_user', 'user', userId, null);
+}
+
+function permanentlyDeleteUser(id, confirmUsername, actorId, actorName) {
+  requireActor({ id: actorId }, ['owner']);
+  const userId = Number(id);
+  if (userId === actorId) throw new Error('You cannot permanently delete your own account');
+  const user = getDb().prepare('SELECT id, username, role, full_name FROM users WHERE id = ?').get(userId);
+  if (!user) throw new Error('User not found');
+  if ((confirmUsername || '').trim() !== user.username) {
+    throw new Error('Type the exact username to confirm permanent deletion');
+  }
+  if (user.role === 'owner') {
+    const owners = getDb().prepare(`SELECT COUNT(*) AS c FROM users WHERE role = 'owner' AND id != ?`).get(userId).c;
+    if (owners < 1) throw new Error('Cannot permanently delete the only owner account');
+  }
+  const db = getDb();
+  const unlink = (sql) => { try { db.prepare(sql).run(userId); } catch (_) {} };
+  const tx = db.transaction(() => {
+    try { db.prepare('DELETE FROM user_login_events WHERE user_id = ?').run(userId); } catch (_) {}
+    try { db.prepare('DELETE FROM held_orders WHERE user_id = ?').run(userId); } catch (_) {}
+    unlink('UPDATE sales SET user_id = NULL WHERE user_id = ?');
+    unlink('UPDATE returns SET user_id = NULL WHERE user_id = ?');
+    unlink('UPDATE expenses SET user_id = NULL WHERE user_id = ?');
+    unlink('UPDATE stock_movements SET user_id = NULL WHERE user_id = ?');
+    unlink('UPDATE purchase_orders SET user_id = NULL WHERE user_id = ?');
+    unlink('UPDATE audit_log SET user_id = NULL WHERE user_id = ?');
+    unlink('UPDATE employees SET user_id = NULL WHERE user_id = ?');
+    unlink('UPDATE shop_operating_log SET user_id = NULL WHERE user_id = ?');
+    unlink('UPDATE quotes SET user_id = NULL WHERE user_id = ?');
+    unlink('UPDATE laybyes SET user_id = NULL WHERE user_id = ?');
+    unlink('UPDATE layby_payments SET user_id = NULL WHERE user_id = ?');
+    unlink('UPDATE gift_card_transactions SET user_id = NULL WHERE user_id = ?');
+    unlink('UPDATE customer_credit_ledger SET user_id = NULL WHERE user_id = ?');
+    unlink('UPDATE exchanges SET user_id = NULL WHERE user_id = ?');
+    unlink('UPDATE supplier_payments SET user_id = NULL WHERE user_id = ?');
+    unlink('UPDATE po_receipts SET user_id = NULL WHERE user_id = ?');
+    unlink('UPDATE shifts SET user_id = NULL WHERE user_id = ?');
+    unlink('UPDATE company_rules SET created_by = NULL WHERE created_by = ?');
+    unlink('UPDATE employee_disciplinary SET created_by = NULL WHERE created_by = ?');
+    db.prepare('DELETE FROM users WHERE id = ?').run(userId);
+  });
+  tx();
+  audit(actorId, actorName, 'permanently_delete_user', 'user', userId, { username: user.username, full_name: user.full_name });
+}
+
+function verifyUserSession(userId) {
+  const sess = session.getUserSession();
+  if (!sess?.id || Number(sess.id) !== Number(userId)) {
+    return { active: false };
+  }
+  const user = getDb().prepare(`
+    SELECT id, username, full_name, role, is_active, permissions, branch_id FROM users WHERE id = ?`).get(userId);
+  if (!user || !user.is_active) {
+    session.clearAll();
+    return { active: false, frozen: true, error: 'Account deactivated — system access is frozen.' };
+  }
+  try { enforceShiftCashoutDeadlines(); } catch (_) { /* ignore */ }
+  return { active: true, user };
+}
+
+function getUsers() {
+  return getDb().prepare(`
+    SELECT id, username, full_name, role,
+      CASE WHEN pin IS NOT NULL AND pin != '' THEN 1 ELSE 0 END as has_pin,
+      is_active, permissions, branch_id, created_at FROM users`).all();
+}
+
+// ─── Shop Setup ─────────────────────────────────────────────────────────────
+
+const SHOP_SETTING_FIELDS = [
+  'shop_name', 'logo_path', 'address', 'phone', 'email', 'website', 'currency', 'currency_name',
+  'decimal_places', 'thousands_sep', 'receipt_footer', 'thank_you_message', 'return_policy',
+  'social_media', 'vat_number', 'tax_rate', 'tax_enabled', 'tax_inclusive', 'receipt_width',
+  'theme', 'language', 'business_type', 'setup_complete', 'license_expiry', 'last_backup',
+  'printer_settings', 'receipt_design', 'security_settings', 'customization',
+  'device_settings', 'discount_settings', 'backup_settings', 'loyalty_settings',
+  'payment_settings', 'account_settings', 'operating_hours_settings',
+  'notification_settings', 'staff_portal_settings', 'sync_settings', 'whatsapp_settings', 'branch_id',
+  'date_format', 'time_format', 'invoice_prefix', 'quote_prefix', 'receipt_prefix', 'sales_targets',
+  'shift_settings', 'admin_signature_path', 'app_display_name', 'eom_settings', 'account_settings_v2'
+];
+
+function parseJsonField(val, fallback = {}) {
+  if (!val) return fallback;
+  try { return typeof val === 'string' ? JSON.parse(val) : val; } catch { return fallback; }
+}
+
+function getSettingsParsed() {
+  const s = getSettings();
+  if (!s) return s;
+  const security = parseJsonField(s.security_settings);
+  if (security.recovery_secret_hash) {
+    security.recovery_configured = true;
+    delete security.recovery_secret_hash;
+  }
+  if (security.bookkeeping_password_hash) {
+    security.bookkeeping_password_configured = true;
+    delete security.bookkeeping_password_hash;
+  }
+  return {
+    ...s,
+    printer_settings: parseJsonField(s.printer_settings),
+    receipt_design: parseJsonField(s.receipt_design),
+    security_settings: security,
+    customization: parseJsonField(s.customization),
+    device_settings: parseJsonField(s.device_settings),
+    discount_settings: parseJsonField(s.discount_settings),
+    backup_settings: parseJsonField(s.backup_settings),
+    loyalty_settings: parseJsonField(s.loyalty_settings, {
+      enabled: true, spend_amount: 10, points_earned: 1, min_sale_total: 0, point_value: 1
+    }),
+    payment_settings: parseJsonField(s.payment_settings, {
+      enabled_methods: ['cash', 'card', 'eft', 'mobile', 'account', 'giftcard', 'other'],
+      allow_mixed: true, giftcard_enabled: true, account_enabled: true, eft_enabled: true
+    }),
+    account_settings: (() => {
+      const base = parseJsonField(s.account_settings, {
+        enabled: true, require_allowlist: true, default_credit_limit: 0
+      });
+      const v2 = parseJsonField(s.account_settings_v2, {});
+      return {
+        ...base,
+        ...v2,
+        require_approval: v2.require_approval !== false,
+        default_period_days: Number(v2.default_period_days) || 30,
+        late_fee_percent: Number(v2.late_fee_percent) || 0
+      };
+    })(),
+    eom_settings: parseJsonField(s.eom_settings, { auto_select: true }),
+    operating_hours_settings: parseJsonField(s.operating_hours_settings, {
+      enabled: false, close_time: '18:00', open_time: '08:00', warn_minutes: 15, alert_at_close: true,
+      weekly: [
+        { day: 0, name: 'Sunday', open: '08:00', close: '18:00', closed: false },
+        { day: 1, name: 'Monday', open: '08:00', close: '18:00', closed: false },
+        { day: 2, name: 'Tuesday', open: '08:00', close: '18:00', closed: false },
+        { day: 3, name: 'Wednesday', open: '08:00', close: '18:00', closed: false },
+        { day: 4, name: 'Thursday', open: '08:00', close: '18:00', closed: false },
+        { day: 5, name: 'Friday', open: '08:00', close: '18:00', closed: false },
+        { day: 6, name: 'Saturday', open: '08:00', close: '18:00', closed: false }
+      ]
+    }),
+    notification_settings: parseJsonField(s.notification_settings, {
+      sound_enabled: true, loop_until_read: true, sound_path: null
+    }),
+    staff_portal_settings: parseJsonField(s.staff_portal_settings, {
+      leave_types: ['Annual Leave', 'Sick Leave', 'Family Responsibility', 'Unpaid Leave'],
+      leave_requires_approval: true, min_leave_notice_days: 1,
+      leave_requests_open: true,
+      max_leave_requests_per_month: null,
+      max_leave_requests_per_year: null,
+      leave_blackouts: [],
+      show_disciplinary: true, require_disciplinary_response: true
+    }),
+    sync_settings: parseJsonField(s.sync_settings, {}),
+    whatsapp_settings: parseJsonField(s.whatsapp_settings, {
+      api_key: '', phone_number_id: '', business_account_id: '',
+      default_branch_phone: '', default_branch_id: null,
+      cashout_whatsapp_phone: ''
+    }),
+    sales_targets: parseJsonField(s.sales_targets, { daily: 0, weekly: 0, monthly: 0, yearly: 0 }),
+    shift_settings: normalizeShiftSettings(parseJsonField(s.shift_settings, {}))
+  };
+}
+
+function saveJsonSetting(key, value, actorId, actorName) {
+  saveSettings({ [key]: JSON.stringify(value) }, actorId, actorName);
+}
+
+function getSettings() {
+  return getDb().prepare('SELECT * FROM shop_settings WHERE id = 1').get();
+}
+
+function saveSettings(data, actorId, actorName) {
+  const fields = Object.keys(data).filter(k => k !== 'id' && SHOP_SETTING_FIELDS.includes(k));
+  if (!fields.length) return;
+  const sets = fields.map(f => `${f} = ?`).join(', ');
+  getDb().prepare(`UPDATE shop_settings SET ${sets}, updated_at = datetime('now') WHERE id = 1`).run(...fields.map(f => data[f]));
+  audit(actorId, actorName, 'update_settings', 'shop_settings', 1, data);
+}
+
+function completeSetup(data) {
+  const existing = getDb().prepare('SELECT setup_complete FROM shop_settings WHERE id = 1').get();
+  if (existing?.setup_complete) throw new Error('Setup already completed');
+  if (!data.shop_name?.trim()) throw new Error('Shop name is required');
+  if (!data.owner_username?.trim()) throw new Error('Username is required');
+  if (!data.owner_password) throw new Error('Password is required');
+  if (data.owner_password.length < 6) throw new Error('Password must be at least 6 characters');
+  if (!data.recovery_secret?.trim()) throw new Error('Private recovery phrase is required');
+  if (data.recovery_secret.trim().length < 8) throw new Error('Recovery phrase must be at least 8 characters');
+  if (data.recovery_secret !== data.recovery_secret_confirm) throw new Error('Recovery phrases do not match');
+
+  saveSettings({
+    shop_name: data.shop_name.trim(),
+    phone: data.phone?.trim() || '',
+    address: data.address?.trim() || '',
+    currency: data.currency || 'R',
+    tax_rate: data.tax_rate || 0,
+    tax_enabled: data.tax_enabled ? 1 : 0,
+    receipt_footer: data.receipt_footer?.trim() || 'Thank you for your purchase!',
+    setup_complete: 1
+  }, null, 'system');
+
+  const hash = bcrypt.hashSync(data.owner_password, 10);
+  getDb().prepare(`
+    INSERT INTO users (username, password_hash, pin, full_name, role)
+    VALUES (?, ?, ?, ?, 'owner')
+  `).run(data.owner_username.trim(), hash, data.owner_pin ? hashPin(data.owner_pin) : null, data.owner_name?.trim() || 'Owner');
+
+  setRecoverySecret(data.recovery_secret.trim(), null, 'system');
+
+  ['Food', 'Drinks', 'Snacks'].forEach((name, i) => {
+    getDb().prepare('INSERT OR IGNORE INTO categories (name, sort_order) VALUES (?, ?)').run(name, i);
+  });
+  return { success: true };
+}
+
+// ─── Categories ─────────────────────────────────────────────────────────────
+
+function ensureCategoryPosSchema() {
+  const db = getDb();
+  for (const sql of [
+    'ALTER TABLE categories ADD COLUMN show_on_pos INTEGER DEFAULT 1',
+    'ALTER TABLE products ADD COLUMN is_best_seller INTEGER DEFAULT 0',
+    'ALTER TABLE products ADD COLUMN show_on_pos INTEGER DEFAULT 1'
+  ]) {
+    try { db.exec(sql); } catch (_) { /* exists */ }
+  }
+}
+
+function getCategories(filters = {}) {
+  ensureCategoryPosSchema();
+  let sql = 'SELECT * FROM categories WHERE is_active = 1';
+  if (filters.for_pos) sql += ' AND COALESCE(show_on_pos, 1) = 1';
+  sql += ' ORDER BY sort_order, name';
+  return getDb().prepare(sql).all();
+}
+
+function saveCategory(data, actorId, actorName) {
+  ensureCategoryPosSchema();
+  const name = data.name?.trim();
+  if (!name) throw new Error('Category name is required');
+  const showOnPos = data.show_on_pos === undefined || data.show_on_pos === null
+    ? 1
+    : (data.show_on_pos ? 1 : 0);
+
+  if (data.id) {
+    const clash = getDb().prepare('SELECT id FROM categories WHERE name = ? AND is_active = 1 AND id != ?').get(name, data.id);
+    if (clash) throw new Error('A category with this name already exists');
+    getDb().prepare('UPDATE categories SET name = ?, color = ?, sort_order = ?, image_path = ?, show_on_pos = ? WHERE id = ?')
+      .run(name, data.color, data.sort_order ?? 0, data.image_path || null, showOnPos, data.id);
+    audit(actorId, actorName, 'update_category', 'category', data.id, { name, show_on_pos: showOnPos });
+    return data.id;
+  }
+
+  const inactive = getDb().prepare('SELECT id FROM categories WHERE name = ? AND is_active = 0').get(name);
+  if (inactive) {
+    getDb().prepare('UPDATE categories SET color = ?, sort_order = ?, image_path = ?, is_active = 1, show_on_pos = ? WHERE id = ?')
+      .run(data.color || '#3b82f6', data.sort_order ?? 0, data.image_path || null, showOnPos, inactive.id);
+    audit(actorId, actorName, 'create_category', 'category', inactive.id, { name, reactivated: true });
+    return inactive.id;
+  }
+
+  const clash = getDb().prepare('SELECT id FROM categories WHERE name = ? AND is_active = 1').get(name);
+  if (clash) throw new Error('A category with this name already exists');
+
+  const sortOrder = data.sort_order ?? getDb().prepare('SELECT COALESCE(MAX(sort_order), -1) + 1 AS next FROM categories').get()?.next ?? 0;
+  const r = getDb().prepare('INSERT INTO categories (name, color, sort_order, image_path, show_on_pos) VALUES (?, ?, ?, ?, ?)')
+    .run(name, data.color || '#3b82f6', sortOrder, data.image_path || null, showOnPos);
+  audit(actorId, actorName, 'create_category', 'category', r.lastInsertRowid, { name });
+  return r.lastInsertRowid;
+}
+
+/** Ensure POS "Other Items" category exists for ad-hoc sell lines. */
+function ensureOtherItemsCategory() {
+  ensureCategoryPosSchema();
+  const db = getDb();
+  let cat = db.prepare(`SELECT * FROM categories WHERE LOWER(name) = 'other items' LIMIT 1`).get();
+  if (cat) {
+    if (!cat.is_active) {
+      db.prepare('UPDATE categories SET is_active = 1, show_on_pos = 1 WHERE id = ?').run(cat.id);
+    } else {
+      try { db.prepare('UPDATE categories SET show_on_pos = 1 WHERE id = ?').run(cat.id); } catch (_) { /* ignore */ }
+    }
+    return db.prepare('SELECT * FROM categories WHERE id = ?').get(cat.id);
+  }
+  const sortOrder = db.prepare('SELECT COALESCE(MAX(sort_order), -1) + 1 AS next FROM categories').get()?.next ?? 0;
+  const r = db.prepare(`
+    INSERT INTO categories (name, color, sort_order, image_path, show_on_pos, is_active)
+    VALUES ('Other Items', '#64748b', ?, NULL, 1, 1)
+  `).run(sortOrder);
+  return db.prepare('SELECT * FROM categories WHERE id = ?').get(r.lastInsertRowid);
+}
+
+/**
+ * Create/update an ad-hoc sell item under Other Items and return the product.
+ * Suggests selling price from cost + target profit % when requested.
+ */
+function saveOtherSellItem(data, actorId, actorName) {
+  ensureCategoryPosSchema();
+  const cat = ensureOtherItemsCategory();
+  const name = (data.name || '').trim();
+  if (!name) throw new Error('Item name is required');
+  const cost = Math.max(0, Number(data.buying_price || data.cost) || 0);
+  const targetProfit = Math.max(0, Number(data.target_profit_pct) || 40);
+  let sell = Number(data.selling_price);
+  const suggested = cost > 0
+    ? Math.round((cost / (1 - Math.min(targetProfit, 95) / 100)) * 100) / 100
+    : (Number.isFinite(sell) ? sell : 0);
+  if (!(sell > 0)) sell = suggested;
+  if (cost > 0 && sell < cost) {
+    throw new Error(`Selling price cannot go below cost (${cost}). Suggested: ${suggested}`);
+  }
+  const margin = sell > 0 ? Math.round(((sell - cost) / sell) * 10000) / 100 : 0;
+  if (cost > 0 && margin + 0.01 < targetProfit && !data.force_below_profit) {
+    return {
+      needs_confirm: true,
+      error: `Price is below ${targetProfit}% profit (margin ${margin}%). Suggested best price: ${suggested}`,
+      suggested_price: suggested,
+      cost,
+      margin
+    };
+  }
+  const db = getDb();
+  let existing = null;
+  if (data.id) existing = db.prepare('SELECT * FROM products WHERE id = ?').get(data.id);
+  if (!existing) {
+    existing = db.prepare(`
+      SELECT * FROM products WHERE category_id = ? AND LOWER(TRIM(name)) = LOWER(?) AND is_active = 1 LIMIT 1
+    `).get(cat.id, name);
+  }
+  if (existing) {
+    db.prepare(`
+      UPDATE products SET name=?, selling_price=?, buying_price=?, category_id=?, show_on_pos=1,
+        item_type=COALESCE(item_type,'retail'), updated_at=datetime('now') WHERE id=?
+    `).run(name, sell, cost, cat.id, existing.id);
+    audit(actorId, actorName, 'update_other_item', 'product', existing.id, { name, sell, cost });
+    return db.prepare('SELECT p.*, c.name AS category_name FROM products p LEFT JOIN categories c ON c.id=p.category_id WHERE p.id=?').get(existing.id);
+  }
+  const r = db.prepare(`
+    INSERT INTO products (
+      name, selling_price, buying_price, stock_quantity, min_stock, unit, category_id,
+      item_type, show_on_pos, is_active, description
+    ) VALUES (?, ?, ?, 999999, 0, 'each', ?, 'retail', 1, 1, ?)
+  `).run(name, sell, cost, cat.id, 'Other sell item (POS)');
+  const id = r.lastInsertRowid;
+  audit(actorId, actorName, 'create_other_item', 'product', id, { name, sell, cost });
+  return db.prepare('SELECT p.*, c.name AS category_name FROM products p LEFT JOIN categories c ON c.id=p.category_id WHERE p.id=?').get(id);
+}
+
+function suggestSellPrice(cost, targetProfitPct = 40) {
+  const c = Math.max(0, Number(cost) || 0);
+  const t = Math.min(95, Math.max(0, Number(targetProfitPct) || 40));
+  if (c <= 0) return 0;
+  return Math.round((c / (1 - t / 100)) * 100) / 100;
+}
+
+/** Min cart total that keeps line items above cost (profit floor for discounts). */
+function cartProfitFloor(items) {
+  let floor = 0;
+  for (const it of items || []) {
+    const qty = Number(it.quantity) || 0;
+    const cost = Number(it.buying_price != null ? it.buying_price : it.recipe_cost) || 0;
+    floor += cost * qty;
+  }
+  return Math.round(floor * 100) / 100;
+}
+
+function deleteCategory(id, actorId, actorName) {
+  getDb().prepare('UPDATE categories SET is_active = 0 WHERE id = ?').run(id);
+  audit(actorId, actorName, 'delete_category', 'category', id, null);
+}
+
+// ─── Products ───────────────────────────────────────────────────────────────
+
+function getProducts(filters = {}) {
+  ensureCategoryPosSchema();
+  let sql = `
+    SELECT p.*, c.name as category_name FROM products p
+    LEFT JOIN categories c ON p.category_id = c.id
+    WHERE p.is_active = 1 AND (p.is_archived = 0 OR p.is_archived IS NULL)
+  `;
+  const params = [];
+  // Recipe ingredients (typed in Recipe Builder) stay in Inventory but are not sold on POS
+  if (filters.ingredients_only) {
+    sql += ` AND p.item_type = 'ingredient'`;
+  } else if (!filters.include_ingredients) {
+    sql += ` AND (p.item_type IS NULL OR p.item_type != 'ingredient')`;
+  }
+  if (filters.for_pos) {
+    sql += ' AND COALESCE(p.show_on_pos, 1) = 1';
+    sql += ' AND (c.id IS NULL OR COALESCE(c.show_on_pos, 1) = 1)';
+  }
+  if (filters.category_id) { sql += ' AND p.category_id = ?'; params.push(filters.category_id); }
+  if (filters.search) {
+    sql += ' AND (p.name LIKE ? OR p.barcode LIKE ? OR p.sku LIKE ?)';
+    const q = `%${filters.search}%`;
+    params.push(q, q, q);
+  }
+  if (filters.low_stock) sql += ' AND p.stock_quantity <= p.min_stock';
+  sql += ' ORDER BY p.name';
+  const products = getDb().prepare(sql).all(...params);
+  try { require('./recipe-production').clearExpiredNewArrivals(); } catch (_) { /* ignore */ }
+  const byProduct = {};
+  if (products.length) {
+    const placeholders = products.map(() => '?').join(',');
+    const allMods = getDb().prepare(`SELECT * FROM product_modifiers WHERE product_id IN (${placeholders}) ORDER BY id`).all(...products.map(p => p.id));
+    for (const m of allMods) {
+      if (!byProduct[m.product_id]) byProduct[m.product_id] = [];
+      byProduct[m.product_id].push(m);
+    }
+  }
+  let enriched = products.map(p => ({
+    ...p,
+    modifiers: byProduct[p.id] || [],
+    options: (byProduct[p.id] || []).filter(m => m.modifier_type === 'option'),
+    extras: (byProduct[p.id] || []).filter(m => m.modifier_type === 'extra'),
+    removals: (byProduct[p.id] || []).filter(m => m.modifier_type === 'removal')
+  }));
+  enriched = promoRequestsSvc.applyPromoPricesToProducts(enriched);
+  try {
+    enriched = require('./recipe-production').applyRecipePromoPricesToProducts(enriched);
+  } catch (_) { /* ignore */ }
+  // POS sees meal production capacity (not raw ingredient / FG stock) for recipe products
+  try {
+    enriched = require('./production-availability').applyCapacityToProducts(enriched);
+  } catch (_) { /* ignore */ }
+  return flyersSvc.applyFlyerPromoOverlay(enriched);
+}
+
+function getProductModifiers(productId) {
+  return getDb().prepare('SELECT * FROM product_modifiers WHERE product_id = ? ORDER BY id').all(productId);
+}
+
+function ensureProductSchema() {
+  const db = getDb();
+  const alters = [
+    'ALTER TABLE products ADD COLUMN brand TEXT',
+    'ALTER TABLE products ADD COLUMN subcategory TEXT',
+    'ALTER TABLE products ADD COLUMN supplier_id INTEGER',
+    'ALTER TABLE products ADD COLUMN max_stock REAL',
+    'ALTER TABLE products ADD COLUMN reorder_level REAL',
+    'ALTER TABLE products ADD COLUMN opening_stock REAL DEFAULT 0',
+    'ALTER TABLE products ADD COLUMN stock_location TEXT',
+    'ALTER TABLE products ADD COLUMN batch_number TEXT',
+    'ALTER TABLE products ADD COLUMN expiry_date TEXT',
+    'ALTER TABLE products ADD COLUMN item_type TEXT DEFAULT \'retail\'',
+    'ALTER TABLE products ADD COLUMN is_archived INTEGER DEFAULT 0',
+    'ALTER TABLE products ADD COLUMN qr_code TEXT',
+    'ALTER TABLE products ADD COLUMN stock_unit_type TEXT DEFAULT \'piece\'',
+    'ALTER TABLE products ADD COLUMN stock_unit TEXT DEFAULT \'each\'',
+    'ALTER TABLE products ADD COLUMN purchase_unit TEXT',
+    'ALTER TABLE products ADD COLUMN purchase_unit_qty REAL DEFAULT 1',
+    'ALTER TABLE products ADD COLUMN purchase_unit_label TEXT',
+    'ALTER TABLE products ADD COLUMN recipe_cost REAL DEFAULT 0',
+    'ALTER TABLE products ADD COLUMN food_cost_pct REAL DEFAULT 0',
+    'ALTER TABLE products ADD COLUMN gross_profit REAL DEFAULT 0',
+    'ALTER TABLE products ADD COLUMN profit_margin REAL DEFAULT 0',
+    'ALTER TABLE products ADD COLUMN alert_out_of_stock INTEGER DEFAULT 1',
+    'ALTER TABLE products ADD COLUMN has_recipe INTEGER DEFAULT 0',
+    'ALTER TABLE products ADD COLUMN option_groups_meta TEXT',
+    'ALTER TABLE products ADD COLUMN requires_options INTEGER DEFAULT 0',
+    "ALTER TABLE products ADD COLUMN options_style TEXT DEFAULT 'radio'",
+    'ALTER TABLE product_modifiers ADD COLUMN option_group TEXT',
+    "ALTER TABLE product_modifiers ADD COLUMN modifier_type TEXT DEFAULT 'extra'"
+  ];
+  for (const sql of alters) {
+    try { db.exec(sql); } catch (_) {}
+  }
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS product_modifiers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        extra_price REAL DEFAULT 0
+      );
+      CREATE TABLE IF NOT EXISTS product_conversions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+        from_qty REAL NOT NULL DEFAULT 1,
+        from_unit TEXT NOT NULL,
+        to_qty REAL NOT NULL,
+        to_unit TEXT NOT NULL,
+        label TEXT,
+        created_at TEXT DEFAULT (datetime('now'))
+      );
+      CREATE TABLE IF NOT EXISTS product_recipe_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+        ingredient_product_id INTEGER NOT NULL REFERENCES products(id),
+        quantity REAL NOT NULL,
+        unit TEXT NOT NULL DEFAULT 'each',
+        waste_pct REAL DEFAULT 0,
+        sort_order INTEGER DEFAULT 0,
+        created_at TEXT DEFAULT (datetime('now'))
+      );
+    `);
+  } catch (_) {}
+}
+
+function saveProductModifiers(productId, modifiers = []) {
+  const db = getDb();
+  ensureProductSchema();
+  const pid = parseInt(productId, 10);
+  if (!pid) return;
+  const list = (modifiers || []).filter(m => m?.name?.trim());
+  const run = db.transaction(() => {
+    db.prepare('DELETE FROM product_modifiers WHERE product_id = ?').run(pid);
+    if (!list.length) return;
+    const insert = db.prepare('INSERT INTO product_modifiers (product_id, name, extra_price, modifier_type, option_group) VALUES (?,?,?,?,?)');
+    for (const m of list) {
+      insert.run(
+        pid,
+        m.name.trim(),
+        Number(m.extra_price) || 0,
+        m.modifier_type === 'option' ? 'option' : (m.modifier_type === 'removal' ? 'removal' : 'extra'),
+        m.option_group?.trim() || null
+      );
+    }
+  });
+  run();
+}
+
+function getProduct(id) {
+  const p = getDb().prepare(`
+    SELECT p.*, c.name AS category_name FROM products p
+    LEFT JOIN categories c ON p.category_id = c.id
+    WHERE p.id = ?
+  `).get(id);
+  if (!p) return null;
+  const mods = getProductModifiers(id);
+  const recipe = inventory.getProductRecipe(id);
+  const metrics = inventory.calculateRecipeMetrics(id, p.selling_price);
+  const base = {
+    ...p,
+    modifiers: mods,
+    options: mods.filter(m => m.modifier_type === 'option'),
+    extras: mods.filter(m => m.modifier_type === 'extra'),
+    removals: mods.filter(m => m.modifier_type === 'removal'),
+    conversions: inventory.getProductConversions(id),
+    recipe,
+    recipe_metrics: metrics
+  };
+  const [decorated] = flyersSvc.applyFlyerPromoOverlay(
+    promoRequestsSvc.applyPromoPricesToProducts([base])
+  );
+  return decorated || base;
+}
+
+function getProductByBarcode(barcode) {
+  const code = String(barcode || '').trim();
+  if (!code) return null;
+  let p = getDb().prepare('SELECT * FROM products WHERE barcode = ? AND is_active = 1').get(code);
+  if (!p) p = getDb().prepare('SELECT * FROM products WHERE sku = ? AND is_active = 1').get(code);
+  if (!p) return null;
+  const mods = getProductModifiers(p.id);
+  return { ...p, modifiers: mods, options: mods.filter(m => m.modifier_type === 'option'), extras: mods.filter(m => m.modifier_type === 'extra'), removals: mods.filter(m => m.modifier_type === 'removal') };
+}
+
+function saveProduct(data, actorId, actorName) {
+  ensureProductSchema();
+  if (!data.name?.trim() && !data.id) throw new Error('Product name is required');
+
+  if (data.id) {
+    const existing = getDb().prepare('SELECT * FROM products WHERE id = ?').get(data.id);
+    if (!existing) throw new Error('Product not found');
+
+    const pick = (key, fallback) => (data[key] !== undefined ? data[key] : fallback);
+    const name = data.name !== undefined ? String(data.name).trim() : existing.name;
+    if (!name) throw new Error('Product name is required');
+    const sellingPrice = pick('selling_price', existing.selling_price);
+    if (sellingPrice == null || Number(sellingPrice) <= 0) throw new Error('Selling price must be greater than 0');
+
+    const fields = {
+      name,
+      category_id: pick('category_id', existing.category_id),
+      selling_price: Number(sellingPrice),
+      buying_price: pick('buying_price', existing.buying_price) || 0,
+      barcode: pick('barcode', existing.barcode),
+      sku: pick('sku', existing.sku),
+      stock_quantity: data.stock_quantity !== undefined ? data.stock_quantity : existing.stock_quantity,
+      min_stock: pick('min_stock', existing.min_stock) ?? 5,
+      max_stock: pick('max_stock', existing.max_stock),
+      reorder_level: pick('reorder_level', existing.reorder_level),
+      unit: data.stock_unit || data.unit || existing.stock_unit || existing.unit || 'each',
+      stock_unit_type: pick('stock_unit_type', existing.stock_unit_type) || 'piece',
+      stock_unit: data.stock_unit || data.unit || existing.stock_unit || existing.unit || 'each',
+      purchase_unit: pick('purchase_unit', existing.purchase_unit),
+      purchase_unit_qty: pick('purchase_unit_qty', existing.purchase_unit_qty) ?? 1,
+      purchase_unit_label: pick('purchase_unit_label', existing.purchase_unit_label),
+      alert_out_of_stock: data.alert_out_of_stock !== undefined
+        ? (data.alert_out_of_stock !== false ? 1 : 0)
+        : (existing.alert_out_of_stock !== 0 ? 1 : 0),
+      picture_path: pick('picture_path', existing.picture_path),
+      description: pick('description', existing.description),
+      brand: pick('brand', existing.brand),
+      subcategory: pick('subcategory', existing.subcategory),
+      supplier_id: pick('supplier_id', existing.supplier_id),
+      item_type: pick('item_type', existing.item_type) || 'retail',
+      stock_location: pick('stock_location', existing.stock_location),
+      expiry_date: pick('expiry_date', existing.expiry_date),
+      qr_code: pick('qr_code', existing.qr_code),
+      is_archived: data.is_archived !== undefined ? (data.is_archived ? 1 : 0) : (existing.is_archived ? 1 : 0),
+      is_active: data.is_active !== undefined ? (data.is_active ? 1 : 0) : existing.is_active,
+      requires_options: data.requires_options !== undefined ? (data.requires_options ? 1 : 0) : (existing.requires_options ? 1 : 0),
+      options_style: pick('options_style', existing.options_style) || 'radio',
+      option_groups_meta: data.option_groups_meta !== undefined
+        ? (data.option_groups_meta ? (typeof data.option_groups_meta === 'string' ? data.option_groups_meta : JSON.stringify(data.option_groups_meta)) : null)
+        : existing.option_groups_meta
+    };
+
+    getDb().prepare(`
+      UPDATE products SET name=?, category_id=?, selling_price=?, buying_price=?, barcode=?, sku=?,
+      stock_quantity=?, min_stock=?, max_stock=?, reorder_level=?, unit=?, stock_unit_type=?, stock_unit=?,
+      purchase_unit=?, purchase_unit_qty=?, purchase_unit_label=?, alert_out_of_stock=?,
+      picture_path=?, description=?, brand=?, subcategory=?, supplier_id=?, item_type=?, stock_location=?,
+      expiry_date=?, qr_code=?, is_archived=?, is_active=?, requires_options=?, options_style=?, option_groups_meta=?, updated_at=datetime('now')
+      WHERE id=?
+    `).run(fields.name, fields.category_id, fields.selling_price, fields.buying_price,
+      fields.barcode, fields.sku, fields.stock_quantity, fields.min_stock, fields.max_stock,
+      fields.reorder_level, fields.unit, fields.stock_unit_type, fields.stock_unit,
+      fields.purchase_unit, fields.purchase_unit_qty, fields.purchase_unit_label, fields.alert_out_of_stock,
+      fields.picture_path, fields.description, fields.brand, fields.subcategory, fields.supplier_id,
+      fields.item_type, fields.stock_location, fields.expiry_date, fields.qr_code,
+      fields.is_archived, fields.is_active, fields.requires_options, fields.options_style, fields.option_groups_meta, data.id);
+
+    if (data.modifiers !== undefined) {
+      try { saveProductModifiers(data.id, data.modifiers || []); } catch (err) {
+        console.error('Product modifiers save warning:', err.message);
+      }
+    }
+    if (data.conversions !== undefined || data.recipe !== undefined) {
+      try {
+        if (data.conversions !== undefined) inventory.saveProductConversions(data.id, data.conversions || []);
+        if (data.recipe !== undefined) inventory.saveProductRecipe(data.id, data.recipe || []);
+        inventory.updateProductRecipeMetrics(data.id, fields.selling_price);
+      } catch (err) {
+        console.error('Product inventory extras save warning:', err.message);
+      }
+    } else if (existing.selling_price !== fields.selling_price) {
+      try { inventory.updateProductRecipeMetrics(data.id, fields.selling_price); } catch (_) { /* ignore */ }
+    }
+    if (existing.selling_price !== fields.selling_price) {
+      auditSvc.logPriceChange(data.id, fields.name, existing.selling_price, fields.selling_price, actorId, actorName);
+    }
+    audit(actorId, actorName, 'update_product', 'product', data.id, { name: fields.name });
+    checkLowStock(data.id);
+    return data.id;
+  }
+
+  if (!data.name?.trim()) throw new Error('Product name is required');
+  const isIngredient = data.item_type === 'ingredient';
+  if (!isIngredient && (!(Number(data.selling_price) > 0))) {
+    throw new Error('Selling price must be greater than 0');
+  }
+  const fields = {
+    name: data.name.trim(),
+    category_id: data.category_id || null,
+    selling_price: data.selling_price,
+    buying_price: data.buying_price || 0,
+    barcode: data.barcode || null,
+    sku: data.sku || null,
+    stock_quantity: data.stock_quantity ?? 0,
+    min_stock: data.min_stock ?? 5,
+    max_stock: data.max_stock || null,
+    reorder_level: data.reorder_level || null,
+    unit: data.stock_unit || data.unit || 'each',
+    stock_unit_type: data.stock_unit_type || 'piece',
+    stock_unit: data.stock_unit || data.unit || 'each',
+    purchase_unit: data.purchase_unit || null,
+    purchase_unit_qty: data.purchase_unit_qty ?? 1,
+    purchase_unit_label: data.purchase_unit_label || null,
+    alert_out_of_stock: data.alert_out_of_stock !== false ? 1 : 0,
+    picture_path: data.picture_path || null,
+    description: data.description || null,
+    brand: data.brand || null,
+    subcategory: data.subcategory || null,
+    supplier_id: data.supplier_id || null,
+    item_type: data.item_type || 'retail',
+    stock_location: data.stock_location || null,
+    expiry_date: data.expiry_date || null,
+    qr_code: data.qr_code || null,
+    is_archived: data.is_archived ? 1 : 0,
+    is_active: data.is_active !== undefined ? (data.is_active ? 1 : 0) : 1,
+    requires_options: data.requires_options ? 1 : 0,
+    options_style: data.options_style || 'radio',
+    option_groups_meta: data.option_groups_meta ? (typeof data.option_groups_meta === 'string' ? data.option_groups_meta : JSON.stringify(data.option_groups_meta)) : null
+  };
+
+  const r = getDb().prepare(`
+    INSERT INTO products (name, category_id, selling_price, buying_price, barcode, sku,
+    stock_quantity, min_stock, max_stock, reorder_level, unit, stock_unit_type, stock_unit,
+    purchase_unit, purchase_unit_qty, purchase_unit_label, alert_out_of_stock,
+    picture_path, description, brand, subcategory, supplier_id, item_type, stock_location,
+    expiry_date, qr_code, opening_stock, is_active, requires_options, options_style, option_groups_meta)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(fields.name, fields.category_id, fields.selling_price, fields.buying_price,
+    fields.barcode, fields.sku, fields.stock_quantity, fields.min_stock, fields.max_stock,
+    fields.reorder_level, fields.unit, fields.stock_unit_type, fields.stock_unit,
+    fields.purchase_unit, fields.purchase_unit_qty, fields.purchase_unit_label, fields.alert_out_of_stock,
+    fields.picture_path, fields.description, fields.brand, fields.subcategory, fields.supplier_id,
+    fields.item_type, fields.stock_location, fields.expiry_date, fields.qr_code,
+    fields.stock_quantity, fields.is_active, fields.requires_options, fields.options_style, fields.option_groups_meta);
+
+  let newId = parseInt(r.lastInsertRowid, 10);
+  if (!newId) {
+    const row = getDb().prepare('SELECT id FROM products WHERE name = ? ORDER BY id DESC LIMIT 1').get(fields.name);
+    newId = row?.id ? parseInt(row.id, 10) : 0;
+  }
+  if (!newId) throw new Error('Failed to add product — database did not return a product ID. Restart the app and try again.');
+
+  try { saveProductModifiers(newId, data.modifiers || []); } catch (err) {
+    console.error('Product modifiers save warning:', err.message);
+  }
+  try {
+    inventory.saveProductConversions(newId, data.conversions || []);
+    inventory.saveProductRecipe(newId, data.recipe || []);
+    inventory.updateProductRecipeMetrics(newId, fields.selling_price);
+  } catch (err) {
+    console.error('Product inventory extras save warning:', err.message);
+  }
+
+  audit(actorId, actorName, 'create_product', 'product', newId, { name: fields.name });
+  checkLowStock(newId);
+  return newId;
+}
+
+function deleteProduct(id, actorId, actorName) {
+  getDb().prepare('UPDATE products SET is_active = 0 WHERE id = ?').run(id);
+  audit(actorId, actorName, 'delete_product', 'product', id, null);
+}
+
+function checkLowStock(productId) {
+  const p = getDb().prepare('SELECT * FROM products WHERE id = ?').get(productId);
+  if (!p || p.alert_out_of_stock === 0) return;
+  const unit = p.stock_unit || p.unit || 'each';
+  if (p.stock_quantity <= 0) {
+    addNotification('out_of_stock', 'Out of Stock', `${p.name} is out of stock`);
+  } else if (p.reorder_level != null && p.stock_quantity <= p.reorder_level) {
+    addNotification('reorder', 'Reorder Level', `${p.name}: ${p.stock_quantity} ${unit} — reorder needed`);
+  } else if (p.stock_quantity <= p.min_stock) {
+    addNotification('low_stock', 'Low Stock', `${p.name}: ${p.stock_quantity} ${unit} remaining`);
+  }
+}
+
+/** Default audience roles for a notification type / action page (who should see it). */
+function defaultNotificationAudience(type, actionPage) {
+  const t = String(type || '').toLowerCase();
+  const page = String(actionPage || '').toLowerCase();
+  const ops = ['owner', 'manager', 'assistant_manager', 'supervisor'];
+  const admins = ['owner', 'manager'];
+  const stockRoles = ['owner', 'manager', 'assistant_manager', 'supervisor'];
+  if (page.startsWith('operations:cashup') || ['cashout', 'cashup', 'target_met', 'target_missed', 'cash_drop'].includes(t)) {
+    return ops;
+  }
+  if (page.startsWith('operations:stockcount') || t === 'stock_count') return stockRoles;
+  if (page === 'staff' || t === 'compliance' || t === 'checklist_reminder' || t === 'checklist_overdue') {
+    return ['owner', 'manager', 'assistant_manager', 'supervisor', 'cashier'];
+  }
+  if (page.startsWith('admin:opscompliance')) return ops;
+  if (page.startsWith('admin:recruitment') || t.startsWith('recruitment')) return ops;
+  if (['low_stock', 'out_of_stock', 'reorder'].includes(t) || page.includes('inventory') || page.includes('stock')) {
+    return stockRoles;
+  }
+  if (t.startsWith('owner_salary')) return admins;
+  if (['payroll_due', 'uif', 'paye', 'sdl', 'coida'].includes(t)) return admins;
+  if (page.startsWith('admin:approvals') || t === 'pending' || t.includes('approval')) return admins;
+  if (page.startsWith('admin:')) return ops;
+  if (page === 'pos') return ['owner', 'manager', 'cashier', 'supervisor', 'assistant_manager'];
+  return ops;
+}
+
+function addNotification(type, title, message, opts = {}) {
+  const entityType = opts.entity_type || null;
+  const entityId = opts.entity_id != null ? opts.entity_id : null;
+  const actionPage = opts.action_page || null;
+  let audience = opts.audience_roles || opts.roles || null;
+  if (Array.isArray(audience)) audience = audience.join(',');
+  if (!audience) audience = defaultNotificationAudience(type, actionPage).join(',');
+  const existing = getDb().prepare(
+    'SELECT id FROM notifications WHERE type = ? AND message = ? AND is_read = 0 AND date(created_at) = date(\'now\')'
+  ).get(type, message);
+  if (!existing) {
+    try {
+      getDb().prepare(
+        'INSERT INTO notifications (type, title, message, entity_type, entity_id, action_page, audience_roles) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      ).run(type, title, message, entityType, entityId, actionPage, audience);
+    } catch (err) {
+      if (String(err.message || '').toLowerCase().includes('no such column')) {
+        getDb().prepare(
+          'INSERT INTO notifications (type, title, message, entity_type, entity_id, action_page) VALUES (?, ?, ?, ?, ?, ?)'
+        ).run(type, title, message, entityType, entityId, actionPage);
+      } else {
+        throw err;
+      }
+    }
+  }
+}
+
+function fmtMoney(amount, currency) {
+  const c = currency || 'R';
+  return `${c}${Number(amount || 0).toFixed(2)}`;
+}
+
+function notifyShiftClose(shiftId, userId, preview, result) {
+  const db = getDb();
+  const user = db.prepare('SELECT full_name FROM users WHERE id = ?').get(userId);
+  const branch = branchesSvc.getActiveBranch();
+  const currency = getSettingsParsed().currency || 'R';
+  const cashierName = user?.full_name || 'Unknown';
+  const branchName = branch?.name || 'Main Branch';
+  const targetMet = !!preview.targetMet;
+  const parts = [
+    `${cashierName} closed shift at ${branchName}`,
+    `Total sales: ${fmtMoney(preview.totalSales, currency)}`
+  ];
+  if (preview.dailyTarget > 0) {
+    parts.push(targetMet
+      ? `Target met (${fmtMoney(preview.todaySales, currency)} / ${fmtMoney(preview.dailyTarget, currency)})`
+      : `Target missed — ${fmtMoney(preview.targetRemaining, currency)} short`);
+  }
+  const cashDiff = result.difference;
+  if (Math.abs(cashDiff) > 0.009) {
+    parts.push(`Cash variance: ${fmtMoney(cashDiff, currency)}`);
+  }
+  addNotification('cashout', 'Shift Cash-Out', parts.join(' · '), {
+    entity_type: 'shift',
+    entity_id: shiftId,
+    action_page: 'operations:cashup'
+  });
+
+  if (preview.dailyTarget > 0) {
+    if (targetMet) {
+      addNotification('target_met', 'Daily Target Met',
+        `${branchName}: ${fmtMoney(preview.todaySales, currency)} reached (target ${fmtMoney(preview.dailyTarget, currency)})`, {
+          entity_type: 'shift',
+          entity_id: shiftId,
+          action_page: 'operations:cashup'
+        });
+    } else {
+      addNotification('target_missed', 'Daily Target Missed',
+        `${branchName}: ${fmtMoney(preview.todaySales, currency)} of ${fmtMoney(preview.dailyTarget, currency)} — ${fmtMoney(preview.targetRemaining, currency)} short`, {
+          entity_type: 'shift',
+          entity_id: shiftId,
+          action_page: 'operations:cashup'
+        });
+    }
+  }
+}
+
+function notifyCashUpSession(cashupId, shiftId, data, actorId) {
+  const db = getDb();
+  const user = db.prepare('SELECT full_name FROM users WHERE id = ?').get(actorId);
+  const branch = branchesSvc.getActiveBranch();
+  const currency = getSettingsParsed().currency || 'R';
+  const cashierName = user?.full_name || 'Unknown';
+  const branchName = branch?.name || 'Main Branch';
+  const variance = (data.actual_cash || 0) - (data.expected_cash || 0);
+  const today = new Date().toLocaleDateString('en-CA');
+  const todaySales = db.prepare(`
+    SELECT COALESCE(SUM(total),0) as total FROM sales
+    WHERE date(created_at, 'localtime') = date(?) AND status = 'completed'
+  `).get(today).total;
+  const dailyTarget = getActiveDailyTargetAmount(getSalesTargets());
+  const parts = [
+    `${cashierName} completed cash-up at ${branchName}`,
+    `Expected: ${fmtMoney(data.expected_cash, currency)} · Actual: ${fmtMoney(data.actual_cash, currency)}`
+  ];
+  if (Math.abs(variance) > 0.009) {
+    parts.push(`Variance: ${fmtMoney(variance, currency)}`);
+  }
+  if (dailyTarget > 0) {
+    const met = todaySales >= dailyTarget;
+    const remaining = Math.max(0, dailyTarget - todaySales);
+    parts.push(met
+      ? `Target met (${fmtMoney(todaySales, currency)} / ${fmtMoney(dailyTarget, currency)})`
+      : `Target missed — ${fmtMoney(remaining, currency)} short`);
+  }
+  addNotification('cashout', 'Cash-Up Completed', parts.join(' · '), {
+    entity_type: 'cashup',
+    entity_id: cashupId,
+    action_page: 'operations:cashup'
+  });
+}
+
+function createTestNotification() {
+  addNotification('test', 'Test Notification', 'This is a test alert. Open notifications and mark as read to stop the sound.');
+}
+
+// ─── Stock ──────────────────────────────────────────────────────────────────
+
+function adjustStock(productId, quantity, type, notes, userId, refType, refId) {
+  const db = getDb();
+  const product = db.prepare('SELECT * FROM products WHERE id = ?').get(productId);
+  if (!product) throw new Error('Product not found');
+  const prev = product.stock_quantity;
+  let newStock;
+  if (type === 'set') {
+    newStock = quantity;
+    quantity = Math.abs(newStock - prev);
+  } else if (type === 'remove' || type === 'sale') {
+    newStock = prev - quantity;
+    if (!getAllowOversell() && newStock < 0) {
+      throw new Error(`Insufficient stock for ${product.name}. Available: ${prev}, requested: ${quantity}`);
+    }
+  } else {
+    newStock = prev + quantity;
+  }
+  db.prepare('UPDATE products SET stock_quantity = ?, updated_at = datetime(\'now\') WHERE id = ?').run(newStock, productId);
+  db.prepare(`
+    INSERT INTO stock_movements (product_id, movement_type, quantity, previous_stock, new_stock, reference_type, reference_id, notes, user_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(productId, type === 'set' ? 'adjust' : type, quantity, prev, newStock, refType, refId, notes, userId);
+  checkLowStock(productId);
+  // Production Availability Engine — recalculate meals that use this ingredient
+  try {
+    require('./production-availability').refreshAffectedByIngredient(productId);
+  } catch (_) { /* ignore */ }
+  return newStock;
+}
+
+function getStockHistory(productId) {
+  return getDb().prepare(`
+    SELECT sm.*, u.full_name as user_name, p.name as product_name
+    FROM stock_movements sm
+    LEFT JOIN users u ON sm.user_id = u.id
+    LEFT JOIN products p ON sm.product_id = p.id
+    WHERE sm.product_id = ?
+    ORDER BY sm.created_at DESC LIMIT 100
+  `).all(productId);
+}
+
+function getAllStockHistory(limit = 100) {
+  return getDb().prepare(`
+    SELECT sm.*, u.full_name as user_name, p.name as product_name
+    FROM stock_movements sm
+    LEFT JOIN users u ON sm.user_id = u.id
+    LEFT JOIN products p ON sm.product_id = p.id
+    ORDER BY sm.created_at DESC LIMIT ?
+  `).all(limit);
+}
+
+// ─── Sales / POS ────────────────────────────────────────────────────────────
+
+function resolveModifierExtras(productId, modifiers) {
+  if (!productId || !modifiers?.length) return 0;
+  const db = getDb();
+  let extra = 0;
+  for (const m of modifiers) {
+    let mod = null;
+    if (m.id) {
+      mod = db.prepare('SELECT extra_price FROM product_modifiers WHERE id = ? AND product_id = ?').get(m.id, productId);
+    }
+    if (!mod && m.name) {
+      mod = db.prepare('SELECT extra_price FROM product_modifiers WHERE product_id = ? AND name = ?').get(productId, m.name);
+    }
+    extra += Number(mod?.extra_price) || 0;
+  }
+  return extra;
+}
+
+function completeSale(saleData, actorId, actorName, actorRole) {
+  const db = getDb();
+  const actorUser = db.prepare('SELECT id, role, full_name, is_active FROM users WHERE id = ?').get(actorId);
+  if (!actorUser || !actorUser.is_active) throw new Error('Invalid or inactive user');
+  const dbRole = actorUser.role || actorRole;
+  if (roleRequiresShift(dbRole)) {
+    const shift = getOpenShift(actorId);
+    if (!shift) throw new Error('You must open a shift before completing sales');
+  }
+  const branchId = features.getBranchId();
+  const deviceId = syncSvc.resolveDeviceUid();
+
+  // Offline replay: same client_request_id must not create a duplicate sale
+  const clientRequestId = saleData && saleData.client_request_id
+    ? String(saleData.client_request_id).trim()
+    : '';
+  if (clientRequestId) {
+    try {
+      db.exec('ALTER TABLE sales ADD COLUMN client_request_id TEXT');
+    } catch (_) { /* exists */ }
+    try {
+      db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_client_request_id ON sales(client_request_id)');
+    } catch (_) { /* exists / PG variant */ }
+    const existing = db.prepare(
+      'SELECT id FROM sales WHERE client_request_id = ? LIMIT 1'
+    ).get(clientRequestId);
+    if (existing && existing.id) {
+      const sale = getSale(existing.id);
+      return {
+        saleId: existing.id,
+        receiptNumber: sale?.receipt_number,
+        orderNumber: sale?.order_number,
+        sale,
+        replayed: true,
+        automation: [],
+        loyaltyPointsEarned: 0,
+        loyaltyPointsRedeemed: 0,
+        loyaltyDiscount: 0,
+        customerReward: null
+      };
+    }
+  }
+
+  const items = Array.isArray(saleData.items) ? saleData.items : [];
+  if (!items.length) throw new Error('Sale must include at least one item');
+
+  const pricedItems = [];
+  let undercharge = 0;
+
+  for (const item of items) {
+    const qty = Number(item.quantity) || 0;
+    if (qty <= 0) throw new Error(`Invalid quantity for ${item.product_name || 'item'}`);
+    if (!item.product_id && !item.combo_id) {
+      throw new Error(`Invalid cart line "${item.product_name || 'item'}" — product or combo required`);
+    }
+    const clientUnit = Number(item.unit_price) || 0;
+    let unitPrice = clientUnit;
+    let buyingPrice = Number(item.buying_price) || 0;
+    let productName = item.product_name;
+    let promoRequestId = item.promo_request_id || null;
+    let originalUnitPrice = item.original_unit_price ?? null;
+
+    if (item.combo_id) {
+      const combo = combosSvc.getCombo(item.combo_id);
+      if (!combo) throw new Error(`Combo not found for ${item.product_name || 'combo item'}`);
+      unitPrice = Number(combo.final_price) || 0;
+      productName = combo.name || productName;
+      buyingPrice = (combo.items || []).reduce((s, ci) => {
+        const p = db.prepare('SELECT buying_price FROM products WHERE id = ?').get(ci.product_id);
+        return s + (Number(p?.buying_price) || 0) * (Number(ci.quantity) || 1);
+      }, 0);
+      originalUnitPrice = Number(combo.normal_price) || null;
+    } else if (item.product_id) {
+      const product = getProduct(item.product_id);
+      if (!product) throw new Error(`Product not found: ${item.product_name || item.product_id}`);
+      unitPrice = Number(product.selling_price) || 0;
+      unitPrice += resolveModifierExtras(item.product_id, item.modifiers);
+      buyingPrice = Number(product.buying_price) || 0;
+      productName = product.name || productName;
+      promoRequestId = product.promo_request_id || promoRequestId;
+      originalUnitPrice = product.promo_active ? (product.original_price ?? null) : null;
+    }
+
+    const lineTotal = Math.round(unitPrice * qty * 100) / 100;
+    if (item.product_id || item.combo_id) {
+      const expectedClient = Math.round(clientUnit * qty * 100) / 100;
+      if (expectedClient < lineTotal - 0.02) {
+        undercharge += (lineTotal - expectedClient);
+      }
+    }
+
+    pricedItems.push({
+      ...item,
+      product_name: productName,
+      quantity: qty,
+      unit_price: unitPrice,
+      buying_price: buyingPrice,
+      discount: Number(item.discount) || 0,
+      total: lineTotal,
+      promo_request_id: promoRequestId,
+      original_unit_price: originalUnitPrice
+    });
+  }
+
+  const discountAuthorized = !!(saleData.discount_authorized || saleData.discount_approver_id);
+  if (undercharge > 0.02 && !discountAuthorized) {
+    throw new Error('Line prices do not match catalog — manager authorization required for discount');
+  }
+
+  saleData.items = pricedItems;
+
+  // Automation: check discount / amount rules
+  const autoRules = features.evaluateAutomation('before_sale', {
+    amount: saleData.total,
+    discount_pct: saleData.subtotal > 0 ? (saleData.discount / saleData.subtotal * 100) : 0
+  });
+  if (autoRules.some(r => r.action?.require_manager)) {
+    throw new Error('Manager approval required for this sale');
+  }
+
+  const settingsParsed = getSettingsParsed();
+  const accountPayments = (saleData.payments || []).filter(p => p.type === 'account' || p.payment_type === 'account');
+  if (accountPayments.length) {
+    if (!saleData.customer_id) throw new Error('Select a customer for On Account payment');
+    const accountTotal = accountPayments.reduce((s, p) => s + Number(p.amount), 0);
+    const check = staff.validateOnAccount(saleData.customer_id, accountTotal, settingsParsed.account_settings);
+    if (!check.ok) throw new Error(check.error);
+  }
+
+  const settingsForTax = getSettingsParsed();
+  const grossSubtotal = pricedItems.reduce((s, i) => s + (Number(i.total) || 0), 0);
+  const cartDiscount = Number(saleData.discount) || 0;
+  if (cartDiscount < -0.001) throw new Error('Invalid cart discount');
+  if (cartDiscount > grossSubtotal + 0.02) throw new Error('Cart discount cannot exceed subtotal');
+  if (cartDiscount > 0.02) {
+    const isMgr = ['owner', 'manager'].includes(dbRole);
+    if (!isMgr) {
+      const pin = saleData.discount_manager_pin || saleData.manager_pin;
+      if (!pin) throw new Error('Manager PIN required for cart discount');
+      try {
+        auditSvc.verifyManagerPin(pin);
+      } catch {
+        throw new Error('Invalid manager PIN for cart discount');
+      }
+    }
+    // Discount must not push sale below total cost (profit floor)
+    const floor = cartProfitFloor(pricedItems.map(i => {
+      const p = getDb().prepare('SELECT buying_price, recipe_cost FROM products WHERE id=?').get(i.product_id);
+      return {
+        quantity: i.quantity,
+        buying_price: p?.buying_price,
+        recipe_cost: p?.recipe_cost
+      };
+    }));
+    if (grossSubtotal - cartDiscount + 0.02 < floor) {
+      throw new Error(`Discount too high — would sell below cost (min total ${floor}). Reduce discount to protect profit.`);
+    }
+  }
+  const taxRate = settingsForTax.tax_enabled ? (settingsForTax.tax_rate || 0) : 0;
+  const preLoyaltyTotal = calcTaxInclusiveTotals(grossSubtotal, cartDiscount, taxRate).total;
+  const loyaltyRedemption = saleData.customer_id && saleData.loyalty_redeem > 0
+    ? features.calcLoyaltyRedemption(saleData.customer_id, saleData.loyalty_redeem, preLoyaltyTotal)
+    : { points: 0, discount: 0 };
+  const saleDiscount = money(cartDiscount + (loyaltyRedemption.discount || 0));
+  const taxTotals = calcTaxInclusiveTotals(grossSubtotal, saleDiscount, taxRate);
+  saleData.subtotal = taxTotals.subtotal;
+  saleData.tax_amount = taxTotals.tax_amount;
+  saleData.total = taxTotals.total;
+  const saleTotal = taxTotals.total;
+  const amountPaid = money(saleData.amount_paid);
+  if (amountPaid < saleTotal - 0.01) {
+    throw new Error('Payment incomplete — amount paid is less than total after loyalty redemption');
+  }
+  let payments = Array.isArray(saleData.payments) ? saleData.payments : [];
+  if (!payments.length && amountPaid >= saleTotal - 0.01) {
+    payments = [{ type: 'cash', amount: amountPaid }];
+  }
+  if (!payments.length) {
+    throw new Error('No payment recorded for this sale');
+  }
+  // Cap all tenders to amount still due so change is not booked as revenue
+  let dueLeft = saleTotal;
+  const cappedPayments = [];
+  let cashTendered = 0;
+  for (const payment of payments) {
+    const pType = payment.type || payment.payment_type || 'cash';
+    let amt = money(payment.amount);
+    if (amt <= 0) continue;
+    if (pType === 'cash') cashTendered = money(cashTendered + amt);
+    if (dueLeft <= 0.009) {
+      if (pType === 'cash') continue; // excess cash is change only
+      continue;
+    }
+    if (amt > dueLeft + 0.02) amt = money(dueLeft);
+    dueLeft = money(dueLeft - amt);
+    cappedPayments.push({ ...payment, type: pType, amount: amt });
+  }
+  payments = cappedPayments;
+  const softSum = payments
+    .filter(p => p.type === 'account' || p.type === 'giftcard')
+    .reduce((s, p) => s + (Number(p.amount) || 0), 0);
+  if (softSum > saleTotal + 0.02) {
+    throw new Error('Account/gift card payments exceed sale total');
+  }
+  const paymentsSum = payments.reduce((s, p) => s + (Number(p.amount) || 0), 0);
+  if (paymentsSum < saleTotal - 0.02) {
+    throw new Error('Payment incomplete — sum of payments is less than sale total');
+  }
+  const changeAmount = money(Math.max(0, cashTendered - Math.max(0, saleTotal - softSum)));
+  for (const payment of payments) {
+    const pType = payment.type || payment.payment_type || 'cash';
+    if (pType === 'giftcard' && !payment.gift_card_code) {
+      throw new Error('Gift card code required for gift card payment');
+    }
+  }
+
+  const receiptNumber = nextReceiptNumber();
+  const orderNumber = nextOrderNumber();
+
+  // Always validate combo component stock before transaction
+  for (const item of saleData.items || []) {
+    if (!item.combo_id) continue;
+    const combo = combosSvc.getCombo(item.combo_id);
+    if (!combo) throw new Error(`Combo not found for ${item.product_name || 'combo item'}`);
+    for (const ci of combo.items || []) {
+      const product = db.prepare('SELECT id, name, stock_quantity, has_recipe FROM products WHERE id = ?').get(ci.product_id);
+      if (!product) continue;
+      const need = (Number(ci.quantity) || 1) * (Number(item.quantity) || 1);
+      if (product.has_recipe) continue;
+      if (product.stock_quantity < need) {
+        throw new Error(`Insufficient stock for combo "${combo.name}" — ${product.name}: need ${need}, have ${product.stock_quantity}`);
+      }
+    }
+  }
+
+  // Production Availability Engine — block sales that cannot be produced
+  try {
+    require('./production-availability').validateSaleCapacity(saleData.items || [], {
+      allowOversell: getAllowOversell()
+    });
+  } catch (err) {
+    throw err;
+  }
+  if (!getAllowOversell()) {
+    for (const item of saleData.items) {
+      if (item.combo_id) continue;
+      if (!item.product_id) continue;
+      const product = db.prepare('SELECT id, name, stock_quantity, has_recipe, production_mode FROM products WHERE id = ?').get(item.product_id);
+      if (!product) continue;
+      // make_to_order validated above via production capacity
+      if (product.has_recipe && product.production_mode !== 'make_to_stock') continue;
+      if (product.stock_quantity < item.quantity) {
+        throw new Error(`Insufficient stock for ${product.name}. Available: ${product.stock_quantity}, in cart: ${item.quantity}`);
+      }
+    }
+  }
+
+  const paEngine = require('./production-availability');
+  paEngine.pauseRefresh();
+  let result;
+  try {
+  // Schema patches must run OUTSIDE the sale transaction (Postgres aborts the whole txn on ALTER errors)
+  try { db.exec('ALTER TABLE sales ADD COLUMN IF NOT EXISTS delivery_address TEXT'); } catch (_) {
+    try { db.exec('ALTER TABLE sales ADD COLUMN delivery_address TEXT'); } catch (_) { /* exists */ }
+  }
+  try { db.exec('ALTER TABLE sales ADD COLUMN IF NOT EXISTS client_request_id TEXT'); } catch (_) {
+    try { db.exec('ALTER TABLE sales ADD COLUMN client_request_id TEXT'); } catch (_) { /* exists */ }
+  }
+  const txn = db.transaction(() => {
+    const saleResult = db.prepare(`
+      INSERT INTO sales (receipt_number, order_number, user_id, customer_id, subtotal, discount, tax_amount, total, amount_paid, change_amount, notes, branch_id, device_id, status, order_type, table_id, table_name, delivery_address, client_request_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?, ?, ?)
+    `).run(receiptNumber, orderNumber, actorId, saleData.customer_id || null,
+      saleData.subtotal, saleDiscount, saleData.tax_amount || 0,
+      saleTotal, amountPaid, changeAmount, saleData.notes || null, branchId, deviceId,
+      saleData.order_type || null, saleData.table_id || null, saleData.table_name || null,
+      saleData.delivery_address || null,
+      clientRequestId || null);
+
+    const saleId = saleResult.lastInsertRowid;
+
+    if (saleData.table_id && saleData.order_type === 'sit_in') {
+      try {
+        db.prepare(`UPDATE restaurant_tables SET status = 'occupied' WHERE id = ?`).run(saleData.table_id);
+      } catch (_) { /* ignore */ }
+    }
+
+    for (const item of saleData.items) {
+      const modText = item.modifiers_text || (item.modifiers ? item.modifiers.map(m => m.name).join(', ') : null);
+      const promoRequestId = item.promo_request_id || null;
+      const originalUnitPrice = item.original_unit_price ?? null;
+      const itemResult = db.prepare(`
+        INSERT INTO sale_items (sale_id, product_id, product_name, quantity, unit_price, buying_price, discount, total, modifiers_text, item_type, combo_id, original_unit_price, promo_request_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(saleId, item.product_id || null, item.product_name, item.quantity,
+        item.unit_price, item.buying_price || 0, item.discount || 0, item.total, modText, item.item_type || null, item.combo_id || null,
+        originalUnitPrice, promoRequestId);
+      const saleItemId = itemResult.lastInsertRowid;
+      if (item.combo_id) {
+        combosSvc.processComboSale(item.combo_id, item.quantity, saleId, saleItemId, adjustStock, actorId, receiptNumber);
+      } else if (item.product_id) {
+        const prodMeta = db.prepare('SELECT has_recipe, production_mode, stock_quantity FROM products WHERE id = ?').get(item.product_id);
+        const makeToStock = prodMeta?.production_mode === 'make_to_stock';
+        if (makeToStock) {
+          adjustStock(item.product_id, item.quantity, 'sale', `Sale ${receiptNumber}`, actorId, 'sale', saleId);
+        } else {
+          const saleNote = `Sale ${receiptNumber} (recipe)`;
+          const selectedMods = item.modifiers?.length
+            ? item.modifiers
+            : String(item.modifiers_text || modText || '')
+              .split(',')
+              .map(s => ({ name: s.trim() }))
+              .filter(m => m.name);
+          const recipeDeducted = inventory.deductRecipeIngredients(
+            item.product_id, item.quantity, saleNote, actorId, 'sale', saleId, adjustStock, selectedMods, item.substitutions || null
+          );
+          if (!recipeDeducted) {
+            adjustStock(item.product_id, item.quantity, 'sale', `Sale ${receiptNumber}`, actorId, 'sale', saleId);
+          }
+        }
+        db.prepare('UPDATE products SET last_sale_date = date(\'now\') WHERE id = ?').run(item.product_id);
+      }
+    }
+
+    for (const payment of payments) {
+      const pType = payment.type || payment.payment_type || 'cash';
+      db.prepare('INSERT INTO sale_payments (sale_id, payment_type, amount) VALUES (?, ?, ?)')
+        .run(saleId, pType, Number(payment.amount) || 0);
+      if (pType === 'account' && saleData.customer_id) {
+        features.addCustomerCreditCharge(saleData.customer_id, payment.amount, saleId, `Sale ${receiptNumber}`, actorId);
+        const acct = settingsParsed.account_settings || {};
+        const cust = db.prepare('SELECT on_account_period_days FROM customers WHERE id = ?').get(saleData.customer_id);
+        const days = cust?.on_account_period_days || acct.default_period_days || 30;
+        const due = new Date();
+        due.setDate(due.getDate() + Number(days));
+        db.prepare('UPDATE customers SET on_account_due_date = ? WHERE id = ?')
+          .run(due.toLocaleDateString('en-CA'), saleData.customer_id);
+      }
+      if (pType === 'giftcard') {
+        if (!payment.gift_card_code) throw new Error('Gift card code required for gift card payment');
+        features.redeemGiftCard(payment.gift_card_code, payment.amount, saleId, actorId);
+      }
+    }
+
+    if (loyaltyRedemption.points > 0 && saleData.customer_id) {
+      features.redeemLoyaltyPoints(saleData.customer_id, loyaltyRedemption.points, saleId);
+    }
+
+    return { saleId, receiptNumber, orderNumber };
+  });
+
+  result = txn();
+  } finally {
+    paEngine.resumeRefresh({ refresh: true });
+  }
+
+  let loyaltyPointsEarned = 0;
+  let customerReward = null;
+  if (saleData.customer_id) {
+    try { loyaltyPointsEarned = features.earnLoyaltyPoints(saleData.customer_id, saleTotal, result.saleId); } catch (_) {}
+    try {
+      customerReward = customerRewardsSvc.processCustomerRewards(
+        saleData.customer_id,
+        result.saleId,
+        saleTotal,
+        (data, aId, aName) => features.createGiftCard(data, aId, aName),
+        actorId,
+        actorName
+      );
+    } catch (_) {}
+  }
+
+  audit(actorId, actorName, 'complete_sale', 'sale', result.saleId, { receipt_number: result.receiptNumber, order_number: result.orderNumber, total: saleTotal });
+  features.log('info', 'sale', `Sale ${result.receiptNumber} completed`, { total: saleTotal, actorId });
+  try { syncSvc.enqueueSale(result.saleId); } catch (_) {}
+  return {
+    ...result,
+    sale: getSale(result.saleId),
+    automation: autoRules,
+    loyaltyPointsEarned,
+    loyaltyPointsRedeemed: loyaltyRedemption.points,
+    loyaltyDiscount: loyaltyRedemption.discount,
+    customerReward
+  };
+}
+
+function getSale(id) {
+  const sale = getDb().prepare(`
+    SELECT s.*, u.full_name as cashier_name, c.name as customer_name, c.phone as customer_phone
+    FROM sales s
+    LEFT JOIN users u ON s.user_id = u.id
+    LEFT JOIN customers c ON s.customer_id = c.id
+    WHERE s.id = ?
+  `).get(id);
+  if (!sale) return null;
+  sale.items = getDb().prepare('SELECT * FROM sale_items WHERE sale_id = ?').all(id);
+  sale.payments = getDb().prepare('SELECT * FROM sale_payments WHERE sale_id = ?').all(id);
+  const loyaltyRedeem = getDb().prepare(`
+    SELECT COALESCE(SUM(ABS(points)), 0) as points FROM loyalty_transactions
+    WHERE sale_id = ? AND type = 'redeem'`).get(id);
+  const loyaltyEarn = getDb().prepare(`
+    SELECT COALESCE(SUM(points), 0) as points FROM loyalty_transactions
+    WHERE sale_id = ? AND type = 'earn'`).get(id);
+  sale.loyalty_points_redeemed = Number(loyaltyRedeem?.points) || 0;
+  sale.loyalty_points_earned = Number(loyaltyEarn?.points) || 0;
+  sale.gift_card_amount = sale.payments
+    .filter(p => p.payment_type === 'giftcard')
+    .reduce((s, p) => s + Number(p.amount), 0);
+  return sale;
+}
+
+function getSaleByReceipt(receiptNumber) {
+  const sale = getDb().prepare('SELECT id FROM sales WHERE receipt_number = ?').get(receiptNumber);
+  return sale ? getSale(sale.id) : null;
+}
+
+function holdOrder(name, cartData, userId) {
+  const r = getDb().prepare('INSERT INTO held_orders (name, user_id, cart_data) VALUES (?, ?, ?)')
+    .run(name || `Hold ${new Date().toLocaleTimeString()}`, userId, JSON.stringify(cartData));
+  return r.lastInsertRowid;
+}
+
+function getHeldOrders() {
+  return getDb().prepare(`
+    SELECT h.*, u.full_name as user_name FROM held_orders h
+    LEFT JOIN users u ON h.user_id = u.id ORDER BY h.created_at DESC
+  `).all().map(h => {
+    let cart_data = [];
+    try { cart_data = JSON.parse(h.cart_data); } catch { cart_data = []; }
+    return { ...h, cart_data };
+  });
+}
+
+function deleteHeldOrder(id) {
+  getDb().prepare('DELETE FROM held_orders WHERE id = ?').run(id);
+}
+
+// ─── Returns ────────────────────────────────────────────────────────────────
+
+function processReturn(data, actorId, actorName) {
+  const db = getDb();
+  try {
+    db.prepare('ALTER TABLE return_items ADD COLUMN sale_item_id INTEGER').run();
+  } catch (_) { /* exists */ }
+  try {
+    db.prepare('ALTER TABLE return_items ADD COLUMN combo_id INTEGER').run();
+  } catch (_) { /* exists */ }
+
+  const user = db.prepare('SELECT role FROM users WHERE id = ?').get(actorId);
+  const secRow = db.prepare('SELECT security_settings FROM shop_settings WHERE id = 1').get();
+  let sec = {};
+  try { sec = JSON.parse(secRow?.security_settings || '{}'); } catch (_) {}
+  const cashierMax = sec.return_cashier_max ?? 100;
+  const managerMax = sec.return_manager_max ?? 1000;
+
+  if (user?.role === 'cashier') {
+    if (!data.supervisor_code) {
+      throw new Error('Supervisor code required for cashier returns');
+    }
+    try { features.verifySupervisorCode(data.supervisor_code, 'refund'); }
+    catch { features.verifySupervisorCode(data.supervisor_code, 'void'); }
+  }
+
+  const sale = db.prepare('SELECT * FROM sales WHERE id = ?').get(data.sale_id);
+  if (!sale) throw new Error('Sale not found');
+  if (isVoidedStatus(sale.status)) throw new Error('Cannot return a voided sale');
+  if (sale.status !== 'completed' && sale.status !== 'partial_return') {
+    throw new Error('This sale is not eligible for return');
+  }
+
+  const returnItems = [];
+  let totalRefund = 0;
+
+  for (const item of data.items || []) {
+    const returnQty = Number(item.quantity) || 0;
+    if (returnQty <= 0) throw new Error(`Invalid return quantity for ${item.product_name || 'item'}`);
+
+    const saleItemId = item.sale_item_id || item.id || null;
+    let saleItem = null;
+    if (saleItemId) {
+      saleItem = db.prepare('SELECT * FROM sale_items WHERE id = ? AND sale_id = ?').get(saleItemId, data.sale_id);
+      if (!saleItem) throw new Error(`Sale line not found for return item ${item.product_name || saleItemId}`);
+    } else if (item.product_id) {
+      saleItem = db.prepare(`
+        SELECT * FROM sale_items WHERE sale_id = ? AND product_id = ? ORDER BY id LIMIT 1
+      `).get(data.sale_id, item.product_id);
+    } else if (item.combo_id) {
+      saleItem = db.prepare(`
+        SELECT * FROM sale_items WHERE sale_id = ? AND combo_id = ? ORDER BY id LIMIT 1
+      `).get(data.sale_id, item.combo_id);
+    }
+    if (!saleItem) {
+      throw new Error(`Cannot match return line: ${item.product_name || 'item'} — provide sale_item_id`);
+    }
+
+    const soldQty = Number(saleItem.quantity) || 0;
+    const returnedByLine = db.prepare(`
+      SELECT COALESCE(SUM(ri.quantity), 0) as qty FROM return_items ri
+      JOIN returns r ON r.id = ri.return_id
+      WHERE r.sale_id = ? AND r.status IN ('completed', 'reopened') AND ri.sale_item_id = ?
+    `).get(data.sale_id, saleItem.id);
+    let returnedQty = Number(returnedByLine?.qty) || 0;
+    if (!returnedQty && saleItem.product_id) {
+      const legacy = db.prepare(`
+        SELECT COALESCE(SUM(ri.quantity), 0) as qty FROM return_items ri
+        JOIN returns r ON r.id = ri.return_id
+        WHERE r.sale_id = ? AND r.status IN ('completed', 'reopened') AND ri.sale_item_id IS NULL AND ri.product_id = ?
+      `).get(data.sale_id, saleItem.product_id);
+      returnedQty = Number(legacy?.qty) || 0;
+    } else if (!returnedQty && saleItem.combo_id) {
+      const legacyCombo = db.prepare(`
+        SELECT COALESCE(SUM(ri.quantity), 0) as qty FROM return_items ri
+        JOIN returns r ON r.id = ri.return_id
+        WHERE r.sale_id = ? AND r.status IN ('completed', 'reopened') AND ri.sale_item_id IS NULL AND ri.combo_id = ?
+      `).get(data.sale_id, saleItem.combo_id);
+      returnedQty = Number(legacyCombo?.qty) || 0;
+    }
+    if (returnedQty + returnQty > soldQty + 0.001) {
+      throw new Error(`Return quantity exceeds sold amount for ${saleItem.product_name}. Sold: ${soldQty}, already returned: ${returnedQty}`);
+    }
+
+    const unitPrice = Number(saleItem.unit_price) || 0;
+    const lineGross = unitPrice * soldQty;
+    // Allocate sale-level discounts so refunds never exceed what was paid
+    const saleGrossAll = (db.prepare(`
+      SELECT COALESCE(SUM(unit_price * quantity), 0) as g FROM sale_items WHERE sale_id = ?
+    `).get(data.sale_id)?.g) || 0;
+    const salePaid = Number(sale.total) || 0;
+    const itemPaidTotal = saleGrossAll > 0.001
+      ? (lineGross / saleGrossAll) * salePaid
+      : lineGross;
+    const lineRefund = Math.round((itemPaidTotal * (returnQty / soldQty)) * 100) / 100;
+    totalRefund += lineRefund;
+    returnItems.push({
+      sale_item_id: saleItem.id,
+      product_id: saleItem.product_id || null,
+      combo_id: saleItem.combo_id || null,
+      product_name: saleItem.product_name,
+      quantity: returnQty,
+      unit_price: soldQty > 0 ? Math.round((itemPaidTotal / soldQty) * 100) / 100 : unitPrice,
+      total: lineRefund
+    });
+  }
+
+  if (!returnItems.length) throw new Error('No items to return');
+
+  const priorRefunds = db.prepare(`
+    SELECT COALESCE(SUM(total_refund), 0) as t FROM returns
+    WHERE sale_id = ? AND status IN ('completed', 'reopened')
+  `).get(data.sale_id);
+  const alreadyRefunded = Number(priorRefunds?.t) || 0;
+  if (alreadyRefunded + totalRefund > (Number(sale.total) || 0) + 0.05) {
+    throw new Error(`Refund would exceed amount paid for this sale (paid R${Number(sale.total) || 0}, already refunded R${alreadyRefunded})`);
+  }
+
+  if (user?.role === 'cashier' && totalRefund > cashierMax) {
+    throw new Error(`Manager approval required for refunds over R${cashierMax}`);
+  }
+  const needsOwnerApproval = totalRefund > managerMax && user?.role !== 'owner';
+  if (needsOwnerApproval) {
+    const pin = data.owner_pin || data.approver_pin || data.supervisor_code;
+    if (!pin) throw new Error(`Owner PIN required for refunds over R${managerMax}`);
+    try {
+      auditSvc.verifyManagerPin(pin);
+    } catch {
+      throw new Error(`Owner/manager PIN required for refunds over R${managerMax}`);
+    }
+  }
+
+  let returnType = data.return_type || 'refund';
+  if (returnType === 'exchange') returnType = 'replace';
+
+  const txn = db.transaction(() => {
+    // Re-check quantities inside the transaction to avoid concurrent over-refund
+    for (const item of returnItems) {
+      const soldQty = Number(db.prepare('SELECT quantity FROM sale_items WHERE id = ?').get(item.sale_item_id)?.quantity) || 0;
+      const returnedByLine = db.prepare(`
+        SELECT COALESCE(SUM(ri.quantity), 0) as qty FROM return_items ri
+        JOIN returns r ON r.id = ri.return_id
+        WHERE r.sale_id = ? AND r.status IN ('completed', 'reopened') AND ri.sale_item_id = ?
+      `).get(data.sale_id, item.sale_item_id);
+      if ((Number(returnedByLine?.qty) || 0) + item.quantity > soldQty + 0.001) {
+        throw new Error(`Return quantity exceeds sold amount for ${item.product_name}`);
+      }
+    }
+    const priorInTxn = db.prepare(`
+      SELECT COALESCE(SUM(total_refund), 0) as t FROM returns
+      WHERE sale_id = ? AND status IN ('completed', 'reopened')
+    `).get(data.sale_id);
+    if ((Number(priorInTxn?.t) || 0) + totalRefund > (Number(sale.total) || 0) + 0.05) {
+      throw new Error('Refund would exceed amount paid for this sale');
+    }
+
+    const row = db.prepare('SELECT last_number FROM return_counter WHERE id = 1').get();
+    const next = (row?.last_number || 0) + 1;
+    db.prepare('UPDATE return_counter SET last_number = ? WHERE id = 1').run(next);
+    const returnNumber = `RET-${String(next).padStart(5, '0')}`;
+
+    const r = db.prepare(`
+      INSERT INTO returns (sale_id, receipt_number, user_id, return_type, reason, total_refund, return_number, approved_by, approved_by_name, return_to_stock, stock_reason, refund_method, customer_id, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed')
+    `).run(data.sale_id, data.receipt_number, actorId, returnType, data.reason, totalRefund,
+      returnNumber, actorId, actorName,
+      data.return_to_stock !== false ? 1 : 0, data.stock_reason || null, data.refund_method || 'cash', data.customer_id || null);
+
+    for (const item of returnItems) {
+      db.prepare(`
+        INSERT INTO return_items (return_id, product_id, product_name, quantity, unit_price, total, sale_item_id, combo_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(r.lastInsertRowid, item.product_id, item.product_name, item.quantity, item.unit_price, item.total,
+        item.sale_item_id, item.combo_id);
+      if (data.return_to_stock !== false) {
+        const returnNote = `Return ${returnNumber}`;
+        if (item.combo_id) {
+          combosSvc.restoreComboSale(item.combo_id, item.quantity, returnNote, actorId, 'return', r.lastInsertRowid, adjustStock);
+        } else if (item.product_id) {
+          let selectedMods = [];
+          if (item.sale_item_id) {
+            const si = db.prepare('SELECT modifiers_text FROM sale_items WHERE id = ?').get(item.sale_item_id);
+            if (si?.modifiers_text) {
+              selectedMods = String(si.modifiers_text).split(',').map(s => ({ name: s.trim() })).filter(m => m.name);
+            }
+          }
+          restoreProductStockAfterSale(
+            item.product_id, item.quantity, returnNote, actorId, 'return', r.lastInsertRowid, selectedMods
+          );
+        }
+      }
+    }
+
+    if (data.return_type === 'exchange' && data.exchange) {
+      db.prepare(`INSERT INTO exchanges (return_id, sale_id, original_product_id, new_product_id, original_product_name, new_product_name, price_difference, notes, user_id)
+        VALUES (?,?,?,?,?,?,?,?,?)`).run(
+        r.lastInsertRowid, data.sale_id, data.exchange.original_product_id || null, data.exchange.new_product_id || null,
+        data.exchange.original_product_name || '', data.exchange.new_product_name || '',
+        data.exchange.price_difference || 0, data.exchange.notes || data.reason, actorId);
+    }
+
+    const allSaleItems = db.prepare('SELECT id, quantity FROM sale_items WHERE sale_id = ?').all(data.sale_id);
+    let fullyReturned = true;
+    for (const si of allSaleItems) {
+      const retQty = db.prepare(`
+        SELECT COALESCE(SUM(ri.quantity), 0) as qty FROM return_items ri
+        JOIN returns r ON r.id = ri.return_id
+        WHERE r.sale_id = ? AND r.status IN ('completed', 'reopened') AND ri.sale_item_id = ?
+      `).get(data.sale_id, si.id);
+      if ((Number(retQty?.qty) || 0) < (Number(si.quantity) || 0) - 0.001) {
+        fullyReturned = false;
+        break;
+      }
+    }
+    db.prepare(`UPDATE sales SET status = ? WHERE id = ?`)
+      .run(fullyReturned ? 'returned' : 'partial_return', data.sale_id);
+
+    return { id: r.lastInsertRowid, returnNumber };
+  });
+  const result = txn();
+  const refundRatio = sale.total > 0 ? Math.min(1, totalRefund / Number(sale.total)) : 0;
+  if (refundRatio > 0) {
+    try { features.reverseSaleBenefits(data.sale_id, actorId, refundRatio); } catch (_) { /* best effort */ }
+  }
+  audit(actorId, actorName, 'process_return', 'return', result.id, { ...data, total_refund: totalRefund, return_number: result.returnNumber });
+  features.log('info', 'return', `Return ${result.returnNumber} processed`, { refund: totalRefund });
+  return result.id;
+}
+
+function getReturns(filters = {}) {
+  let sql = `
+    SELECT r.*, u.full_name as user_name FROM returns r
+    LEFT JOIN users u ON r.user_id = u.id WHERE 1=1
+  `;
+  const params = [];
+  if (filters.from) { sql += ' AND date(r.created_at) >= ?'; params.push(filters.from); }
+  if (filters.to) { sql += ' AND date(r.created_at) <= ?'; params.push(filters.to); }
+  sql += ' ORDER BY r.created_at DESC';
+  return getDb().prepare(sql).all(...params);
+}
+
+// ─── Expenses ───────────────────────────────────────────────────────────────
+
+function getExpenses(filters = {}) {
+  let sql = 'SELECT e.*, u.full_name as user_name FROM expenses e LEFT JOIN users u ON e.user_id = u.id WHERE 1=1';
+  const params = [];
+  if (filters.from) { sql += ' AND e.expense_date >= ?'; params.push(filters.from); }
+  if (filters.to) { sql += ' AND e.expense_date <= ?'; params.push(filters.to); }
+  if (filters.category) { sql += ' AND e.category = ?'; params.push(filters.category); }
+  sql += ' ORDER BY e.expense_date DESC';
+  return getDb().prepare(sql).all(...params);
+}
+
+function saveExpense(data, actorId, actorName) {
+  const amount = money(data.amount);
+  if (!(amount > 0)) throw new Error('Expense amount must be greater than zero');
+  if (!data.category || !String(data.category).trim()) throw new Error('Expense category is required');
+  const expenseDate = data.expense_date || new Date().toLocaleDateString('en-CA');
+  if (data.id) {
+    getDb().prepare('UPDATE expenses SET category=?, description=?, amount=?, expense_date=? WHERE id=?')
+      .run(data.category, data.description, amount, expenseDate, data.id);
+    audit(actorId, actorName, 'update_expense', 'expense', data.id, data);
+    return data.id;
+  }
+  const r = getDb().prepare(`
+    INSERT INTO expenses (category, description, amount, user_id, expense_date)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(data.category, data.description, amount, actorId, expenseDate);
+  audit(actorId, actorName, 'create_expense', 'expense', r.lastInsertRowid, data);
+  return r.lastInsertRowid;
+}
+
+function deleteExpense(id, actorId, actorName) {
+  getDb().prepare('DELETE FROM expenses WHERE id = ?').run(id);
+  audit(actorId, actorName, 'delete_expense', 'expense', id, null);
+}
+
+// ─── Customers ──────────────────────────────────────────────────────────────
+
+function normalizePhone(phone) {
+  if (!phone) return '';
+  let digits = String(phone).replace(/\D/g, '');
+  if (digits.startsWith('27') && digits.length >= 11) digits = digits.slice(2);
+  if (digits.startsWith('0')) digits = digits.slice(1);
+  return digits.slice(-9);
+}
+
+function phonesMatch(a, b) {
+  const na = normalizePhone(a);
+  const nb = normalizePhone(b);
+  return !!(na && nb && na.length >= 9 && na === nb);
+}
+
+function getCustomers(search) {
+  let sql = 'SELECT * FROM customers WHERE 1=1';
+  const params = [];
+  const q = typeof search === 'string' ? search.trim() : '';
+  if (q) {
+    const digits = q.replace(/\D/g, '');
+    if (digits.length >= 3) {
+      sql += ` AND (name LIKE ? OR phone LIKE ? OR email LIKE ?
+        OR REPLACE(REPLACE(REPLACE(REPLACE(phone, ' ', ''), '-', ''), '+', ''), '(', '') LIKE ?)`;
+      params.push(`%${q}%`, `%${q}%`, `%${q}%`, `%${digits}%`);
+    } else {
+      sql += ' AND (name LIKE ? OR phone LIKE ? OR email LIKE ?)';
+      params.push(`%${q}%`, `%${q}%`, `%${q}%`);
+    }
+  }
+  sql += ' ORDER BY name';
+  return getDb().prepare(sql).all(...params);
+}
+
+function getCustomer(id) {
+  if (id == null || id === '') return null;
+  return getDb().prepare('SELECT * FROM customers WHERE id = ?').get(id) || null;
+}
+
+function saveCustomer(data, actorId, actorName) {
+  const dup = findDuplicateCustomer(data);
+  if (dup) {
+    const label = dup.field === 'phone' ? 'phone number' : dup.field === 'email' ? 'email address' : 'name';
+    throw new Error(`A customer with this ${label} already exists: ${dup.customer.name}${dup.customer.phone ? ` (${dup.customer.phone})` : ''}`);
+  }
+  if (data.id) {
+    getDb().prepare(`UPDATE customers SET name=?, phone=?, email=?, address=?, balance=?, notes=?,
+      allow_on_account=?, credit_limit=?, on_account_frozen=?, on_account_approved=?,
+      on_account_period_days=?, on_account_due_date=?, updated_at=datetime('now') WHERE id=?`)
+      .run(data.name, data.phone, data.email, data.address, data.balance || 0, data.notes,
+        data.allow_on_account ? 1 : 0, data.credit_limit != null ? data.credit_limit : null,
+        data.on_account_frozen ? 1 : 0, data.on_account_approved ? 1 : 0,
+        data.on_account_period_days != null ? data.on_account_period_days : null,
+        data.on_account_due_date || null, data.id);
+    audit(actorId, actorName, 'update_customer', 'customer', data.id, { name: data.name });
+    return getDb().prepare('SELECT * FROM customers WHERE id = ?').get(data.id);
+  }
+  const r = getDb().prepare(`INSERT INTO customers (name, phone, email, address, balance, notes, allow_on_account, credit_limit,
+    on_account_frozen, on_account_approved, on_account_period_days, on_account_due_date)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(data.name, data.phone, data.email, data.address, data.balance || 0, data.notes,
+      data.allow_on_account ? 1 : 0, data.credit_limit != null ? data.credit_limit : null,
+      data.on_account_frozen ? 1 : 0, data.on_account_approved ? 1 : 0,
+      data.on_account_period_days != null ? data.on_account_period_days : null,
+      data.on_account_due_date || null);
+  audit(actorId, actorName, 'create_customer', 'customer', r.lastInsertRowid, { name: data.name });
+  return getDb().prepare('SELECT * FROM customers WHERE id = ?').get(r.lastInsertRowid);
+}
+
+function findDuplicateCustomer(data) {
+  const db = getDb();
+  const excludeId = data.id || 0;
+  if (data.phone && data.phone.trim()) {
+    const withPhone = db.prepare('SELECT * FROM customers WHERE phone IS NOT NULL AND TRIM(phone) != \'\' AND id != ?').all(excludeId);
+    for (const c of withPhone) {
+      if (phonesMatch(data.phone, c.phone)) return { field: 'phone', customer: c };
+    }
+  }
+  if (data.email && data.email.trim()) {
+    const byEmail = db.prepare('SELECT * FROM customers WHERE LOWER(email) = LOWER(?) AND id != ?').get(data.email.trim(), excludeId);
+    if (byEmail) return { field: 'email', customer: byEmail };
+  }
+  const byName = db.prepare('SELECT * FROM customers WHERE LOWER(name) = LOWER(?) AND id != ?').get(data.name.trim(), excludeId);
+  if (byName) return { field: 'name', customer: byName };
+  return null;
+}
+
+function deleteCustomer(id, actorId, actorName) {
+  const db = getDb();
+  const customer = db.prepare('SELECT * FROM customers WHERE id = ?').get(id);
+  if (!customer) throw new Error('Customer not found');
+  const salesCount = db.prepare('SELECT COUNT(*) as c FROM sales WHERE customer_id = ?').get(id).c;
+  if (salesCount > 0) throw new Error('Cannot delete — customer has purchase history. Edit instead.');
+  db.prepare('DELETE FROM customer_credit_ledger WHERE customer_id = ?').run(id);
+  db.prepare('DELETE FROM loyalty_transactions WHERE customer_id = ?').run(id);
+  db.prepare('DELETE FROM customers WHERE id = ?').run(id);
+  audit(actorId, actorName, 'delete_customer', 'customer', id, { name: customer.name });
+  return { success: true };
+}
+
+function getCustomerHistory(customerId) {
+  return getDb().prepare(`
+    SELECT s.* FROM sales s WHERE s.customer_id = ? ORDER BY s.created_at DESC LIMIT 50
+  `).all(customerId);
+}
+
+// ─── Suppliers ──────────────────────────────────────────────────────────────
+
+function getSuppliers(search) {
+  let sql = 'SELECT * FROM suppliers WHERE 1=1';
+  const params = [];
+  if (search) { sql += ' AND (name LIKE ? OR phone LIKE ?)'; const q = `%${search}%`; params.push(q, q); }
+  sql += ' ORDER BY name';
+  return getDb().prepare(sql).all(...params);
+}
+
+function ensureSupplierSchema() {
+  const db = getDb();
+  for (const sql of [
+    'ALTER TABLE suppliers ADD COLUMN bank_name TEXT',
+    'ALTER TABLE suppliers ADD COLUMN bank_account_name TEXT',
+    'ALTER TABLE suppliers ADD COLUMN bank_account_number TEXT',
+    'ALTER TABLE suppliers ADD COLUMN bank_branch_code TEXT'
+  ]) {
+    try { db.exec(sql); } catch (_) { /* exists */ }
+  }
+}
+
+function saveSupplier(data, actorId, actorName) {
+  ensureSupplierSchema();
+  if (data.id) {
+    getDb().prepare(`UPDATE suppliers SET name=?, phone=?, email=?, address=?, balance_owed=?, notes=?,
+      bank_name=?, bank_account_name=?, bank_account_number=?, bank_branch_code=?, updated_at=datetime('now') WHERE id=?`)
+      .run(
+        data.name, data.phone, data.email, data.address, data.balance_owed || 0, data.notes || null,
+        data.bank_name || null, data.bank_account_name || null, data.bank_account_number || null, data.bank_branch_code || null,
+        data.id
+      );
+    audit(actorId, actorName, 'update_supplier', 'supplier', data.id, { name: data.name });
+    return data.id;
+  }
+  const r = getDb().prepare(`
+    INSERT INTO suppliers (name, phone, email, address, balance_owed, notes, bank_name, bank_account_name, bank_account_number, bank_branch_code)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    data.name, data.phone, data.email, data.address, data.balance_owed || 0, data.notes || null,
+    data.bank_name || null, data.bank_account_name || null, data.bank_account_number || null, data.bank_branch_code || null
+  );
+  audit(actorId, actorName, 'create_supplier', 'supplier', r.lastInsertRowid, { name: data.name });
+  return r.lastInsertRowid;
+}
+
+function recordSupplierPayment(supplierId, data, actorId, actorName) {
+  ensureSupplierSchema();
+  const db = getDb();
+  const supplier = db.prepare('SELECT * FROM suppliers WHERE id = ?').get(supplierId);
+  if (!supplier) throw new Error('Supplier not found');
+  const amount = Number(data.amount) || 0;
+  if (amount <= 0) throw new Error('Payment amount must be greater than zero');
+  const paymentNumber = `SPY-${Date.now().toString(36).toUpperCase()}`;
+  const newBalance = Math.max(0, (supplier.balance_owed || 0) - amount);
+  db.prepare('INSERT INTO supplier_payments (supplier_id, payment_number, amount, payment_method, notes, user_id) VALUES (?,?,?,?,?,?)')
+    .run(supplierId, paymentNumber, amount, data.payment_method || 'cash', data.notes || null, actorId);
+  db.prepare('UPDATE suppliers SET balance_owed = ?, updated_at = datetime(\'now\') WHERE id = ?').run(newBalance, supplierId);
+  audit(actorId, actorName, 'supplier_payment', 'supplier', supplierId, { amount, payment_number: paymentNumber, balance_after: newBalance });
+  return {
+    payment_number: paymentNumber,
+    amount,
+    balance_before: supplier.balance_owed || 0,
+    balance_after: newBalance,
+    supplier_name: supplier.name,
+    supplier_phone: supplier.phone,
+    supplier_email: supplier.email,
+    supplier_address: supplier.address,
+    bank_name: supplier.bank_name,
+    bank_account_name: supplier.bank_account_name,
+    bank_account_number: supplier.bank_account_number,
+    bank_branch_code: supplier.bank_branch_code,
+    payment_method: data.payment_method || 'cash',
+    notes: data.notes || null,
+    created_at: new Date().toISOString()
+  };
+}
+
+function getSupplierPayments(supplierId) {
+  return getDb().prepare(`
+    SELECT sp.*, u.full_name as user_name, s.name as supplier_name
+    FROM supplier_payments sp
+    LEFT JOIN users u ON sp.user_id = u.id
+    LEFT JOIN suppliers s ON sp.supplier_id = s.id
+    WHERE sp.supplier_id = ?
+    ORDER BY sp.created_at DESC
+  `).all(supplierId);
+}
+
+// ─── Purchase Orders ────────────────────────────────────────────────────────
+
+function getPurchaseOrders() {
+  return getDb().prepare(`
+    SELECT po.*, s.name as supplier_name, u.full_name as user_name
+    FROM purchase_orders po
+    LEFT JOIN suppliers s ON po.supplier_id = s.id
+    LEFT JOIN users u ON po.user_id = u.id
+    ORDER BY po.created_at DESC
+  `).all();
+}
+
+function getPurchaseOrder(id) {
+  const po = getDb().prepare(`
+    SELECT po.*, s.name as supplier_name FROM purchase_orders po
+    LEFT JOIN suppliers s ON po.supplier_id = s.id WHERE po.id = ?
+  `).get(id);
+  if (!po) return null;
+  const items = getDb().prepare('SELECT * FROM purchase_order_items WHERE purchase_order_id = ?').all(id);
+  return { ...po, items };
+}
+
+function savePurchaseOrder(data, actorId, actorName) {
+  const db = getDb();
+  const poNumber = nextPONumber();
+  const txn = db.transaction(() => {
+    const total = data.items.reduce((s, i) => s + i.total, 0);
+    const r = db.prepare(`
+      INSERT INTO purchase_orders (po_number, supplier_id, user_id, total, status, receiving_date, notes)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(poNumber, data.supplier_id, actorId, total, data.status || 'pending', data.receiving_date, data.notes);
+
+    for (const item of data.items) {
+      db.prepare(`
+        INSERT INTO purchase_order_items (purchase_order_id, product_id, product_name, quantity, buying_price, total)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(r.lastInsertRowid, item.product_id, item.product_name, item.quantity, item.buying_price, item.total);
+
+      if (data.status === 'received' && item.product_id) {
+        adjustStock(item.product_id, item.quantity, 'purchase', `PO ${poNumber}`, actorId, 'purchase_order', r.lastInsertRowid);
+        db.prepare('UPDATE products SET buying_price = ? WHERE id = ?').run(item.buying_price, item.product_id);
+      }
+    }
+    return { id: r.lastInsertRowid, po_number: poNumber };
+  });
+  const result = txn();
+  audit(actorId, actorName, 'create_purchase_order', 'purchase_order', result.id, { po_number: result.po_number });
+  return result;
+}
+
+function receivePurchaseOrder(id, actorId, actorName) {
+  const db = getDb();
+  const po = db.prepare('SELECT * FROM purchase_orders WHERE id = ?').get(id);
+  if (!po) throw new Error('Purchase order not found');
+  if (po.status === 'received') throw new Error('Purchase order has already been received');
+  const items = db.prepare('SELECT * FROM purchase_order_items WHERE purchase_order_id = ?').all(id);
+  db.transaction(() => {
+    for (const item of items) {
+      const remaining = Math.max(0, (Number(item.quantity) || 0) - (Number(item.received_qty) || 0));
+      if (item.product_id && remaining > 0) {
+        adjustStock(item.product_id, remaining, 'purchase', `PO ${po.po_number}`, actorId, 'purchase_order', id);
+        db.prepare('UPDATE products SET buying_price = ? WHERE id = ?').run(item.buying_price, item.product_id);
+      }
+      db.prepare('UPDATE purchase_order_items SET received_qty = quantity WHERE id = ?').run(item.id);
+    }
+    db.prepare("UPDATE purchase_orders SET status = 'received', receiving_date = date('now') WHERE id = ?").run(id);
+  })();
+  audit(actorId, actorName, 'receive_purchase_order', 'purchase_order', id, null);
+}
+
+// ─── Dashboard & Reports ────────────────────────────────────────────────────
+
+function getDashboardStats(from, to, branchId) {
+  const db = getDb();
+  const rangeFrom = from || new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
+  const rangeTo = to || new Date().toLocaleDateString('en-CA');
+  const branchSql = branchId ? ' AND branch_id = ?' : '';
+  const branchParams = branchId ? [branchId] : [];
+
+  const salesInRange = db.prepare(`
+    SELECT COALESCE(SUM(total),0) as total, COUNT(*) as count FROM sales
+    WHERE date(created_at, 'localtime') BETWEEN ? AND ? AND status IN ('completed','partial_return')${branchSql}
+  `).get(rangeFrom, rangeTo, ...branchParams);
+  const refundsInRange = db.prepare(`
+    SELECT COALESCE(SUM(total_refund),0) as total FROM returns
+    WHERE date(created_at, 'localtime') BETWEEN ? AND ? AND status IN ('completed','reopened')
+  `).get(rangeFrom, rangeTo);
+
+  const expensesInRange = db.prepare(`
+    SELECT COALESCE(SUM(amount),0) as total FROM expenses WHERE expense_date BETWEEN ? AND ?
+  `).get(rangeFrom, rangeTo);
+
+  const profitData = db.prepare(`
+    SELECT COALESCE(SUM(line_profit), 0) as profit FROM (
+      SELECT s.id,
+        (SELECT COALESCE(SUM(si.total - si.buying_price * si.quantity), 0) FROM sale_items si WHERE si.sale_id = s.id)
+        - COALESCE((SELECT SUM(r.total_refund) FROM returns r WHERE r.sale_id = s.id AND r.status IN ('completed','reopened')), 0) as line_profit
+      FROM sales s
+      WHERE date(s.created_at, 'localtime') BETWEEN ? AND ? AND s.status IN ('completed','partial_return')${branchSql.replace('branch_id', 's.branch_id')}
+    )
+  `).get(rangeFrom, rangeTo, ...branchParams);
+
+  const lowStock = db.prepare('SELECT COUNT(*) as count FROM products WHERE is_active=1 AND stock_quantity <= min_stock').get();
+  const salesBranchSql = branchId ? ' AND s.branch_id = ?' : '';
+  const salesOnlyBranchSql = branchId ? ' AND branch_id = ?' : '';
+
+  const bestSeller = db.prepare(`
+    SELECT si.product_name, SUM(si.quantity) as qty FROM sale_items si
+    JOIN sales s ON si.sale_id = s.id
+    WHERE date(s.created_at, 'localtime') BETWEEN ? AND ? AND s.status IN ('completed','partial_return')${salesBranchSql}
+    GROUP BY si.product_name ORDER BY qty DESC LIMIT 1
+  `).get(rangeFrom, rangeTo, ...branchParams);
+
+  const salesGraph = db.prepare(`
+    SELECT date(created_at, 'localtime') as day, SUM(total) as total FROM sales
+    WHERE date(created_at, 'localtime') BETWEEN ? AND ? AND status IN ('completed','partial_return')${salesOnlyBranchSql}
+    GROUP BY date(created_at, 'localtime') ORDER BY day
+  `).all(rangeFrom, rangeTo, ...branchParams);
+
+  const paymentBreakdown = db.prepare(`
+    SELECT sp.payment_type, SUM(sp.amount) as total FROM sale_payments sp
+    JOIN sales s ON sp.sale_id = s.id
+    WHERE date(s.created_at, 'localtime') BETWEEN ? AND ? AND s.status IN ('completed','partial_return')${salesBranchSql}
+    GROUP BY sp.payment_type
+  `).all(rangeFrom, rangeTo, ...branchParams);
+
+  const netSales = money((salesInRange.total || 0) - (refundsInRange.total || 0));
+
+  return {
+    from: rangeFrom, to: rangeTo,
+    todaySales: netSales,
+    todayCount: salesInRange.count,
+    monthlyExpenses: expensesInRange.total,
+    profit: money((profitData.profit || 0) - expensesInRange.total),
+    lowStockCount: lowStock.count,
+    bestSeller: bestSeller?.product_name || '—',
+    bestSellerQty: bestSeller?.qty || 0,
+    productsSoldToday: salesInRange.count,
+    salesGraph,
+    paymentBreakdown
+  };
+}
+
+function getInventoryStats() {
+  const db = getDb();
+  const totalValue = db.prepare(`
+    SELECT COALESCE(SUM(stock_quantity * buying_price), 0) as val FROM products WHERE is_active=1
+  `).get();
+  const lowStock = db.prepare('SELECT COUNT(*) as c FROM products WHERE is_active=1 AND stock_quantity <= min_stock AND stock_quantity > 0').get();
+  const outOfStock = db.prepare('SELECT COUNT(*) as c FROM products WHERE is_active=1 AND stock_quantity <= 0').get();
+  const fastMoving = db.prepare(`
+    SELECT si.product_name, SUM(si.quantity) as qty FROM sale_items si
+    JOIN sales s ON si.sale_id = s.id WHERE date(s.created_at) >= date('now', '-30 days')
+    GROUP BY si.product_name ORDER BY qty DESC LIMIT 5
+  `).all();
+  const slowMoving = db.prepare(`
+    SELECT p.name, p.stock_quantity FROM products p WHERE p.is_active=1
+    AND p.id NOT IN (SELECT DISTINCT product_id FROM sale_items WHERE product_id IS NOT NULL)
+    ORDER BY p.stock_quantity DESC LIMIT 5
+  `).all();
+  return { totalValue: totalValue.val, lowStock: lowStock.c, outOfStock: outOfStock.c, fastMoving, slowMoving };
+}
+
+function getSalesAnalytics(from, to) {
+  const db = getDb();
+  const rangeFrom = from || new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
+  const rangeTo = to || new Date().toLocaleDateString('en-CA');
+  return {
+    byHour: db.prepare(`
+      SELECT strftime('%H', created_at) as hour, SUM(total) as total, COUNT(*) as count
+      FROM sales WHERE date(created_at) BETWEEN ? AND ? AND status='completed'
+      GROUP BY hour ORDER BY hour
+    `).all(rangeFrom, rangeTo),
+    byProduct: db.prepare(`
+      SELECT si.product_name, SUM(si.quantity) as qty, SUM(si.total) as revenue,
+        SUM(si.total - si.buying_price * si.quantity) as profit
+      FROM sale_items si JOIN sales s ON si.sale_id = s.id
+      WHERE date(s.created_at) BETWEEN ? AND ? AND s.status='completed'
+      GROUP BY si.product_name ORDER BY revenue DESC LIMIT 20
+    `).all(rangeFrom, rangeTo),
+    byCategory: db.prepare(`
+      SELECT c.name as category, SUM(si.total) as revenue FROM sale_items si
+      JOIN sales s ON si.sale_id = s.id
+      LEFT JOIN products p ON si.product_id = p.id
+      LEFT JOIN categories c ON p.category_id = c.id
+      WHERE date(s.created_at) BETWEEN ? AND ? AND s.status='completed'
+      GROUP BY c.name ORDER BY revenue DESC
+    `).all(rangeFrom, rangeTo)
+  };
+}
+
+function normalizeTargetPeriod(raw, defaultActive) {
+  if (raw != null && typeof raw === 'object' && !Array.isArray(raw)) {
+    return {
+      amount: Number(raw.amount) || 0,
+      active: raw.active !== false
+    };
+  }
+  const amount = Number(raw) || 0;
+  return {
+    amount,
+    active: defaultActive != null ? !!defaultActive : amount > 0
+  };
+}
+
+function normalizeSalesTargets(raw) {
+  const src = raw || {};
+  return {
+    daily: normalizeTargetPeriod(src.daily, src.daily?.active !== false),
+    weekly: normalizeTargetPeriod(src.weekly, false),
+    monthly: normalizeTargetPeriod(src.monthly, false),
+    yearly: normalizeTargetPeriod(src.yearly, false)
+  };
+}
+
+function getActiveDailyTargetAmount(targets) {
+  const norm = normalizeSalesTargets(targets);
+  return norm.daily.active ? norm.daily.amount : 0;
+}
+
+function getSalesTargets() {
+  const row = getDb().prepare('SELECT sales_targets FROM shop_settings WHERE id = 1').get();
+  return normalizeSalesTargets(parseJsonField(row?.sales_targets, {}));
+}
+
+function saveSalesTargets(targets, actorId, actorName) {
+  requireActor({ id: actorId }, ['owner', 'manager']);
+  const data = normalizeSalesTargets(targets);
+  for (const period of ['daily', 'weekly', 'monthly', 'yearly']) {
+    if (targets[period] != null) {
+      data[period] = normalizeTargetPeriod(targets[period], period === 'daily');
+    }
+  }
+  saveSettings({ sales_targets: JSON.stringify(data) }, actorId, actorName);
+  return data;
+}
+
+const DEFAULT_SHIFT_REQUIRED_ROLES = ['cashier', 'manager', 'assistant_manager', 'owner'];
+const SHIFT_ROLE_OPTIONS = ['owner', 'manager', 'assistant_manager', 'cashier'];
+
+function normalizeShiftSettings(raw) {
+  const src = raw || {};
+  let roles = src.required_roles;
+  if (!Array.isArray(roles) || !roles.length) {
+    roles = [...DEFAULT_SHIFT_REQUIRED_ROLES];
+  }
+  const penalty = Number(src.cashout_late_penalty);
+  return {
+    required_roles: roles.filter(r => SHIFT_ROLE_OPTIONS.includes(r)),
+    cashout_deadline_time: String(src.cashout_deadline_time || '22:00').slice(0, 5),
+    cashout_late_penalty: Number.isFinite(penalty) && penalty >= 0 ? penalty : 0,
+    cashout_deadline_enabled: src.cashout_deadline_enabled !== false && src.cashout_deadline_enabled !== 0
+  };
+}
+
+function getShiftSettings() {
+  const row = getDb().prepare('SELECT shift_settings FROM shop_settings WHERE id = 1').get();
+  return normalizeShiftSettings(parseJsonField(row?.shift_settings, {}));
+}
+
+function saveShiftSettings(data, actorId, actorName) {
+  requireActor({ id: actorId }, ['owner', 'manager']);
+  const merged = normalizeShiftSettings({ ...getShiftSettings(), ...data });
+  saveSettings({ shift_settings: JSON.stringify(merged) }, actorId, actorName);
+  return merged;
+}
+
+function roleRequiresShift(role, settings) {
+  const s = settings || getShiftSettings();
+  return (s.required_roles || DEFAULT_SHIFT_REQUIRED_ROLES).includes(role);
+}
+
+function isAdminExemptFromCashoutPenalty(role) {
+  return ['owner', 'manager'].includes(role);
+}
+
+function enforceShiftCashoutDeadlines() {
+  const settings = getShiftSettings();
+  if (!settings.cashout_deadline_enabled) return { closed: 0 };
+  const deadline = settings.cashout_deadline_time || '22:00';
+  const penaltyAmt = Number(settings.cashout_late_penalty) || 0;
+  const now = new Date();
+  const todayStr = now.toLocaleDateString('en-CA');
+  const [hh, mm] = deadline.split(':').map(Number);
+  const deadlineDate = new Date(`${todayStr}T${String(hh || 0).padStart(2, '0')}:${String(mm || 0).padStart(2, '0')}:00`);
+  if (Number.isNaN(deadlineDate.getTime()) || now < deadlineDate) return { closed: 0 };
+
+  const db = getDb();
+  const openShifts = db.prepare(`
+    SELECT sh.*, u.role, u.full_name, u.username, e.id AS employee_id
+    FROM shifts sh
+    JOIN users u ON u.id = sh.user_id
+    LEFT JOIN employees e ON e.user_id = u.id AND e.status = 'Active'
+    WHERE sh.status = 'open'
+  `).all();
+  let closed = 0;
+  for (const sh of openShifts) {
+    const openedDay = String(sh.opened_at || '').slice(0, 10);
+    // Only auto-close shifts opened today (or earlier still open after today's deadline)
+    if (openedDay > todayStr) continue;
+    const exempt = isAdminExemptFromCashoutPenalty(sh.role);
+    try {
+      closeShift(sh.id, {
+        cash_counted: null,
+        notes: exempt
+          ? `[Auto-closed at cash-out deadline ${deadline} — admin exempt, no charge]`
+          : `[Auto-closed at cash-out deadline ${deadline} — late cash-out penalty may apply]`,
+        actual_payments: {},
+        auto_closed: true
+      }, sh.user_id);
+      closed += 1;
+      if (!exempt && penaltyAmt > 0 && sh.employee_id) {
+        db.prepare(`
+          INSERT INTO cashout_penalties (user_id, employee_id, shift_id, work_date, amount, reason, status, created_by_name)
+          VALUES (?,?,?,?,?,?, 'pending', ?)`).run(
+          sh.user_id, sh.employee_id, sh.id, todayStr, penaltyAmt,
+          `Missed POS cash-out by ${deadline}`,
+          'system'
+        );
+        try {
+          addNotification('cashout_penalty', 'Late cash-out penalty',
+            `${sh.full_name || sh.username}: R${penaltyAmt.toFixed(2)} will be deducted on next payroll (missed cash-out by ${deadline}).`, {
+              entity_type: 'cashout_penalty',
+              entity_id: sh.employee_id,
+              action_page: 'staffhr:payroll',
+              audience_roles: ['owner', 'manager']
+            });
+        } catch (_) { /* ignore */ }
+      } else if (exempt) {
+        try {
+          addNotification('cashout', 'Admin shift auto-closed',
+            `${sh.full_name || 'Admin'} shift auto-closed at ${deadline} (no charge).`, {
+              action_page: 'operations:cashup',
+              audience_roles: ['owner', 'manager']
+            });
+        } catch (_) { /* ignore */ }
+      }
+    } catch (err) {
+      console.error('[enforceShiftCashoutDeadlines]', sh.id, err.message);
+    }
+  }
+  return { closed };
+}
+
+function getShiftClosePreview(shiftId, userId) {
+  const db = getDb();
+  const shift = db.prepare('SELECT * FROM shifts WHERE id = ? AND status = \'open\'').get(shiftId);
+  if (!shift) throw new Error('Shift not found or already closed');
+
+  const sales = db.prepare(`
+    SELECT COALESCE(SUM(s.total),0) as total, COUNT(*) as count FROM sales s
+    WHERE s.user_id = ? AND s.created_at >= ? AND s.status IN ('completed', 'partial_return', 'returned')
+  `).get(userId, shift.opened_at);
+
+  const refunds = db.prepare(`
+    SELECT COALESCE(SUM(r.total_refund),0) as total FROM returns r
+    JOIN sales s ON s.id = r.sale_id
+    WHERE s.user_id = ? AND s.created_at >= ? AND r.status IN ('completed', 'reopened')
+  `).get(userId, shift.opened_at);
+
+  const payments = db.prepare(`
+    SELECT sp.payment_type, SUM(sp.amount) as total FROM sale_payments sp
+    JOIN sales s ON sp.sale_id = s.id
+    WHERE s.user_id = ? AND s.created_at >= ? AND s.status IN ('completed', 'partial_return', 'returned')
+    GROUP BY sp.payment_type
+  `).all(userId, shift.opened_at);
+
+  const paymentMap = {};
+  for (const p of payments) paymentMap[p.payment_type] = p.total || 0;
+
+  const refundTotal = Number(refunds?.total) || 0;
+  const cash = paymentMap.cash || 0;
+  let cashDropsTotal = 0;
+  let cashDrops = [];
+  try {
+    cashDrops = db.prepare(`
+      SELECT * FROM cash_drops WHERE shift_id = ? ORDER BY id
+    `).all(shiftId);
+    cashDropsTotal = cashDrops.reduce((s, d) => s + (Number(d.amount) || 0), 0);
+  } catch (_) { /* table may be missing before v59 */ }
+  const expectedCash = (shift.opening_float || 0) + cash - refundTotal - cashDropsTotal;
+  const targets = getSalesTargets();
+  const today = new Date().toLocaleDateString('en-CA');
+  const todaySales = db.prepare(`
+    SELECT COALESCE(SUM(total),0) as total FROM sales
+    WHERE date(created_at, 'localtime') = date(?) AND status IN ('completed', 'partial_return', 'returned')
+  `).get(today).total;
+
+  const dailyTarget = getActiveDailyTargetAmount(targets);
+  const netSales = Math.max(0, (Number(sales.total) || 0) - refundTotal);
+  const targetRemaining = Math.max(0, dailyTarget - todaySales);
+  const targetMet = dailyTarget > 0 && todaySales >= dailyTarget ? 1 : 0;
+
+  const methods = ['cash', 'card', 'eft', 'mobile', 'account', 'giftcard', 'other'];
+  const expectedPayments = {};
+  for (const m of methods) expectedPayments[m] = paymentMap[m] || 0;
+
+  return {
+    shift,
+    totalSales: netSales,
+    saleCount: sales.count,
+    expectedPayments,
+    expectedCash,
+    refunds: refundTotal,
+    cashDropsTotal,
+    cashDrops,
+    openingFloat: shift.opening_float || 0,
+    dailyTarget,
+    todaySales,
+    shiftSales: netSales,
+    targetRemaining,
+    targetMet
+  };
+}
+
+function saveCashDropProofImage(imageData, dropId) {
+  const fs = require('fs');
+  const path = require('path');
+  const { getDbPathForBackup } = require('../database/db');
+  if (!imageData) return null;
+  const dir = path.join(path.dirname(getDbPathForBackup()), 'assets', 'cash-drops');
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  let ext = '.jpg';
+  let raw = imageData;
+  const match = String(imageData).match(/^data:image\/(\w+);base64,(.+)$/);
+  if (match) {
+    ext = match[1] === 'png' ? '.png' : '.jpg';
+    raw = match[2];
+  } else if (typeof imageData === 'string' && !imageData.includes(',')) {
+    raw = imageData;
+  } else {
+    return null;
+  }
+  const file = path.join(dir, `drop-${dropId || 'new'}-${Date.now()}${ext}`);
+  fs.writeFileSync(file, Buffer.from(raw, 'base64'));
+  return file;
+}
+
+function recordCashDrop(data, actor) {
+  const user = assertUserActor(actor, ['owner', 'manager', 'cashier', 'supervisor', 'assistant_manager']);
+  const amount = Number(data?.amount);
+  if (!(amount > 0)) throw new Error('Enter a valid amount to send to admin');
+  const db = getDb();
+  const shift = data?.shift_id
+    ? db.prepare(`SELECT * FROM shifts WHERE id = ? AND status = 'open'`).get(data.shift_id)
+    : db.prepare(`SELECT * FROM shifts WHERE user_id = ? AND status = 'open' ORDER BY id DESC LIMIT 1`).get(user.id);
+  if (!shift) throw new Error('Open a shift first before sending cash to admin');
+  const r = db.prepare(`
+    INSERT INTO cash_drops (shift_id, user_id, user_name, amount, proof_path, notes, status)
+    VALUES (?,?,?,?,?,?, 'pending')
+  `).run(
+    shift.id, user.id, user.full_name || user.username,
+    amount, null, data?.notes || null
+  );
+  const dropId = r.lastInsertRowid;
+  let proofPath = data?.proof_path || null;
+  if (data?.proof_image) {
+    proofPath = saveCashDropProofImage(data.proof_image, dropId) || proofPath;
+  }
+  if (proofPath) {
+    db.prepare('UPDATE cash_drops SET proof_path = ? WHERE id = ?').run(proofPath, dropId);
+  }
+  addNotification('cashup', 'Cash sent to admin',
+    `${user.full_name || user.username} sent ${amount.toFixed(2)} to admin/safe (shift #${shift.id}).`);
+  audit(user.id, user.username, 'cash_drop', 'cash_drop', dropId, { amount, shift_id: shift.id });
+  return db.prepare('SELECT * FROM cash_drops WHERE id = ?').get(dropId);
+}
+
+function getCashDrops(filters = {}) {
+  const db = getDb();
+  let sql = 'SELECT * FROM cash_drops WHERE 1=1';
+  const params = [];
+  if (filters.shift_id) { sql += ' AND shift_id = ?'; params.push(filters.shift_id); }
+  if (filters.status) { sql += ' AND status = ?'; params.push(filters.status); }
+  if (filters.from) { sql += ' AND date(created_at) >= date(?)'; params.push(filters.from); }
+  if (filters.to) { sql += ' AND date(created_at) <= date(?)'; params.push(filters.to); }
+  sql += ' ORDER BY id DESC LIMIT 200';
+  try {
+    return db.prepare(sql).all(...params);
+  } catch (_) {
+    return [];
+  }
+}
+
+function confirmCashDrop(id, actor) {
+  const user = assertUserActor(actor, ['owner', 'manager', 'supervisor', 'assistant_manager']);
+  const db = getDb();
+  const row = db.prepare('SELECT * FROM cash_drops WHERE id = ?').get(id);
+  if (!row) throw new Error('Cash drop not found');
+  db.prepare(`
+    UPDATE cash_drops SET status='confirmed', confirmed_by=?, confirmed_at=datetime('now') WHERE id=?
+  `).run(user.id, id);
+  audit(user.id, user.username, 'cash_drop_confirm', 'cash_drop', id, { amount: row.amount });
+  return db.prepare('SELECT * FROM cash_drops WHERE id = ?').get(id);
+}
+
+function openShift(userId, openingFloat) {
+  const existing = getDb().prepare("SELECT id FROM shifts WHERE user_id = ? AND status = 'open'").get(userId);
+  if (existing) return getOpenShift(userId);
+  getDb().prepare('INSERT INTO shifts (user_id, opening_float) VALUES (?, ?)').run(userId, openingFloat || 0);
+  return getOpenShift(userId);
+}
+
+function closeShift(shiftId, data, userId) {
+  if (features.hasCashUpForShift(shiftId)) {
+    throw new Error('This shift has already been cashed out');
+  }
+  const preview = getShiftClosePreview(shiftId, userId);
+  const shift = preview.shift;
+  const paymentMap = preview.expectedPayments;
+  const cash = paymentMap.cash || 0;
+  const card = paymentMap.card || 0;
+  const eft = paymentMap.eft || 0;
+  const mobile = paymentMap.mobile || 0;
+  const giftcard = paymentMap.giftcard || 0;
+  const account = paymentMap.account || 0;
+  const other = paymentMap.other || 0;
+
+  const actualPayments = data.actual_payments || {};
+  const shortages = {};
+  for (const [type, expected] of Object.entries(paymentMap)) {
+    const actual = Number(actualPayments[type]);
+    shortages[type] = Number.isFinite(actual) ? actual - expected : 0;
+  }
+  // Auto-close: use expected cash as counted so difference is zero unless already counted
+  const cashCounted = data.cash_counted != null
+    ? Number(data.cash_counted)
+    : (data.auto_closed
+      ? Number(preview.expectedCash) || 0
+      : (Number(actualPayments.cash) || 0));
+  const expected = preview.expectedCash;
+  const diff = cashCounted - expected;
+
+  getDb().prepare(`
+    UPDATE shifts SET closed_at=datetime('now'), status='closed', closing_balance=?, cash_counted=?,
+    expected_cash=?, cash_difference=?, total_sales=?, total_cash=?, total_card=?, total_eft=?,
+    total_mobile=?, mobile_sales=?, other_sales=?, giftcard_sales=?, account_sales=?,
+    actual_payments_json=?, payment_shortages_json=?,
+    daily_target=?, sales_at_close=?, target_remaining=?, target_met=?,
+    customer_count=?, notes=? WHERE id=?
+  `).run(
+    data.closing_balance != null ? data.closing_balance : cashCounted,
+    cashCounted, expected, diff,
+    preview.totalSales, cash, card, eft, mobile, mobile, other, giftcard, account,
+    JSON.stringify(actualPayments),
+    JSON.stringify(data.payment_shortages || shortages),
+    preview.dailyTarget, preview.todaySales, preview.targetRemaining, preview.targetMet,
+    preview.saleCount, data.notes || null, shiftId
+  );
+  const cashupData = {
+    opening_cash: shift.opening_float || 0,
+    cash_sales: cash,
+    card_sales: card,
+    eft_sales: eft,
+    mobile_sales: mobile,
+    expenses: 0,
+    refunds: preview.refunds || 0,
+    expected_cash: expected,
+    actual_cash: cashCounted,
+    manager_approved: false,
+    force_pending: true,
+    notes: data.notes || null
+  };
+  let cashupId = null;
+  try {
+    cashupId = createCashUp(shiftId, cashupData, userId);
+  } catch (err) {
+    console.error('[closeShift] cashup record failed:', err.message);
+    throw err;
+  }
+
+  const result = { expected, difference: diff, totalSales: preview.totalSales, payments: paymentMap, shortages, targetMet: preview.targetMet, cashupId };
+  try {
+    notifyShiftClose(shiftId, userId, preview, result);
+  } catch (err) {
+    console.error('[closeShift] notification failed:', err.message);
+  }
+  return result;
+}
+
+function createCashUp(shiftId, data, actorId) {
+  const cashupId = features.createCashUp(shiftId, data, actorId);
+  try {
+    notifyCashUpSession(cashupId, shiftId, data, actorId);
+  } catch (err) {
+    console.error('[createCashUp] notification failed:', err.message);
+  }
+  return cashupId;
+}
+
+function getShifts(limit = 50) {
+  return getDb().prepare(`
+    SELECT sh.*, u.full_name as user_name FROM shifts sh
+    LEFT JOIN users u ON sh.user_id = u.id ORDER BY sh.opened_at DESC LIMIT ?
+  `).all(limit);
+}
+
+function getOpenShift(userId) {
+  return getDb().prepare("SELECT * FROM shifts WHERE user_id = ? AND status = 'open'").get(userId);
+}
+
+function importProducts(rows, actorId, actorName) {
+  let count = 0;
+  const errors = [];
+  for (const row of rows) {
+    if (!row.name) continue;
+    const selling_price = parseFloat(row.selling_price || row.price);
+    if (!selling_price || selling_price <= 0) {
+      errors.push(`${row.name}: invalid price`);
+      continue;
+    }
+    try {
+      saveProduct({
+        name: row.name,
+        selling_price,
+        buying_price: parseFloat(row.buying_price || row.cost) || 0,
+        barcode: row.barcode || null,
+        sku: row.sku || null,
+        stock_quantity: parseFloat(row.stock_quantity || row.stock) || 0,
+        unit: row.unit || 'each',
+        stock_unit: row.unit || 'each',
+        category_id: row.category_id || null
+      }, actorId, actorName);
+      count++;
+    } catch (err) {
+      errors.push(`${row.name}: ${err.message}`);
+    }
+  }
+  if (!count && errors.length) throw new Error(errors.slice(0, 3).join('; '));
+  return { count, errors };
+}
+
+function getSalesReport(from, to) {
+  return getDb().prepare(`
+    SELECT s.*, u.full_name as cashier_name,
+      COALESCE((SELECT SUM(r.total_refund) FROM returns r WHERE r.sale_id = s.id AND r.status IN ('completed','reopened')), 0) as refunded_total
+    FROM sales s
+    LEFT JOIN users u ON s.user_id = u.id
+    WHERE date(s.created_at, 'localtime') BETWEEN ? AND ? AND ${SALE_REVENUE_STATUSES_SQL}
+    ORDER BY s.created_at DESC
+  `).all(from, to);
+}
+
+function getProfitReport(from, to) {
+  return getDb().prepare(`
+    SELECT day,
+      SUM(revenue) as revenue,
+      SUM(cost) as cost,
+      SUM(revenue) - SUM(cost) as profit
+    FROM (
+      SELECT date(s.created_at, 'localtime') as day,
+        s.total - COALESCE((
+          SELECT SUM(r.total_refund) FROM returns r
+          WHERE r.sale_id = s.id AND r.status IN ('completed','reopened')
+        ), 0) as revenue,
+        (SELECT COALESCE(SUM(si.buying_price * si.quantity), 0) FROM sale_items si WHERE si.sale_id = s.id) as cost
+      FROM sales s
+      WHERE date(s.created_at, 'localtime') BETWEEN ? AND ? AND ${SALE_REVENUE_STATUSES_SQL}
+    )
+    GROUP BY day ORDER BY day
+  `).all(from, to);
+}
+
+function getCashierReport(from, to) {
+  return getDb().prepare(`
+    SELECT u.full_name, COUNT(s.id) as sales_count, SUM(s.total) as total
+    FROM sales s JOIN users u ON s.user_id = u.id
+    WHERE date(s.created_at, 'localtime') BETWEEN ? AND ? AND ${SALE_REVENUE_STATUSES_SQL}
+    GROUP BY s.user_id ORDER BY total DESC
+  `).all(from, to);
+}
+
+function getProductReport(from, to) {
+  return getDb().prepare(`
+    SELECT si.product_name, SUM(si.quantity) as qty, SUM(si.total) as revenue
+    FROM sale_items si JOIN sales s ON si.sale_id = s.id
+    WHERE date(s.created_at, 'localtime') BETWEEN ? AND ? AND ${SALE_REVENUE_STATUSES_SQL}
+    GROUP BY si.product_name ORDER BY revenue DESC
+  `).all(from, to);
+}
+
+function getStockReport() {
+  return getDb().prepare(`
+    SELECT p.*, c.name as category_name,
+      CASE WHEN p.stock_quantity <= 0 THEN 'out' WHEN p.stock_quantity <= p.min_stock THEN 'low' ELSE 'ok' END as status
+    FROM products p LEFT JOIN categories c ON p.category_id = c.id
+    WHERE p.is_active = 1 ORDER BY p.name
+  `).all();
+}
+
+// ─── Audit & Notifications ──────────────────────────────────────────────────
+
+function getAuditLog(filters = {}) {
+  let sql = 'SELECT * FROM audit_log WHERE 1=1';
+  const params = [];
+  if (filters.from) { sql += ' AND date(created_at) >= date(?)'; params.push(filters.from); }
+  if (filters.to) { sql += ' AND date(created_at) <= date(?)'; params.push(filters.to); }
+  sql += ' ORDER BY created_at DESC LIMIT ?';
+  params.push(filters.limit || 500);
+  return getDb().prepare(sql).all(...params);
+}
+
+function notificationVisibleToRole(row, role) {
+  if (!role) return false;
+  const raw = row.audience_roles;
+  if (!raw) {
+    // Legacy rows: infer from type/action_page
+    const allowed = defaultNotificationAudience(row.type, row.action_page);
+    return allowed.includes(role);
+  }
+  const roles = String(raw).split(',').map(s => s.trim()).filter(Boolean);
+  if (!roles.length) return true;
+  return roles.includes(role);
+}
+
+function getNotifications(actorOrRole) {
+  const rows = getDb().prepare('SELECT * FROM notifications WHERE is_read = 0 ORDER BY created_at DESC LIMIT 80').all();
+  let role = null;
+  if (typeof actorOrRole === 'string') role = actorOrRole;
+  else if (actorOrRole?.role) role = actorOrRole.role;
+  else {
+    try { role = session.getUserSession()?.role || null; } catch (_) { role = null; }
+  }
+  if (!role) return rows;
+  return rows.filter(r => notificationVisibleToRole(r, role));
+}
+
+function markNotificationRead(id) {
+  getDb().prepare('UPDATE notifications SET is_read = 1 WHERE id = ?').run(id);
+}
+
+function markAllNotificationsRead() {
+  getDb().prepare('UPDATE notifications SET is_read = 1 WHERE is_read = 0').run();
+}
+
+const PAYROLL_WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+function refreshPaymentDueNotifications() {
+  const now = new Date().toLocaleDateString('en-CA');
+  const profile = ownerSalary.getOwnerProfile();
+  if (profile?.is_active) {
+    try { ownerSalary.ensureCurrentPeriod(profile); } catch (_) { /* ignore */ }
+    const periods = getDb().prepare(`
+      SELECT * FROM owner_salary_periods WHERE profile_id = ?
+        AND status IN ('unpaid','partially_paid') AND outstanding_balance > 0
+        AND due_date <= date('now') ORDER BY due_date`).all(profile.id);
+    for (const p of periods) {
+      const isToday = p.due_date === now;
+      const title = isToday ? 'Owner Salary Due Today' : 'Owner Salary Overdue';
+      const msg = `${profile.owner_name}: ${p.payslip_number} — ${Number(p.outstanding_balance).toFixed(2)} ${isToday ? 'due today' : `overdue since ${p.due_date}`}`;
+      addNotification(isToday ? 'owner_salary_due' : 'owner_salary_overdue', title, msg);
+    }
+  }
+  const settings = staff.getPayrollSettings();
+  if (staff.isPayrollDueToday(settings)) {
+    const freq = settings.pay_frequency || 'monthly';
+    const dayLabel = freq === 'monthly'
+      ? `day ${settings.payday || 25} of the month`
+      : PAYROLL_WEEKDAYS[Number(settings.payday_weekday ?? 5)] || 'Friday';
+    addNotification('payroll_due', 'Staff Pay Day', `Today is staff ${freq} pay day (${dayLabel}). Process payroll in Admin → Payroll.`);
+  }
+  try { hrContracts.ensureProbationNotifications(); } catch (_) { /* ignore */ }
+  try { opsComplianceSvc.ensureChecklistDeadlineWarnings(); } catch (_) { /* ignore */ }
+  try { hrContracts.ensureDefaultTemplates(); } catch (_) { /* ignore */ }
+  try { hrTrainingSvc.ensureDefaultHrTemplates(); } catch (_) { /* ignore */ }
+  try { opsComplianceSvc.ensureChecklistReminderNotifications(); } catch (_) { /* ignore */ }
+  try { flyersSvc.syncFlyerStatuses(); } catch (_) { /* ignore */ }
+  try { documentHubSvc.processScheduledDocuments(); } catch (_) { /* ignore */ }
+  try { promoRequestsSvc.syncPromoStatuses(); } catch (_) { /* ignore */ }
+}
+
+function processScheduledDocuments() {
+  const processed = _documentHubProcessScheduled();
+  for (const p of processed) {
+    if (p.error) {
+      addNotification('document_share', 'Scheduled Share Failed',
+        `"${p.title}": ${p.error}`, {
+          entity_type: 'document_hub',
+          entity_id: p.id,
+          action_page: `document-hub:share:${p.id}`
+        });
+      continue;
+    }
+    const parts = [`"${p.title}" scheduled share is ready`];
+    const res = p.results || {};
+    if (res.group_link) parts.push('WhatsApp group link included');
+    if (res.urls?.length) parts.push(`${res.urls.length} customer wa.me link(s)`);
+    if (res.status_export?.path) parts.push('Status export (1080×1920) ready');
+    addNotification('document_share', 'Document Share Ready', parts.join(' · '), {
+      entity_type: 'document_hub',
+      entity_id: p.id,
+      action_page: `document-hub:share:${p.id}`
+    });
+  }
+  return processed;
+}
+
+function runStartupTasks() {
+  try { processScheduledDocuments(); } catch (_) { /* ignore */ }
+  try { if (typeof staffExports.autoCloseOpenAttendance === 'function') staffExports.autoCloseOpenAttendance(); } catch (_) { /* ignore */ }
+  try { enforceShiftCashoutDeadlines(); } catch (_) { /* ignore */ }
+}
+
+function saveKdsNotificationSound(soundPath, actorId, actorName) {
+  getDb().prepare('UPDATE shop_settings SET kds_notification_sound = ?, updated_at = datetime(\'now\') WHERE id = 1')
+    .run(soundPath || null);
+  audit(actorId, actorName, 'update_kds_sound', 'settings', 1, { sound_path: soundPath || null });
+  return getSettingsParsed();
+}
+
+// ─── Search ─────────────────────────────────────────────────────────────────
+
+function globalSearch(query) {
+  const q = `%${query}%`;
+  const ql = String(query).toLowerCase();
+  const db = getDb();
+  const settings = db.prepare('SELECT shop_name, address, phone, email FROM shop_settings WHERE id = 1').get();
+  const settingsMatches = [];
+  if (settings) {
+    for (const [key, label, section] of [
+      ['shop_name', 'Shop Name', 'customize'],
+      ['address', 'Address', 'customize'],
+      ['phone', 'Phone', 'customize'],
+      ['email', 'Email', 'customize']
+    ]) {
+      const val = settings[key];
+      if (val && String(val).toLowerCase().includes(ql)) {
+        settingsMatches.push({ key, label, value: val, section });
+      }
+    }
+  }
+  const safe = (fn, fallback = []) => {
+    try { return fn(); } catch (_) { return fallback; }
+  };
+  return {
+    products: db.prepare('SELECT id, name, barcode, sku, selling_price, stock_quantity FROM products WHERE is_active=1 AND (name LIKE ? OR barcode LIKE ? OR sku LIKE ?) LIMIT 20').all(q, q, q),
+    customers: db.prepare('SELECT id, name, phone FROM customers WHERE name LIKE ? OR phone LIKE ? LIMIT 10').all(q, q),
+    suppliers: db.prepare('SELECT id, name, phone FROM suppliers WHERE name LIKE ? OR phone LIKE ? LIMIT 10').all(q, q),
+    receipts: db.prepare('SELECT id, receipt_number, order_number, total, created_at FROM sales WHERE receipt_number LIKE ? OR order_number LIKE ? LIMIT 10').all(q, q),
+    employees: db.prepare(`SELECT id, full_name, employee_code, phone, position FROM employees WHERE status = 'Active' AND (full_name LIKE ? OR employee_code LIKE ? OR phone LIKE ? OR email LIKE ?) LIMIT 10`).all(q, q, q, q),
+    combos: safe(() => db.prepare('SELECT id, name, final_price AS selling_price, status FROM combos WHERE name LIKE ? LIMIT 10').all(q)),
+    donations: safe(() => db.prepare('SELECT id, donation_number, recipient_org, amount, donation_date FROM donations WHERE donation_number LIKE ? OR recipient_org LIKE ? LIMIT 10').all(q, q)),
+    categories: safe(() => db.prepare('SELECT id, name FROM categories WHERE name LIKE ? LIMIT 10').all(q)),
+    giftcards: safe(() => db.prepare(`SELECT g.id, g.code, g.balance, g.status, c.name AS customer_name FROM gift_cards g LEFT JOIN customers c ON c.id = g.customer_id WHERE g.code LIKE ? OR c.name LIKE ? OR g.customer_phone LIKE ? LIMIT 10`).all(q, q, q)),
+    laybyes: safe(() => db.prepare(`SELECT l.id, l.layby_number, l.balance, l.status, c.name AS customer_name FROM laybyes l LEFT JOIN customers c ON c.id = l.customer_id WHERE l.layby_number LIKE ? OR c.name LIKE ? OR c.phone LIKE ? LIMIT 10`).all(q, q, q)),
+    expenses: safe(() => db.prepare('SELECT id, description, amount, expense_date FROM expenses WHERE description LIKE ? OR category LIKE ? LIMIT 10').all(q, q)),
+    quotes: safe(() => db.prepare('SELECT id, quote_number, total, status FROM quotes WHERE quote_number LIKE ? LIMIT 10').all(q)),
+    users: safe(() => db.prepare(`SELECT id, username, full_name, role FROM users WHERE is_active=1 AND (username LIKE ? OR full_name LIKE ? OR role LIKE ?) LIMIT 10`).all(q, q, q)),
+    settings: settingsMatches
+  };
+}
+
+function logOperatingEvent(eventType, user) {
+  const type = eventType === 'close' ? 'close' : 'open';
+  const uid = user?.id ?? null;
+  const uname = user?.username ?? user?.full_name ?? null;
+  const fname = user?.full_name ?? null;
+  getDb().prepare(`
+    INSERT INTO shop_operating_log (event_type, user_id, username, full_name, notes)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(type, uid, uname, fname, null);
+  if (uid && uname) {
+    audit(uid, uname, type === 'open' ? 'shop_open' : 'shop_close', 'operating', null, null);
+  }
+  return { success: true };
+}
+
+function getOperatingLogReport(from, to) {
+  return getDb().prepare(`
+    SELECT event_type, user_id, username, full_name, event_at, notes
+    FROM shop_operating_log
+    WHERE date(event_at) >= date(?) AND date(event_at) <= date(?)
+    ORDER BY event_at DESC
+  `).all(from, to);
+}
+
+/**
+ * Accept a hub online order: create a POS sale (order_type=online), deduct stock, sync sale, mark order accepted.
+ */
+async function acceptOnlineOrderAsSale(localId, actor, opts = {}) {
+  const db = getDb();
+  const order = db.prepare('SELECT * FROM online_orders_local WHERE id = ?').get(localId);
+  if (!order) throw new Error('Online order not found');
+  if (order.status !== 'pending') throw new Error(`Order is already ${order.status}`);
+  if (order.sale_id) throw new Error('Order already linked to a sale');
+
+  let lines = [];
+  try { lines = JSON.parse(order.items_json || '[]'); } catch (_) {
+    throw new Error('Order items are invalid');
+  }
+  if (!lines.length) throw new Error('Order has no items');
+
+  const saleItems = [];
+  for (const line of lines) {
+    let product = null;
+    const remoteId = line.remote_id != null ? Number(line.remote_id) : null;
+    if (remoteId) product = db.prepare('SELECT * FROM products WHERE id = ? AND is_active = 1').get(remoteId);
+    if (!product && line.barcode) {
+      product = db.prepare('SELECT * FROM products WHERE barcode = ? AND is_active = 1').get(String(line.barcode).trim());
+    }
+    if (!product && line.name) {
+      product = db.prepare('SELECT * FROM products WHERE lower(trim(name)) = lower(trim(?)) AND is_active = 1')
+        .get(String(line.name));
+    }
+    if (!product) {
+      throw new Error(`Cannot match product on this POS: ${line.name || line.barcode || line.remote_id || 'unknown'}. Publish products from this till, then sync.`);
+    }
+    saleItems.push({
+      product_id: product.id,
+      product_name: product.name,
+      quantity: Number(line.quantity) || 1,
+      unit_price: Number(product.selling_price) || 0,
+      buying_price: Number(product.buying_price) || 0
+    });
+  }
+
+  const fulfillment = opts.fulfillment || order.fulfillment || 'pickup';
+  const notes = [
+    `Online order ${order.order_number}`,
+    order.customer_name ? `Customer: ${order.customer_name}` : null,
+    order.customer_phone ? `Phone: ${order.customer_phone}` : null,
+    fulfillment ? `Fulfillment: ${fulfillment}` : null,
+    order.notes || null
+  ].filter(Boolean).join(' · ');
+
+  // Generous tender — completeSale recalculates catalog totals + tax and caps payments
+  const rough = saleItems.reduce((s, i) => s + (Number(i.unit_price) || 0) * (Number(i.quantity) || 0), 0);
+  const tender = Math.max(rough * 1.3, rough + 50, 1);
+  const saleData = {
+    items: saleItems,
+    discount: 0,
+    amount_paid: tender,
+    payments: [{ type: 'online', amount: tender }],
+    order_type: 'online',
+    delivery_address: fulfillment === 'delivery' ? (opts.delivery_address || order.delivery_address || null) : null,
+    notes,
+    discount_authorized: true
+  };
+
+  const actorId = actor?.id;
+  if (!actorId) throw new Error('Login required to accept online orders');
+  const sale = completeSale(saleData, actorId, actor.full_name || actor.username, actor.role);
+  const saleId = sale.saleId || sale.sale?.id;
+  if (!saleId) throw new Error('Sale was created but id is missing');
+
+  await syncSvc.updateOnlineOrderStatus(localId, opts.mark_completed ? 'completed' : 'accepted');
+  try {
+    db.prepare(`UPDATE online_orders_local SET sale_id = ?, fulfillment = COALESCE(?, fulfillment), updated_at = datetime('now') WHERE id = ?`)
+      .run(saleId, fulfillment, localId);
+  } catch (_) {
+    try {
+      db.exec('ALTER TABLE online_orders_local ADD COLUMN sale_id INTEGER');
+      db.exec('ALTER TABLE online_orders_local ADD COLUMN fulfillment TEXT');
+      db.prepare('UPDATE online_orders_local SET sale_id = ?, fulfillment = ? WHERE id = ?')
+        .run(saleId, fulfillment, localId);
+    } catch (__) { /* ignore */ }
+  }
+
+  return {
+    order: db.prepare('SELECT * FROM online_orders_local WHERE id = ?').get(localId),
+    sale: sale.sale || getSale(saleId),
+    saleId
+  };
+}
+
+module.exports = {
+  ...features,
+  ...auditSvc,
+  audit, login, logout, createUser, updateUser, deleteUser, permanentlyDeleteUser, verifyUserSession, getUsers, requireActor,
+  sanitizeSettingsResponse,
+  getUserSession: session.getUserSession,
+  getEmployeeSession: session.getEmployeeSession,
+  clearAllSessions: session.clearAll,
+  setUserSession: session.setUserSession,
+  setEmployeeSession: session.setEmployeeSession,
+  verifyBookkeepingPassword, setBookkeepingPassword, isBookkeepingUnlocked, requireBookkeepingAccess,
+  hasRecoverySecret, setRecoverySecret, getUsernamesForRecovery, resetPasswordViaRecovery, factoryResetBusiness, clearOperationalData,
+  getSettings, getSettingsParsed, saveSettings, saveJsonSetting, completeSetup, parseJsonField,
+  getCategories, saveCategory, deleteCategory, ensureOtherItemsCategory, saveOtherSellItem, suggestSellPrice, cartProfitFloor,
+  getProducts, getProduct, getProductByBarcode, getProductModifiers, saveProductModifiers, saveProduct, deleteProduct,
+  calcRecipeMetrics: (data) => inventory.calculateRecipeMetrics(null, data.selling_price, data.recipe),
+  adjustStock, restoreProductStockAfterSale, getStockHistory, getAllStockHistory,
+  completeSale, getSale, getSaleByReceipt, holdOrder, getHeldOrders, deleteHeldOrder,
+  processReturn, getReturns,
+  getExpenses, saveExpense, deleteExpense,
+  getCustomers, getCustomer, saveCustomer, deleteCustomer, getCustomerHistory,
+  getSuppliers, saveSupplier, recordSupplierPayment, getSupplierPayments,
+  getPurchaseOrders, getPurchaseOrder, savePurchaseOrder, receivePurchaseOrder,
+  getDashboardStats, getInventoryStats, getSalesAnalytics,
+  getSalesReport, getProfitReport, getCashierReport, getProductReport, getStockReport,
+  openShift, closeShift, getShiftClosePreview, getShifts, getOpenShift, getSalesTargets, saveSalesTargets,
+  recordCashDrop, getCashDrops, confirmCashDrop,
+  getShiftSettings, saveShiftSettings, roleRequiresShift, enforceShiftCashoutDeadlines, createCashUp,
+  normalizePhone, phonesMatch, importProducts,
+  getAuditLog, getNotifications, markNotificationRead, markAllNotificationsRead, createTestNotification, refreshPaymentDueNotifications,
+  globalSearch,
+  convertQuoteToSale: (quoteId, actorId, actorName) => features.convertQuoteToSale(quoteId, completeSale, actorId, actorName),
+  completeStockCount: (countId, actorId) => features.completeStockCount(countId, adjustStock, actorId),
+  recordWaste: (data, actorId) => features.recordWaste(data, adjustStock, actorId),
+  approveWaste: (id, actorId, notes) => {
+    const row = features.approveWaste(id, actorId, notes);
+    adjustStock(row.product_id, row.quantity, 'remove', `Waste approved: ${row.reason}`, actorId, 'waste', id);
+    return getDb().prepare(`
+      SELECT w.*, p.name as product_name FROM waste_records w
+      JOIN products p ON w.product_id = p.id WHERE w.id = ?`).get(id);
+  },
+  rejectWaste: (id, actorId, notes) => features.rejectWaste(id, actorId, notes),
+  returnWasteToStock: (id, actorId) => {
+    const row = features.returnWasteToStock(id, actorId);
+    adjustStock(row.product_id, row.quantity, 'add', `Waste returned to stock #${id}`, actorId, 'waste_return', id);
+    return getDb().prepare(`
+      SELECT w.*, p.name as product_name FROM waste_records w
+      JOIN products p ON w.product_id = p.id WHERE w.id = ?`).get(id);
+  },
+  approveCashUp: (id, actorId, notes) => features.approveCashUp(id, actorId, notes),
+  receivePurchaseOrderPartial: (poId, items, actorId, actorName) => features.receivePurchaseOrderPartial(poId, items, actorId, actorName, adjustStock),
+  logOperatingEvent, getOperatingLogReport,
+  ...branchesSvc,
+  getSyncSettings: () => syncSvc.getSyncSettings(),
+  saveSyncSettings: (data) => syncSvc.saveSyncSettings(data),
+  getSyncStatus: () => syncSvc.getSyncStatus(),
+  registerSyncDevice: (role, name) => syncSvc.registerDevice(role, name),
+  syncNow: () => syncSvc.syncNow(),
+  publishProductsToHub: () => syncSvc.publishProducts(getProducts, getCategories),
+  syncBranchesToHub: () => syncSvc.syncBranchesToHub(),
+  getOnlineOrdersLocal: (status) => syncSvc.getOnlineOrdersLocal(status),
+  updateOnlineOrderStatus: (id, status) => syncSvc.updateOnlineOrderStatus(id, status),
+  acceptOnlineOrderAsSale,
+  ...staffExports,
+  getEmployeeDocuments,
+  saveEmployeeDocument,
+  ...hrContracts,
+  ...staffSelfies,
+  ...ownerSalary,
+  ...bookkeeping,
+  ...donationsExports,
+  getDonationDocument,
+  ...opsComplianceSvc,
+  ...promoRequestsSvc,
+  getNonSellingProducts: (filters) => promoRequestsSvc.enrichNonSellingProducts(opsComplianceSvc.getNonSellingProducts(filters)),
+  ...combosSvc,
+  ...flyersExports,
+  getFlyerTemplates,
+  ...marketingAgentSvc,
+  ...whatsappExports,
+  getWhatsAppTemplates,
+  ...documentHubExports,
+  getHubDocuments,
+  getHubDocument,
+  saveHubDocument,
+  deleteHubDocument,
+  processScheduledDocuments,
+  runStartupTasks,
+  saveKdsNotificationSound,
+  ...customerRewardsSvc,
+  ...employeeOfMonthSvc,
+  ...hrTrainingSvc,
+  ...recruitmentSvc,
+  ...require('./recipe-production')
+};

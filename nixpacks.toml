@@ -1,0 +1,3 @@
+# Fallback only if Docker builder is not used
+[start]
+cmd = "node server.js"

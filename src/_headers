@@ -1,0 +1,11 @@
+/*
+  Cache static assets on Netlify (drag-drop or publish folder).
+*/
+/css/*
+  Cache-Control: public, max-age=86400
+/js/*
+  Cache-Control: public, max-age=86400
+/assets/*
+  Cache-Control: public, max-age=604800
+/
+  Cache-Control: public, max-age=0, must-revalidate

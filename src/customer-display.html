@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Customer Order Display</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: Segoe UI, system-ui, sans-serif; background: #0b1220; color: #f8fafc; min-height: 100vh; }
+    header { padding: 16px 28px; background: linear-gradient(180deg,#1e293b,#0b1220); display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #334155; }
+    header h1 { font-size: 22px; font-weight: 800; }
+    header .clock { color: #94a3b8; font-size: 15px; }
+    .board { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; padding: 20px; min-height: calc(100vh - 70px); }
+    .col { background: #111827; border: 1px solid #334155; border-radius: 16px; display: flex; flex-direction: column; overflow: hidden; }
+    .col-head { padding: 14px 16px; font-weight: 800; font-size: 18px; letter-spacing: 0.04em; text-align: center; }
+    .col.preparing .col-head { background: #78350f; color: #fde68a; }
+    .col.ready .col-head { background: #1d4ed8; color: #dbeafe; }
+    .col.collection .col-head { background: #14532d; color: #bbf7d0; }
+    .col-body { padding: 12px; display: flex; flex-direction: column; gap: 10px; overflow: auto; flex: 1; }
+    .ticket { background: #1e293b; border-radius: 12px; padding: 14px; border: 1px solid #334155; cursor: pointer; transition: transform .15s, border-color .15s; }
+    .ticket:hover { transform: translateY(-2px); border-color: #94a3b8; }
+    .ticket .num { font-size: 28px; font-weight: 900; letter-spacing: 0.03em; }
+    .ticket .meta { margin-top: 6px; color: #94a3b8; font-size: 13px; }
+    .ticket .hint { margin-top: 8px; font-size: 12px; color: #64748b; }
+    .empty { color: #64748b; text-align: center; padding: 40px 12px; font-size: 15px; }
+    @media (max-width: 900px) { .board { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Order Status</h1>
+    <div class="clock" id="cds-clock"></div>
+  </header>
+  <div class="board">
+    <section class="col preparing">
+      <div class="col-head">PREPARING</div>
+      <div class="col-body" id="col-preparing"><div class="empty">—</div></div>
+    </section>
+    <section class="col ready">
+      <div class="col-head">READY</div>
+      <div class="col-body" id="col-ready"><div class="empty">—</div></div>
+    </section>
+    <section class="col collection">
+      <div class="col-head">COLLECTION</div>
+      <div class="col-body" id="col-collection"><div class="empty">—</div></div>
+    </section>
+  </div>
+  <script src="js/api.js"></script>
+  <script src="js/utils.js"></script>
+  <script src="js/customer-display-app.js"></script>
+</body>
+</html>

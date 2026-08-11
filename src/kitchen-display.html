@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Kitchen Display</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: Segoe UI, system-ui, sans-serif; background: #0f172a; color: #f1f5f9; min-height: 100vh; }
+    header { padding: 14px 24px; background: linear-gradient(180deg,#1e293b,#0f172a); display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #334155; }
+    header h1 { font-size: 20px; font-weight: 700; letter-spacing: 0.02em; }
+    header .clock { color: #94a3b8; font-size: 14px; }
+    #orders { padding: 20px; display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; align-content: start; }
+    .order-card { background: #1e293b; border-radius: 14px; border: 1px solid #334155; box-shadow: 0 8px 24px rgba(0,0,0,0.25); padding: 16px; display: flex; flex-direction: column; gap: 10px; border-top: 4px solid #ef4444; }
+    .order-card.preparing { border-top-color: #f59e0b; }
+    .order-card.ready { border-top-color: #22c55e; }
+    .order-card.collection { border-top-color: #38bdf8; }
+    .order-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+    .order-num { font-size: 18px; font-weight: 700; }
+    .order-badge { font-size: 10px; font-weight: 700; padding: 4px 8px; border-radius: 999px; background: #334155; }
+    .order-badge.pending { background: #7f1d1d; color: #fecaca; }
+    .order-badge.preparing { background: #78350f; color: #fde68a; }
+    .order-badge.ready { background: #14532d; color: #bbf7d0; }
+    .order-badge.collection { background: #0c4a6e; color: #bae6fd; }
+    .order-meta { font-size: 12px; color: #94a3b8; }
+    .order-items { list-style: none; display: flex; flex-direction: column; gap: 8px; }
+    .order-items li { font-size: 16px; font-weight: 600; line-height: 1.35; padding-bottom: 8px; border-bottom: 1px dashed #475569; }
+    .order-items .qty { color: #fbbf24; margin-right: 4px; }
+    .order-items em { font-size: 13px; font-weight: 400; color: #cbd5e1; }
+    .order-actions { margin-top: auto; display: flex; gap: 8px; flex-wrap: wrap; }
+    .btn { border: none; border-radius: 8px; padding: 8px 12px; cursor: pointer; font-weight: 600; font-size: 13px; }
+    .btn-start { background: #f59e0b; color: #111; }
+    .btn-ready { background: #22c55e; color: #111; }
+    .btn-done { background: #475569; color: #fff; margin-left: auto; }
+    .empty { grid-column: 1 / -1; text-align: center; padding: 80px 20px; color: #64748b; font-size: 18px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🍳 Kitchen Display</h1>
+    <div class="clock" id="kds-clock"></div>
+  </header>
+  <div id="orders"><div class="empty">Waiting for orders…</div></div>
+  <script src="js/api.js"></script>
+  <script src="js/utils.js"></script>
+  <script src="js/kitchen-display-app.js"></script>
+</body>
+</html>

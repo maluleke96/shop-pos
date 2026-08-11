@@ -1,0 +1,852 @@
+const Utils = {
+  formatMoney(amount, currency = 'R') {
+    return `${currency}${Number(amount || 0).toFixed(2)}`;
+  },
+
+  formatPriceAdjustment(price, currency = 'R') {
+    const n = Number(price) || 0;
+    if (n === 0) return '';
+    const abs = Utils.formatMoney(Math.abs(n), currency);
+    return n > 0 ? `(+${abs})` : `(-${abs})`;
+  },
+
+  /** Tax totals from shelf/cart gross (prices are tax-inclusive when VAT is enabled). */
+  calcTaxTotals(grossAmount, settings, discount = 0) {
+    const gross = Math.max(0, Number(grossAmount) || 0);
+    const disc = Math.max(0, Number(discount) || 0);
+    const afterDiscount = Math.round(Math.max(0, gross - disc) * 100) / 100;
+    if (!settings?.tax_enabled) {
+      return { subtotalExcl: afterDiscount, tax: 0, total: afterDiscount, taxRate: 0 };
+    }
+    const taxRate = Number(settings.tax_rate) || 0;
+    const tax = taxRate ? Math.round((afterDiscount - afterDiscount / (1 + taxRate / 100)) * 100) / 100 : 0;
+    return { subtotalExcl: Math.round((afterDiscount - tax) * 100) / 100, tax, total: afterDiscount, taxRate };
+  },
+
+  formatDate(d) {
+    if (!d) return '—';
+    return new Date(d).toLocaleDateString('en-ZA', { year: 'numeric', month: 'short', day: 'numeric' });
+  },
+
+  formatDateTime(d) {
+    if (!d) return '—';
+    return new Date(d).toLocaleString('en-ZA', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  },
+
+  today() {
+    return new Date().toLocaleDateString('en-CA');
+  },
+
+  daysAgo(n) {
+    const d = new Date();
+    d.setDate(d.getDate() - n);
+    return d.toLocaleDateString('en-CA');
+  },
+
+  monthStart() {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`;
+  },
+
+  weekStart() {
+    const d = new Date();
+    const day = d.getDay();
+    d.setDate(d.getDate() - day);
+    return d.toLocaleDateString('en-CA');
+  },
+
+  calcTaxInclusive(grossTotal, discount, taxRatePct, taxEnabled) {
+    const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+    const afterDiscount = round2(Math.max(0, (Number(grossTotal) || 0) - Math.max(0, Number(discount) || 0)));
+    if (!taxEnabled) return { subtotal: afterDiscount, tax_amount: 0, total: afterDiscount };
+    const rate = Number(taxRatePct) || 0;
+    if (!rate) return { subtotal: afterDiscount, tax_amount: 0, total: afterDiscount };
+    const tax_amount = round2(afterDiscount - afterDiscount / (1 + rate / 100));
+    return { subtotal: round2(afterDiscount - tax_amount), tax_amount, total: afterDiscount };
+  },
+
+  itemTaxBreakdown(unitPriceIncl, quantity, taxRatePct, taxEnabled) {
+    const lineTotal = (Number(unitPriceIncl) || 0) * (Number(quantity) || 1);
+    if (!taxEnabled) return { excl: lineTotal, tax: 0, incl: lineTotal };
+    const rate = Number(taxRatePct) || 0;
+    if (!rate) return { excl: lineTotal, tax: 0, incl: lineTotal };
+    const tax = lineTotal - lineTotal / (1 + rate / 100);
+    return { excl: lineTotal - tax, tax, incl: lineTotal };
+  },
+
+  dateFilterHTML(id = 'date-filter', from = null, to = null) {
+    const f = from || Utils.monthStart();
+    const t = to || Utils.today();
+    return `<div class="date-filter" id="${id}">
+      <label>From</label><input type="date" class="df-from" value="${f}">
+      <label>To</label><input type="date" class="df-to" value="${t}">
+      <button type="button" class="btn btn-sm btn-primary df-apply">Apply</button>
+      <button type="button" class="btn btn-sm btn-ghost df-today">Today</button>
+      <button type="button" class="btn btn-sm btn-ghost df-week">This Week</button>
+      <button type="button" class="btn btn-sm btn-ghost df-month">This Month</button>
+    </div>`;
+  },
+
+  bindDateFilter(container, onApply) {
+    const el = typeof container === 'string' ? document.getElementById(container) : container;
+    if (!el) return;
+    const apply = () => onApply(el.querySelector('.df-from').value, el.querySelector('.df-to').value);
+    el.querySelector('.df-apply')?.addEventListener('click', apply);
+    el.querySelector('.df-today')?.addEventListener('click', () => {
+      el.querySelector('.df-from').value = Utils.today();
+      el.querySelector('.df-to').value = Utils.today();
+      apply();
+    });
+    el.querySelector('.df-yesterday')?.addEventListener('click', () => {
+      el.querySelector('.df-from').value = Utils.daysAgo(1);
+      el.querySelector('.df-to').value = Utils.daysAgo(1);
+      apply();
+    });
+    el.querySelector('.df-week')?.addEventListener('click', () => {
+      el.querySelector('.df-from').value = Utils.weekStart();
+      el.querySelector('.df-to').value = Utils.today();
+      apply();
+    });
+    el.querySelector('.df-lastweek')?.addEventListener('click', () => {
+      const d = new Date();
+      d.setDate(d.getDate() - d.getDay() - 7);
+      const start = d.toLocaleDateString('en-CA');
+      d.setDate(d.getDate() + 6);
+      el.querySelector('.df-from').value = start;
+      el.querySelector('.df-to').value = d.toLocaleDateString('en-CA');
+      apply();
+    });
+    el.querySelector('.df-month')?.addEventListener('click', () => {
+      el.querySelector('.df-from').value = Utils.monthStart();
+      el.querySelector('.df-to').value = Utils.today();
+      apply();
+    });
+    el.querySelector('.df-lastmonth')?.addEventListener('click', () => {
+      const d = new Date();
+      d.setMonth(d.getMonth() - 1);
+      el.querySelector('.df-from').value = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`;
+      d.setMonth(d.getMonth() + 1);
+      d.setDate(0);
+      el.querySelector('.df-to').value = d.toLocaleDateString('en-CA');
+      apply();
+    });
+    el.querySelector('.df-year')?.addEventListener('click', () => {
+      const y = new Date().getFullYear();
+      el.querySelector('.df-from').value = `${y}-01-01`;
+      el.querySelector('.df-to').value = Utils.today();
+      apply();
+    });
+  },
+
+  extendedDateFilterHTML(id = 'date-filter', from = null, to = null) {
+    const f = from || Utils.monthStart();
+    const t = to || Utils.today();
+    return `<div class="date-filter" id="${id}">
+      <label>From</label><input type="date" class="df-from" value="${f}">
+      <label>To</label><input type="date" class="df-to" value="${t}">
+      <button type="button" class="btn btn-sm btn-primary df-apply">Apply</button>
+      <button type="button" class="btn btn-sm btn-ghost df-today">Today</button>
+      <button type="button" class="btn btn-sm btn-ghost df-yesterday">Yesterday</button>
+      <button type="button" class="btn btn-sm btn-ghost df-week">This Week</button>
+      <button type="button" class="btn btn-sm btn-ghost df-lastweek">Last Week</button>
+      <button type="button" class="btn btn-sm btn-ghost df-month">This Month</button>
+      <button type="button" class="btn btn-sm btn-ghost df-lastmonth">Last Month</button>
+      <button type="button" class="btn btn-sm btn-ghost df-year">This Year</button>
+    </div>`;
+  },
+
+  companyInfo(settings) {
+    return {
+      shop_name: settings?.shop_name || 'Shop POS',
+      address: settings?.address || '',
+      phone: settings?.phone || '',
+      email: settings?.email || '',
+      vat_number: settings?.vat_number || ''
+    };
+  },
+
+  toast(msg, type = 'info') {
+    const el = document.createElement('div');
+    el.className = `toast ${type}`;
+    el.textContent = msg;
+    document.getElementById('toast-container').appendChild(el);
+    setTimeout(() => el.remove(), 3500);
+  },
+
+  showModal(title, bodyHtml, footerHtml = '', options = {}) {
+    document.getElementById('modal-title').textContent = title;
+    document.getElementById('modal-body').innerHTML = bodyHtml;
+    document.getElementById('modal-footer').innerHTML = footerHtml;
+    const overlay = document.getElementById('modal-overlay');
+    overlay.classList.remove('hidden');
+    overlay.dataset.noDismiss = options.noDismiss ? '1' : '0';
+    const closeBtn = document.getElementById('modal-close');
+    if (closeBtn) closeBtn.style.display = options.noDismiss ? 'none' : '';
+  },
+
+  hideModal() {
+    const overlay = document.getElementById('modal-overlay');
+    if (overlay?.dataset.noDismiss === '1') return;
+    overlay.classList.add('hidden');
+    overlay.dataset.noDismiss = '0';
+    const closeBtn = document.getElementById('modal-close');
+    if (closeBtn) closeBtn.style.display = '';
+  },
+
+  forceHideModal() {
+    const overlay = document.getElementById('modal-overlay');
+    if (!overlay) return;
+    overlay.classList.add('hidden');
+    overlay.dataset.noDismiss = '0';
+    const closeBtn = document.getElementById('modal-close');
+    if (closeBtn) closeBtn.style.display = '';
+  },
+
+  roleTag(role) {
+    return `<span class="tag tag-${role}">${role}</span>`;
+  },
+
+  stockTag(qty, min) {
+    if (qty <= 0) return '<span class="tag tag-out">Out</span>';
+    if (qty <= min) return '<span class="tag tag-low">Low</span>';
+    return '<span class="tag tag-ok">OK</span>';
+  },
+
+  canAccess(user, page) {
+    if (!user) return false;
+    if (page === 'admin') return Utils.canAccessAdmin(user);
+    if (user.role === 'owner') return true;
+    if (user.role === 'marketing_agent') return page === 'marketing' || page === 'document-hub';
+    const pagePermMap = {
+      dashboard: 'view_reports', pos: 'sell', staff: 'sell', products: 'products', categories: 'products',
+      stock: 'manage_stock', customers: 'customers', suppliers: 'suppliers', expenses: 'view_reports',
+      returns: 'refunds', quotes: 'quotes', layby: 'layby', giftcards: 'gift_cards', marketing: 'products',
+      'document-hub': 'operations', whatsapp: 'operations', operations: 'operations', restaurant: 'kitchen', 'purchase-orders': 'suppliers',
+      reports: 'reports', audit: 'view_reports', bookkeeping: 'bookkeeping', admin: 'system_settings', users: 'system_settings',
+      settings: 'sell'
+    };
+    if (user.role === 'assistant_manager') {
+      const perm = pagePermMap[page];
+      return perm ? Utils.hasPermission(user, perm) : false;
+    }
+    const perm = pagePermMap[page];
+    if (perm && Utils.hasPermission(user, perm)) return true;
+    const managerPages = ['dashboard', 'admin', 'pos', 'staff', 'products', 'categories', 'stock', 'customers', 'suppliers', 'expenses', 'returns', 'quotes', 'layby', 'giftcards', 'marketing', 'document-hub', 'whatsapp', 'operations', 'restaurant', 'recipe', 'purchase-orders', 'reports', 'bookkeeping', 'audit'];
+    const cashierPages = ['pos', 'staff', 'returns'];
+    const supervisorPages = ['admin', 'pos', 'staff', 'operations', 'returns', 'layby', 'giftcards', 'quotes'];
+    if (user.role === 'manager') return managerPages.includes(page);
+    if (user.role === 'supervisor') return supervisorPages.includes(page);
+    if (user.role === 'cashier') return cashierPages.includes(page);
+    return false;
+  },
+
+  /** Owner-only admin sidebar sections — hidden from manager/supervisor search & nav */
+  adminOwnerOnlySections: new Set([
+    'permissions', 'backup', 'payroll', 'database', 'developer', 'automation',
+    'customfields', 'formats', 'importexport', 'branches', 'tax', 'device', 'customer-rewards',
+    'analytics'
+  ]),
+
+  /** Sections managers/supervisors should always see when they have admin access */
+  adminManagerSections: new Set([
+    'staffhr', 'hrcontracts', 'recruitment', 'marketing-mgmt', 'employee-of-month', 'opscompliance', 'combos',
+    'quotes', 'approvals', 'recipe'
+  ]),
+
+  canAccessAdmin(user) {
+    if (!user) return false;
+    if (user.role === 'owner') return true;
+    if (user.role === 'manager') return true;
+    if (user.role === 'supervisor') return true;
+    if (user.role === 'assistant_manager') return Utils.hasPermission(user, 'system_settings');
+    return false;
+  },
+
+  canAccessAdminSection(user, sectionId) {
+    if (!Utils.canAccessAdmin(user)) return false;
+    if (user.role === 'owner') return true;
+    if (user.role === 'supervisor') {
+      return Utils.adminManagerSections.has(sectionId);
+    }
+    if (Utils.adminManagerSections.has(sectionId)) return true;
+    return !Utils.adminOwnerOnlySections.has(sectionId);
+  },
+
+  roleDefaults: {
+    owner: { sell: true, void_sales: true, refunds: true, discounts: true, change_prices: true, view_reports: true, manage_stock: true, system_settings: true, customers: true, suppliers: true, gift_cards: true, cash_up: true, products: true, reports: true, operations: true, kitchen: true, quotes: true, layby: true, delete_sales: true, bookkeeping: true },
+    manager: { sell: true, void_sales: true, refunds: true, discounts: true, change_prices: true, view_reports: true, manage_stock: true, customers: true, suppliers: true, gift_cards: true, cash_up: true, products: true, reports: true, operations: true, kitchen: true, quotes: true, layby: true, owner_salary: true, owner_salary_only: false, bookkeeping: true },
+    supervisor: { sell: true, void_sales: true, refunds: true, discounts: true, cash_up: true, operations: true, kitchen: true, gift_cards: true, layby: true, quotes: true },
+    assistant_manager: {},
+    marketing_agent: {},
+    cashier: { sell: true, refunds: true, owner_salary: false, owner_salary_only: false }
+  },
+
+  normalizePhone(phone) {
+    if (!phone) return '';
+    let digits = String(phone).replace(/\D/g, '');
+    if (digits.startsWith('27') && digits.length >= 11) digits = digits.slice(2);
+    if (digits.startsWith('0')) digits = digits.slice(1);
+    return digits.slice(-9);
+  },
+
+  phonesMatch(a, b) {
+    const na = Utils.normalizePhone(a);
+    const nb = Utils.normalizePhone(b);
+    return !!(na && nb && na.length >= 9 && na === nb);
+  },
+
+  hasPermission(user, key) {
+    if (!user) return false;
+    if (user.role === 'owner') return true;
+    let perms = user.permissions;
+    if (typeof perms === 'string') {
+      try { perms = JSON.parse(perms); } catch { perms = {}; }
+    }
+    if (perms && Object.prototype.hasOwnProperty.call(perms, key)) return !!perms[key];
+    return !!(Utils.roleDefaults[user.role] || {})[key];
+  },
+
+  getCashoutWhatsAppPhone(settings) {
+    const ws = settings?.whatsapp_settings;
+    let parsed = ws;
+    if (typeof ws === 'string') {
+      try { parsed = JSON.parse(ws); } catch { parsed = {}; }
+    }
+    return String(parsed?.cashout_whatsapp_phone || settings?.phone || '').trim();
+  },
+
+  openWhatsApp(phone, message) {
+    const digits = String(phone || '').replace(/\D/g, '');
+    if (!digits) return false;
+    const num = digits.startsWith('0') ? `27${digits.slice(1)}` : digits;
+    const url = `https://wa.me/${num}?text=${encodeURIComponent(message || '')}`;
+    window.open(url, '_blank');
+    return true;
+  },
+
+  expenseCategories: ['rent', 'transport', 'electricity', 'salary', 'fuel', 'maintenance', 'other'],
+  paymentTypes: ['cash', 'card', 'eft', 'mobile', 'account', 'giftcard', 'other'],
+  paymentLabels: { cash: 'Cash', card: 'Card', eft: 'EFT', mobile: 'Mobile Money', account: 'On Account', giftcard: 'Gift Card', other: 'Other' },
+  returnReasons: ['Wrong Item', 'Customer Changed Mind', 'Expired Product', 'Damaged Product', 'Incorrect Price', 'Duplicate Sale', 'Defective Product', 'Other'],
+  businessTypes: ['retail', 'restaurant', 'grocery', 'pharmacy', 'clothing', 'hardware', 'spaza', 'supermarket'],
+  units: ['each', 'piece', 'kg', 'g', 'litre', 'ml', 'box', 'bottle', 'packet', 'dozen'],
+  stockUnitTypes: {
+    piece: { label: 'Piece / Unit', units: ['piece', 'each', 'unit', 'whole', 'half', 'quarter', 'slice', 'loaf'] },
+    weight: { label: 'Weight', units: ['g', 'kg'] },
+    volume: { label: 'Volume', units: ['ml', 'L', 'litre'] },
+    length: { label: 'Length', units: ['mm', 'cm', 'm'] },
+    pack: { label: 'Pack / Box', units: ['pack', 'box', 'carton', 'case'] },
+    bundle: { label: 'Bundle', units: ['bundle', 'set', 'multipack'] },
+    portion: { label: 'Portion', units: ['portion', 'serving'] }
+  },
+
+  getUnitsForType(type) {
+    return Utils.stockUnitTypes[type]?.units || Utils.units;
+  },
+
+  getAllStockUnits() {
+    const set = new Set(Utils.units);
+    Object.values(Utils.stockUnitTypes).forEach(t => t.units.forEach(u => set.add(u)));
+    return [...set];
+  },
+
+  formatPurchaseUnit(qty, label, unit) {
+    const q = qty != null && qty !== '' ? qty : 1;
+    const parts = [q];
+    if (label) parts.push(label);
+    else if (unit) parts.push(unit);
+    return parts.join(' ');
+  },
+
+  fileUrl(filePath) {
+    if (!filePath) return '';
+    const p = String(filePath);
+    if (p.startsWith('mobile://') || p.startsWith('data:')) return p;
+    const norm = p.replace(/\\/g, '/');
+    if (norm.startsWith('file://')) return norm;
+    return /^[a-zA-Z]:/.test(norm) ? `file:///${norm}` : `file://${norm.startsWith('/') ? norm : `/${norm}`}`;
+  },
+
+  _imageUrlCache: new Map(),
+
+  async resolveImageUrl(filePath) {
+    if (!filePath) return '';
+    const key = String(filePath);
+    if (Utils._imageUrlCache.has(key)) return Utils._imageUrlCache.get(key);
+    if (key.startsWith('data:')) return key;
+    const data = await API.getImageDataUrl(key);
+    if (data?.success && data.dataUrl) {
+      Utils._imageUrlCache.set(key, data.dataUrl);
+      return data.dataUrl;
+    }
+    const fallback = Utils.fileUrl(key);
+    Utils._imageUrlCache.set(key, fallback);
+    return fallback;
+  },
+
+  async hydrateImages(root) {
+    const scope = root && root.querySelectorAll ? root : document;
+    const imgs = [...scope.querySelectorAll('img[data-image-path]')];
+    const pending = [];
+    for (const img of imgs) {
+      const path = img.dataset.imagePath;
+      if (!path || img.dataset.imageLoaded === '1') continue;
+      if (Utils._imageUrlCache.has(path)) {
+        img.src = Utils._imageUrlCache.get(path);
+        img.dataset.imageLoaded = '1';
+      } else {
+        pending.push(img);
+      }
+    }
+    // Load uncached images in small chunks so category/product tab switches stay responsive
+    for (let i = 0; i < pending.length; i += 6) {
+      const chunk = pending.slice(i, i + 6);
+      await Promise.all(chunk.map(async (img) => {
+        const path = img.dataset.imagePath;
+        if (!path || img.dataset.imageLoaded === '1') return;
+        const src = await Utils.resolveImageUrl(path);
+        if (src) {
+          img.src = src;
+          img.dataset.imageLoaded = '1';
+        }
+      }));
+      if (i + 6 < pending.length) {
+        await new Promise(r => requestAnimationFrame(r));
+      }
+    }
+  },
+
+  cachedImageAttr(filePath) {
+    if (!filePath) return '';
+    const key = String(filePath);
+    if (Utils._imageUrlCache.has(key)) {
+      return `src="${Utils._imageUrlCache.get(key)}" data-image-path="${key}" data-image-loaded="1"`;
+    }
+    return `data-image-path="${key}"`;
+  },
+
+  async setImagePreview(container, filePath, imgStyle = 'max-height:100px;border-radius:8px;border:1px solid var(--border)') {
+    const el = typeof container === 'string' ? document.getElementById(container) : container;
+    if (!el || !filePath) return;
+    const src = await Utils.resolveImageUrl(filePath);
+    el.innerHTML = `<img src="${src}" style="${imgStyle}">`;
+  },
+
+  loyaltyPointValue(settings) {
+    const ls = settings?.loyalty_settings || {};
+    return Number(ls.point_value) > 0 ? Number(ls.point_value) : 1;
+  },
+
+  loyaltyPointsValue(points, settings, currency = 'R') {
+    const val = Math.floor(points || 0) * this.loyaltyPointValue(settings);
+    return { amount: val, formatted: this.formatMoney(val, currency) };
+  },
+
+  loyaltyMaxRedeemPoints(total, customerPoints, settings) {
+    const pv = this.loyaltyPointValue(settings);
+    const avail = Math.floor(Number(customerPoints) || 0);
+    const maxByTotal = Math.floor((Number(total) || 0) / pv);
+    return Math.max(0, Math.min(avail, maxByTotal));
+  },
+
+  loyaltyRedeemDiscount(points, settings) {
+    return Math.floor(points || 0) * this.loyaltyPointValue(settings);
+  },
+
+  loyaltyPreviewPoints(total, settings) {
+    const ls = settings?.loyalty_settings || {};
+    if (ls.enabled === false || !total) return 0;
+    const spend = Number(ls.spend_amount) > 0 ? Number(ls.spend_amount) : 10;
+    const earned = Number(ls.points_earned) > 0 ? Number(ls.points_earned) : 1;
+    const min = Number(ls.min_sale_total) || 0;
+    if (total < min) return 0;
+    return Math.floor((total / spend) * earned);
+  },
+
+  itemTypes: ['retail', 'food', 'drink', 'combo', 'side', 'grocery', 'service'],
+
+  getDeviceId() {
+    let id = localStorage.getItem('shoppos_device_id');
+    if (!id) {
+      id = `POS-${Date.now().toString(36).toUpperCase()}`;
+      localStorage.setItem('shoppos_device_id', id);
+    }
+    return id;
+  },
+
+  getLocalDeviceSettings() {
+    try { return JSON.parse(localStorage.getItem('shoppos_device_settings') || '{}'); } catch { return {}; }
+  },
+
+  saveLocalDeviceSettings(data) {
+    const merged = { ...Utils.getLocalDeviceSettings(), ...data, device_id: Utils.getDeviceId() };
+    localStorage.setItem('shoppos_device_settings', JSON.stringify(merged));
+    if (API.saveDeviceSettings) API.saveDeviceSettings(merged).catch(() => {});
+    return merged;
+  },
+
+  mergeDeviceSettings(settings) {
+    const global = settings?.device_settings || {};
+    const local = Utils.getLocalDeviceSettings();
+    return { ...global, ...local, device_id: Utils.getDeviceId() };
+  },
+
+  printerStatusBadge(status) {
+    if (!status) return '<span class="tag tag-low">Unknown</span>';
+    return status.online
+      ? `<span class="tag tag-ok">● Online</span> <span class="muted">${status.message}</span>`
+      : `<span class="tag tag-out">● Offline</span> <span class="muted">${status.message}</span>`;
+  },
+
+  escHtml(v) {
+    return String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  },
+
+  customerPickerHTML(prefix = 'cust') {
+    return `<div class="field"><label>Customer</label>
+      <div class="customer-picker-wrap" style="position:relative">
+        <input type="search" id="${prefix}-search" placeholder="Search name or phone…" autocomplete="off">
+        <input type="hidden" id="${prefix}-id">
+        <div id="${prefix}-dropdown" class="search-dropdown hidden" style="position:absolute;top:100%;left:0;right:0;z-index:50;max-height:180px;overflow:auto;background:var(--bg);border:1px solid var(--border);border-radius:8px"></div>
+      </div>
+      <small class="muted" id="${prefix}-selected">Optional — link gift card to a customer</small></div>`;
+  },
+
+  bindCustomerPicker(prefix, customers, preset = null) {
+    const input = document.getElementById(`${prefix}-search`);
+    const hidden = document.getElementById(`${prefix}-id`);
+    const dropdown = document.getElementById(`${prefix}-dropdown`);
+    const selectedEl = document.getElementById(`${prefix}-selected`);
+    if (!input || !hidden || !dropdown) return;
+
+    const list = customers || [];
+    let selected = preset || null;
+
+    const applySelection = (c) => {
+      selected = c;
+      hidden.value = c?.id || '';
+      input.value = c ? `${c.name}${c.phone ? ` (${c.phone})` : ''}` : '';
+      if (selectedEl) {
+        selectedEl.textContent = c
+          ? `Selected: ${c.name}${c.phone ? ` · ${c.phone}` : ''}`
+          : 'Optional — link gift card to a customer';
+      }
+      dropdown.classList.add('hidden');
+    };
+
+    if (preset) applySelection(preset);
+
+    const showResults = (matches) => {
+      if (!matches.length) {
+        dropdown.innerHTML = '<div class="search-item muted" style="padding:10px">No customers found</div>';
+      } else {
+        dropdown.innerHTML = matches.slice(0, 12).map(c =>
+          `<div class="search-item" data-id="${c.id}" style="padding:10px;cursor:pointer;border-bottom:1px solid var(--border)">
+            <strong>${Utils.escHtml(c.name)}</strong>${c.phone ? `<br><small>${Utils.escHtml(c.phone)}</small>` : ''}
+          </div>`).join('');
+        dropdown.querySelectorAll('[data-id]').forEach(el => {
+          el.addEventListener('click', () => {
+            const c = list.find(x => x.id == el.dataset.id);
+            if (c) applySelection(c);
+          });
+        });
+      }
+      dropdown.classList.remove('hidden');
+    };
+
+    input.oninput = () => {
+      const q = input.value.trim().toLowerCase();
+      if (!q) {
+        dropdown.classList.add('hidden');
+        selected = null;
+        hidden.value = '';
+        if (selectedEl) selectedEl.textContent = 'Optional — link gift card to a customer';
+        return;
+      }
+      const matches = list.filter(c =>
+        c.name.toLowerCase().includes(q) || (c.phone || '').includes(q) || (c.email || '').toLowerCase().includes(q)
+      );
+      showResults(matches);
+    };
+
+    input.onfocus = () => {
+      if (input.value.trim()) input.oninput();
+    };
+
+    document.addEventListener('click', (e) => {
+      if (!e.target.closest('.customer-picker-wrap')) dropdown.classList.add('hidden');
+    });
+
+    return {
+      getSelected: () => selected,
+      setSelected: applySelection,
+      clear: () => applySelection(null)
+    };
+  },
+
+  async sendGiftCardWhatsApp(app, { phone, customerName, code, amount, customerId }) {
+    if (!phone) return { success: false, error: 'No phone number' };
+    const currency = app.settings?.currency || 'R';
+    const waRes = await API.sendWhatsAppMessage({
+      phone,
+      customer_id: customerId || null,
+      recipient_type: 'customer',
+      recipient_name: customerName || 'Customer',
+      customer_name: customerName || 'Customer',
+      branch: app.settings?.shop_name,
+      message_type: 'gift_card',
+      template_slug: 'gift_card',
+      body: `Hello! Your gift card from ${app.settings?.shop_name || 'our shop'} is ready.\nCode: ${code}\nValue: ${Utils.formatMoney(amount, currency)}\nPresent this code at checkout.`,
+      gift_card_code: code,
+      gift_card_value: Utils.formatMoney(amount, currency),
+      voucher_code: code
+    }, app.user);
+    if (waRes.success && waRes.data?.url) {
+      window.open(waRes.data.url, '_blank');
+      if (waRes.data.id) await API.markWhatsAppOpened(waRes.data.id, app.user);
+    }
+    return waRes;
+  },
+
+  async sendQuoteWhatsApp(app, quote) {
+    const phone = quote?.customer_phone;
+    if (!phone) return { success: false, error: 'No customer phone on this quote' };
+    const currency = app.settings?.currency || 'R';
+    const quoteLines = Receipt.buildQuoteWhatsAppLines(quote, app.settings);
+    const validUntilLine = quote.valid_until ? `Valid until: ${Utils.formatDate(quote.valid_until)}` : '';
+    const waRes = await API.sendWhatsAppMessage({
+      phone,
+      customer_id: quote.customer_id || null,
+      recipient_type: 'customer',
+      recipient_name: quote.customer_name || 'Customer',
+      customer_name: quote.customer_name || 'Customer',
+      branch: app.settings?.shop_name,
+      message_type: 'quotation',
+      template_slug: 'quotation',
+      order_number: quote.quote_number,
+      total_purchase: quote.total,
+      quote_lines: quoteLines,
+      valid_until_line: validUntilLine,
+      date: quote.valid_until || Utils.today()
+    }, app.user);
+    if (waRes.success && waRes.data?.url) {
+      window.open(waRes.data.url, '_blank');
+      if (waRes.data.id) await API.markWhatsAppOpened(waRes.data.id, app.user);
+    }
+    return waRes;
+  },
+
+  async sendPayslipWhatsApp(app, payrollRow, employee) {
+    const phone = employee?.phone;
+    if (!phone) return { success: false, error: 'No phone number on employee record — ask admin to add your phone' };
+    const currency = app.settings?.currency || 'R';
+    const period = `${payrollRow.period_start} – ${payrollRow.period_end}`;
+    const message = `Hi ${employee.full_name}, your payslip for ${period}:\n\nGross: ${Utils.formatMoney(payrollRow.gross_salary || 0, currency)}\nPAYE: ${Utils.formatMoney(payrollRow.paye || 0, currency)}\nUIF: ${Utils.formatMoney(payrollRow.uif_employee || 0, currency)}\nNet: ${Utils.formatMoney(payrollRow.net_salary, currency)}\n\nContact ${app.settings?.shop_name || 'management'} for your full PDF payslip.`;
+    if (['owner', 'manager'].includes(app.user?.role)) {
+      const waRes = await API.sendWhatsAppMessage({
+        phone,
+        employee_id: employee.id,
+        recipient_type: 'employee',
+        recipient_name: employee.full_name,
+        employee_name: employee.full_name,
+        branch: app.settings?.shop_name,
+        message_type: 'payslip',
+        template_slug: 'payslip',
+        pay_period: period,
+        gross_pay: payrollRow.gross_salary,
+        paye_amount: payrollRow.paye,
+        uif_amount: payrollRow.uif_employee,
+        net_pay: payrollRow.net_salary
+      }, app.user);
+      if (waRes.success && waRes.data?.url) {
+        window.open(waRes.data.url, '_blank');
+        if (waRes.data.id) await API.markWhatsAppOpened(waRes.data.id, app.user);
+      }
+      return waRes;
+    }
+    Utils.openWhatsApp(phone, message);
+    return { success: true };
+  },
+
+  async sendLeaveWhatsApp(app, leave, employee) {
+    if (leave.status !== 'approved') return { success: false, error: 'Only approved leave can be shared' };
+    const phone = employee?.phone;
+    if (!phone) return { success: false, error: 'No phone number on employee record' };
+    const period = `${leave.start_date} – ${leave.end_date || leave.start_date}`;
+    const message = `Hi ${employee.full_name}, your ${leave.leave_type} leave has been APPROVED.\n\nPeriod: ${period}\nDays: ${leave.days}\n\n— ${app.settings?.shop_name || 'Management'}`;
+    if (['owner', 'manager'].includes(app.user?.role)) {
+      const waRes = await API.sendWhatsAppMessage({
+        phone,
+        employee_id: employee.id,
+        recipient_type: 'employee',
+        recipient_name: employee.full_name,
+        employee_name: employee.full_name,
+        branch: app.settings?.shop_name,
+        message_type: 'leave_approval',
+        template_slug: 'leave_approval',
+        leave_type: leave.leave_type,
+        pay_period: period,
+        days: leave.days,
+        date: leave.start_date
+      }, app.user);
+      if (waRes.success && waRes.data?.url) {
+        window.open(waRes.data.url, '_blank');
+        if (waRes.data.id) await API.markWhatsAppOpened(waRes.data.id, app.user);
+      }
+      return waRes;
+    }
+    Utils.openWhatsApp(phone, message);
+    return { success: true };
+  },
+
+  async sendDisciplinaryWhatsApp(app, record, employee) {
+    const phone = employee?.phone;
+    if (!phone) return { success: false, error: 'No phone number on employee record' };
+    const reason = `${record.record_type}: ${(record.description || '').slice(0, 120)}`;
+    const waRes = await API.sendWhatsAppMessage({
+      phone,
+      employee_id: employee.id,
+      recipient_type: 'employee',
+      recipient_name: employee.full_name,
+      employee_name: employee.full_name,
+      branch: app.settings?.shop_name,
+      message_type: 'warning',
+      template_slug: 'warning',
+      warning_reason: reason,
+      date: record.incident_date
+    }, app.user);
+    if (waRes.success && waRes.data?.url) {
+      window.open(waRes.data.url, '_blank');
+      if (waRes.data.id) await API.markWhatsAppOpened(waRes.data.id, app.user);
+      await API.markStaffDisciplinaryWa(record.id);
+    }
+    return waRes;
+  },
+
+  isNative() {
+    return !!(window.Capacitor?.isNativePlatform?.() || window.__SHOP_POS_MOBILE__);
+  },
+
+  getCameraPlugin() {
+    return window.Capacitor?.Plugins?.Camera || null;
+  },
+
+  async captureProofPhoto() {
+    const Camera = Utils.getCameraPlugin();
+    if (Utils.isNative() && Camera?.getPhoto) {
+      try {
+        if (Camera.requestPermissions) {
+          const perm = await Camera.requestPermissions({ permissions: ['camera'] });
+          if (perm.camera !== 'granted' && perm.camera !== 'limited') {
+            throw new Error('Camera permission denied');
+          }
+        }
+        const photo = await Camera.getPhoto({
+          quality: 85,
+          allowEditing: false,
+          resultType: 'dataUrl',
+          source: 'camera',
+          direction: 'rear',
+          saveToGallery: false,
+          correctOrientation: true
+        });
+        return photo?.dataUrl || (photo?.base64String ? `data:image/jpeg;base64,${photo.base64String}` : null);
+      } catch (err) {
+        throw new Error(err.message || 'Camera unavailable');
+      }
+    }
+    return new Promise((resolve, reject) => {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = 'image/*';
+      input.capture = 'environment';
+      input.onchange = () => {
+        const file = input.files?.[0];
+        if (!file) return reject(new Error('No photo selected'));
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(new Error('Could not read photo'));
+        reader.readAsDataURL(file);
+      };
+      input.click();
+    });
+  },
+
+  async pickProofImage() {
+    return new Promise((resolve, reject) => {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = 'image/*';
+      input.onchange = () => {
+        const file = input.files?.[0];
+        if (!file) return reject(new Error('No image selected'));
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(new Error('Could not read image'));
+        reader.readAsDataURL(file);
+      };
+      input.click();
+    });
+  },
+
+  _loadedScripts: new Set(),
+
+  loadScript(src) {
+    if (this._loadedScripts.has(src)) return Promise.resolve();
+    // Already in the document (Windows index preload) — do not inject twice
+    const existing = document.querySelector(`script[src="${src}"]`)
+      || document.querySelector(`script[src$="/${src}"]`);
+    if (existing) {
+      this._loadedScripts.add(src);
+      return Promise.resolve();
+    }
+    return new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = src;
+      s.onload = () => { this._loadedScripts.add(src); resolve(); };
+      s.onerror = () => reject(new Error(`Failed to load ${src}`));
+      document.body.appendChild(s);
+    });
+  },
+
+  pageSkeleton(rows = 4) {
+    return `<div class="page-skeleton" style="padding:16px">${Array.from({ length: rows }, () =>
+      `<div style="height:14px;background:var(--border);border-radius:6px;margin-bottom:10px;opacity:0.5"></div>`).join('')}
+      <p class="muted" style="font-size:13px;margin-top:8px">Loading…</p></div>`;
+  },
+
+  sessionCacheGet(key) {
+    try {
+      const raw = sessionStorage.getItem(`spcache_${key}`);
+      if (!raw) return null;
+      const entry = JSON.parse(raw);
+      if (!entry?.exp || entry.exp < Date.now()) {
+        sessionStorage.removeItem(`spcache_${key}`);
+        return null;
+      }
+      return entry.data;
+    } catch { return null; }
+  },
+
+  sessionCacheSet(key, data, ttlMs = 300000) {
+    try {
+      sessionStorage.setItem(`spcache_${key}`, JSON.stringify({ data, exp: Date.now() + ttlMs }));
+    } catch { /* quota */ }
+  },
+
+  sessionCacheClear(prefix) {
+    try {
+      for (let i = sessionStorage.length - 1; i >= 0; i--) {
+        const k = sessionStorage.key(i);
+        if (k?.startsWith(`spcache_${prefix || ''}`)) sessionStorage.removeItem(k);
+      }
+    } catch { /* ignore */ }
+  }
+};
+
+window.Utils = Utils;
+
+document.getElementById('modal-close').addEventListener('click', Utils.hideModal);
+document.getElementById('modal-overlay').addEventListener('click', (e) => {
+  if (e.target === e.currentTarget && e.currentTarget.dataset.noDismiss !== '1') Utils.hideModal();
+});
