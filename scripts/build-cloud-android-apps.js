@@ -13,6 +13,7 @@ const cloudUrl =
 
 const apps = [
   { mode: 'admin', config: 'capacitor.admin.json', apkName: 'ShopPOS-Admin.apk', label: 'Shop POS Admin' },
+  { mode: 'pos', config: 'capacitor.pos.json', apkName: 'ShopPOS-POS.apk', label: 'Shop POS' },
   { mode: 'staff', config: 'capacitor.staff.json', apkName: 'ShopPOS-StaffPortal.apk', label: 'Staff Portal' },
   { mode: 'marketing', config: 'capacitor.marketing.json', apkName: 'ShopPOS-Marketing.apk', label: 'Marketing Agent' },
   { mode: 'recipe', config: 'capacitor.recipe.json', apkName: 'ShopPOS-Recipe.apk', label: 'Recipe & Production' }
@@ -63,8 +64,19 @@ function patchStringsXml(appName, appId) {
 function patchBuildGradle(appId) {
   const p = path.join(root, 'android', 'app', 'build.gradle');
   let g = fs.readFileSync(p, 'utf8').replace(/^\uFEFF/, '');
-  g = g.replace(/namespace\s+"[^"]+"/, `namespace "${appId}"`);
+  // Keep Java namespace as com.shoppos.offline (where MainActivity lives).
+  // Only applicationId changes so each APK can install side-by-side without crashing.
+  if (!/namespace\s+"com\.shoppos\.offline"/.test(g)) {
+    g = g.replace(/namespace\s+"[^"]+"/, 'namespace "com.shoppos.offline"');
+  }
   g = g.replace(/applicationId\s+"[^"]+"/, `applicationId "${appId}"`);
+  // Keep version in sync with package.json when present
+  try {
+    const ver = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version || '2.10.20';
+    const code = String(ver).replace(/\D/g, '') || '21020';
+    g = g.replace(/versionCode\s+\d+/, `versionCode ${code}`);
+    g = g.replace(/versionName\s+"[^"]+"/, `versionName "${ver}"`);
+  } catch (_) { /* ignore */ }
   writeUtf8NoBom(p, g);
 }
 
@@ -130,27 +142,25 @@ for (const a of apps) {
   results.push({ name: a.apkName, path: dest, mb });
 }
 
-const readme = `Shop POS — Android APKs (local + sync)
-=====================================
+const readme = `Shop POS — Android APKs
+=======================
 
-These apps work on the phone without internet. When internet returns,
-they send queued changes to:
-${cloudUrl}
+Same apps as before — open and install from this folder.
 
-The browser URL stays online-only (no local copy).
+  ShopPOS-Admin.apk
+  ShopPOS-POS.apk
+  ShopPOS-StaffPortal.apk
+  ShopPOS-Marketing.apk
+  ShopPOS-Recipe.apk
 
-Files:
-${results.map((r) => `  ${r.name}  (${r.mb} MB)`).join('\n')}
+Admin          — Sign in + Set up shop
+POS            — Till only (cashier/manager usernames from Admin)
+StaffPortal    — Employee ID + PIN only
+Marketing      — Marketing login only
+Recipe         — Recipe & production login only
 
-Install on Android:
-  1. Copy the APK to the phone (USB, WhatsApp, email, etc.)
-  2. Open the APK and allow "Install unknown apps" if asked
-  3. All four can be installed side-by-side (different app IDs)
-
-  Admin          — Sign in + Set up shop
-  StaffPortal    — Employee ID + PIN only
-  Marketing      — Marketing login only
-  Recipe         — Recipe & production login only
+Works offline. When online, syncs to your Railway shop.
+Sign in online once so the phone uses the same shop as the browser.
 `;
 fs.writeFileSync(path.join(destRoot, 'README.txt'), readme, 'utf8');
-console.log(`\nAll APKs copied to:\n  ${destRoot}\n`);
+console.log(`\nAll APKs ready in Android folder.\n`);

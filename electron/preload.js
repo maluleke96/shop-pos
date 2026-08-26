@@ -45,7 +45,7 @@ const channels = [
   'shifts:cashDrop', 'shifts:cashDrops', 'shifts:confirmCashDrop',
   'settings:getSalesTargets', 'settings:saveSalesTargets',
   'settings:getShiftSettings', 'settings:enforceCashoutDeadlines', 'settings:saveShiftSettings',
-  'reports:sales', 'reports:profit', 'reports:cashier', 'reports:product', 'reports:stock', 'reports:expenses',
+  'reports:sales', 'reports:profit', 'reports:cashier', 'reports:cashierDetail', 'reports:product', 'reports:stock', 'reports:expenses',
   'reports:hourly', 'reports:category', 'reports:brand', 'reports:payments', 'reports:employee',
   'reports:discounts', 'reports:voids', 'reports:movements', 'reports:profitDash',
   'reports:giftcards', 'reports:layby', 'reports:quotes', 'reports:onaccount', 'reports:cashup', 'reports:operating',

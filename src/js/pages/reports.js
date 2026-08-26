@@ -109,8 +109,15 @@ const ReportsPage = {
         data = res.data || [];
         title = 'Cashier Report';
         filename = `cashier-report-${from}.pdf`;
-        headers = ['Cashier', 'Sales Count', 'Total'];
-        rows = data.map(c => [c.full_name, String(c.sales_count), Utils.formatMoney(c.total, currency)]);
+        headers = ['Cashier', 'Username', 'Sales Count', 'Subtotal', 'Tax', 'Total'];
+        rows = data.map(c => [
+          c.full_name,
+          c.username || '—',
+          String(c.sales_count),
+          Utils.formatMoney(c.subtotal || 0, currency),
+          Utils.formatMoney(c.tax_total || 0, currency),
+          Utils.formatMoney(c.total, currency)
+        ]);
         break;
       }
       case 'product': {

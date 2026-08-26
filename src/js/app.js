@@ -140,23 +140,39 @@ const App = {
 
       // Dedicated apps: skip admin welcome/setup — go straight to that app's login
       if (mode === 'staff') {
-        await this.ensureSettingsLoaded();
         this.hideMobileLoading();
+        this.ensureSettingsLoaded().catch(() => {});
         await this.openStaffPortal();
         return;
       }
       if (mode === 'marketing') {
-        await this.ensureSettingsLoaded();
         this.hideMobileLoading();
+        this.ensureSettingsLoaded().catch(() => {});
         await this.openMarketingAgentLogin();
         return;
       }
       if (mode === 'recipe') {
-        await this.ensureSettingsLoaded();
         this.hideMobileLoading();
+        this.ensureSettingsLoaded().catch(() => {});
         await this.openRecipeProduction();
         return;
       }
+
+      // POS-only installer: show login immediately (no setup / welcome delay)
+      if (mode === 'pos') {
+        this.hideMobileLoading();
+        this.showScreen('login');
+        this.startLoginOperatingTimer?.();
+        this.ensureSettingsLoaded().then(() => {
+          this.applyTheme?.();
+          this.updateBranding?.();
+        }).catch(() => {});
+        return;
+      }
+
+      // Show Sign in ASAP — load settings in background (don't block login UI)
+      this.hideMobileLoading();
+      this.showWelcome({ shopReady: true, status: 'Loading shop…' });
 
       // Prefer adopting existing business before deciding setup vs login
       try {
@@ -188,12 +204,12 @@ const App = {
         this.showWelcome({
           status: res.error || 'Could not reach the shop database yet. You can still try Sign in or Set up.'
         });
-        this.hideMobileLoading();
         return;
       }
       this.settings = res.data;
       this.applyTheme();
-      await this.syncDeviceSettings();
+      // Device sync can wait — don't block Sign in
+      this.syncDeviceSettings().catch(() => {});
 
       if (!Number(this.settings?.setup_complete)) {
         let existing = null;
@@ -208,17 +224,14 @@ const App = {
           if (Number(this.settings?.setup_complete)) {
             this.updateBranding();
             this.showWelcome({ shopReady: true });
-            this.hideMobileLoading();
             return;
           }
         }
         this.showWelcome({ needsSetup: true });
-        this.hideMobileLoading();
         return;
       }
       this.updateBranding();
       this.showWelcome({ shopReady: true });
-      this.hideMobileLoading();
     } catch (err) {
       console.error('App init failed:', err);
       this.showMobileError(err.message || 'Could not start Shop POS');
@@ -864,12 +877,32 @@ const App = {
       ...(this._lazyScripts[page] || [])
     ];
     const failures = [];
-    await Promise.all(scripts.map(async (src) => {
-      try { await Utils.loadScript(src); } catch (err) {
+    // Load in order — Admin extenders (admin-audit, admin-pro, …) must run AFTER admin.js
+    for (const src of scripts) {
+      try {
+        await Utils.loadScript(src);
+      } catch (err) {
         failures.push(src);
         console.warn('Lazy script load failed:', src, err?.message || err);
       }
-    }));
+    }
+
+    // If Admin extenders ran too early on a previous visit, force-reload them once
+    if (page === 'admin' && window.AdminPage && !AdminPage.sections?.some((s) => s.id === 'salesmgmt')) {
+      const extenders = scripts.filter((s) => /\/admin-(pro|audit|staff|hr|operations|combos|quotes|payroll|employee-month|recruitment|marketing)\.js$/i.test(s));
+      for (const src of extenders) {
+        try {
+          Utils._loadedScripts?.delete?.(src);
+          document.querySelector(`script[src="${src}"]`)?.remove();
+          document.querySelector(`script[src$="/${src}"]`)?.remove();
+          await Utils.loadScript(src);
+        } catch (err) {
+          failures.push(src);
+          console.warn('Admin extender reload failed:', src, err?.message || err);
+        }
+      }
+    }
+
     this.bindPageModule(page);
     if (page === 'staff' && failures.length && !window.StaffPage?.renderWorkerPanel) {
       throw new Error('Staff portal modules failed to load');
@@ -920,11 +953,17 @@ const App = {
       (this.user?.full_name || '') + ' · ' + (this.user?.role || '');
 
     const preferredCustom = this.settings?.customization?.default_home_page;
-    const preferred = preferredCustom
-      || (['cashier', 'supervisor', 'assistant_manager'].includes(this.user.role) ? 'pos' : 'dashboard');
+    const preferred = (this.appMode() === 'pos')
+      ? 'pos'
+      : (preferredCustom
+        || (['cashier', 'supervisor', 'assistant_manager'].includes(this.user.role) ? 'pos' : 'dashboard'));
     const startPage = Utils.canAccess(this.user, preferred)
       ? preferred
       : (this.navItems.map(n => n.id).find(id => Utils.canAccess(this.user, id)) || 'pos');
+    // Hide back-to-welcome on POS-only builds
+    if (this.appMode() === 'pos') {
+      document.getElementById('login-back-welcome')?.classList.add('hidden');
+    }
     // Navigate ASAP — do not wait for timers / sync / notifications
     await this.navigate(startPage);
 
@@ -1100,6 +1139,9 @@ const App = {
         AdminPage.refreshAdminNav();
       }
       await pageModule.render(host, this);
+      if (page === 'admin' && typeof AdminPage !== 'undefined' && typeof AdminPage.refreshAdminNav === 'function') {
+        AdminPage.refreshAdminNav(host);
+      }
     } catch (err) {
       if (navGen !== this._navGen) return;
       host.innerHTML = `<p class="error-msg">${Utils.escHtml(err?.message || 'Page failed to load')}</p>`;
@@ -2192,7 +2234,19 @@ const App = {
 window.App = App;
 
 function bootApp() {
-  App.init().catch(err => App.showMobileError?.(err.message) || console.error(err));
+  const start = () => {
+    if (window.__SHOP_POS_BOOTED__) return;
+    window.__SHOP_POS_BOOTED__ = true;
+    App.init().catch(err => App.showMobileError?.(err.message) || console.error(err));
+  };
+  // Android: wait for local DB / posAPI before first screen
+  const native = !!(window.__SHOP_POS_MOBILE__ || window.__SHOP_POS_LOCAL_INSTALLER__ || window.Capacitor?.isNativePlatform?.());
+  if (native && !window.posAPI) {
+    window.addEventListener('posAPIReady', start, { once: true });
+    setTimeout(start, 8000);
+    return;
+  }
+  start();
 }
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', bootApp);

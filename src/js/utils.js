@@ -252,6 +252,15 @@ const Utils = {
 
   canAccess(user, page) {
     if (!user) return false;
+    // POS-only installer: till + cash-up only (any role that can sell)
+    if (typeof window !== 'undefined' && window.__SHOP_POS_APP_MODE__ === 'pos') {
+      if (page !== 'pos' && page !== 'operations') return false;
+      if (user.role === 'owner' || user.role === 'manager' || user.role === 'cashier' ||
+          user.role === 'supervisor' || user.role === 'assistant_manager') {
+        return page === 'pos' || (page === 'operations' && user.role !== 'cashier');
+      }
+      return false;
+    }
     if (page === 'admin') return Utils.canAccessAdmin(user);
     if (user.role === 'owner') return true;
     if (user.role === 'marketing_agent') return page === 'marketing' || page === 'document-hub';
@@ -283,14 +292,14 @@ const Utils = {
   /** Owner-only admin sidebar sections — hidden from manager/supervisor search & nav */
   adminOwnerOnlySections: new Set([
     'backup', 'payroll', 'database', 'developer', 'automation',
-    'customfields', 'formats', 'importexport', 'branches', 'tax', 'device', 'customer-rewards',
+    'customfields', 'formats', 'importexport', 'branches', 'device', 'customer-rewards',
     'analytics'
   ]),
 
   /** Sections managers/supervisors should always see when they have admin access */
   adminManagerSections: new Set([
     'overview', 'staffhr', 'staffportal', 'hrcontracts', 'recruitment', 'marketing-mgmt', 'employee-of-month', 'opscompliance', 'combos',
-    'quotes', 'approvals', 'recipe'
+    'quotes', 'approvals', 'recipe', 'tax', 'tax-hub', 'cashiers', 'permissions'
   ]),
 
   canAccessAdmin(user) {

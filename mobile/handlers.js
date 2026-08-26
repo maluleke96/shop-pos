@@ -479,7 +479,8 @@ function buildHandlers(store) {
 
   add('reports:sales', wrapSync((f, t) => { requireSession(); return s.getSalesReport(f, t); }));
   add('reports:profit', wrapSync((f, t) => { requireSession(); return s.getProfitReport(f, t); }));
-  add('reports:cashier', wrapSync((f, t) => { requireSession(); return s.getCashierReport(f, t); }));
+  add('reports:cashier', wrapSync((f, t, userId) => { requireSession(); return s.getCashierReport(f, t, userId); }));
+  add('reports:cashierDetail', wrapSync((f, t, userId) => { requireSession(); return s.getCashierSalesDetail(f, t, userId); }));
   add('reports:product', wrapSync((f, t) => { requireSession(); return s.getProductReport(f, t); }));
   add('reports:stock', wrapSync(() => { requireSession(); return s.getStockReport(); }));
   add('reports:expenses', wrapSync((f, t) => { requireSession(); return s.getExpenses({ from: f, to: t }); }));

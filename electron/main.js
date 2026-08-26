@@ -94,6 +94,7 @@ process.env.SHOP_POS_LOCAL_INSTALLER = '1';
 
 const TITLES = {
   admin: 'Shop POS Admin',
+  pos: 'Shop POS',
   staff: 'Staff Portal',
   marketing: 'Marketing Agent',
   recipe: 'Recipe & Production'
@@ -115,7 +116,7 @@ function createWindow() {
     show: false
   });
 
-  mainWindow.loadFile(path.join(__dirname, '../src/index.html'), { query: { app: MODE === 'admin' ? 'admin' : MODE } });
+  mainWindow.loadFile(path.join(__dirname, '../src/index.html'), { query: { app: MODE || 'admin' } });
   mainWindow.once('ready-to-show', () => {
     mainWindow.show();
     if (!process.env.SHOP_POS_APP_MODE) mainWindow.setFullScreen(true);
@@ -492,7 +493,8 @@ function registerIpc() {
   }));
   ipcMain.handle('reports:sales', wrap((from, to) => { requireSession(); return store.getSalesReport(from, to); }));
   ipcMain.handle('reports:profit', wrap((from, to) => { requireSession(); return store.getProfitReport(from, to); }));
-  ipcMain.handle('reports:cashier', wrap((from, to) => { requireSession(); return store.getCashierReport(from, to); }));
+  ipcMain.handle('reports:cashier', wrap((from, to, userId) => { requireSession(); return store.getCashierReport(from, to, userId); }));
+  ipcMain.handle('reports:cashierDetail', wrap((from, to, userId) => { requireSession(); return store.getCashierSalesDetail(from, to, userId); }));
   ipcMain.handle('reports:product', wrap((from, to) => { requireSession(); return store.getProductReport(from, to); }));
   ipcMain.handle('reports:stock', wrap(() => { requireSession(); return store.getStockReport(); }));
   ipcMain.handle('reports:expenses', wrap((from, to) => { requireSession(); return store.getExpenses({ from, to }); }));

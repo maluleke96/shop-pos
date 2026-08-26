@@ -106,12 +106,12 @@ const UsersPage = {
           <input type="password" id="uf-pin" maxlength="6" inputmode="numeric" placeholder="6-digit PIN"></div>
         <div class="field"><label>Role</label>
           <select id="uf-role">
-            <option value="owner" ${user?.role === 'owner' ? 'selected' : ''}>Owner</option>
+            ${app.user?.role === 'owner' ? `<option value="owner" ${user?.role === 'owner' ? 'selected' : ''}>Owner</option>` : ''}
             <option value="manager" ${user?.role === 'manager' ? 'selected' : ''}>Manager</option>
             <option value="assistant_manager" ${user?.role === 'assistant_manager' ? 'selected' : ''}>Assistant Manager</option>
             <option value="supervisor" ${user?.role === 'supervisor' ? 'selected' : ''}>Supervisor</option>
             <option value="marketing_agent" ${user?.role === 'marketing_agent' ? 'selected' : ''}>Marketing Agent</option>
-            <option value="cashier" ${user?.role === 'cashier' ? 'selected' : ''} ${!user && app.user?.role !== 'owner' ? 'disabled' : ''}>Cashier</option>
+            <option value="cashier" ${user?.role === 'cashier' ? 'selected' : ''}>Cashier</option>
           </select></div>
         <div class="field"><label>Branch</label>
           <select id="uf-branch">

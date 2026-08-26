@@ -522,6 +522,13 @@ function seedInstallerAccountFromCloud(payload = {}) {
 
   // Align catalog with cloud shop when local is empty or was a different / placeholder shop
   try {
+    if (payload.skipCatalog) {
+      audit(null, username, 'seed_installer_from_cloud', 'user', null, {
+        username, role, shop_name: patch.shop_name || settings.shop_name || null, skipCatalog: true
+      });
+      return { success: true, username, shop_name: patch.shop_name || settings.shop_name || null };
+    }
+
     const cloudName = String(patch.shop_name || settings.shop_name || '').trim();
     const localNameBefore = String(before?.shop_name || '').trim();
     const needCatalog =
@@ -656,8 +663,11 @@ async function factoryResetBusiness(recoverySecret, confirmText) {
 const VALID_USER_ROLES = ['owner', 'manager', 'assistant_manager', 'supervisor', 'marketing_agent', 'cashier'];
 
 function createUser(data, actorId, actorName) {
-  requireActor({ id: actorId }, ['owner']);
+  const actor = requireActor({ id: actorId }, ['owner', 'manager']);
   if (!VALID_USER_ROLES.includes(data.role)) throw new Error('Invalid role');
+  if (data.role === 'owner' && actor.role !== 'owner') {
+    throw new Error('Only the owner can create owner accounts');
+  }
   if (!data.password || data.password.length < 6) throw new Error('Password must be at least 6 characters');
   const hash = bcrypt.hashSync(data.password, 10);
   const pinHash = data.pin ? hashPin(data.pin) : null;
@@ -670,10 +680,13 @@ function createUser(data, actorId, actorName) {
 }
 
 function updateUser(id, data, actorId, actorName) {
-  requireActor({ id: actorId }, ['owner']);
+  const actor = requireActor({ id: actorId }, ['owner', 'manager']);
   const userId = Number(id);
   const existing = getDb().prepare('SELECT id, role, is_active FROM users WHERE id = ?').get(userId);
   if (!existing) throw new Error('User not found');
+  if (actor.role === 'manager' && existing.role === 'owner') {
+    throw new Error('Managers cannot edit owner accounts');
+  }
   const fields = [];
   const values = [];
   if (data.full_name) { fields.push('full_name = ?'); values.push(data.full_name.trim()); }
@@ -684,6 +697,9 @@ function updateUser(id, data, actorId, actorName) {
   }
   if (data.role) {
     if (!VALID_USER_ROLES.includes(data.role)) throw new Error('Invalid role');
+    if (data.role === 'owner' && actor.role !== 'owner') {
+      throw new Error('Only the owner can assign the owner role');
+    }
     if (existing.role === 'owner' && data.role !== 'owner') {
       const owners = getDb().prepare(`SELECT COUNT(*) AS c FROM users WHERE role = 'owner' AND is_active = 1 AND id != ?`).get(userId).c;
       if (owners < 1) throw new Error('Cannot change role — at least one active owner is required');
@@ -810,7 +826,7 @@ function getUsers() {
 const SHOP_SETTING_FIELDS = [
   'shop_name', 'logo_path', 'address', 'phone', 'email', 'website', 'currency', 'currency_name',
   'decimal_places', 'thousands_sep', 'receipt_footer', 'thank_you_message', 'return_policy',
-  'social_media', 'vat_number', 'tax_rate', 'tax_enabled', 'tax_inclusive', 'receipt_width',
+  'social_media', 'vat_number', 'tax_rate', 'tax_enabled', 'tax_inclusive', 'tax_show_on_pos', 'receipt_width',
   'theme', 'language', 'business_type', 'setup_complete', 'license_expiry', 'last_backup',
   'printer_settings', 'receipt_design', 'security_settings', 'customization',
   'device_settings', 'discount_settings', 'backup_settings', 'loyalty_settings',
@@ -2662,28 +2678,76 @@ function getPurchaseOrder(id) {
   return { ...po, items };
 }
 
+function calcPurchaseLineTax(qty, buyingPrice, taxRate, taxEnabled, inclusive) {
+  const line = Math.round((Number(qty) || 0) * (Number(buyingPrice) || 0) * 100) / 100;
+  if (!taxEnabled || !(Number(taxRate) > 0)) {
+    return { lineExcl: line, tax: 0, lineTotal: line };
+  }
+  const rate = Number(taxRate) || 0;
+  if (inclusive) {
+    const tax = Math.round((line - line / (1 + rate / 100)) * 100) / 100;
+    return { lineExcl: Math.round((line - tax) * 100) / 100, tax, lineTotal: line };
+  }
+  const tax = Math.round(line * rate / 100 * 100) / 100;
+  return { lineExcl: line, tax, lineTotal: Math.round((line + tax) * 100) / 100 };
+}
+
 function savePurchaseOrder(data, actorId, actorName) {
   const db = getDb();
   const poNumber = nextPONumber();
+  const settings = getSettings() || {};
+  const taxEnabled = !!(settings.tax_enabled || data.tax_enabled);
+  const taxRate = taxEnabled ? (Number(data.tax_rate != null ? data.tax_rate : settings.tax_rate) || 0) : 0;
+  const inclusive = data.tax_inclusive != null
+    ? !!(data.tax_inclusive)
+    : (settings.tax_inclusive !== false && settings.tax_inclusive !== 0 && settings.tax_inclusive !== '0');
   const txn = db.transaction(() => {
-    const total = data.items.reduce((s, i) => s + i.total, 0);
-    const r = db.prepare(`
-      INSERT INTO purchase_orders (po_number, supplier_id, user_id, total, status, receiving_date, notes)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(poNumber, data.supplier_id, actorId, total, data.status || 'pending', data.receiving_date, data.notes);
+    let subtotal = 0;
+    let taxAmount = 0;
+    let total = 0;
+    const pricedItems = (data.items || []).map((item) => {
+      const br = calcPurchaseLineTax(item.quantity, item.buying_price, taxRate, taxEnabled, inclusive);
+      subtotal += br.lineExcl;
+      taxAmount += br.tax;
+      total += br.lineTotal;
+      return { ...item, total: br.lineTotal, tax_amount: br.tax };
+    });
+    subtotal = Math.round(subtotal * 100) / 100;
+    taxAmount = Math.round(taxAmount * 100) / 100;
+    total = Math.round(total * 100) / 100;
 
-    for (const item of data.items) {
-      db.prepare(`
-        INSERT INTO purchase_order_items (purchase_order_id, product_id, product_name, quantity, buying_price, total)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `).run(r.lastInsertRowid, item.product_id, item.product_name, item.quantity, item.buying_price, item.total);
+    let r;
+    try {
+      r = db.prepare(`
+        INSERT INTO purchase_orders (po_number, supplier_id, user_id, total, status, receiving_date, notes, subtotal, tax_amount, tax_rate)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(poNumber, data.supplier_id, actorId, total, data.status || 'pending', data.receiving_date, data.notes, subtotal, taxAmount, taxRate);
+    } catch (_) {
+      r = db.prepare(`
+        INSERT INTO purchase_orders (po_number, supplier_id, user_id, total, status, receiving_date, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(poNumber, data.supplier_id, actorId, total, data.status || 'pending', data.receiving_date, data.notes);
+    }
+
+    for (const item of pricedItems) {
+      try {
+        db.prepare(`
+          INSERT INTO purchase_order_items (purchase_order_id, product_id, product_name, quantity, buying_price, total, tax_amount)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `).run(r.lastInsertRowid, item.product_id, item.product_name, item.quantity, item.buying_price, item.total, item.tax_amount || 0);
+      } catch (_) {
+        db.prepare(`
+          INSERT INTO purchase_order_items (purchase_order_id, product_id, product_name, quantity, buying_price, total)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `).run(r.lastInsertRowid, item.product_id, item.product_name, item.quantity, item.buying_price, item.total);
+      }
 
       if (data.status === 'received' && item.product_id) {
         adjustStock(item.product_id, item.quantity, 'purchase', `PO ${poNumber}`, actorId, 'purchase_order', r.lastInsertRowid);
         db.prepare('UPDATE products SET buying_price = ? WHERE id = ?').run(item.buying_price, item.product_id);
       }
     }
-    return { id: r.lastInsertRowid, po_number: poNumber };
+    return { id: r.lastInsertRowid, po_number: poNumber, subtotal, tax_amount: taxAmount, total };
   });
   const result = txn();
   audit(actorId, actorName, 'create_purchase_order', 'purchase_order', result.id, { po_number: result.po_number });
@@ -3303,13 +3367,36 @@ function getProfitReport(from, to) {
   `).all(from, to);
 }
 
-function getCashierReport(from, to) {
+function getCashierReport(from, to, userId) {
+  const params = [from, to];
+  let filter = '';
+  if (userId != null && userId !== '' && Number(userId) > 0) {
+    filter = ' AND s.user_id = ?';
+    params.push(Number(userId));
+  }
   return getDb().prepare(`
-    SELECT u.full_name, COUNT(s.id) as sales_count, SUM(s.total) as total
+    SELECT u.id as user_id, u.full_name, u.username, u.role,
+      COUNT(s.id) as sales_count,
+      COALESCE(SUM(s.total), 0) as total,
+      COALESCE(SUM(s.subtotal), 0) as subtotal,
+      COALESCE(SUM(s.tax_amount), 0) as tax_total,
+      COALESCE(SUM(s.discount), 0) as discount_total
     FROM sales s JOIN users u ON s.user_id = u.id
-    WHERE date(s.created_at, 'localtime') BETWEEN ? AND ? AND ${SALE_REVENUE_STATUSES_SQL}
+    WHERE date(s.created_at, 'localtime') BETWEEN ? AND ? AND ${SALE_REVENUE_STATUSES_SQL}${filter}
     GROUP BY s.user_id ORDER BY total DESC
-  `).all(from, to);
+  `).all(...params);
+}
+
+function getCashierSalesDetail(from, to, userId) {
+  if (!userId) return [];
+  return getDb().prepare(`
+    SELECT s.id, s.receipt_number, s.created_at, s.subtotal, s.tax_amount, s.discount, s.total, s.status,
+      s.payment_method
+    FROM sales s
+    WHERE s.user_id = ? AND date(s.created_at, 'localtime') BETWEEN ? AND ? AND ${SALE_REVENUE_STATUSES_SQL}
+    ORDER BY s.created_at DESC
+    LIMIT 500
+  `).all(Number(userId), from, to);
 }
 
 function getProductReport(from, to) {
@@ -3634,7 +3721,7 @@ module.exports = {
   getSuppliers, saveSupplier, recordSupplierPayment, getSupplierPayments,
   getPurchaseOrders, getPurchaseOrder, savePurchaseOrder, receivePurchaseOrder,
   getDashboardStats, getInventoryStats, getSalesAnalytics,
-  getSalesReport, getProfitReport, getCashierReport, getProductReport, getStockReport,
+  getSalesReport, getProfitReport, getCashierReport, getCashierSalesDetail, getProductReport, getStockReport,
   openShift, closeShift, getShiftClosePreview, getShifts, getOpenShift, getSalesTargets, saveSalesTargets,
   recordCashDrop, getCashDrops, confirmCashDrop,
   getShiftSettings, saveShiftSettings, roleRequiresShift, enforceShiftCashoutDeadlines, createCashUp,

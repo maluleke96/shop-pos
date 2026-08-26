@@ -1254,7 +1254,11 @@ const POSPage = {
     }
     const grossSubtotal = this.cart.reduce((s, i) => s + i.total, 0);
     const totals = Utils.calcTaxTotals(grossSubtotal, this.app.settings, this.discount);
-    const taxEnabled = !!this.app.settings?.tax_enabled && totals.tax > 0;
+    const taxEnabled = !!this.app.settings?.tax_enabled &&
+      this.app.settings?.tax_show_on_pos !== 0 &&
+      this.app.settings?.tax_show_on_pos !== false &&
+      this.app.settings?.tax_show_on_pos !== '0' &&
+      totals.tax > 0;
     const taxRatePct = totals.taxRate || 0;
 
     const subtotalRow = document.getElementById('cart-subtotal');

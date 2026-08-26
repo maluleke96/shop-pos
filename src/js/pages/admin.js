@@ -14,6 +14,8 @@ const AdminPage = {
     { id: 'top-customers', label: '⭐ Top Customers', icon: 'customers' },
     { id: 'approvals', label: '✅ Settings Approvals', icon: 'approvals' },
     { id: 'tax', label: '💰 Tax & Currency', icon: 'tax' },
+    { id: 'tax-hub', label: '📊 Tax Calculations', icon: 'tax' },
+    { id: 'cashiers', label: '🧑‍💼 Cashiers & Managers', icon: 'permissions' },
     { id: 'shifts', label: '⏱️ Shift Management', icon: 'shifts' },
     { id: 'operating', label: '🕐 Operating Hours', icon: 'operating' },
     { id: 'cashdrawer', label: '💵 Cash Drawer', icon: 'cashdrawer' },
@@ -144,6 +146,8 @@ const AdminPage = {
       'top-customers': () => this.renderTopCustomers(el),
       approvals: () => this.renderSettingsApprovals(el),
       tax: () => this.renderTaxCurrency(el),
+      'tax-hub': () => this.renderTaxHub(el),
+      cashiers: () => this.renderCashiersPanel(el),
       shifts: () => this.renderShifts(el),
       operating: () => this.renderOperatingHours(el),
       cashdrawer: () => this.renderCashDrawer(el),
@@ -1165,9 +1169,12 @@ const AdminPage = {
 
   renderTaxCurrency(el) {
     const s = this.settings;
+    const showOnPos = s.tax_show_on_pos !== 0 && s.tax_show_on_pos !== false && s.tax_show_on_pos !== '0';
     el.innerHTML = `<div class="admin-section"><h3>Tax & Currency Settings</h3>
+      <p class="muted">Turn tax on for sales and stock purchases. Choose whether it appears on the POS screen and receipts.</p>
       <div class="card"><div class="card-body"><div class="form-grid">
-        <div class="field"><label><input type="checkbox" id="tax-enabled" ${s.tax_enabled?'checked':''}> Enable VAT/Tax</label></div>
+        <div class="field"><label><input type="checkbox" id="tax-enabled" ${s.tax_enabled?'checked':''}> Enable VAT/Tax (calculate on sales &amp; purchases)</label></div>
+        <div class="field"><label><input type="checkbox" id="tax-show-pos" ${showOnPos?'checked':''}> Show tax on POS &amp; receipts</label></div>
         <div class="field"><label>VAT Percentage</label><input type="number" id="tax-rate" step="0.1" value="${s.tax_rate||0}"></div>
         <div class="field"><label><input type="checkbox" id="tax-inclusive" ${s.tax_inclusive?'checked':''}> Tax inclusive pricing</label></div>
         <div class="field"><label>VAT Number</label><input id="vat-num" value="${s.vat_number||''}"></div>
@@ -1180,11 +1187,13 @@ const AdminPage = {
           <option value="." ${s.thousands_sep==='.'?'selected':''}>Period (.)</option></select></div>
       </div>
       <button class="btn btn-primary" id="save-tax" style="margin-top:16px">Save Tax & Currency</button>
+      <p class="muted" style="margin-top:12px">See <strong>Tax Calculations</strong> for sales VAT, purchase VAT, and bookkeeping link.</p>
       </div></div></div>`;
 
     document.getElementById('save-tax').addEventListener('click', async () => {
       const patch = {
         tax_enabled: document.getElementById('tax-enabled').checked ? 1 : 0,
+        tax_show_on_pos: document.getElementById('tax-show-pos').checked ? 1 : 0,
         tax_rate: parseFloat(document.getElementById('tax-rate').value) || 0,
         tax_inclusive: document.getElementById('tax-inclusive').checked ? 1 : 0,
         vat_number: document.getElementById('vat-num').value.trim(),
@@ -1194,10 +1203,136 @@ const AdminPage = {
         thousands_sep: document.getElementById('cur-sep').value
       };
       await API.saveSettings(patch, this.app.user);
+      // Keep bookkeeping VAT in sync
+      try {
+        const bk = await API.getBookkeepingSettings();
+        const cur = bk.data || {};
+        await API.saveBookkeepingSettings({
+          ...cur,
+          vat_rate: patch.tax_rate,
+          vat_registered: patch.tax_enabled ? 1 : 0
+        }, this.app.user);
+      } catch (_) { /* ignore */ }
       this.settings = { ...this.settings, ...patch };
       if (this.app) this.app.settings = { ...this.app.settings, ...patch };
-      Utils.toast('Tax & currency saved', 'success');
+      Utils.toast('Tax & currency saved (linked to bookkeeping)', 'success');
     });
+  },
+
+  async renderTaxHub(el) {
+    const currency = this.settings?.currency || 'R';
+    const from = this._taxFrom || Utils.daysAgo(30);
+    const to = this._taxTo || Utils.today();
+    el.innerHTML = `<div class="admin-section"><h3>Tax Calculations</h3>
+      <p class="muted">Output VAT (sales), input VAT (stock purchases), and net VAT — same figures as Bookkeeping tax report.</p>
+      <div class="page-toolbar" style="gap:8px;flex-wrap:wrap">
+        <input type="date" id="tax-hub-from" value="${from}">
+        <input type="date" id="tax-hub-to" value="${to}">
+        <button class="btn btn-ghost" id="tax-hub-refresh">Refresh</button>
+        <button class="btn btn-ghost" id="tax-hub-bookkeeping">Open Bookkeeping</button>
+      </div>
+      <div id="tax-hub-body"><p class="muted">Loading…</p></div>
+    </div>`;
+
+    const load = async () => {
+      this._taxFrom = document.getElementById('tax-hub-from').value;
+      this._taxTo = document.getElementById('tax-hub-to').value;
+      const body = document.getElementById('tax-hub-body');
+      const [taxRes, setRes] = await Promise.all([
+        API.getTaxSummary(this._taxFrom, this._taxTo),
+        Promise.resolve({ data: this.settings })
+      ]);
+      if (!taxRes.success) {
+        body.innerHTML = `<p class="error-msg">${Utils.escHtml(taxRes.error || 'Failed to load')}</p>`;
+        return;
+      }
+      const t = taxRes.data || {};
+      const s = setRes.data || this.settings || {};
+      body.innerHTML = `
+        <div class="stats-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin:12px 0">
+          <div class="card"><div class="card-body"><div class="muted">Tax on POS</div><strong>${s.tax_enabled && (s.tax_show_on_pos !== 0 && s.tax_show_on_pos !== false) ? 'Shown' : 'Hidden'}</strong></div></div>
+          <div class="card"><div class="card-body"><div class="muted">VAT rate</div><strong>${t.vatRate || s.tax_rate || 0}%</strong></div></div>
+          <div class="card"><div class="card-body"><div class="muted">Sales (gross)</div><strong>${Utils.formatMoney(t.taxableSales || 0, currency)}</strong></div></div>
+          <div class="card"><div class="card-body"><div class="muted">Output VAT (sales)</div><strong>${Utils.formatMoney(t.outputVat ?? t.vat ?? 0, currency)}</strong></div></div>
+          <div class="card"><div class="card-body"><div class="muted">Input VAT (purchases)</div><strong>${Utils.formatMoney(t.inputVat || 0, currency)}</strong></div></div>
+          <div class="card"><div class="card-body"><div class="muted">Net VAT</div><strong>${Utils.formatMoney(t.netVat != null ? t.netVat : ((t.outputVat ?? t.vat ?? 0) - (t.inputVat || 0)), currency)}</strong></div></div>
+        </div>
+        <div class="card"><div class="card-body">
+          <h4 style="margin:0 0 8px">How it works</h4>
+          <ul class="muted" style="margin:0;padding-left:18px">
+            <li>Sales: tax is calculated at checkout when VAT is enabled.</li>
+            <li>Purchases: tax is calculated on purchase orders when you buy stock.</li>
+            <li>Bookkeeping uses these same totals for the tax report.</li>
+          </ul>
+        </div></div>`;
+    };
+
+    document.getElementById('tax-hub-refresh')?.addEventListener('click', load);
+    document.getElementById('tax-hub-bookkeeping')?.addEventListener('click', () => {
+      this.app?.navigate?.('bookkeeping');
+    });
+    await load();
+  },
+
+  async renderCashiersPanel(el) {
+    const currency = this.settings?.currency || 'R';
+    const from = this._cashierFrom || Utils.daysAgo(7);
+    const to = this._cashierTo || Utils.today();
+    el.innerHTML = `<div class="admin-section"><h3>Cashiers &amp; Managers</h3>
+      <p class="muted">Create multiple managers and cashiers under <strong>Users</strong>. Here you see each cashier’s sales for the period.</p>
+      <div class="page-toolbar" style="gap:8px;flex-wrap:wrap">
+        <input type="date" id="cash-from" value="${from}">
+        <input type="date" id="cash-to" value="${to}">
+        <button class="btn btn-ghost" id="cash-refresh">Refresh</button>
+        <button class="btn btn-primary" id="cash-goto-users">Manage users</button>
+      </div>
+      <div class="card"><div class="table-wrap"><table>
+        <thead><tr><th>Name</th><th>Username</th><th>Role</th><th>Sales</th><th>Subtotal</th><th>Tax</th><th>Total</th><th></th></tr></thead>
+        <tbody id="cash-tbody"><tr><td colspan="8" class="muted">Loading…</td></tr></tbody>
+      </table></div></div>
+      <div id="cash-detail" style="margin-top:16px"></div>
+    </div>`;
+
+    const load = async () => {
+      this._cashierFrom = document.getElementById('cash-from').value;
+      this._cashierTo = document.getElementById('cash-to').value;
+      const res = await API.getCashierReport(this._cashierFrom, this._cashierTo);
+      const rows = res.data || [];
+      document.getElementById('cash-tbody').innerHTML = rows.map(c => `<tr>
+        <td>${Utils.escHtml(c.full_name || '—')}</td>
+        <td>${Utils.escHtml(c.username || '—')}</td>
+        <td>${Utils.roleTag?.(c.role) || c.role || '—'}</td>
+        <td>${c.sales_count || 0}</td>
+        <td>${Utils.formatMoney(c.subtotal || 0, currency)}</td>
+        <td>${Utils.formatMoney(c.tax_total || 0, currency)}</td>
+        <td><strong>${Utils.formatMoney(c.total || 0, currency)}</strong></td>
+        <td><button class="btn btn-sm btn-ghost cash-drill" data-id="${c.user_id}" data-name="${Utils.escHtml(c.full_name || '')}">Details</button></td>
+      </tr>`).join('') || '<tr><td colspan="8" class="muted">No cashier sales in this period</td></tr>';
+
+      document.querySelectorAll('.cash-drill').forEach(btn => btn.addEventListener('click', async () => {
+        const id = parseInt(btn.dataset.id, 10);
+        const detail = document.getElementById('cash-detail');
+        detail.innerHTML = `<p class="muted">Loading sales for ${btn.dataset.name}…</p>`;
+        const dRes = await API.getCashierSalesDetail(this._cashierFrom, this._cashierTo, id);
+        const sales = dRes.data || [];
+        detail.innerHTML = `<h4>${Utils.escHtml(btn.dataset.name)} — sales</h4>
+          <div class="card"><div class="table-wrap"><table>
+            <thead><tr><th>Receipt</th><th>Date</th><th>Subtotal</th><th>Tax</th><th>Total</th><th>Pay</th></tr></thead>
+            <tbody>${sales.map(s => `<tr>
+              <td>${Utils.escHtml(s.receipt_number || '—')}</td>
+              <td>${Utils.formatDateTime(s.created_at)}</td>
+              <td>${Utils.formatMoney(s.subtotal || 0, currency)}</td>
+              <td>${Utils.formatMoney(s.tax_amount || 0, currency)}</td>
+              <td>${Utils.formatMoney(s.total || 0, currency)}</td>
+              <td>${Utils.escHtml(s.payment_method || '—')}</td>
+            </tr>`).join('') || '<tr><td colspan="6" class="muted">No sales</td></tr>'}</tbody>
+          </table></div></div>`;
+      }));
+    };
+
+    document.getElementById('cash-refresh')?.addEventListener('click', load);
+    document.getElementById('cash-goto-users')?.addEventListener('click', () => this.app?.navigate?.('users'));
+    await load();
   },
 
   async renderSalesTargets(el) {

@@ -1,12 +1,13 @@
 /**
- * Windows / Android installers: local SQLite first.
- * If login fails locally, authenticate against the Railway shop (Supabase Postgres)
- * and seed the local account so the same username/password works offline next time.
- * Recovery phrase also falls back to the online shop.
+ * Windows / Android installers: local SQLite first (fast login).
+ * If login fails locally, authenticate against the Railway shop and seed
+ * the local account so the same username/password works offline next time.
+ * Catalog sync runs in the background after login succeeds.
  */
 (function () {
   const DEFAULT_CLOUD = 'https://peaceful-motivation-production-7dd2.up.railway.app';
   const TOKEN_KEY = 'shoppos_sync_session';
+  const RPC_TIMEOUT_MS = 8000;
   const WRITE_RE = /^(auth_|sales_|stock_|products_|categories_|customers_|suppliers_|po_|returns_|expenses_|shifts_|staff_|recipe_|hr_|payroll_|held_|quotes_|layby_|giftcards_|waste_|cashup_|combos_|settings_save|settings_saveJson|ops_|salaryClaims_)/;
 
   function isBrowserCloud() {
@@ -44,20 +45,28 @@
     try { window.ShopPosConnection?.set?.(state, detail); } catch (_) { /* ignore */ }
   }
 
-  async function sendRpc(method, args) {
+  async function sendRpc(method, args, timeoutMs) {
     const headers = { 'Content-Type': 'application/json' };
     if (sessionToken) headers['X-Session-Token'] = sessionToken;
-    const r = await fetch(rpcUrl(), {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ method, args: args || [] })
-    });
-    const tok = r.headers.get('X-Session-Token');
-    if (tok) {
-      sessionToken = tok;
-      try { localStorage.setItem(TOKEN_KEY, tok); } catch (_) { /* ignore */ }
+    const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const ms = timeoutMs != null ? timeoutMs : RPC_TIMEOUT_MS;
+    const timer = ctrl ? setTimeout(() => ctrl.abort(), ms) : null;
+    try {
+      const r = await fetch(rpcUrl(), {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ method, args: args || [] }),
+        signal: ctrl?.signal
+      });
+      const tok = r.headers.get('X-Session-Token');
+      if (tok) {
+        sessionToken = tok;
+        try { localStorage.setItem(TOKEN_KEY, tok); } catch (_) { /* ignore */ }
+      }
+      return r.json();
+    } finally {
+      if (timer) clearTimeout(timer);
     }
-    return r.json();
   }
 
   function unwrap(res) {
@@ -80,7 +89,8 @@
     return u.user || u.data?.user || null;
   }
 
-  async function seedLocalFromCloud(username, password, pin, cloudUser) {
+  async function fetchShopCatalog(opts = {}) {
+    const skipCatalog = !!opts.skipCatalog;
     let settings = {};
     let categories = [];
     let products = [];
@@ -88,16 +98,25 @@
       const sRes = unwrap(await sendRpc('settings_getParsed', []));
       if (sRes && sRes.success !== false) settings = sRes.data || sRes || {};
     } catch (_) { /* ignore */ }
-    try {
-      const cRes = unwrap(await sendRpc('categories_get', [{}]));
-      if (Array.isArray(cRes)) categories = cRes;
-      else if (Array.isArray(cRes?.data)) categories = cRes.data;
-    } catch (_) { /* ignore */ }
-    try {
-      const pRes = unwrap(await sendRpc('products_get', [{}]));
-      if (Array.isArray(pRes)) products = pRes;
-      else if (Array.isArray(pRes?.data)) products = pRes.data;
-    } catch (_) { /* ignore */ }
+    if (!skipCatalog) {
+      try {
+        const [cRaw, pRaw] = await Promise.all([
+          sendRpc('categories_get', [{}]),
+          sendRpc('products_get', [{}])
+        ]);
+        const cRes = unwrap(cRaw);
+        const pRes = unwrap(pRaw);
+        if (Array.isArray(cRes)) categories = cRes;
+        else if (Array.isArray(cRes?.data)) categories = cRes.data;
+        if (Array.isArray(pRes)) products = pRes;
+        else if (Array.isArray(pRes?.data)) products = pRes.data;
+      } catch (_) { /* ignore */ }
+    }
+    return { settings, categories, products };
+  }
+
+  async function seedLocalFromCloud(username, password, pin, cloudUser, opts = {}) {
+    const { settings, categories, products } = await fetchShopCatalog(opts);
     const api = window.posAPI;
     if (!api || typeof api.auth_seedInstallerAccount !== 'function') return false;
     const seed = await api.auth_seedInstallerAccount({
@@ -107,9 +126,28 @@
       cloudUser: cloudUser || {},
       settings,
       categories,
-      products
+      products,
+      skipCatalog: !!opts.skipCatalog
     });
     return seed && seed.success !== false;
+  }
+
+  function scheduleCatalogSync(username, password, pin, cloudUser) {
+    const run = async () => {
+      try {
+        setConn('syncing', 'Syncing catalog…');
+        await seedLocalFromCloud(username, password, pin, cloudUser, { skipCatalog: false });
+        setConn('online', 'Online');
+      } catch (e) {
+        console.warn('[installer-sync] catalog', e);
+        setConn(navigator.onLine === false ? 'offline' : 'online');
+      }
+    };
+    if (typeof requestIdleCallback === 'function') {
+      requestIdleCallback(() => { run(); }, { timeout: 2500 });
+    } else {
+      setTimeout(run, 400);
+    }
   }
 
   async function flushQueue() {
@@ -157,35 +195,44 @@
       if (key === 'auth_login') {
         api[prop] = async function (...args) {
           const [username, password, pin] = args;
-          // Cloud-first when online — same credentials must open the online shop
-          if (navigator.onLine !== false) {
-            setConn('syncing', 'Signing in to online shop…');
-            try {
-              const cloudRaw = await sendRpc(key, args);
-              const cloud = unwrap(cloudRaw);
-              if (loginOk(cloud)) {
-                const user = loginUser(cloud);
-                await seedLocalFromCloud(username, password, pin, user);
-                const again = await orig.apply(this, args);
-                setConn('online', 'Online');
-                if (loginOk(again)) return { ...again, cloudLinked: true };
-                return { success: true, user, cloudLinked: true };
-              }
-              // Online rejected credentials — try local only (pure offline shop)
-              setConn('online', 'Online');
-              const localFail = await orig.apply(this, args);
-              return cloud.error ? cloud : localFail;
-            } catch (e) {
+
+          // Fast path: local SQLite first (no network wait)
+          let local = null;
+          try {
+            local = await orig.apply(this, args);
+            if (loginOk(local)) {
               setConn(navigator.onLine === false ? 'offline' : 'online');
-              // Network error — fall back to local
-              const local = await orig.apply(this, args);
-              if (loginOk(local)) return local;
-              return local.error
-                ? local
-                : { success: false, error: e.message || 'Could not reach online shop' };
+              return local;
             }
+          } catch (e) {
+            local = { success: false, error: e.message || 'Local login failed' };
           }
-          return orig.apply(this, args);
+
+          if (navigator.onLine === false) return local;
+
+          // Online fallback — seed account quickly, catalog in background
+          setConn('syncing', 'Signing in…');
+          try {
+            const cloudRaw = await sendRpc(key, args, RPC_TIMEOUT_MS);
+            const cloud = unwrap(cloudRaw);
+            if (loginOk(cloud)) {
+              const user = loginUser(cloud);
+              await seedLocalFromCloud(username, password, pin, user, { skipCatalog: true });
+              const again = await orig.apply(this, args);
+              setConn('online', 'Online');
+              scheduleCatalogSync(username, password, pin, user);
+              if (loginOk(again)) return { ...again, cloudLinked: true };
+              return { success: true, user, cloudLinked: true };
+            }
+            setConn('online', 'Online');
+            return cloud.error ? cloud : local;
+          } catch (e) {
+            setConn(navigator.onLine === false ? 'offline' : 'online');
+            if (loginOk(local)) return local;
+            return local?.error
+              ? local
+              : { success: false, error: e.message || 'Could not reach online shop' };
+          }
         };
         return;
       }
@@ -235,7 +282,7 @@
             const cloud = unwrap(await sendRpc(key, args));
             if (cloud && cloud.success !== false) {
               try {
-                await seedLocalFromCloud(username, newPassword, null, { username, role: 'owner', full_name: username });
+                await seedLocalFromCloud(username, newPassword, null, { username, role: 'owner', full_name: username }, { skipCatalog: true });
               } catch (_) { /* ignore */ }
               return cloud.data != null ? { success: true, data: cloud.data, fromCloud: true } : cloud;
             }

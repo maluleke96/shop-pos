@@ -459,14 +459,57 @@ function getTaxSummary(from, to) {
   syncLedger(from, to);
   const db = getDb();
   const settings = getBookkeepingSettings();
-  const sales = db.prepare(`SELECT COALESCE(SUM(total),0) as v FROM sales WHERE status='completed' AND date(created_at) BETWEEN date(?) AND date(?)`).get(from, to)?.v || 0;
-  const vatRate = settings.vat_rate || 15;
-  const vatOnSales = settings.vat_registered ? sales * vatRate / (100 + vatRate) : 0;
+  const shop = (() => {
+    try {
+      return db.prepare('SELECT tax_enabled, tax_rate, tax_inclusive, vat_number FROM shop_settings WHERE id = 1').get() || {};
+    } catch (_) {
+      return {};
+    }
+  })();
+  const vatRate = Number(settings.vat_rate) || Number(shop.tax_rate) || 15;
+  const vatRegistered = settings.vat_registered != null
+    ? !!settings.vat_registered
+    : !!(shop.tax_enabled);
+
+  const salesRow = db.prepare(`
+    SELECT COALESCE(SUM(total),0) as sales,
+      COALESCE(SUM(tax_amount),0) as output_vat,
+      COALESCE(SUM(subtotal),0) as excl
+    FROM sales WHERE status='completed' AND date(created_at) BETWEEN date(?) AND date(?)
+  `).get(from, to) || {};
+
+  let outputVat = Number(salesRow.output_vat) || 0;
+  const sales = Number(salesRow.sales) || 0;
+  if (vatRegistered && !outputVat && sales) {
+    outputVat = sales * vatRate / (100 + vatRate);
+  }
+
+  let inputVat = 0;
+  try {
+    inputVat = db.prepare(`
+      SELECT COALESCE(SUM(tax_amount),0) as v FROM purchase_orders
+      WHERE status IN ('received','partial') AND date(COALESCE(receiving_date, created_at)) BETWEEN date(?) AND date(?)
+    `).get(from, to)?.v || 0;
+  } catch (_) {
+    inputVat = 0;
+  }
+
   const paye = db.prepare(`SELECT COALESCE(SUM(paye),0) as v FROM employee_payroll WHERE date(period_end) BETWEEN date(?) AND date(?)`).get(from, to)?.v || 0;
   const uif = db.prepare(`SELECT COALESCE(SUM(uif_employee+uif_employer),0) as v FROM employee_payroll WHERE date(period_end) BETWEEN date(?) AND date(?)`).get(from, to)?.v || 0;
   const sdl = db.prepare(`SELECT COALESCE(SUM(sdl),0) as v FROM employee_payroll WHERE date(period_end) BETWEEN date(?) AND date(?)`).get(from, to)?.v || 0;
   const coida = db.prepare(`SELECT COALESCE(SUM(coida),0) as v FROM employee_payroll WHERE date(period_end) BETWEEN date(?) AND date(?)`).get(from, to)?.v || 0;
-  return { vat: vatOnSales, paye, uif, sdl, coida, vatRate, vatRegistered: !!settings.vat_registered, taxableSales: sales };
+  const netVat = Math.round((outputVat - inputVat) * 100) / 100;
+  return {
+    vat: outputVat,
+    outputVat,
+    inputVat,
+    netVat,
+    paye, uif, sdl, coida,
+    vatRate,
+    vatRegistered,
+    taxableSales: sales,
+    salesExcl: Number(salesRow.excl) || 0
+  };
 }
 
 function getFinancialReport(type, from, to) {

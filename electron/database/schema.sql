@@ -197,6 +197,9 @@ CREATE TABLE IF NOT EXISTS purchase_orders (
   supplier_id INTEGER REFERENCES suppliers(id),
   user_id INTEGER REFERENCES users(id),
   total REAL DEFAULT 0,
+  subtotal REAL DEFAULT 0,
+  tax_amount REAL DEFAULT 0,
+  tax_rate REAL DEFAULT 0,
   status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'partial', 'received', 'cancelled')),
   receiving_date TEXT,
   notes TEXT,
@@ -210,7 +213,8 @@ CREATE TABLE IF NOT EXISTS purchase_order_items (
   product_name TEXT NOT NULL,
   quantity REAL NOT NULL,
   buying_price REAL NOT NULL,
-  total REAL NOT NULL
+  total REAL NOT NULL,
+  tax_amount REAL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS audit_log (

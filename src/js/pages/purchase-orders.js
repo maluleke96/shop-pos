@@ -78,6 +78,10 @@ const PurchaseOrdersPage = {
   },
 
   showForm() {
+    const s = this.app.settings || {};
+    const taxOn = !!s.tax_enabled;
+    const taxRate = taxOn ? (Number(s.tax_rate) || 0) : 0;
+    const currency = this.app.settings?.currency || 'R';
     const supOpts = this.suppliers.map(s => `<option value="${s.id}">${s.name}</option>`).join('');
     const prodOpts = this.products.map(p => `<option value="${p.id}" data-price="${p.buying_price}">${p.name}</option>`).join('');
     Utils.showModal('New Purchase Order', `
@@ -87,6 +91,7 @@ const PurchaseOrdersPage = {
         <div class="field"><label>Quantity</label><input type="number" id="po-qty" value="1" min="1"></div>
         <div class="field"><label>Buying Price</label><input type="number" id="po-price" step="0.01"></div>
       </div>
+      ${taxOn ? `<p class="muted" id="po-tax-hint">VAT ${taxRate}% will be calculated on this purchase (linked to Tax Calculations / Bookkeeping).</p>` : ''}
       <div class="field"><label><input type="checkbox" id="po-receive"> Receive immediately (add to stock)</label></div>`,
       '<button class="btn btn-primary" id="save-po">Create Order</button>');
 
@@ -101,15 +106,19 @@ const PurchaseOrdersPage = {
       const prod = this.products.find(p => p.id == prodSelect.value);
       const qty = parseFloat(document.getElementById('po-qty').value) || 1;
       const price = parseFloat(document.getElementById('po-price').value) || 0;
+      const line = qty * price;
       const res = await API.savePurchaseOrder({
         supplier_id: parseInt(document.getElementById('po-supplier').value) || null,
         status: document.getElementById('po-receive').checked ? 'received' : 'pending',
-        items: [{ product_id: prod.id, product_name: prod.name, quantity: qty, buying_price: price, total: qty * price }]
+        items: [{ product_id: prod.id, product_name: prod.name, quantity: qty, buying_price: price, total: line }]
       }, this.app.user);
       if (!res.success) return Utils.toast(res.error || 'Save failed', 'error');
       Utils.hideModal();
       PurchaseOrdersPage.render(document.getElementById('page-content'), this.app);
-      Utils.toast('Purchase order created', 'success');
+      const taxMsg = taxOn && res.data?.tax_amount
+        ? ` (incl. ${Utils.formatMoney(res.data.tax_amount, currency)} VAT)`
+        : '';
+      Utils.toast('Purchase order created' + taxMsg, 'success');
     });
   },
 
