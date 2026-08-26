@@ -802,3 +802,50 @@ body.capacitor-android .rp-sidebar { transition: none !important; }
   .flyer-studio-layout { grid-template-columns: 1fr; }
   .flyer-studio-sidebar { max-height: none; }
 }
+
+/* POS-only installer: full-screen till — no sidebar / topbar / ops chrome */
+html.pos-kiosk #sidebar,
+html.pos-kiosk .sidebar,
+html.pos-kiosk .sidebar-backdrop,
+html.pos-kiosk .topbar,
+html.pos-kiosk .operating-banner,
+html.pos-kiosk #btn-sidebar-toggle,
+html.pos-kiosk #btn-nav-back {
+  display: none !important;
+}
+html.pos-kiosk #screen-app {
+  display: flex !important;
+  flex-direction: column;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+}
+html.pos-kiosk #screen-app.hidden { display: none !important; }
+html.pos-kiosk .main-content {
+  width: 100%;
+  max-width: none;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+html.pos-kiosk .page-content {
+  padding: 0;
+  height: 100%;
+  overflow: hidden;
+}
+html.pos-kiosk .page-hosts,
+html.pos-kiosk .page-host {
+  height: 100%;
+}
+html.pos-kiosk .pos-layout {
+  height: 100vh;
+  height: 100dvh;
+  gap: 0;
+  margin: 0;
+}
+html.pos-kiosk .pos-success-screen {
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+html.pos-kiosk #login-back-welcome { display: none !important; }
+

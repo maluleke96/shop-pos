@@ -36,4 +36,8 @@
 
   window.__SHOP_POS_APP_MODE__ = mode;
   document.documentElement.dataset.appMode = mode;
+  if (mode === 'pos') {
+    document.documentElement.classList.add('pos-kiosk');
+    document.body?.classList?.add('pos-kiosk');
+  }
 })();

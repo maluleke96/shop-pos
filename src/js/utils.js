@@ -252,14 +252,9 @@ const Utils = {
 
   canAccess(user, page) {
     if (!user) return false;
-    // POS-only installer: till + cash-up only (any role that can sell)
+    // POS-only installer: till screen only — no sidebar pages, no cash-up/ops
     if (typeof window !== 'undefined' && window.__SHOP_POS_APP_MODE__ === 'pos') {
-      if (page !== 'pos' && page !== 'operations') return false;
-      if (user.role === 'owner' || user.role === 'manager' || user.role === 'cashier' ||
-          user.role === 'supervisor' || user.role === 'assistant_manager') {
-        return page === 'pos' || (page === 'operations' && user.role !== 'cashier');
-      }
-      return false;
+      return page === 'pos' && ['owner', 'manager', 'cashier', 'supervisor', 'assistant_manager'].includes(user.role);
     }
     if (page === 'admin') return Utils.canAccessAdmin(user);
     if (user.role === 'owner') return true;

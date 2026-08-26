@@ -44,44 +44,64 @@ const POSPage = {
       device_settings: Utils.mergeDeviceSettings(this.app.settings)
     };
     const branchId = app.user?.branch_id || undefined;
-    const isMobile = !!(window.__SHOP_POS_MOBILE__ || Utils.isNative?.());
+    const isKiosk = !!(window.__SHOP_POS_APP_MODE__ === 'pos' || app.isPosKiosk?.());
 
     this.shiftSettings = app.settings?.shift_settings || this.shiftSettings || {
       required_roles: ['cashier', 'manager', 'assistant_manager', 'owner']
     };
 
-    // Show shift gate BEFORE painting the till UI
-    el.innerHTML = `<div class="pos-shift-wait" style="padding:48px 24px;text-align:center;max-width:480px;margin:40px auto">
-      <p style="font-size:16px;margin:0 0 8px">Checking your shift…</p>
-      <p class="muted" style="margin:0">Please wait</p>
-    </div>`;
+    // Paint till immediately — never block on "Checking your shift…"
+    this.categories = this.categories || [];
+    this.products = this.products || [];
+    this.combos = this.combos || [];
+    this.salesTargets = this.salesTargets || { daily: { amount: 0, active: false } };
+    this.activeCampaigns = this.activeCampaigns || [];
+    this.renderLayout(el);
+    this.bindEvents(el);
+    if (isKiosk) this.ensureKioskLogout(el);
 
-    try {
-      const [shiftSettingsRes, shiftRes] = await Promise.all([
-        API.getShiftSettings().catch(() => ({ success: false })),
-        API.getOpenShift(app.user)
-      ]);
-      if (shiftSettingsRes.success) {
-        this.shiftSettings = shiftSettingsRes.data || this.shiftSettings;
-      }
-      this.openShift = shiftRes.data || null;
-    } catch (_) { /* keep defaults */ }
+    const filters = { for_pos: true };
+    const shiftP = Promise.all([
+      API.getShiftSettings().catch(() => ({ success: false })),
+      API.getOpenShift(app.user).catch(() => ({ success: false, data: null }))
+    ]);
+    const catalogP = Promise.all([
+      API.getCategories(filters),
+      API.getProducts(filters)
+    ]);
 
-    const enforceCashout = async () => {
-      try {
-        const hadShift = !!this.openShift;
-        const enforced = await API.enforceCashoutDeadlines();
+    const [[shiftSettingsRes, shiftRes], [catRes, prodRes]] = await Promise.all([shiftP, catalogP]);
+    if (shiftSettingsRes.success) {
+      this.shiftSettings = shiftSettingsRes.data || this.shiftSettings;
+    }
+    this.openShift = shiftRes?.data || null;
+    this.categories = catRes.data || [];
+    this.products = prodRes.data || [];
+    this.rebuildProductLookups();
+
+    // Refresh product grid with real catalog
+    const tabs = document.getElementById('pos-categories');
+    if (tabs) {
+      tabs.innerHTML = `
+        <button class="cat-tab active" data-cat="">All</button>
+        <button class="cat-tab" data-cat="__available_today" style="border-color:#2dd4bf">Available Today</button>
+        <button class="cat-tab" data-cat="__new_arrival" style="border-color:#38bdf8">New Arrival</button>
+        <button class="cat-tab" data-cat="__best_seller" style="border-color:#fbbf24">Best Seller</button>
+        ${this.categories.map(c => `<button class="cat-tab" data-cat="${c.id}" style="border-color:${c.color}">
+          ${c.image_path ? `<img ${Utils.cachedImageAttr(c.image_path)} class="cat-tab-img" alt="">` : ''}${c.name}</button>`).join('')}`;
+    }
+    this.renderProducts(document.getElementById('pos-search')?.value || '');
+    this.renderCart?.();
+
+    setTimeout(() => {
+      API.enforceCashoutDeadlines().then(async (enforced) => {
         if (enforced.success && enforced.data?.closed > 0) {
           const refreshed = await API.getOpenShift(app.user);
           this.openShift = refreshed.data || null;
           Utils.toast(`Auto-closed ${enforced.data.closed} shift(s) past cash-out deadline`, 'info');
-          if (hadShift && !this.openShift && this.requiresShift()) {
-            Utils.toast('Your shift was closed by deadline — open a new shift to keep selling', 'warning');
-          }
         }
-      } catch (_) { /* ignore */ }
-    };
-    setTimeout(() => enforceCashout(), 0);
+      }).catch(() => {});
+    }, 0);
 
     if (this.requiresShift()) {
       if (this.openShift) {
@@ -91,36 +111,21 @@ const POSPage = {
       }
     }
 
-    const filters = { for_pos: true };
-    const [catRes, prodRes] = await Promise.all([
-      API.getCategories(filters),
-      API.getProducts(filters)
-    ]);
-    this.categories = catRes.data || [];
-    this.products = prodRes.data || [];
-    this.combos = this.combos || [];
-    this.salesTargets = this.salesTargets || { daily: { amount: 0, active: false } };
-    this.activeCampaigns = this.activeCampaigns || [];
-    this.rebuildProductLookups();
-
-    this.renderLayout(el);
-    this.bindEvents(el);
-
-    const secondary = Promise.all([
+    // Secondary data — don't block selling
+    Promise.all([
       API.getActiveCombos(branchId ? { branch_id: branchId } : {}).catch(() => ({ success: false, data: [] })),
       API.getSalesTargets().catch(() => ({ success: false })),
       API.getActiveCampaigns(app.user?.branch_id).catch(() => ({ success: false }))
-    ]);
-
-    const [comboRes, targetsRes, campRes] = await secondary;
-    this.combos = comboRes.data || [];
-    this.salesTargets = targetsRes.success ? (targetsRes.data || { daily: { amount: 0, active: false } }) : { daily: { amount: 0, active: false } };
-    this.activeCampaigns = campRes.success ? (campRes.data || []) : [];
-    const tabs = document.getElementById('pos-categories');
-    if (tabs && this.combos.length && !tabs.querySelector('[data-cat="combos"]')) {
-      const best = tabs.querySelector('[data-cat="__best_seller"]');
-      best?.insertAdjacentHTML('afterend', '<button class="cat-tab" data-cat="combos" style="border-color:#e11d48">🎁 COMBOS</button>');
-    }
+    ]).then(([comboRes, targetsRes, campRes]) => {
+      this.combos = comboRes.data || [];
+      this.salesTargets = targetsRes.success ? (targetsRes.data || { daily: { amount: 0, active: false } }) : { daily: { amount: 0, active: false } };
+      this.activeCampaigns = campRes.success ? (campRes.data || []) : [];
+      const catTabs = document.getElementById('pos-categories');
+      if (catTabs && this.combos.length && !catTabs.querySelector('[data-cat="combos"]')) {
+        const best = catTabs.querySelector('[data-cat="__best_seller"]');
+        best?.insertAdjacentHTML('afterend', '<button class="cat-tab" data-cat="combos" style="border-color:#e11d48">🎁 COMBOS</button>');
+      }
+    });
 
     if (pendingQuote?.status === 'open' && pendingQuote.items?.length) {
       this.loadQuoteIntoCart(pendingQuote);
@@ -133,6 +138,20 @@ const POSPage = {
     if (scanEnabled && ds.scanner_auto_mode !== false) this.toggleScanMode(true);
     if (ss.type === 'camera') this._preferCameraScan = true;
     await this.updateShiftBar();
+  },
+
+  ensureKioskLogout(el) {
+    if (window.__SHOP_POS_APP_MODE__ !== 'pos') return;
+    const bar = el.querySelector('.pos-toolbar') || el.querySelector('#pos-shift-bar');
+    if (!bar || el.querySelector('#pos-kiosk-logout')) return;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.id = 'pos-kiosk-logout';
+    btn.className = 'btn btn-ghost btn-sm';
+    btn.textContent = 'Logout';
+    btn.title = 'Sign out';
+    btn.addEventListener('click', () => this.app?.logout?.());
+    (el.querySelector('.pos-toolbar') || bar).appendChild(btn);
   },
 
   /** Keep-alive revisit: preserve cart, refresh catalog/shift in background. */

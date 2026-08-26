@@ -115,6 +115,37 @@ const App = {
     return window.__SHOP_POS_APP_MODE__ || 'admin';
   },
 
+  isPosKiosk() {
+    return this.appMode() === 'pos';
+  },
+
+  applyPosKioskChrome() {
+    const on = this.isPosKiosk();
+    document.documentElement.classList.toggle('pos-kiosk', on);
+    document.body.classList.toggle('pos-kiosk', on);
+    if (on) {
+      document.getElementById('login-back-welcome')?.classList.add('hidden');
+      this.closeSidebar?.();
+    }
+  },
+
+  /** Warm page scripts while user is still on login (faster after Sign In). */
+  prefetchLoginScripts() {
+    if (this._loginPrefetchStarted) return;
+    this._loginPrefetchStarted = true;
+    const mode = this.appMode();
+    const pages = mode === 'pos'
+      ? ['pos']
+      : mode === 'admin'
+        ? ['pos', 'dashboard']
+        : [];
+    const run = () => {
+      pages.forEach((p, i) => setTimeout(() => this.ensurePageScripts(p).catch(() => {}), i * 80));
+    };
+    if (typeof requestIdleCallback === 'function') requestIdleCallback(run, { timeout: 1200 });
+    else setTimeout(run, 200);
+  },
+
   async ensureSettingsLoaded() {
     if (this.settings && Number(this.settings.setup_complete) !== undefined) return this.settings;
     try {
@@ -160,9 +191,11 @@ const App = {
 
       // POS-only installer: show login immediately (no setup / welcome delay)
       if (mode === 'pos') {
+        this.applyPosKioskChrome();
         this.hideMobileLoading();
         this.showScreen('login');
         this.startLoginOperatingTimer?.();
+        this.prefetchLoginScripts();
         this.ensureSettingsLoaded().then(() => {
           this.applyTheme?.();
           this.updateBranding?.();
@@ -173,6 +206,7 @@ const App = {
       // Show Sign in ASAP — load settings in background (don't block login UI)
       this.hideMobileLoading();
       this.showWelcome({ shopReady: true, status: 'Loading shop…' });
+      this.prefetchLoginScripts();
 
       // Prefer adopting existing business before deciding setup vs login
       try {
@@ -296,6 +330,7 @@ const App = {
     document.getElementById('welcome-signin')?.addEventListener('click', () => {
       this.showScreen('login');
       this.startLoginOperatingTimer();
+      this.prefetchLoginScripts();
     });
     document.getElementById('welcome-setup')?.addEventListener('click', () => {
       this.showScreen('setup');
@@ -672,14 +707,16 @@ const App = {
       errEl.classList.add('hidden');
       this.user = user;
       this.user.is_active = 1;
-      // Reload settings after login — installers may have just seeded the online shop
-      this.settings = null;
+      // Keep existing settings — do NOT clear (was forcing a slow reload after every login)
       try { window.DataCache?.invalidate?.(); } catch (_) { /* ignore */ }
-      // Immediate UI — enterApp continues without waiting on non-critical work
+      this.applyPosKioskChrome();
       this.showScreen('app');
-      document.getElementById('sidebar-user-role').textContent =
-        (this.user.full_name || '') + ' · ' + (this.user.role || '');
-      this.renderNav();
+      if (!this.isPosKiosk()) {
+        document.getElementById('sidebar-user-role').textContent =
+          (this.user.full_name || '') + ' · ' + (this.user.role || '');
+        this.renderNav();
+      }
+      // Enter without blocking the Sign In button on non-critical work
       await this.enterApp();
     } finally {
       if (btn) { btn.disabled = false; btn.textContent = btn.dataset.prev || 'Sign In'; }
@@ -935,9 +972,19 @@ const App = {
   async enterApp() {
     const isMobile = !!(window.__SHOP_POS_MOBILE__ || Utils.isNative?.());
     this.stopLoginOperatingTimer();
+    this.applyPosKioskChrome();
 
-    // Settings first (needed for branding) — reuse cache from init/login
-    await this.ensureSettingsLoaded();
+    // Settings: don't block POS/admin entry if we already have them
+    if (!this.settings) {
+      const settingsP = this.ensureSettingsLoaded();
+      // Cap wait so a slow RPC never freezes the till
+      await Promise.race([
+        settingsP,
+        new Promise((r) => setTimeout(r, this.isPosKiosk() ? 400 : 900))
+      ]);
+    } else {
+      this.ensureSettingsLoaded().catch(() => {});
+    }
     this.updateBranding();
     this.applyTheme();
 
@@ -948,46 +995,49 @@ const App = {
     }
 
     this.showScreen('app');
-    this.renderNav();
-    document.getElementById('sidebar-user-role').textContent =
-      (this.user?.full_name || '') + ' · ' + (this.user?.role || '');
+    if (!this.isPosKiosk()) {
+      this.renderNav();
+      document.getElementById('sidebar-user-role').textContent =
+        (this.user?.full_name || '') + ' · ' + (this.user?.role || '');
+    }
 
     const preferredCustom = this.settings?.customization?.default_home_page;
-    const preferred = (this.appMode() === 'pos')
+    const preferred = this.isPosKiosk()
       ? 'pos'
       : (preferredCustom
         || (['cashier', 'supervisor', 'assistant_manager'].includes(this.user.role) ? 'pos' : 'dashboard'));
     const startPage = Utils.canAccess(this.user, preferred)
       ? preferred
       : (this.navItems.map(n => n.id).find(id => Utils.canAccess(this.user, id)) || 'pos');
-    // Hide back-to-welcome on POS-only builds
-    if (this.appMode() === 'pos') {
-      document.getElementById('login-back-welcome')?.classList.add('hidden');
-    }
+
     // Navigate ASAP — do not wait for timers / sync / notifications
     await this.navigate(startPage);
 
-    // Background startup (never block UI)
+    // Background startup (never block UI) — lighter on POS kiosk
     const bg = async () => {
-      try {
-        const br = await API.getActiveBranch();
-        if (br.success && br.data) {
-          this.activeBranch = br.data;
-          document.getElementById('sidebar-user-role').textContent =
-            this.user.full_name + ' · ' + this.user.role + ' · ' + this.activeBranch.name;
-        }
-      } catch { /* ignore */ }
+      if (!this.isPosKiosk()) {
+        try {
+          const br = await API.getActiveBranch();
+          if (br.success && br.data) {
+            this.activeBranch = br.data;
+            document.getElementById('sidebar-user-role').textContent =
+              this.user.full_name + ' · ' + this.user.role + ' · ' + this.activeBranch.name;
+          }
+        } catch { /* ignore */ }
+      }
       try { await API.logOperatingEvent('open', this.user); } catch { /* ignore */ }
-      try { await API.ensureDemoNotificationSound(); } catch { /* ignore */ }
-      this.startOperatingTimer();
+      if (!this.isPosKiosk()) {
+        try { await API.ensureDemoNotificationSound(); } catch { /* ignore */ }
+        this.startOperatingTimer();
+        this.startNotificationSoundMonitor();
+        this.startNotificationRefresh();
+        this.startScheduledDocMonitor();
+        this.loadNotifications();
+        this.runDeferredStartup();
+      }
       this.startAutoLogoutTimer();
-      this.startNotificationSoundMonitor();
       this.startSyncMonitor();
       this.startSessionMonitor();
-      this.startNotificationRefresh();
-      this.startScheduledDocMonitor();
-      this.loadNotifications();
-      this.runDeferredStartup();
     };
     if (isMobile) setTimeout(bg, 0);
     else requestIdleCallback?.(() => bg(), { timeout: 1500 }) || setTimeout(bg, 100);
@@ -1121,8 +1171,8 @@ const App = {
       return;
     }
 
-    // First visit: skeleton shell immediately, then load
-    host.innerHTML = Utils.pageSkeleton();
+    // First visit: skeleton shell immediately, then load (POS paints its own shell — skip skeleton)
+    if (page !== 'pos') host.innerHTML = Utils.pageSkeleton();
     markVisible(false);
     content.dataset.loading = '1';
 

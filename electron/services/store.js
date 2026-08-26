@@ -276,11 +276,15 @@ function login(username, password, pin) {
   const shiftBlock = checkCashierShiftAccess(user);
   if (!shiftBlock.ok) return { success: false, error: shiftBlock.error };
 
-  audit(user.id, user.username, 'login', 'user', user.id, null);
-  try { staff.recordUserLoginEvent(user, 'login'); } catch (_) { /* ignore */ }
   const { password_hash, pin: _pin, ...safe } = user;
   session.setUserSession(safe);
   session.clearEmployeeSession();
+  // Audit after session is set — never block the login response
+  const defer = typeof setImmediate === 'function' ? setImmediate : (fn) => setTimeout(fn, 0);
+  defer(() => {
+    try { audit(user.id, user.username, 'login', 'user', user.id, null); } catch (_) { /* ignore */ }
+    try { staff.recordUserLoginEvent(user, 'login'); } catch (_) { /* ignore */ }
+  });
   return { success: true, user: safe };
 }
 

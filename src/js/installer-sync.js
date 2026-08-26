@@ -7,7 +7,7 @@
 (function () {
   const DEFAULT_CLOUD = 'https://peaceful-motivation-production-7dd2.up.railway.app';
   const TOKEN_KEY = 'shoppos_sync_session';
-  const RPC_TIMEOUT_MS = 8000;
+  const RPC_TIMEOUT_MS = 5000;
   const WRITE_RE = /^(auth_|sales_|stock_|products_|categories_|customers_|suppliers_|po_|returns_|expenses_|shifts_|staff_|recipe_|hr_|payroll_|held_|quotes_|layby_|giftcards_|waste_|cashup_|combos_|settings_save|settings_saveJson|ops_|salaryClaims_)/;
 
   function isBrowserCloud() {
