@@ -287,14 +287,14 @@ const Utils = {
   /** Owner-only admin sidebar sections — hidden from manager/supervisor search & nav */
   adminOwnerOnlySections: new Set([
     'backup', 'payroll', 'database', 'developer', 'automation',
-    'customfields', 'formats', 'importexport', 'branches', 'device', 'customer-rewards',
+    'customfields', 'formats', 'importexport', 'device', 'customer-rewards',
     'analytics'
   ]),
 
   /** Sections managers/supervisors should always see when they have admin access */
   adminManagerSections: new Set([
     'overview', 'staffhr', 'staffportal', 'hrcontracts', 'recruitment', 'marketing-mgmt', 'employee-of-month', 'opscompliance', 'combos',
-    'quotes', 'approvals', 'recipe', 'tax', 'tax-hub', 'cashiers', 'permissions'
+    'quotes', 'approvals', 'recipe', 'tax', 'tax-hub', 'cashiers', 'permissions', 'branches'
   ]),
 
   canAccessAdmin(user) {

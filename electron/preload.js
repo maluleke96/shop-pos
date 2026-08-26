@@ -191,7 +191,7 @@ const channels = [
   'documentHub:get', 'documentHub:getOne', 'documentHub:save', 'documentHub:delete',
   'documentHub:share', 'documentHub:exportStatus', 'documentHub:processScheduled', 'documentHub:syncFlyer',
   'rewards:getRules', 'rewards:saveRule', 'rewards:deleteRule',
-  'branches:get', 'branches:getActive', 'branches:save', 'branches:setActive',
+  'branches:get', 'branches:getActive', 'branches:getView', 'branches:setView', 'branches:save', 'branches:setActive', 'branches:saveSettings',
   'sync:getStatus', 'sync:saveSettings', 'sync:register', 'sync:now', 'sync:publishProducts',
   'sync:branchesToHub', 'sync:getOnlineOrders', 'sync:updateOnlineOrder', 'sync:acceptOnlineOrder',
   'tables:delete', 'reports:orderTypes', 'store:runStartupTasks', 'settings:saveKdsSound',

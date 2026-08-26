@@ -364,6 +364,14 @@ const App = {
     document.getElementById('sidebar-backdrop')?.addEventListener('click', () => this.closeSidebar());
     document.getElementById('global-search').addEventListener('input', (e) => this.handleSearchDebounced(e.target.value));
     document.getElementById('btn-notifications').addEventListener('click', () => this.showNotifications());
+    document.getElementById('global-branch-filter')?.addEventListener('change', async (e) => {
+      const val = e.target.value;
+      const r = await API.setViewBranch(val === 'all' ? null : val, this.user);
+      if (r && r.success === false) return Utils.toast(r.error || 'Could not switch branch', 'error');
+      this.viewBranchId = val === 'all' ? null : Number(val);
+      Utils.toast(val === 'all' ? 'Showing all branches' : 'Branch filter updated', 'success');
+      if (this.currentPage) this.navigate(this.currentPage);
+    });
 
     document.getElementById('sidebar-nav').addEventListener('click', (e) => {
       const btn = e.target.closest('.nav-btn');
@@ -999,6 +1007,7 @@ const App = {
       this.renderNav();
       document.getElementById('sidebar-user-role').textContent =
         (this.user?.full_name || '') + ' · ' + (this.user?.role || '');
+      this.refreshBranchSwitcher().catch(() => {});
     }
 
     const preferredCustom = this.settings?.customization?.default_home_page;
@@ -1068,6 +1077,34 @@ const App = {
   stopScheduledDocMonitor() {
     if (this._scheduledDocInterval) clearInterval(this._scheduledDocInterval);
     this._scheduledDocInterval = null;
+  },
+
+  async refreshBranchSwitcher() {
+    const sel = document.getElementById('global-branch-filter');
+    if (!sel) return;
+    const isOwner = this.user?.role === 'owner';
+    const wrap = sel.closest('.branch-switcher');
+    if (!isOwner && this.user?.role !== 'manager') {
+      wrap?.classList.add('hidden');
+      return;
+    }
+    wrap?.classList.remove('hidden');
+    try {
+      const [brRes, viewRes] = await Promise.all([API.getBranches(), API.getViewBranch?.() || Promise.resolve({})]);
+      const branches = brRes.data || [];
+      const view = viewRes.data || {};
+      const current = view.view_branch_id != null ? String(view.view_branch_id) : 'all';
+      this.viewBranchId = view.view_branch_id != null ? Number(view.view_branch_id) : null;
+      sel.innerHTML = `<option value="all">All branches</option>` +
+        branches.map((b) => `<option value="${b.id}">${Utils.escHtml(b.name)} (${Utils.escHtml(b.code || '')})</option>`).join('');
+      sel.value = current;
+      if (this.user?.role === 'manager' && this.user.branch_id) {
+        sel.value = String(this.user.branch_id);
+        sel.disabled = true;
+      } else {
+        sel.disabled = false;
+      }
+    } catch (_) { /* ignore */ }
   },
 
   renderNav() {

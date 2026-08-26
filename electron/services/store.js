@@ -673,20 +673,36 @@ function createUser(data, actorId, actorName) {
     throw new Error('Only the owner can create owner accounts');
   }
   if (!data.password || data.password.length < 6) throw new Error('Password must be at least 6 characters');
+  // Managers/supervisors/cashiers must belong to a branch; marketing agents may be shared (null)
+  let branchId = data.branch_id != null && data.branch_id !== '' ? Number(data.branch_id) : null;
+  if (['manager', 'supervisor', 'cashier', 'assistant_manager'].includes(data.role)) {
+    if (!branchId) {
+      if (actor.role === 'manager' && actor.branch_id) branchId = Number(actor.branch_id);
+      else throw new Error('Select a branch for this user');
+    }
+    if (actor.role === 'manager' && Number(actor.branch_id) !== Number(branchId)) {
+      throw new Error('Managers can only create staff for their own branch');
+    }
+    branchesSvc.assertBranchRoleSlot(data.role, branchId, null);
+  }
+  if (data.role === 'marketing_agent') {
+    // Shared across branches — branch_id optional
+    branchId = branchId || null;
+  }
   const hash = bcrypt.hashSync(data.password, 10);
   const pinHash = data.pin ? hashPin(data.pin) : null;
   const result = getDb().prepare(`
     INSERT INTO users (username, password_hash, pin, full_name, role, permissions, branch_id)
     VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(data.username, hash, pinHash, data.full_name, data.role, JSON.stringify(data.permissions || {}), data.branch_id || null);
-  audit(actorId, actorName, 'create_user', 'user', result.lastInsertRowid, { username: data.username, role: data.role });
+  `).run(data.username, hash, pinHash, data.full_name, data.role, JSON.stringify(data.permissions || {}), branchId);
+  audit(actorId, actorName, 'create_user', 'user', result.lastInsertRowid, { username: data.username, role: data.role, branch_id: branchId });
   return result.lastInsertRowid;
 }
 
 function updateUser(id, data, actorId, actorName) {
   const actor = requireActor({ id: actorId }, ['owner', 'manager']);
   const userId = Number(id);
-  const existing = getDb().prepare('SELECT id, role, is_active FROM users WHERE id = ?').get(userId);
+  const existing = getDb().prepare('SELECT id, role, is_active, branch_id FROM users WHERE id = ?').get(userId);
   if (!existing) throw new Error('User not found');
   if (actor.role === 'manager' && existing.role === 'owner') {
     throw new Error('Managers cannot edit owner accounts');
@@ -710,6 +726,18 @@ function updateUser(id, data, actorId, actorName) {
     }
     fields.push('role = ?'); values.push(data.role);
   }
+  const nextRole = data.role || existing.role;
+  let nextBranch = existing.branch_id;
+  if (data.branch_id !== undefined) {
+    nextBranch = data.branch_id || null;
+    fields.push('branch_id = ?'); values.push(nextBranch);
+  }
+  if (['manager', 'supervisor'].includes(nextRole) && nextBranch) {
+    branchesSvc.assertBranchRoleSlot(nextRole, nextBranch, userId);
+  }
+  if (['manager', 'supervisor', 'cashier', 'assistant_manager'].includes(nextRole) && !nextBranch) {
+    throw new Error('Select a branch for this user');
+  }
   if (data.clear_pin) {
     fields.push('pin = ?'); values.push(null);
   } else if (data.pin !== undefined && data.pin !== null && data.pin !== '') {
@@ -728,7 +756,6 @@ function updateUser(id, data, actorId, actorName) {
     fields.push('password_hash = ?'); values.push(bcrypt.hashSync(data.password, 10));
   }
   if (data.permissions) { fields.push('permissions = ?'); values.push(JSON.stringify(data.permissions)); }
-  if (data.branch_id !== undefined) { fields.push('branch_id = ?'); values.push(data.branch_id || null); }
   if (fields.length === 0) throw new Error('No changes to save');
   fields.push("updated_at = datetime('now')");
   values.push(userId);
@@ -1170,6 +1197,19 @@ function getProducts(filters = {}) {
     sql += ' AND COALESCE(p.show_on_pos, 1) = 1';
     sql += ' AND (c.id IS NULL OR COALESCE(c.show_on_pos, 1) = 1)';
   }
+  // Branch catalog: shared (NULL) + this branch's products
+  const scope = branchesSvc.resolveBranchScope(filters.actor || null, {
+    branchId: filters.branch_id,
+    forceTill: !!filters.for_pos
+  });
+  const branchForStock = scope.branchId || scope.tillId || 1;
+  if (!scope.allBranches && branchForStock) {
+    sql += ' AND (p.branch_id IS NULL OR p.branch_id = ?)';
+    params.push(branchForStock);
+  } else if (filters.branch_id != null && filters.branch_id !== '' && filters.branch_id !== 'all') {
+    sql += ' AND (p.branch_id IS NULL OR p.branch_id = ?)';
+    params.push(Number(filters.branch_id));
+  }
   if (filters.category_id) { sql += ' AND p.category_id = ?'; params.push(filters.category_id); }
   if (filters.search) {
     sql += ' AND (p.name LIKE ? OR p.barcode LIKE ? OR p.sku LIKE ?)';
@@ -1189,18 +1229,36 @@ function getProducts(filters = {}) {
       byProduct[m.product_id].push(m);
     }
   }
-  let enriched = products.map(p => ({
-    ...p,
-    modifiers: byProduct[p.id] || [],
-    options: (byProduct[p.id] || []).filter(m => m.modifier_type === 'option'),
-    extras: (byProduct[p.id] || []).filter(m => m.modifier_type === 'extra'),
-    removals: (byProduct[p.id] || []).filter(m => m.modifier_type === 'removal')
-  }));
+  // Overlay per-branch stock when branch_stock exists
+  let stockMap = {};
+  try {
+    if (products.length && branchForStock) {
+      const placeholders = products.map(() => '?').join(',');
+      const rows = getDb().prepare(`
+        SELECT product_id, quantity, min_stock FROM branch_stock
+        WHERE branch_id = ? AND product_id IN (${placeholders})
+      `).all(branchForStock, ...products.map((p) => p.id));
+      stockMap = Object.fromEntries(rows.map((r) => [r.product_id, r]));
+    }
+  } catch (_) { /* migration not applied yet */ }
+
+  let enriched = products.map(p => {
+    const bs = stockMap[p.id];
+    return {
+      ...p,
+      stock_quantity: bs ? Number(bs.quantity) : p.stock_quantity,
+      min_stock: bs && bs.min_stock != null ? Number(bs.min_stock) : p.min_stock,
+      branch_stock_id: branchForStock,
+      modifiers: byProduct[p.id] || [],
+      options: (byProduct[p.id] || []).filter(m => m.modifier_type === 'option'),
+      extras: (byProduct[p.id] || []).filter(m => m.modifier_type === 'extra'),
+      removals: (byProduct[p.id] || []).filter(m => m.modifier_type === 'removal')
+    };
+  });
   enriched = promoRequestsSvc.applyPromoPricesToProducts(enriched);
   try {
     enriched = require('./recipe-production').applyRecipePromoPricesToProducts(enriched);
   } catch (_) { /* ignore */ }
-  // POS sees meal production capacity (not raw ingredient / FG stock) for recipe products
   try {
     enriched = require('./production-availability').applyCapacityToProducts(enriched);
   } catch (_) { /* ignore */ }
@@ -1430,6 +1488,18 @@ function saveProduct(data, actorId, actorName) {
       auditSvc.logPriceChange(data.id, fields.name, existing.selling_price, fields.selling_price, actorId, actorName);
     }
     audit(actorId, actorName, 'update_product', 'product', data.id, { name: fields.name });
+    if (data.branch_id !== undefined) {
+      try {
+        getDb().prepare('UPDATE products SET branch_id = ? WHERE id = ?').run(data.branch_id || null, data.id);
+      } catch (_) { /* column may not exist */ }
+    }
+    if (data.stock_quantity !== undefined) {
+      try {
+        const scope = branchesSvc.resolveBranchScope({ id: actorId }, { forceTill: true });
+        branchesSvc.ensureBranchStockRow(data.id, scope.stampId);
+        branchesSvc.adjustBranchStock(data.id, data.stock_quantity, 'set', 'Product edit', actorId, 'product', data.id, scope.stampId);
+      } catch (_) { /* ignore */ }
+    }
     checkLowStock(data.id);
     return data.id;
   }
@@ -1507,6 +1577,18 @@ function saveProduct(data, actorId, actorName) {
   }
 
   audit(actorId, actorName, 'create_product', 'product', newId, { name: fields.name });
+  if (data.branch_id !== undefined) {
+    try {
+      getDb().prepare('UPDATE products SET branch_id = ? WHERE id = ?').run(data.branch_id || null, newId);
+    } catch (_) { /* ignore */ }
+  }
+  try {
+    const scope = branchesSvc.resolveBranchScope({ id: actorId }, { forceTill: true });
+    branchesSvc.ensureBranchStockRow(newId, scope.stampId);
+    if (fields.stock_quantity != null) {
+      branchesSvc.adjustBranchStock(newId, fields.stock_quantity, 'set', 'Product create', actorId, 'product', newId, scope.stampId);
+    }
+  } catch (_) { /* ignore */ }
   checkLowStock(newId);
   return newId;
 }
@@ -1675,7 +1757,25 @@ function createTestNotification() {
 
 // ─── Stock ──────────────────────────────────────────────────────────────────
 
-function adjustStock(productId, quantity, type, notes, userId, refType, refId) {
+function adjustStock(productId, quantity, type, notes, userId, refType, refId, branchId) {
+  const scope = branchesSvc.resolveBranchScope(
+    userId ? { id: userId } : null,
+    { forceTill: true, branchId }
+  );
+  const bid = branchId != null ? Number(branchId) : scope.stampId;
+  try {
+    // Prefer per-branch stock when table exists
+    getDb().prepare('SELECT 1 FROM branch_stock LIMIT 1').get();
+    const newStock = branchesSvc.adjustBranchStock(productId, quantity, type, notes, userId, refType, refId, bid);
+    checkLowStock(productId);
+    try {
+      require('./production-availability').refreshAffectedByIngredient(productId);
+    } catch (_) { /* ignore */ }
+    return newStock;
+  } catch (err) {
+    if (String(err.message || '').includes('Insufficient')) throw err;
+    // Fallback to legacy single-stock
+  }
   const db = getDb();
   const product = db.prepare('SELECT * FROM products WHERE id = ?').get(productId);
   if (!product) throw new Error('Product not found');
@@ -1698,7 +1798,6 @@ function adjustStock(productId, quantity, type, notes, userId, refType, refId) {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(productId, type === 'set' ? 'adjust' : type, quantity, prev, newStock, refType, refId, notes, userId);
   checkLowStock(productId);
-  // Production Availability Engine — recalculate meals that use this ingredient
   try {
     require('./production-availability').refreshAffectedByIngredient(productId);
   } catch (_) { /* ignore */ }
@@ -1754,7 +1853,14 @@ function completeSale(saleData, actorId, actorName, actorRole) {
     const shift = getOpenShift(actorId);
     if (!shift) throw new Error('You must open a shift before completing sales');
   }
-  const branchId = features.getBranchId();
+  const branchId = (() => {
+    try {
+      const actor = actorId ? getDb().prepare('SELECT id, role, branch_id FROM users WHERE id = ?').get(actorId) : null;
+      return branchesSvc.resolveBranchScope(actor, { forceTill: true }).stampId;
+    } catch (_) {
+      return features.getBranchId();
+    }
+  })();
   const deviceId = syncSvc.resolveDeviceUid();
 
   // Offline replay: same client_request_id must not create a duplicate sale
@@ -2436,6 +2542,13 @@ function getExpenses(filters = {}) {
   if (filters.from) { sql += ' AND e.expense_date >= ?'; params.push(filters.from); }
   if (filters.to) { sql += ' AND e.expense_date <= ?'; params.push(filters.to); }
   if (filters.category) { sql += ' AND e.category = ?'; params.push(filters.category); }
+  const scope = branchesSvc.resolveBranchScope(filters.actor || null, { branchId: filters.branch_id });
+  if (!scope.allBranches && scope.branchId) {
+    try {
+      sql += ' AND (e.branch_id = ? OR e.branch_id IS NULL)';
+      params.push(scope.branchId);
+    } catch (_) { /* ignore */ }
+  }
   sql += ' ORDER BY e.expense_date DESC';
   return getDb().prepare(sql).all(...params);
 }
@@ -2445,16 +2558,31 @@ function saveExpense(data, actorId, actorName) {
   if (!(amount > 0)) throw new Error('Expense amount must be greater than zero');
   if (!data.category || !String(data.category).trim()) throw new Error('Expense category is required');
   const expenseDate = data.expense_date || new Date().toLocaleDateString('en-CA');
+  const scope = branchesSvc.resolveBranchScope({ id: actorId }, { forceTill: true, branchId: data.branch_id });
+  const branchId = data.branch_id != null ? Number(data.branch_id) : scope.stampId;
   if (data.id) {
-    getDb().prepare('UPDATE expenses SET category=?, description=?, amount=?, expense_date=? WHERE id=?')
-      .run(data.category, data.description, amount, expenseDate, data.id);
+    try {
+      getDb().prepare('UPDATE expenses SET category=?, description=?, amount=?, expense_date=?, branch_id=? WHERE id=?')
+        .run(data.category, data.description, amount, expenseDate, branchId, data.id);
+    } catch (_) {
+      getDb().prepare('UPDATE expenses SET category=?, description=?, amount=?, expense_date=? WHERE id=?')
+        .run(data.category, data.description, amount, expenseDate, data.id);
+    }
     audit(actorId, actorName, 'update_expense', 'expense', data.id, data);
     return data.id;
   }
-  const r = getDb().prepare(`
-    INSERT INTO expenses (category, description, amount, user_id, expense_date)
-    VALUES (?, ?, ?, ?, ?)
-  `).run(data.category, data.description, amount, actorId, expenseDate);
+  let r;
+  try {
+    r = getDb().prepare(`
+      INSERT INTO expenses (category, description, amount, user_id, expense_date, branch_id)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(data.category, data.description, amount, actorId, expenseDate, branchId);
+  } catch (_) {
+    r = getDb().prepare(`
+      INSERT INTO expenses (category, description, amount, user_id, expense_date)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(data.category, data.description, amount, actorId, expenseDate);
+  }
   audit(actorId, actorName, 'create_expense', 'expense', r.lastInsertRowid, data);
   return r.lastInsertRowid;
 }

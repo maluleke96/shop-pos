@@ -1223,53 +1223,120 @@ const AdminPage = {
     const currency = this.settings?.currency || 'R';
     const from = this._taxFrom || Utils.daysAgo(30);
     const to = this._taxTo || Utils.today();
+    const branchesRes = await API.getBranches();
+    const branches = branchesRes.data || [];
+    const viewBranch = this.app?.viewBranchId != null ? String(this.app.viewBranchId) : 'all';
     el.innerHTML = `<div class="admin-section"><h3>Tax Calculations</h3>
-      <p class="muted">Output VAT (sales), input VAT (stock purchases), and net VAT — same figures as Bookkeeping tax report.</p>
-      <div class="page-toolbar" style="gap:8px;flex-wrap:wrap">
+      <p class="muted">Per-sale tax breakdown, totals, and PDF download. Filter by branch and date range.</p>
+      <div class="page-toolbar" style="gap:8px;flex-wrap:wrap;align-items:center">
+        <select id="tax-hub-branch">
+          <option value="all">All branches</option>
+          ${branches.map((b) => `<option value="${b.id}" ${viewBranch === String(b.id) ? 'selected' : ''}>${Utils.escHtml(b.name)}</option>`).join('')}
+        </select>
+        <button type="button" class="btn btn-ghost btn-sm tax-preset" data-days="0">Today</button>
+        <button type="button" class="btn btn-ghost btn-sm tax-preset" data-days="7">7 days</button>
+        <button type="button" class="btn btn-ghost btn-sm tax-preset" data-days="30">30 days</button>
+        <button type="button" class="btn btn-ghost btn-sm tax-preset" data-months="6">6 months</button>
+        <button type="button" class="btn btn-ghost btn-sm tax-preset" data-year="1">Year</button>
         <input type="date" id="tax-hub-from" value="${from}">
         <input type="date" id="tax-hub-to" value="${to}">
         <button class="btn btn-ghost" id="tax-hub-refresh">Refresh</button>
-        <button class="btn btn-ghost" id="tax-hub-bookkeeping">Open Bookkeeping</button>
+        <button class="btn btn-primary" id="tax-hub-pdf">Download PDF</button>
+        <button class="btn btn-ghost" id="tax-hub-bookkeeping">Bookkeeping</button>
       </div>
       <div id="tax-hub-body"><p class="muted">Loading…</p></div>
     </div>`;
 
+    const setRange = (fromDate, toDate) => {
+      document.getElementById('tax-hub-from').value = fromDate;
+      document.getElementById('tax-hub-to').value = toDate;
+    };
+
+    el.querySelectorAll('.tax-preset').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const toDate = Utils.today();
+        if (btn.dataset.days != null) {
+          const d = Number(btn.dataset.days);
+          setRange(d === 0 ? toDate : Utils.daysAgo(d), toDate);
+        } else if (btn.dataset.months) {
+          const d = new Date();
+          d.setMonth(d.getMonth() - Number(btn.dataset.months));
+          setRange(d.toISOString().slice(0, 10), toDate);
+        } else if (btn.dataset.year) {
+          const d = new Date();
+          d.setFullYear(d.getFullYear() - 1);
+          setRange(d.toISOString().slice(0, 10), toDate);
+        }
+        load();
+      });
+    });
+
     const load = async () => {
       this._taxFrom = document.getElementById('tax-hub-from').value;
       this._taxTo = document.getElementById('tax-hub-to').value;
+      const branchId = document.getElementById('tax-hub-branch').value;
       const body = document.getElementById('tax-hub-body');
-      const [taxRes, setRes] = await Promise.all([
-        API.getTaxSummary(this._taxFrom, this._taxTo),
-        Promise.resolve({ data: this.settings })
-      ]);
+      const taxRes = await API.getTaxSummary(this._taxFrom, this._taxTo, branchId === 'all' ? null : branchId);
       if (!taxRes.success) {
         body.innerHTML = `<p class="error-msg">${Utils.escHtml(taxRes.error || 'Failed to load')}</p>`;
         return;
       }
       const t = taxRes.data || {};
-      const s = setRes.data || this.settings || {};
+      const sales = t.sales || [];
+      this._lastTaxReport = t;
       body.innerHTML = `
-        <div class="stats-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin:12px 0">
-          <div class="card"><div class="card-body"><div class="muted">Tax on POS</div><strong>${s.tax_enabled && (s.tax_show_on_pos !== 0 && s.tax_show_on_pos !== false) ? 'Shown' : 'Hidden'}</strong></div></div>
-          <div class="card"><div class="card-body"><div class="muted">VAT rate</div><strong>${t.vatRate || s.tax_rate || 0}%</strong></div></div>
-          <div class="card"><div class="card-body"><div class="muted">Sales (gross)</div><strong>${Utils.formatMoney(t.taxableSales || 0, currency)}</strong></div></div>
-          <div class="card"><div class="card-body"><div class="muted">Output VAT (sales)</div><strong>${Utils.formatMoney(t.outputVat ?? t.vat ?? 0, currency)}</strong></div></div>
+        <div class="stats-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:12px 0">
+          <div class="card"><div class="card-body"><div class="muted">Sales count</div><strong>${t.salesCount || sales.length}</strong></div></div>
+          <div class="card"><div class="card-body"><div class="muted">Gross sales</div><strong>${Utils.formatMoney(t.taxableSales || 0, currency)}</strong></div></div>
+          <div class="card"><div class="card-body"><div class="muted">Excl. tax</div><strong>${Utils.formatMoney(t.salesExcl || 0, currency)}</strong></div></div>
+          <div class="card"><div class="card-body"><div class="muted">Tax / VAT</div><strong>${Utils.formatMoney(t.outputVat ?? t.vat ?? 0, currency)}</strong></div></div>
+          <div class="card"><div class="card-body"><div class="muted">After tax</div><strong>${Utils.formatMoney(t.salesAfterTax != null ? t.salesAfterTax : ((t.taxableSales || 0) - (t.outputVat ?? t.vat ?? 0)), currency)}</strong></div></div>
           <div class="card"><div class="card-body"><div class="muted">Input VAT (purchases)</div><strong>${Utils.formatMoney(t.inputVat || 0, currency)}</strong></div></div>
-          <div class="card"><div class="card-body"><div class="muted">Net VAT</div><strong>${Utils.formatMoney(t.netVat != null ? t.netVat : ((t.outputVat ?? t.vat ?? 0) - (t.inputVat || 0)), currency)}</strong></div></div>
+          <div class="card"><div class="card-body"><div class="muted">Net VAT</div><strong>${Utils.formatMoney(t.netVat != null ? t.netVat : 0, currency)}</strong></div></div>
+          <div class="card"><div class="card-body"><div class="muted">VAT rate</div><strong>${t.vatRate || 0}%</strong></div></div>
         </div>
-        <div class="card"><div class="card-body">
-          <h4 style="margin:0 0 8px">How it works</h4>
-          <ul class="muted" style="margin:0;padding-left:18px">
-            <li>Sales: tax is calculated at checkout when VAT is enabled.</li>
-            <li>Purchases: tax is calculated on purchase orders when you buy stock.</li>
-            <li>Bookkeeping uses these same totals for the tax report.</li>
-          </ul>
-        </div></div>`;
+        <div class="card"><div class="table-wrap"><table>
+          <thead><tr><th>Receipt</th><th>Date</th><th>Branch</th><th>Cashier</th><th>Excl. tax</th><th>Tax</th><th>Total</th></tr></thead>
+          <tbody>
+            ${sales.map((s) => `<tr>
+              <td>${Utils.escHtml(s.receipt_number || '—')}</td>
+              <td>${Utils.formatDateTime(s.created_at)}</td>
+              <td>${Utils.escHtml(s.branch_name || '—')}</td>
+              <td>${Utils.escHtml(s.cashier_name || '—')}</td>
+              <td>${Utils.formatMoney(s.subtotal || 0, currency)}</td>
+              <td>${Utils.formatMoney(s.tax_amount || 0, currency)}</td>
+              <td><strong>${Utils.formatMoney(s.total || 0, currency)}</strong></td>
+            </tr>`).join('') || '<tr><td colspan="7" class="muted">No sales in this period</td></tr>'}
+          </tbody>
+        </table></div></div>`;
     };
 
     document.getElementById('tax-hub-refresh')?.addEventListener('click', load);
-    document.getElementById('tax-hub-bookkeeping')?.addEventListener('click', () => {
-      this.app?.navigate?.('bookkeeping');
+    document.getElementById('tax-hub-branch')?.addEventListener('change', load);
+    document.getElementById('tax-hub-bookkeeping')?.addEventListener('click', () => this.app?.navigate?.('bookkeeping'));
+    document.getElementById('tax-hub-pdf')?.addEventListener('click', async () => {
+      const t = this._lastTaxReport;
+      if (!t) return Utils.toast('Refresh the report first', 'error');
+      const title = `Tax report ${this._taxFrom} to ${this._taxTo}`;
+      const headers = ['Receipt', 'Date', 'Branch', 'Cashier', 'Excl. tax', 'Tax', 'Total'];
+      const bodyRows = (t.sales || []).map((s) => [
+        s.receipt_number || '',
+        Utils.formatDateTime(s.created_at),
+        s.branch_name || '',
+        s.cashier_name || '',
+        Utils.formatMoney(s.subtotal || 0, currency),
+        Utils.formatMoney(s.tax_amount || 0, currency),
+        Utils.formatMoney(s.total || 0, currency)
+      ]);
+      bodyRows.push(['TOTALS', '', '', '', Utils.formatMoney(t.salesExcl || 0, currency), Utils.formatMoney(t.outputVat ?? t.vat ?? 0, currency), Utils.formatMoney(t.taxableSales || 0, currency)]);
+      bodyRows.push(['Net VAT owed', '', '', '', '', Utils.formatMoney(t.netVat || 0, currency), '']);
+      if (typeof Export?.toPDF === 'function') {
+        await Export.toPDF(`tax-report-${this._taxFrom}.pdf`, title, headers, bodyRows, { shop_name: this.settings?.shop_name });
+      } else if (typeof Export?.print === 'function') {
+        await Export.print(title, headers, bodyRows, { shop_name: this.settings?.shop_name });
+      } else {
+        Utils.toast('PDF export not available on this device', 'error');
+      }
     });
     await load();
   },
@@ -2242,34 +2309,60 @@ const AdminPage = {
     const branches = branchesRes.data || [];
     const activeRes = await API.getActiveBranch?.() || {};
     const active = activeRes.data || branches.find((b) => b.is_active) || branches[0] || { id: 1, name: 'Main Branch', code: 'MAIN' };
+    const viewRes = await API.getViewBranch?.() || {};
+    const view = viewRes.data || {};
+    const currency = this.settings?.currency || 'R';
+    const isOwner = this.app?.user?.role === 'owner';
 
-    const cloudOn = !!(window.__SHOP_POS_CLOUD__ || window.__SHOP_POS_ENV__?.RPC_URL || window.__SHOP_POS_ENV__?.SHOP_POS_RPC_URL);
     el.innerHTML = `<div class="admin-section"><h3>Branches</h3>
-      <p class="muted">${cloudOn
-        ? 'This till is connected to cloud RPC — other cloud tills share the same database.'
-        : 'This Windows/Android installer stores data <strong>on this device only</strong>. Phone and PC do not sync automatically. Use Backup &amp; Restore (or a configured cloud RPC) to move data between devices.'}</p>
+      <p class="muted">Each branch has its own manager (1), supervisor (1), cashiers (many), stock, sales, tax and expenses.
+        Marketing agents can be shared. Use the top <strong>Branch</strong> filter to view one shop or all.</p>
       <div class="card" style="margin-bottom:12px"><div class="card-body">
-        <h4 style="margin-top:0">${cloudOn ? 'Cloud backend' : 'Local database'}</h4>
-        <p class="muted" style="margin:0">${cloudOn
-          ? 'RPC URL is configured. Customer online ordering has been removed.'
-          : 'No cloud RPC URL is set. Shop name, sales, and staff stay on this till. Optional: set <code>SHOP_POS_RPC_URL</code> for multi-till cloud. Customer online ordering has been removed.'}</p>
+        <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center">
+          <div><span class="muted">Till connected to:</span> <strong>${Utils.escHtml(active.name || '—')}</strong> <span class="tag tag-ok">Active till</span></div>
+          <div><span class="muted">Admin viewing:</span> <strong>${view.view_all || view.view_branch_id == null ? 'All branches' : Utils.escHtml(view.branch?.name || '—')}</strong></div>
+        </div>
       </div></div>
       <div class="card"><div class="card-body">
-        <h4>Branches</h4>
-        <div id="branch-list">${branches.map(b => `<div style="padding:8px 0;border-bottom:1px solid var(--border)"><strong>${b.name}</strong> <span class="muted">(${b.code})</span>${b.id===active.id?' <span class="tag tag-ok">Active</span>':''}
-          <button type="button" class="btn btn-sm btn-ghost br-activate" data-id="${b.id}" style="margin-left:8px">Set active</button>
-        </div>`).join('') || '<p class="muted">No branches</p>'}</div>
-        <div class="form-grid" style="margin-top:12px">
-          <div class="field"><label>New Branch Name</label><input id="br-name"></div>
-          <div class="field"><label>Branch Code</label><input id="br-code" placeholder="e.g. SANDTON"></div>
+        <h4 style="margin-top:0">Your branches</h4>
+        <div id="branch-list">${branches.map((b) => {
+          const mgr = b.manager?.full_name || '— none —';
+          const sup = b.supervisor?.full_name || '— none —';
+          const cashiers = b.cashier_count != null ? b.cashier_count : (b.staff?.cashiers?.length || 0);
+          return `<div style="padding:12px 0;border-bottom:1px solid var(--border)">
+            <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between">
+              <div>
+                <strong>${Utils.escHtml(b.name)}</strong> <span class="muted">(${Utils.escHtml(b.code || '')})</span>
+                ${b.id === active.id ? ' <span class="tag tag-ok">Till active</span>' : ''}
+                ${b.is_active === 0 ? ' <span class="tag tag-out">Inactive</span>' : ''}
+                <div class="muted" style="font-size:12px;margin-top:4px">
+                  Manager: ${Utils.escHtml(mgr)} · Supervisor: ${Utils.escHtml(sup)} · Cashiers: ${cashiers}
+                  · Sales today: ${Utils.formatMoney(b.sales_today || 0, currency)}
+                  · Stock SKUs: ${b.stock_skus || 0}
+                </div>
+                ${b.address ? `<div class="muted" style="font-size:12px">${Utils.escHtml(b.address)}${b.phone ? ' · ' + Utils.escHtml(b.phone) : ''}</div>` : ''}
+              </div>
+              <div style="display:flex;flex-wrap:wrap;gap:6px">
+                <button type="button" class="btn btn-sm btn-ghost br-activate" data-id="${b.id}">Connect till</button>
+                ${isOwner ? `<button type="button" class="btn btn-sm btn-ghost br-view" data-id="${b.id}">View data</button>
+                <button type="button" class="btn btn-sm btn-ghost br-edit" data-id="${b.id}">Edit</button>` : ''}
+              </div>
+            </div>
+          </div>`;
+        }).join('') || '<p class="muted">No branches yet — add your first shop below.</p>'}</div>
+        ${isOwner ? `<h4 style="margin-top:16px">Add / connect a branch</h4>
+        <div class="form-grid">
+          <div class="field"><label>Branch Name *</label><input id="br-name" placeholder="e.g. Sandton Mall"></div>
+          <div class="field"><label>Branch Code *</label><input id="br-code" placeholder="e.g. SANDTON"></div>
           <div class="field"><label>Address</label><input id="br-address"></div>
           <div class="field"><label>Phone</label><input id="br-phone"></div>
         </div>
-        <button type="button" class="btn btn-primary" id="br-add" style="margin-top:8px">Add Branch</button>
+        <button type="button" class="btn btn-primary" id="br-add" style="margin-top:8px">Create Branch</button>
+        <p class="muted" style="margin-top:8px;font-size:12px">After creating a branch: assign 1 manager + 1 supervisor + cashiers in <strong>Users</strong> (select that branch). Assign products to the branch on the Products page. Connect each till with <em>Connect till</em>.</p>` : ''}
       </div></div>
       <div class="card" style="margin-top:16px"><div class="card-body">
         <h4>Recipe file transfer</h4>
-        <p class="muted" style="font-size:12px">Optional file export/import of recipe BOM between shops (not a VPS hub).</p>
+        <p class="muted" style="font-size:12px">Optional file export/import of recipe BOM between shops.</p>
         <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px">
           <button type="button" class="btn btn-ghost" id="sync-export-recipes">Export Recipes (file)</button>
           <button type="button" class="btn btn-ghost" id="sync-import-recipes">Import Recipes…</button>
@@ -2281,18 +2374,63 @@ const AdminPage = {
       const name = document.getElementById('br-name').value.trim();
       const code = document.getElementById('br-code').value.trim();
       if (!name || !code) return Utils.toast('Name and code required', 'error');
-      const r = await API.saveBranch({ name, code, address: document.getElementById('br-address').value.trim(), phone: document.getElementById('br-phone').value.trim() });
+      const r = await API.saveBranch({
+        name, code,
+        address: document.getElementById('br-address').value.trim(),
+        phone: document.getElementById('br-phone').value.trim()
+      }, this.app.user);
       if (!r.success) return Utils.toast(r.error, 'error');
-      Utils.toast('Branch added', 'success');
+      Utils.toast('Branch created — assign manager, supervisor & cashiers next', 'success');
       this.renderBranchesSync(el);
     });
 
     el.querySelectorAll('.br-activate').forEach((btn) => {
       btn.addEventListener('click', async () => {
-        const r = await API.setActiveBranch(parseInt(btn.dataset.id, 10));
+        const r = await API.setActiveBranch(parseInt(btn.dataset.id, 10), this.app.user);
         if (r && r.success === false) return Utils.toast(r.error || 'Failed', 'error');
-        Utils.toast('Active branch updated', 'success');
+        Utils.toast('This till is now connected to that branch', 'success');
+        this.app?.refreshBranchSwitcher?.();
         this.renderBranchesSync(el);
+      });
+    });
+
+    el.querySelectorAll('.br-view').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const r = await API.setViewBranch(parseInt(btn.dataset.id, 10), this.app.user);
+        if (r && r.success === false) return Utils.toast(r.error || 'Failed', 'error');
+        Utils.toast('Admin view filtered to this branch', 'success');
+        this.app?.refreshBranchSwitcher?.();
+        this.renderBranchesSync(el);
+      });
+    });
+
+    el.querySelectorAll('.br-edit').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const b = branches.find((x) => String(x.id) === String(btn.dataset.id));
+        if (!b) return;
+        Utils.showModal(`Edit branch — ${b.name}`, `
+          <div class="form-grid">
+            <div class="field"><label>Name</label><input id="be-name" value="${Utils.escHtml(b.name || '')}"></div>
+            <div class="field"><label>Code</label><input id="be-code" value="${Utils.escHtml(b.code || '')}"></div>
+            <div class="field"><label>Address</label><input id="be-address" value="${Utils.escHtml(b.address || '')}"></div>
+            <div class="field"><label>Phone</label><input id="be-phone" value="${Utils.escHtml(b.phone || '')}"></div>
+            <div class="field full"><label><input type="checkbox" id="be-active" ${b.is_active !== 0 ? 'checked' : ''}> Active</label></div>
+          </div>`,
+          '<button class="btn btn-primary" id="be-save">Save</button>');
+        document.getElementById('be-save')?.addEventListener('click', async () => {
+          const r = await API.saveBranch({
+            id: b.id,
+            name: document.getElementById('be-name').value.trim(),
+            code: document.getElementById('be-code').value.trim(),
+            address: document.getElementById('be-address').value.trim(),
+            phone: document.getElementById('be-phone').value.trim(),
+            is_active: document.getElementById('be-active').checked
+          }, this.app.user);
+          if (!r.success) return Utils.toast(r.error || 'Save failed', 'error');
+          Utils.hideModal();
+          Utils.toast('Branch updated', 'success');
+          this.renderBranchesSync(el);
+        });
       });
     });
 

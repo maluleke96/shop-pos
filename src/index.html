@@ -138,6 +138,12 @@
             <h2 id="page-title">Dashboard</h2>
           </div>
           <div class="topbar-right">
+            <label class="branch-switcher muted" style="display:flex;align-items:center;gap:6px;font-size:12px" title="View data for one branch or all">
+              <span>Branch</span>
+              <select id="global-branch-filter" style="max-width:160px;padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface)">
+                <option value="all">All branches</option>
+              </select>
+            </label>
             <div class="search-box">
               <input type="search" id="global-search" placeholder="Search products, staff, receipts, donations…">
               <div id="search-results" class="search-dropdown hidden"></div>

@@ -113,11 +113,13 @@ const UsersPage = {
             <option value="marketing_agent" ${user?.role === 'marketing_agent' ? 'selected' : ''}>Marketing Agent</option>
             <option value="cashier" ${user?.role === 'cashier' ? 'selected' : ''}>Cashier</option>
           </select></div>
-        <div class="field"><label>Branch</label>
+        <div class="field"><label>Branch ${['manager', 'supervisor', 'cashier', 'assistant_manager'].includes(user?.role) || !user ? '*' : ''}</label>
           <select id="uf-branch">
-            <option value="">— All branches —</option>
+            <option value="">— ${user?.role === 'marketing_agent' || (!user) ? 'Shared / all branches' : 'Select branch'} —</option>
             ${branches.map(b => `<option value="${b.id}" ${user?.branch_id == b.id ? 'selected' : ''}>${b.name}</option>`).join('')}
-          </select></div>
+          </select>
+          <small class="muted">1 manager + 1 supervisor per branch. Many cashiers allowed. Marketing agents can be shared.</small>
+        </div>
         ${user ? `<div class="field full"><label><input type="checkbox" id="uf-active" ${user.is_active ? 'checked' : ''}> Active — can sign in</label></div>
         ${user.has_pin ? '<div class="field full"><label><input type="checkbox" id="uf-clear-pin"> Clear PIN</label></div>' : ''}` : ''}
         ${showPerms ? `<div class="field full" id="uf-perms-wrap"><label>Permissions <span class="muted">(optional — overrides role defaults)</span></label>

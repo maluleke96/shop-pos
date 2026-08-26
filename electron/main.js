@@ -448,7 +448,8 @@ function registerIpc() {
   ipcMain.handle('dashboard:stats', wrapSync((from, to) => {
     requireSession();
     const sess = store.getUserSession();
-    const branchId = sess?.role === 'manager' && sess?.branch_id ? sess.branch_id : null;
+    const scope = store.resolveBranchScope(sess || null);
+    const branchId = scope.allBranches ? null : scope.branchId;
     return store.getDashboardStats(from, to, branchId);
   }));
   ipcMain.handle('inventory:stats', wrapSync(() => store.getInventoryStats()));
@@ -2058,9 +2059,9 @@ function registerIpc() {
     store.requireBookkeepingAccess(store.getUserSession());
     return store.getPayrollAccounting(from, to);
   }));
-  ipcMain.handle('bookkeeping:taxSummary', wrapF((from, to) => {
+  ipcMain.handle('bookkeeping:taxSummary', wrapF((from, to, branchId) => {
     store.requireBookkeepingAccess(store.getUserSession());
-    return store.getTaxSummary(from, to);
+    return store.getTaxSummary(from, to, branchId);
   }));
   ipcMain.handle('bookkeeping:report', wrapF((type, from, to) => {
     store.requireBookkeepingAccess(store.getUserSession());
@@ -2417,8 +2418,13 @@ function registerIpc() {
   }));
 
   // Branches & Sync Hub
-  ipcMain.handle('branches:get', wrap(() => store.getBranches()));
+  ipcMain.handle('branches:get', wrap(() => store.getBranchesDetailed ? store.getBranchesDetailed() : store.getBranches()));
   ipcMain.handle('branches:getActive', wrap(() => store.getActiveBranch()));
+  ipcMain.handle('branches:getView', wrap(() => store.getViewBranch()));
+  ipcMain.handle('branches:setView', wrap((branchId, actor) => {
+    store.requireActor(actor || store.getUserSession(), ['owner', 'manager']);
+    return store.setViewBranch(branchId);
+  }));
   ipcMain.handle('branches:save', wrap((data, actor) => {
     store.requireActor(actor || store.getUserSession(), ['owner', 'manager']);
     return store.saveBranch(data);
@@ -2426,6 +2432,10 @@ function registerIpc() {
   ipcMain.handle('branches:setActive', wrap((branchId, actor) => {
     store.requireActor(actor || store.getUserSession(), ['owner', 'manager']);
     return store.setActiveBranch(branchId);
+  }));
+  ipcMain.handle('branches:saveSettings', wrap((branchId, data, actor) => {
+    store.requireActor(actor || store.getUserSession(), ['owner', 'manager']);
+    return store.saveBranchSettings(branchId, data || {});
   }));
   ipcMain.handle('sync:getStatus', wrap(() => store.getSyncStatus()));
   ipcMain.handle('sync:saveSettings', wrap((data, actor) => {

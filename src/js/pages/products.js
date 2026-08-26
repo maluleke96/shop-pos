@@ -254,6 +254,13 @@ const ProductsPage = {
     this.editingOptionGroups = this.loadOptionGroups(product);
     if (!this.editingExtras?.length) this.editingExtras = [{ name: '', extra_price: 0 }];
     const optionsStyle = product?.options_style || 'radio';
+    let branches = [];
+    try {
+      const br = await API.getBranches();
+      branches = br.data || [];
+    } catch (_) { /* ignore */ }
+    const branchOpts = `<option value="">Shared (all branches)</option>` +
+      branches.map((b) => `<option value="${b.id}" ${product?.branch_id == b.id ? 'selected' : ''}>${Utils.escHtml(b.name)} only</option>`).join('');
 
     Utils.showModal(product?.id ? 'Edit Product' : 'Add Product', `
       <div class="form-tabs">
@@ -266,6 +273,8 @@ const ProductsPage = {
         <div class="form-grid">
           <div class="field"><label>Product Name *</label><input id="pf-name" value="${product?.name || ''}"></div>
           <div class="field"><label>Category</label><select id="pf-category"><option value="">—</option>${cats}</select></div>
+          <div class="field"><label>Belongs to branch</label><select id="pf-branch">${branchOpts}</select>
+            <small class="muted">Shared = every branch can sell it (stock is still per branch)</small></div>
           <div class="field"><label>Item Type</label><select id="pf-type">${types}</select></div>
           <div class="field"><label>SKU</label><input id="pf-sku" value="${product?.sku || ''}"></div>
           <div class="field"><label>Barcode</label><input id="pf-barcode" value="${product?.barcode || ''}"><button type="button" class="btn btn-sm btn-ghost" id="pf-gen-barcode" style="margin-top:4px">Auto-generate</button></div>
@@ -575,7 +584,10 @@ const ProductsPage = {
       options_style: document.getElementById('pf-options-style')?.value || 'radio',
       option_groups_meta: this._optionGroupsMeta || [],
       modifiers,
-      conversions
+      conversions,
+      branch_id: document.getElementById('pf-branch')?.value
+        ? parseInt(document.getElementById('pf-branch').value, 10)
+        : null
     };
     if (prev.recipe?.length) data.recipe = prev.recipe;
 

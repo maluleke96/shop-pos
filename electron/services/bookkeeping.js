@@ -455,7 +455,7 @@ function getPayrollAccounting(from, to) {
   return { ...payroll, ownerSalary: ownerPaid };
 }
 
-function getTaxSummary(from, to) {
+function getTaxSummary(from, to, branchId) {
   syncLedger(from, to);
   const db = getDb();
   const settings = getBookkeepingSettings();
@@ -471,12 +471,19 @@ function getTaxSummary(from, to) {
     ? !!settings.vat_registered
     : !!(shop.tax_enabled);
 
+  let branchSql = '';
+  const params = [from, to];
+  if (branchId != null && branchId !== '' && branchId !== 'all') {
+    branchSql = ' AND branch_id = ?';
+    params.push(Number(branchId));
+  }
+
   const salesRow = db.prepare(`
     SELECT COALESCE(SUM(total),0) as sales,
       COALESCE(SUM(tax_amount),0) as output_vat,
       COALESCE(SUM(subtotal),0) as excl
-    FROM sales WHERE status='completed' AND date(created_at) BETWEEN date(?) AND date(?)
-  `).get(from, to) || {};
+    FROM sales WHERE status='completed' AND date(created_at) BETWEEN date(?) AND date(?)${branchSql}
+  `).get(...params) || {};
 
   let outputVat = Number(salesRow.output_vat) || 0;
   const sales = Number(salesRow.sales) || 0;
@@ -486,10 +493,12 @@ function getTaxSummary(from, to) {
 
   let inputVat = 0;
   try {
-    inputVat = db.prepare(`
+    const pParams = [from, to];
+    let pSql = `
       SELECT COALESCE(SUM(tax_amount),0) as v FROM purchase_orders
-      WHERE status IN ('received','partial') AND date(COALESCE(receiving_date, created_at)) BETWEEN date(?) AND date(?)
-    `).get(from, to)?.v || 0;
+      WHERE status IN ('received','partial') AND date(COALESCE(receiving_date, created_at)) BETWEEN date(?) AND date(?)`;
+    // POs don't have branch_id yet — keep global input VAT
+    inputVat = db.prepare(pSql).get(...pParams)?.v || 0;
   } catch (_) {
     inputVat = 0;
   }
@@ -499,6 +508,18 @@ function getTaxSummary(from, to) {
   const sdl = db.prepare(`SELECT COALESCE(SUM(sdl),0) as v FROM employee_payroll WHERE date(period_end) BETWEEN date(?) AND date(?)`).get(from, to)?.v || 0;
   const coida = db.prepare(`SELECT COALESCE(SUM(coida),0) as v FROM employee_payroll WHERE date(period_end) BETWEEN date(?) AND date(?)`).get(from, to)?.v || 0;
   const netVat = Math.round((outputVat - inputVat) * 100) / 100;
+
+  const salesList = db.prepare(`
+    SELECT s.id, s.receipt_number, s.created_at, s.subtotal, s.tax_amount, s.total, s.branch_id,
+      u.full_name as cashier_name, b.name as branch_name
+    FROM sales s
+    LEFT JOIN users u ON s.user_id = u.id
+    LEFT JOIN branches b ON s.branch_id = b.id
+    WHERE s.status='completed' AND date(s.created_at) BETWEEN date(?) AND date(?)${branchSql.replace(/branch_id/g, 's.branch_id')}
+    ORDER BY s.created_at DESC
+    LIMIT 2000
+  `).all(...params);
+
   return {
     vat: outputVat,
     outputVat,
@@ -508,7 +529,13 @@ function getTaxSummary(from, to) {
     vatRate,
     vatRegistered,
     taxableSales: sales,
-    salesExcl: Number(salesRow.excl) || 0
+    salesExcl: Number(salesRow.excl) || 0,
+    salesAfterTax: Math.round((sales - outputVat) * 100) / 100,
+    salesCount: salesList.length,
+    sales: salesList,
+    branchId: branchId != null && branchId !== 'all' ? Number(branchId) : null,
+    from,
+    to
   };
 }
 

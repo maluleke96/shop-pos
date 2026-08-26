@@ -1606,9 +1606,9 @@ function buildHandlers(store) {
     s.requireBookkeepingAccess(s.getUserSession?.());
     return s.getPayrollAccounting(f, t);
   }));
-  add('bookkeeping:taxSummary', wrapSync((f, t) => {
+  add('bookkeeping:taxSummary', wrapSync((f, t, branchId) => {
     s.requireBookkeepingAccess(s.getUserSession?.());
-    return s.getTaxSummary(f, t);
+    return s.getTaxSummary(f, t, branchId);
   }));
   add('bookkeeping:report', wrapSync((type, f, t) => {
     s.requireBookkeepingAccess(s.getUserSession?.());
@@ -1943,8 +1943,13 @@ function buildHandlers(store) {
   add('rewards:saveRule', wrapSync((data, a) => s.saveRewardRule(data, a)));
   add('rewards:deleteRule', wrapSync((id, a) => s.deleteRewardRule(id, a)));
 
-  add('branches:get', wrapSync(() => s.getBranches()));
+  add('branches:get', wrapSync(() => (s.getBranchesDetailed ? s.getBranchesDetailed() : s.getBranches())));
   add('branches:getActive', wrapSync(() => s.getActiveBranch()));
+  add('branches:getView', wrapSync(() => s.getViewBranch()));
+  add('branches:setView', wrapSync((id, a) => {
+    s.requireActor(a || s.getUserSession?.(), ['owner', 'manager']);
+    return s.setViewBranch(id);
+  }));
   add('branches:save', wrapSync((data, a) => {
     s.requireActor(a || s.getUserSession?.(), ['owner', 'manager']);
     return s.saveBranch(data);
@@ -1952,6 +1957,10 @@ function buildHandlers(store) {
   add('branches:setActive', wrapSync((id, a) => {
     s.requireActor(a || s.getUserSession?.(), ['owner', 'manager']);
     return s.setActiveBranch(id);
+  }));
+  add('branches:saveSettings', wrapSync((id, data, a) => {
+    s.requireActor(a || s.getUserSession?.(), ['owner', 'manager']);
+    return s.saveBranchSettings(id, data || {});
   }));
   add('sync:getStatus', wrapSync(() => s.getSyncStatus()));
   add('sync:saveSettings', wrapSync((data, actor) => {
