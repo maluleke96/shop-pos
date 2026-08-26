@@ -1,6 +1,20 @@
 const Utils = {
-  formatMoney(amount, currency = 'R') {
-    return `${currency}${Number(amount || 0).toFixed(2)}`;
+  formatMoney(amount, currency) {
+    const s = (typeof App !== 'undefined' && App?.settings) ? App.settings : {};
+    const cur = currency || s.currency || 'R';
+    let dec = Number(s.decimal_places);
+    if (!Number.isFinite(dec) || dec < 2) dec = 2;
+    dec = 2;
+    const sep = s.thousands_sep && s.thousands_sep !== '.' ? String(s.thousands_sep) : '';
+    const pos = s.currency_position || 'before';
+    const num = Number(amount);
+    const val = Number.isFinite(num) ? num : 0;
+    const fixed = Math.abs(val).toFixed(dec);
+    const [intPart, frac = ''] = fixed.split('.');
+    const withSep = sep ? intPart.replace(/\B(?=(\d{3})+(?!\d))/g, sep) : intPart;
+    let body = dec > 0 ? `${withSep}.${frac}` : withSep;
+    if (val < 0) body = `-${body}`;
+    return pos === 'after' ? `${body}${cur}` : `${cur}${body}`;
   },
 
   formatPriceAdjustment(price, currency = 'R') {
@@ -19,18 +33,35 @@ const Utils = {
       return { subtotalExcl: afterDiscount, tax: 0, total: afterDiscount, taxRate: 0 };
     }
     const taxRate = Number(settings.tax_rate) || 0;
+    const inclusive = settings.tax_inclusive !== false && settings.tax_inclusive !== 0 && settings.tax_inclusive !== '0';
+    if (!inclusive) {
+      const tax = taxRate ? Math.round(afterDiscount * taxRate / 100 * 100) / 100 : 0;
+      return { subtotalExcl: afterDiscount, tax, total: Math.round((afterDiscount + tax) * 100) / 100, taxRate };
+    }
     const tax = taxRate ? Math.round((afterDiscount - afterDiscount / (1 + taxRate / 100)) * 100) / 100 : 0;
     return { subtotalExcl: Math.round((afterDiscount - tax) * 100) / 100, tax, total: afterDiscount, taxRate };
   },
 
   formatDate(d) {
     if (!d) return '—';
-    return new Date(d).toLocaleDateString('en-ZA', { year: 'numeric', month: 'short', day: 'numeric' });
+    const dt = new Date(d);
+    if (Number.isNaN(dt.getTime())) return String(d);
+    const fmt = (typeof App !== 'undefined' && App?.settings?.date_format) || 'DD MMM YYYY';
+    const y = dt.getFullYear();
+    const m = String(dt.getMonth() + 1).padStart(2, '0');
+    const day = String(dt.getDate()).padStart(2, '0');
+    if (fmt === 'YYYY-MM-DD') return `${y}-${m}-${day}`;
+    if (fmt === 'MM/DD/YYYY') return `${m}/${day}/${y}`;
+    if (fmt === 'DD/MM/YYYY') return `${day}/${m}/${y}`;
+    return dt.toLocaleDateString('en-ZA', { year: 'numeric', month: 'short', day: 'numeric' });
   },
 
   formatDateTime(d) {
     if (!d) return '—';
-    return new Date(d).toLocaleString('en-ZA', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    const dt = new Date(d);
+    if (Number.isNaN(dt.getTime())) return String(d);
+    const hour12 = (typeof App !== 'undefined' && App?.settings?.time_format) === '12h';
+    return `${Utils.formatDate(d)} ${dt.toLocaleTimeString(hour12 ? 'en-US' : 'en-GB', { hour: '2-digit', minute: '2-digit', hour12 })}`;
   },
 
   today() {
@@ -50,8 +81,9 @@ const Utils = {
 
   weekStart() {
     const d = new Date();
-    const day = d.getDay();
-    d.setDate(d.getDate() - day);
+    const day = d.getDay(); // 0 Sun … 6 Sat
+    const diff = day === 0 ? -6 : 1 - day; // Monday
+    d.setDate(d.getDate() + diff);
     return d.toLocaleDateString('en-CA');
   },
 
@@ -61,6 +93,12 @@ const Utils = {
     if (!taxEnabled) return { subtotal: afterDiscount, tax_amount: 0, total: afterDiscount };
     const rate = Number(taxRatePct) || 0;
     if (!rate) return { subtotal: afterDiscount, tax_amount: 0, total: afterDiscount };
+    const taxSettings = (typeof App !== 'undefined' && App?.settings) ? App.settings : {};
+    const inclusive = taxSettings.tax_inclusive !== false && taxSettings.tax_inclusive !== 0 && taxSettings.tax_inclusive !== '0';
+    if (!inclusive) {
+      const tax_amount = round2(afterDiscount * rate / 100);
+      return { subtotal: afterDiscount, tax_amount, total: round2(afterDiscount + tax_amount) };
+    }
     const tax_amount = round2(afterDiscount - afterDiscount / (1 + rate / 100));
     return { subtotal: round2(afterDiscount - tax_amount), tax_amount, total: afterDiscount };
   },
@@ -218,12 +256,12 @@ const Utils = {
     if (user.role === 'owner') return true;
     if (user.role === 'marketing_agent') return page === 'marketing' || page === 'document-hub';
     const pagePermMap = {
-      dashboard: 'view_reports', pos: 'sell', staff: 'sell', products: 'products', categories: 'products',
+      dashboard: 'view_reports', pos: 'sell', staff: 'staff_portal', products: 'products', categories: 'products',
       stock: 'manage_stock', customers: 'customers', suppliers: 'suppliers', expenses: 'view_reports',
       returns: 'refunds', quotes: 'quotes', layby: 'layby', giftcards: 'gift_cards', marketing: 'products',
-      'document-hub': 'operations', whatsapp: 'operations', operations: 'operations', restaurant: 'kitchen', 'purchase-orders': 'suppliers',
+      'document-hub': 'operations', whatsapp: 'whatsapp', operations: 'operations', restaurant: 'kitchen', 'purchase-orders': 'suppliers',
       reports: 'reports', audit: 'view_reports', bookkeeping: 'bookkeeping', admin: 'system_settings', users: 'system_settings',
-      settings: 'sell'
+      settings: 'system_settings', recipe: 'recipe'
     };
     if (user.role === 'assistant_manager') {
       const perm = pagePermMap[page];
@@ -231,9 +269,11 @@ const Utils = {
     }
     const perm = pagePermMap[page];
     if (perm && Utils.hasPermission(user, perm)) return true;
-    const managerPages = ['dashboard', 'admin', 'pos', 'staff', 'products', 'categories', 'stock', 'customers', 'suppliers', 'expenses', 'returns', 'quotes', 'layby', 'giftcards', 'marketing', 'document-hub', 'whatsapp', 'operations', 'restaurant', 'recipe', 'purchase-orders', 'reports', 'bookkeeping', 'audit'];
-    const cashierPages = ['pos', 'staff', 'returns'];
-    const supervisorPages = ['admin', 'pos', 'staff', 'operations', 'returns', 'layby', 'giftcards', 'quotes'];
+    // staff / returns never fall through to role page lists — admin must grant staff_portal / refunds
+    if (page === 'staff' || page === 'returns') return false;
+    const managerPages = ['dashboard', 'admin', 'pos', 'products', 'categories', 'stock', 'customers', 'suppliers', 'expenses', 'quotes', 'layby', 'giftcards', 'marketing', 'document-hub', 'whatsapp', 'operations', 'restaurant', 'recipe', 'purchase-orders', 'reports', 'bookkeeping', 'audit', 'settings', 'users'];
+    const cashierPages = ['pos'];
+    const supervisorPages = ['admin', 'pos', 'operations', 'layby', 'giftcards', 'quotes'];
     if (user.role === 'manager') return managerPages.includes(page);
     if (user.role === 'supervisor') return supervisorPages.includes(page);
     if (user.role === 'cashier') return cashierPages.includes(page);
@@ -242,14 +282,14 @@ const Utils = {
 
   /** Owner-only admin sidebar sections — hidden from manager/supervisor search & nav */
   adminOwnerOnlySections: new Set([
-    'permissions', 'backup', 'payroll', 'database', 'developer', 'automation',
+    'backup', 'payroll', 'database', 'developer', 'automation',
     'customfields', 'formats', 'importexport', 'branches', 'tax', 'device', 'customer-rewards',
     'analytics'
   ]),
 
   /** Sections managers/supervisors should always see when they have admin access */
   adminManagerSections: new Set([
-    'staffhr', 'hrcontracts', 'recruitment', 'marketing-mgmt', 'employee-of-month', 'opscompliance', 'combos',
+    'overview', 'staffhr', 'staffportal', 'hrcontracts', 'recruitment', 'marketing-mgmt', 'employee-of-month', 'opscompliance', 'combos',
     'quotes', 'approvals', 'recipe'
   ]),
 
@@ -265,6 +305,7 @@ const Utils = {
   canAccessAdminSection(user, sectionId) {
     if (!Utils.canAccessAdmin(user)) return false;
     if (user.role === 'owner') return true;
+    if (sectionId === 'permissions' && user.role === 'manager') return true;
     if (user.role === 'supervisor') {
       return Utils.adminManagerSections.has(sectionId);
     }
@@ -273,12 +314,15 @@ const Utils = {
   },
 
   roleDefaults: {
-    owner: { sell: true, void_sales: true, refunds: true, discounts: true, change_prices: true, view_reports: true, manage_stock: true, system_settings: true, customers: true, suppliers: true, gift_cards: true, cash_up: true, products: true, reports: true, operations: true, kitchen: true, quotes: true, layby: true, delete_sales: true, bookkeeping: true },
-    manager: { sell: true, void_sales: true, refunds: true, discounts: true, change_prices: true, view_reports: true, manage_stock: true, customers: true, suppliers: true, gift_cards: true, cash_up: true, products: true, reports: true, operations: true, kitchen: true, quotes: true, layby: true, owner_salary: true, owner_salary_only: false, bookkeeping: true },
-    supervisor: { sell: true, void_sales: true, refunds: true, discounts: true, cash_up: true, operations: true, kitchen: true, gift_cards: true, layby: true, quotes: true },
-    assistant_manager: {},
+    owner: { sell: true, void_sales: true, refunds: true, discounts: true, change_prices: true, view_reports: true, manage_stock: true, system_settings: true, customers: true, suppliers: true, gift_cards: true, cash_up: true, products: true, reports: true, operations: true, kitchen: true, quotes: true, layby: true, delete_sales: true, bookkeeping: true, staff_portal: true },
+    manager: { sell: true, void_sales: true, refunds: true, discounts: true, change_prices: true, view_reports: true, manage_stock: true, customers: true, suppliers: true, gift_cards: true, cash_up: true, products: true, reports: true, operations: true, kitchen: true, quotes: true, layby: true, owner_salary: true, owner_salary_only: false, bookkeeping: true, staff_portal: false },
+    supervisor: { sell: true, void_sales: true, refunds: true, discounts: true, cash_up: true, operations: true, kitchen: true, gift_cards: true, layby: true, quotes: true, staff_portal: false },
+    assistant_manager: {
+      sell: true, void_sales: true, refunds: true, discounts: true, cash_up: true, operations: true,
+      kitchen: true, gift_cards: true, layby: true, quotes: true, view_reports: true, customers: true, products: true, staff_portal: false
+    },
     marketing_agent: {},
-    cashier: { sell: true, refunds: true, owner_salary: false, owner_salary_only: false }
+    cashier: { sell: true, refunds: false, owner_salary: false, owner_salary_only: false, staff_portal: false }
   },
 
   normalizePhone(phone) {
@@ -320,8 +364,136 @@ const Utils = {
     if (!digits) return false;
     const num = digits.startsWith('0') ? `27${digits.slice(1)}` : digits;
     const url = `https://wa.me/${num}?text=${encodeURIComponent(message || '')}`;
-    window.open(url, '_blank');
+    if (window.API?.openExternal) API.openExternal(url);
+    else window.open(url, '_blank', 'noopener,noreferrer');
     return true;
+  },
+
+  async deliverWhatsApp(result, fallbackPhone, fallbackMessage) {
+    const data = result?.data || result || {};
+    if (result && result.success === false) {
+      if (fallbackPhone) {
+        Utils.openWhatsApp(fallbackPhone, fallbackMessage || '');
+        Utils.toast('WhatsApp opened — tap Send in the chat', 'success');
+        return { success: true, fallback: true };
+      }
+      Utils.toast(result.error || 'WhatsApp failed', 'error');
+      return result;
+    }
+    if (data.via === 'cloud_api' || (data.status === 'sent' && !data.url)) {
+      Utils.toast('Sent via WhatsApp', 'success');
+      return result || { success: true };
+    }
+    const urls = data.url ? [data.url] : (Array.isArray(data.urls) ? data.urls.map((u) => (typeof u === 'string' ? u : u?.url)).filter(Boolean) : []);
+    if (urls.length) {
+      for (const url of urls.slice(0, 10)) {
+        if (window.API?.openExternal) await API.openExternal(url);
+        else window.open(url, '_blank', 'noopener,noreferrer');
+      }
+      if (data.id && (window.App?.user || result?.user)) {
+        try { await API.markWhatsAppOpened(data.id, window.App?.user); } catch (_) { /* ignore */ }
+      }
+      Utils.toast(urls.length > 1 ? `Opened ${Math.min(urls.length, 10)} WhatsApp chat(s)` : 'WhatsApp opened — tap Send in the chat', 'success');
+      return result || { success: true };
+    }
+    if (fallbackPhone) {
+      Utils.openWhatsApp(fallbackPhone, fallbackMessage || '');
+      Utils.toast('WhatsApp opened — tap Send in the chat', 'success');
+      return { success: true, fallback: true };
+    }
+    Utils.toast('WhatsApp message prepared', 'success');
+    return result || { success: true };
+  },
+
+  async savePdfBuffer(filename, buf) {
+    if (!buf?.success) {
+      Utils.toast(buf?.error || 'Could not build PDF', 'error');
+      return false;
+    }
+    let bytes = buf.data;
+    if (bytes && typeof bytes === 'object' && bytes.data && !(bytes instanceof Uint8Array) && !Array.isArray(bytes) && bytes.type !== 'Buffer') {
+      bytes = bytes.data;
+    }
+    try {
+      if (bytes instanceof ArrayBuffer) bytes = new Uint8Array(bytes);
+      else if (bytes?.type === 'Buffer' && Array.isArray(bytes.data)) bytes = new Uint8Array(bytes.data);
+      else if (Array.isArray(bytes)) bytes = new Uint8Array(bytes);
+      else if (!(bytes instanceof Uint8Array) && bytes != null) bytes = new Uint8Array(bytes);
+    } catch (err) {
+      Utils.toast(err.message || 'Invalid PDF data', 'error');
+      return false;
+    }
+    if (!bytes || !bytes.byteLength) {
+      Utils.toast('PDF was empty — nothing to save', 'error');
+      return false;
+    }
+    const saved = await API.saveFile(filename, [{ name: 'PDF', extensions: ['pdf'] }], bytes);
+    if (saved?.cancelled) return false;
+    if (saved && saved.success === false) {
+      Utils.toast(saved.error || 'Could not save PDF', 'error');
+      return false;
+    }
+    Utils.toast(saved?.path ? `PDF saved: ${saved.path}` : 'PDF saved', 'success');
+    return true;
+  },
+
+  /**
+   * Send a PDF (or A4 HTML) to the Admin-configured A4 printer (USB / Bluetooth / network).
+   * Does not affect thermal receipt/kitchen printers.
+   */
+  async printToA4(bufferOrHtml, filename = 'document.pdf') {
+    const configured =
+      (typeof App !== 'undefined' && App?.settings?.printer_settings?.invoice_printer) ||
+      Utils.getLocalDeviceSettings()?.invoice_printer ||
+      '';
+
+    try {
+      let result;
+      if (typeof bufferOrHtml === 'string') {
+        result = typeof API.printA4 === 'function'
+          ? await API.printA4(bufferOrHtml)
+          : { success: false, error: 'A4 print not available' };
+      } else {
+        let bytes = bufferOrHtml;
+        if (bytes && typeof bytes === 'object' && bytes.data && !(bytes instanceof Uint8Array) && !Array.isArray(bytes) && bytes.type !== 'Buffer') {
+          bytes = bytes.data;
+        }
+        if (bytes?.success === false) {
+          Utils.toast(bytes.error || 'Could not build PDF', 'error');
+          return bytes;
+        }
+        if (bytes?.success && bytes.data != null) bytes = bytes.data;
+        if (bytes instanceof ArrayBuffer) bytes = new Uint8Array(bytes);
+        else if (bytes?.type === 'Buffer' && Array.isArray(bytes.data)) bytes = new Uint8Array(bytes.data);
+        else if (Array.isArray(bytes)) bytes = new Uint8Array(bytes);
+
+        if (!bytes || !(bytes.byteLength || bytes.length)) {
+          Utils.toast('Nothing to print', 'error');
+          return { success: false, error: 'Empty document' };
+        }
+        result = typeof API.printPdf === 'function'
+          ? await API.printPdf(bytes, filename)
+          : await API.openPdf(bytes, filename);
+      }
+
+      if (result?.success === false) {
+        Utils.toast(result.error || 'Print failed', 'error');
+        return result;
+      }
+      if (result?.fallback || result?.preview) {
+        const hint = configured
+          ? 'Opened preview — use Print in the viewer if needed'
+          : 'No A4 printer set — open Admin → Printer Setup → A4 Printer (USB/Bluetooth), connect & Save';
+        Utils.toast(hint, configured ? 'info' : 'error');
+        return result;
+      }
+      const name = result?.printer || configured;
+      Utils.toast(name ? `Sent to A4 printer: ${name}` : 'Sent to A4 printer', 'success');
+      return result;
+    } catch (err) {
+      Utils.toast(err.message || 'Print failed', 'error');
+      return { success: false, error: err.message || String(err) };
+    }
   },
 
   expenseCategories: ['rent', 'transport', 'electricity', 'salary', 'fuel', 'maintenance', 'other'],
@@ -601,11 +773,8 @@ const Utils = {
       gift_card_value: Utils.formatMoney(amount, currency),
       voucher_code: code
     }, app.user);
-    if (waRes.success && waRes.data?.url) {
-      window.open(waRes.data.url, '_blank');
-      if (waRes.data.id) await API.markWhatsAppOpened(waRes.data.id, app.user);
-    }
-    return waRes;
+    await Utils.deliverWhatsApp(waRes, phone, `Hello! Your gift card from ${app.settings?.shop_name || 'our shop'} is ready.\nCode: ${code}\nValue: ${Utils.formatMoney(amount, currency)}\nPresent this code at checkout.`);
+    return waRes.success === false && !phone ? waRes : { success: true, ...(waRes || {}) };
   },
 
   async sendQuoteWhatsApp(app, quote) {
@@ -629,11 +798,8 @@ const Utils = {
       valid_until_line: validUntilLine,
       date: quote.valid_until || Utils.today()
     }, app.user);
-    if (waRes.success && waRes.data?.url) {
-      window.open(waRes.data.url, '_blank');
-      if (waRes.data.id) await API.markWhatsAppOpened(waRes.data.id, app.user);
-    }
-    return waRes;
+    await Utils.deliverWhatsApp(waRes, phone, `Hi ${quote.customer_name || 'Customer'}, quotation ${quote.quote_number || ''} from ${app.settings?.shop_name || 'us'}.`);
+    return waRes.success === false ? waRes : { success: true, ...(waRes || {}) };
   },
 
   async sendPayslipWhatsApp(app, payrollRow, employee) {
@@ -642,7 +808,7 @@ const Utils = {
     const currency = app.settings?.currency || 'R';
     const period = `${payrollRow.period_start} – ${payrollRow.period_end}`;
     const message = `Hi ${employee.full_name}, your payslip for ${period}:\n\nGross: ${Utils.formatMoney(payrollRow.gross_salary || 0, currency)}\nPAYE: ${Utils.formatMoney(payrollRow.paye || 0, currency)}\nUIF: ${Utils.formatMoney(payrollRow.uif_employee || 0, currency)}\nNet: ${Utils.formatMoney(payrollRow.net_salary, currency)}\n\nContact ${app.settings?.shop_name || 'management'} for your full PDF payslip.`;
-    if (['owner', 'manager'].includes(app.user?.role)) {
+    if (['owner', 'manager', 'supervisor', 'assistant_manager'].includes(app.user?.role)) {
       const waRes = await API.sendWhatsAppMessage({
         phone,
         employee_id: employee.id,
@@ -658,11 +824,8 @@ const Utils = {
         uif_amount: payrollRow.uif_employee,
         net_pay: payrollRow.net_salary
       }, app.user);
-      if (waRes.success && waRes.data?.url) {
-        window.open(waRes.data.url, '_blank');
-        if (waRes.data.id) await API.markWhatsAppOpened(waRes.data.id, app.user);
-      }
-      return waRes;
+      await Utils.deliverWhatsApp(waRes, phone, message);
+      return { success: true };
     }
     Utils.openWhatsApp(phone, message);
     return { success: true };
@@ -674,7 +837,7 @@ const Utils = {
     if (!phone) return { success: false, error: 'No phone number on employee record' };
     const period = `${leave.start_date} – ${leave.end_date || leave.start_date}`;
     const message = `Hi ${employee.full_name}, your ${leave.leave_type} leave has been APPROVED.\n\nPeriod: ${period}\nDays: ${leave.days}\n\n— ${app.settings?.shop_name || 'Management'}`;
-    if (['owner', 'manager'].includes(app.user?.role)) {
+    if (['owner', 'manager', 'supervisor', 'assistant_manager'].includes(app.user?.role)) {
       const waRes = await API.sendWhatsAppMessage({
         phone,
         employee_id: employee.id,
@@ -689,11 +852,8 @@ const Utils = {
         days: leave.days,
         date: leave.start_date
       }, app.user);
-      if (waRes.success && waRes.data?.url) {
-        window.open(waRes.data.url, '_blank');
-        if (waRes.data.id) await API.markWhatsAppOpened(waRes.data.id, app.user);
-      }
-      return waRes;
+      await Utils.deliverWhatsApp(waRes, phone, message);
+      return { success: true };
     }
     Utils.openWhatsApp(phone, message);
     return { success: true };
@@ -715,12 +875,11 @@ const Utils = {
       warning_reason: reason,
       date: record.incident_date
     }, app.user);
-    if (waRes.success && waRes.data?.url) {
-      window.open(waRes.data.url, '_blank');
-      if (waRes.data.id) await API.markWhatsAppOpened(waRes.data.id, app.user);
-      await API.markStaffDisciplinaryWa(record.id);
+    await Utils.deliverWhatsApp(waRes, phone, `Hi ${employee.full_name}, ${reason}\n\n— ${app.settings?.shop_name || 'Management'}`);
+    if (waRes?.success !== false || phone) {
+      try { await API.markStaffDisciplinaryWa(record.id); } catch (_) { /* ignore */ }
     }
-    return waRes;
+    return waRes?.success === false && !phone ? waRes : { success: true };
   },
 
   isNative() {
@@ -806,6 +965,26 @@ const Utils = {
       s.onload = () => { this._loadedScripts.add(src); resolve(); };
       s.onerror = () => reject(new Error(`Failed to load ${src}`));
       document.body.appendChild(s);
+    });
+  },
+
+  _loadedStyles: new Set(),
+
+  loadStylesheet(href) {
+    if (this._loadedStyles.has(href)) return Promise.resolve();
+    const existing = document.querySelector(`link[href="${href}"]`)
+      || document.querySelector(`link[href$="/${href}"]`);
+    if (existing) {
+      this._loadedStyles.add(href);
+      return Promise.resolve();
+    }
+    return new Promise((resolve, reject) => {
+      const l = document.createElement('link');
+      l.rel = 'stylesheet';
+      l.href = href;
+      l.onload = () => { this._loadedStyles.add(href); resolve(); };
+      l.onerror = () => reject(new Error(`Failed to load ${href}`));
+      document.head.appendChild(l);
     });
   },
 

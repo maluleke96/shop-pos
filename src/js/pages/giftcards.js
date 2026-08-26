@@ -167,12 +167,10 @@ const GiftCardsPage = {
     const r = await API.sendWhatsAppMessage({
       phone,
       recipient_name: card.customer_name || 'Customer',
-      message_type: 'giftcard',
+      message_type: 'gift_card',
       body: msg
     }, app.user);
-    if (!r.success) return Utils.toast(r.error || 'WhatsApp failed', 'error');
-    window.open(r.data.url, '_blank');
-    Utils.toast('WhatsApp opened for gift recipient', 'success');
+    await Utils.deliverWhatsApp(r, phone, msg);
   },
 
   async showCreateForm(el, app, settings) {

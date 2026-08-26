@@ -1,4 +1,9 @@
-const { App } = require('@capacitor/app');
+let App = null;
+try {
+  App = require('@capacitor/app').App;
+} catch (_) {
+  App = null;
+}
 const capFiles = require('./capacitorFiles');
 
 const LAST_AUTO_KEY = 'shoppos_last_auto_backup_date';
@@ -46,9 +51,9 @@ function scheduleDailyBackup(store) {
   tick();
   setInterval(tick, 60 * 60 * 1000);
 
-  App.addListener('appStateChange', ({ isActive }) => {
+  App?.addListener?.('appStateChange', ({ isActive }) => {
     if (isActive) tick();
-  }).catch(() => {});
+  })?.catch?.(() => {});
 }
 
 function getBackupInfo(store) {

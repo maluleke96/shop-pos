@@ -684,10 +684,12 @@ function getActiveCampaigns(branchId) {
 }
 
 /** Overlay PROMO badges / original_price for products in live flyer campaigns (prices already mutated on go-live). */
-function applyFlyerPromoOverlay(products) {
+function applyFlyerPromoOverlay(products, preloadedFlyers) {
   if (!products?.length) return products;
   const today = todayStr();
-  const live = getDb().prepare(`
+  const live = Array.isArray(preloadedFlyers)
+    ? preloadedFlyers
+    : getDb().prepare(`
     SELECT id, end_date, original_prices_json, products_json FROM promotion_flyers
     WHERE status='active' AND apply_pos_prices=1
     AND (start_date IS NULL OR start_date <= ?)

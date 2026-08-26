@@ -15,6 +15,11 @@ const WhatsAppPage = {
 
   PLACEHOLDERS: '{{CustomerName}}, {{LoyaltyPoints}}, {{Branch}}, {{PromotionName}}, {{VoucherCode}}, {{Coupon}}, {{OrderNumber}}, {{TotalPurchase}}, {{Phone}}, {{EmployeeName}}, {{PayPeriod}}, {{NetPay}}, {{Date}}, {{AttendanceStatus}}, {{WarningReason}}, {{AnnouncementText}}',
 
+  async deliverResult(r) {
+    if (r?.data?.cloud_error) Utils.toast(`Cloud API unavailable (${r.data.cloud_error}) — opening WhatsApp chat`, 'info');
+    return Utils.deliverWhatsApp(r);
+  },
+
   async render(el, app) {
     this.app = app;
     this.currency = app.settings?.currency || 'R';
@@ -22,6 +27,7 @@ const WhatsAppPage = {
       el.innerHTML = '<p class="muted">WhatsApp Communication Center is available to owner, manager, and assistant manager.</p>';
       return;
     }
+    el.innerHTML = `<div class="page-toolbar"><h3>WhatsApp</h3></div><p class="muted">Loading templates…</p>`;
     const [tplRes, campRes, brRes, setRes] = await Promise.all([
       API.getWhatsAppTemplates({}),
       API.getWhatsAppCampaigns({}),
@@ -222,14 +228,13 @@ const WhatsAppPage = {
   },
 
   async runCampaignSend(campaignId) {
-    if (!confirm('Send this campaign? Messages will be logged and wa.me links prepared for each recipient.')) return;
+    if (!confirm('Send this campaign? Cloud API is used when credentials are saved; otherwise WhatsApp chats are opened.')) return;
     const r = await API.sendWhatsAppCampaign(campaignId, this.app.user);
     if (!r.success) return Utils.toast(r.error, 'error');
     const data = r.data || {};
     Utils.toast(`Campaign sent — ${data.sent_count || 0} message(s) logged`, 'success');
     if (data.recipients?.length === 1) {
-      window.open(data.recipients[0].url, '_blank');
-      await API.markWhatsAppOpened(data.recipients[0].id, this.app.user);
+      await this.deliverResult({ data: data.recipients[0] });
     } else if (data.recipients?.length > 1) {
       this.showCampaignResults(data.recipients);
     }
@@ -238,15 +243,15 @@ const WhatsAppPage = {
 
   showCampaignResults(recipients) {
     Utils.showModal('Campaign Recipients', `
-      <p class="muted">Open each WhatsApp chat manually. Messages are logged in History.</p>
+      <p class="muted">Cloud-sent rows need no tap. Others open WhatsApp for you to Send.</p>
       <div style="max-height:320px;overflow:auto">${recipients.map(r =>
         `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)">
-          <span>${r.name} · ${r.phone}</span>
-          <button class="btn btn-sm btn-primary wa-open-link" data-id="${r.id}" data-url="${encodeURIComponent(r.url)}">Open</button>
+          <span>${r.name} · ${r.phone}${r.via === 'cloud_api' ? ' · sent' : ''}</span>
+          ${r.url ? `<button class="btn btn-sm btn-primary wa-open-link" data-id="${r.id}" data-url="${encodeURIComponent(r.url)}">Open</button>` : '<span class="muted">API</span>'}
         </div>`).join('')}</div>`,
       '<button class="btn btn-ghost" onclick="Utils.hideModal()">Close</button>');
     document.querySelectorAll('.wa-open-link').forEach(b => b.addEventListener('click', async () => {
-      window.open(decodeURIComponent(b.dataset.url), '_blank');
+      await API.openExternal(decodeURIComponent(b.dataset.url));
       await API.markWhatsAppOpened(parseInt(b.dataset.id), this.app.user);
     }));
   },
@@ -303,9 +308,7 @@ const WhatsAppPage = {
         voucher_code: document.getElementById('wa-cust-voucher').value.trim()
       }, this.app.user);
       if (!r.success) return Utils.toast(r.error, 'error');
-      window.open(r.data.url, '_blank');
-      await API.markWhatsAppOpened(r.data.id, this.app.user);
-      Utils.toast('WhatsApp opened — message logged', 'success');
+      await this.deliverResult(r);
     });
   },
 
@@ -352,9 +355,7 @@ const WhatsAppPage = {
       const f = document.getElementById('wa-num-from').value;
       const t = document.getElementById('wa-num-to').value;
       const buf = await API.getCustomerPhoneReportPdf({ from: f, to: t });
-      if (!buf.success) return Utils.toast(buf.error, 'error');
-      await API.saveFile(`customer-whatsapp-numbers-${f}-${t}.pdf`, [{ name: 'PDF', extensions: ['pdf'] }], buf.data);
-      Utils.toast('PDF exported', 'success');
+      await Utils.savePdfBuffer(`customer-whatsapp-numbers-${f}-${t}.pdf`, buf);
     });
     panel.querySelectorAll('.wa-num-row').forEach(btn => {
       btn.addEventListener('click', () => {
@@ -370,12 +371,10 @@ const WhatsAppPage = {
     const empRes = await API.getEmployees({ status: 'Active' });
     this.employees = (empRes.data || []).filter(e => e.phone);
     const empTpl = this.templates.filter(t => t.category === 'employee' && t.is_active);
-    const isOwner = this.app.user?.role === 'owner';
 
     panel.innerHTML = `<div class="card" style="margin-top:12px"><div class="card-body">
       <h4 style="margin:0 0 12px">Employee Center</h4>
-      <p class="muted">Send payslip, attendance, warning, or announcement messages to staff.</p>
-      ${!isOwner ? '<p class="muted" style="color:var(--warning)">Payslip and warning templates require owner role.</p>' : ''}
+      <p class="muted">Send payslip, attendance, warning, or announcement messages to staff. Owner, manager, supervisor, and assistant manager can send HR messages.</p>
       <div class="form-grid">
         <div class="field"><label>Employee</label>
           <select id="wa-emp-pick"><option value="">— Select —</option>
@@ -383,7 +382,7 @@ const WhatsAppPage = {
           </select></div>
         <div class="field"><label>Template</label>
           <select id="wa-emp-tpl">${empTpl.map(t =>
-            `<option value="${t.id}">${t.name}${['payslip', 'warning'].includes(t.slug) ? ' (owner)' : ''}</option>`).join('')}
+            `<option value="${t.id}">${t.name}</option>`).join('')}
           </select></div>
         <div class="field full"><label>Message</label><textarea id="wa-emp-body" rows="4" style="width:100%">${this.esc(empTpl[0]?.body || '')}</textarea></div>
         <div class="field"><label>Pay Period / Date</label><input id="wa-emp-date" value="${Utils.today()}"></div>
@@ -424,9 +423,7 @@ const WhatsAppPage = {
       };
       const r = await API.sendWhatsAppMessage(payload, this.app.user);
       if (!r.success) return Utils.toast(r.error, 'error');
-      window.open(r.data.url, '_blank');
-      await API.markWhatsAppOpened(r.data.id, this.app.user);
-      Utils.toast('WhatsApp opened — message logged', 'success');
+      await this.deliverResult(r);
     });
   },
 
@@ -496,7 +493,7 @@ const WhatsAppPage = {
 
   bindHistoryOpen(panel) {
     panel.querySelectorAll('.wa-hist-open').forEach(b => b.addEventListener('click', async () => {
-      window.open(decodeURIComponent(b.dataset.url), '_blank');
+      await API.openExternal(decodeURIComponent(b.dataset.url));
       await API.markWhatsAppOpened(parseInt(b.dataset.id), this.app.user);
     }));
   },
@@ -504,10 +501,10 @@ const WhatsAppPage = {
   async renderSettings(panel) {
     const s = this.settings;
     panel.innerHTML = `<div class="card" style="margin-top:12px"><div class="card-body">
-      <h4 style="margin:0 0 12px">WhatsApp Business API (optional)</h4>
-      <p class="muted">Manual wa.me links are used today. Save API credentials here for future automated sending.</p>
+      <h4 style="margin:0 0 12px">WhatsApp sending</h4>
+      <p class="muted">Without API credentials, Shop POS opens a WhatsApp chat (wa.me) for you to tap Send. If Phone Number ID + Access Token are saved, it tries Meta Cloud API first and only opens wa.me if that fails.</p>
       <div class="form-grid">
-        <div class="field"><label>API Key</label><input id="wa-set-api" type="password" value="${this.esc(s.api_key || '')}" placeholder="Future use"></div>
+        <div class="field"><label>Access Token</label><input id="wa-set-api" type="password" value="${this.esc(s.api_key || '')}" placeholder="Meta Cloud API token"></div>
         <div class="field"><label>Phone Number ID</label><input id="wa-set-phone-id" value="${this.esc(s.phone_number_id || '')}"></div>
         <div class="field"><label>Business Account ID</label><input id="wa-set-biz-id" value="${this.esc(s.business_account_id || '')}"></div>
         <div class="field"><label>Cashout WhatsApp Number</label><input id="wa-set-cashout-phone" value="${this.esc(s.cashout_whatsapp_phone || '')}" placeholder="Admin/manager number for cash-out shares"></div>

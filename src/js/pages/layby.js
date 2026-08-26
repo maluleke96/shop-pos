@@ -8,6 +8,9 @@ const LaybyPage = {
     this.from = this.from || Utils.daysAgo(90);
     this.to = this.to || Utils.today();
     const currency = app.settings?.currency || 'R';
+    el.innerHTML = `<div class="page-toolbar"><h3>Lay-Bye / Partial Payments</h3>
+      <button class="btn btn-primary" id="new-layby">+ New Lay-Bye</button></div>
+      <p class="muted">Loading lay-byes…</p>`;
     const filters = { from: this.from, to: this.to };
     if (this.statusFilter && this.statusFilter !== 'all') filters.status = this.statusFilter;
     const [res, settingsRes] = await Promise.all([
@@ -206,9 +209,8 @@ const LaybyPage = {
       message_type: 'layby',
       body: msg
     }, this.app.user);
-    if (!wa.success) return quiet ? null : Utils.toast(wa.error || 'WhatsApp failed', 'error');
-    window.open(wa.data.url, '_blank');
-    if (!quiet) Utils.toast('WhatsApp opened with lay-bye details', 'success');
+    if (!wa.success && quiet) return null;
+    await Utils.deliverWhatsApp(wa, phone, msg);
   },
 
   async showCreateForm() {

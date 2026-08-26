@@ -3,28 +3,11 @@ const ProductsPage = {
 
   async render(el, app) {
     this.app = app;
-    el.innerHTML = `<div class="page-toolbar"><input type="search" id="prod-search" placeholder="Search products…" style="padding:8px 14px;border:1.5px solid var(--border);border-radius:8px;width:260px">
-        <button class="btn btn-primary" id="add-product">+ Add Product</button></div>
-      <div class="card"><div class="table-wrap">${Utils.pageSkeleton(5)}</div></div>`;
-
-    const cached = Utils.sessionCacheGet('products_page');
-    let prodRes; let catRes; let supRes;
-    if (cached) {
-      ({ products: this.products, categories: this.categories, suppliers: this.suppliers } = cached);
-    } else {
-      [prodRes, catRes, supRes] = await Promise.all([API.getProducts(), API.getCategories(), API.getSuppliers()]);
-      this.products = prodRes.data || [];
-      this.categories = catRes.data || [];
-      this.suppliers = supRes.data || [];
-      Utils.sessionCacheSet('products_page', {
-        products: this.products,
-        categories: this.categories,
-        suppliers: this.suppliers
-      });
-    }
+    this._host = el;
     const currency = app.settings?.currency || 'R';
 
-    el.innerHTML = `
+    const paint = () => {
+      el.innerHTML = `
       <div class="page-toolbar">
         <input type="search" id="prod-search" placeholder="Search products…" style="padding:8px 14px;border:1.5px solid var(--border);border-radius:8px;width:260px">
         <button class="btn btn-primary" id="add-product">+ Add Product</button>
@@ -33,21 +16,76 @@ const ProductsPage = {
         <thead><tr><th></th><th>Name</th><th>Category</th><th>Price</th><th>Cost</th><th>Stock</th><th>Options</th><th>Status</th><th></th></tr></thead>
         <tbody id="prod-table">${this.renderRows(currency)}</tbody>
       </table></div></div>`;
+      document.getElementById('add-product').addEventListener('click', () => this.showForm());
+      document.getElementById('prod-search').addEventListener('input', (e) => {
+        clearTimeout(this._searchTimer);
+        this._searchTimer = setTimeout(() => {
+          const q = e.target.value.toLowerCase();
+          const filtered = this.products.filter(p => p.name.toLowerCase().includes(q) || p.barcode?.includes(q));
+          const table = document.getElementById('prod-table');
+          table.innerHTML = this.renderRows(currency, filtered);
+          this.bindTableEvents();
+          Utils.hydrateImages(table);
+        }, 180);
+      });
+      this.bindTableEvents();
+      Utils.hydrateImages(el);
+    };
 
-    document.getElementById('add-product').addEventListener('click', () => this.showForm());
-    document.getElementById('prod-search').addEventListener('input', (e) => {
-      clearTimeout(this._searchTimer);
-      this._searchTimer = setTimeout(() => {
-        const q = e.target.value.toLowerCase();
-        const filtered = this.products.filter(p => p.name.toLowerCase().includes(q) || p.barcode?.includes(q));
-        const table = document.getElementById('prod-table');
-        table.innerHTML = this.renderRows(currency, filtered);
-        this.bindTableEvents();
-        Utils.hydrateImages(table);
-      }, 180);
-    });
-    this.bindTableEvents();
-    Utils.hydrateImages(el);
+    // Cache-first paint only when we have a non-empty product list (empty [] must not block refresh / hide errors)
+    const mem = window.DataCache?.peek?.('products', [{}]);
+    const fromMem = mem?.success !== false && Array.isArray(mem?.data) && mem.data.length
+      ? { products: mem.data, categories: window.DataCache?.peek?.('categories', [{}])?.data || [], suppliers: window.DataCache?.peek?.('suppliers', [''])?.data || [] }
+      : null;
+    const fromSession = Utils.sessionCacheGet('products_page');
+    const cached = fromMem || (Array.isArray(fromSession?.products) && fromSession.products.length ? fromSession : null);
+    if (cached?.products?.length) {
+      this.products = cached.products;
+      this.categories = cached.categories || this.categories || [];
+      this.suppliers = cached.suppliers || this.suppliers || [];
+      paint();
+    } else {
+      el.innerHTML = `<div class="page-toolbar"><input type="search" id="prod-search" placeholder="Search products…" style="padding:8px 14px;border:1.5px solid var(--border);border-radius:8px;width:260px">
+        <button class="btn btn-primary" id="add-product">+ Add Product</button></div>
+      <div class="card"><div class="table-wrap">${Utils.pageSkeleton(5)}</div></div>`;
+    }
+
+    try {
+      const [prodRes, catRes, supRes] = await Promise.all([
+        API.getProducts({}),
+        API.getCategories({}),
+        API.getSuppliers()
+      ]);
+      if (prodRes && prodRes.success === false) {
+        const msg = prodRes.error || 'Failed to load products';
+        if (!this.products?.length) {
+          el.innerHTML = `<div class="page-toolbar"><h3>Products</h3></div><p class="error-msg">${Utils.escHtml(msg)}</p>`;
+          return;
+        }
+        window.DataCache?.showStaleBanner?.(el, `Unable to refresh. Showing last updated data. (${msg})`);
+        return;
+      }
+      this.products = Array.isArray(prodRes?.data) ? prodRes.data : [];
+      this.categories = Array.isArray(catRes?.data) ? catRes.data : (this.categories || []);
+      this.suppliers = Array.isArray(supRes?.data) ? supRes.data : (this.suppliers || []);
+      Utils.sessionCacheSet('products_page', {
+        products: this.products,
+        categories: this.categories,
+        suppliers: this.suppliers
+      });
+      paint();
+      window.DataCache?.clearStaleBanner?.(el);
+    } catch (err) {
+      if (!this.products?.length) {
+        el.innerHTML = `<div class="page-toolbar"><h3>Products</h3></div><p class="error-msg">${Utils.escHtml(err?.message || 'Failed to load products')}</p>`;
+        return;
+      }
+      window.DataCache?.showStaleBanner?.(el, 'Unable to refresh. Showing last updated data.');
+    }
+  },
+
+  async activate(el, app) {
+    return this.render(el, app);
   },
 
   renderRows(currency, items) {
@@ -222,6 +260,7 @@ const ProductsPage = {
         <button type="button" class="form-tab active" data-tab="basic">Basic</button>
         <button type="button" class="form-tab" data-tab="stock">Stock</button>
         <button type="button" class="form-tab" data-tab="options">Options & Extras</button>
+        <button type="button" class="form-tab" data-tab="custom">Custom Fields</button>
       </div>
       <div id="tab-basic" class="tab-panel">
         <div class="form-grid">
@@ -245,8 +284,33 @@ const ProductsPage = {
         <div class="form-grid">
           <div class="field"><label>Stock Quantity</label><input type="number" id="pf-stock" step="0.01" value="${product?.stock_quantity ?? 0}"></div>
           <div class="field"><label>Min Stock Alert</label><input type="number" id="pf-min" step="0.01" value="${product?.min_stock ?? 5}"></div>
-          <div class="field"><label>Unit</label><select id="pf-unit">${this.unitOptions(stockUnit)}</select></div>
+          <div class="field"><label>Stock unit (how you count)</label><select id="pf-unit">${this.unitOptions(stockUnit)}</select></div>
         </div>
+        <h4 style="margin:20px 0 8px">Packages (how you buy)</h4>
+        <p class="muted" style="margin:0 0 12px;font-size:13px">Example: buy by <strong>Case</strong> of <strong>24</strong> bottles — stock stays in bottles. Restock 2 cases → +48 stock.</p>
+        <div class="form-grid">
+          <div class="field"><label>Package name</label>
+            <input id="pf-pack-label" list="pf-pack-presets" placeholder="e.g. Case, Box, Carton, Pack" value="${product?.purchase_unit_label || ''}">
+            <datalist id="pf-pack-presets">
+              <option value="Case"><option value="Box"><option value="Carton"><option value="Pack"><option value="Bundle"><option value="Crate">
+            </datalist>
+          </div>
+          <div class="field"><label>Contains (qty)</label>
+            <input type="number" id="pf-pack-qty" step="0.001" min="0.001" value="${product?.purchase_unit_qty > 0 ? product.purchase_unit_qty : 1}">
+          </div>
+          <div class="field"><label>Of stock unit</label>
+            <select id="pf-pack-of-unit">${this.unitOptions(stockUnit)}</select>
+            <small class="muted">Usually same as stock unit above</small>
+          </div>
+          <div class="field"><label>Purchase unit code</label>
+            <select id="pf-purchase-unit">${this.unitOptions(product?.purchase_unit || product?.purchase_unit_label || 'case')}</select>
+            <small class="muted">Used when restocking / receiving</small>
+          </div>
+        </div>
+        <h4 style="margin:20px 0 8px">Extra conversions</h4>
+        <p class="muted" style="margin:0 0 8px;font-size:12px">Optional: e.g. 1 kg = 1000 g. Package above is saved as a conversion automatically.</p>
+        <div id="pf-conv-list"></div>
+        <button type="button" class="btn btn-ghost btn-sm" id="pf-add-conv" style="margin-top:8px">+ Add conversion</button>
       </div>
       <div id="tab-options" class="tab-panel hidden">
         <p class="muted" style="margin-bottom:12px">Set option groups (e.g. sauce — pick 1 or 2, mandatory or not). Use <strong>Without / Remove</strong> to reduce price (e.g. Without pap −R10).</p>
@@ -265,6 +329,10 @@ const ProductsPage = {
         <h4 style="margin:20px 0 8px">Extras (add-on checkboxes)</h4>
         <div id="extra-list"></div>
         <button type="button" class="btn btn-ghost btn-sm" id="add-extra" style="margin-top:8px">+ Add Extra</button>
+      </div>
+      <div id="tab-custom" class="tab-panel hidden">
+        <p class="muted" style="margin-bottom:12px">Extra fields from Admin → Custom Fields. Leave blank if unused.</p>
+        <div id="pf-custom-fields"><p class="muted">Loading…</p></div>
       </div>`,
       '<button type="button" class="btn btn-primary" id="save-prod">Save Product</button>');
 
@@ -334,6 +402,56 @@ const ProductsPage = {
     renderOptionGroups();
     renderRemovals();
     renderExtras();
+
+    this.editingConversions = (product?.conversions || []).map(c => ({
+      from_qty: Number(c.from_qty) > 0 ? Number(c.from_qty) : 1,
+      from_unit: c.from_unit || '',
+      to_qty: Number(c.to_qty) > 0 ? Number(c.to_qty) : 1,
+      to_unit: c.to_unit || stockUnit,
+      label: c.label || ''
+    }));
+    const renderConversions = () => {
+      const el = document.getElementById('pf-conv-list');
+      if (!el) return;
+      el.innerHTML = this.editingConversions.map((c, i) => `
+        <div class="form-grid" style="margin-bottom:8px;align-items:end">
+          <div class="field"><label>From qty</label><input type="number" class="cv-from-qty" data-i="${i}" step="0.001" min="0.001" value="${c.from_qty}"></div>
+          <div class="field"><label>From unit</label><input class="cv-from-unit" data-i="${i}" list="pf-unit-list" value="${c.from_unit}" placeholder="case"></div>
+          <div class="field"><label>= To qty</label><input type="number" class="cv-to-qty" data-i="${i}" step="0.001" min="0.001" value="${c.to_qty}"></div>
+          <div class="field"><label>To unit</label><input class="cv-to-unit" data-i="${i}" list="pf-unit-list" value="${c.to_unit}" placeholder="each"></div>
+          <div class="field"><label>Label</label><input class="cv-label" data-i="${i}" value="${c.label || ''}" placeholder="optional"></div>
+          <div class="field" style="display:flex;align-items:flex-end"><button type="button" class="btn btn-sm btn-danger cv-rm" data-i="${i}">×</button></div>
+        </div>`).join('') || '<p class="muted">No extra conversions</p>';
+      if (!document.getElementById('pf-unit-list')) {
+        const dl = document.createElement('datalist');
+        dl.id = 'pf-unit-list';
+        dl.innerHTML = Utils.getAllStockUnits().map(u => `<option value="${u}">`).join('');
+        el.parentElement?.appendChild(dl);
+      }
+      el.querySelectorAll('.cv-from-qty').forEach(inp => inp.addEventListener('input', () => { this.editingConversions[inp.dataset.i].from_qty = parseFloat(inp.value) || 1; }));
+      el.querySelectorAll('.cv-from-unit').forEach(inp => inp.addEventListener('input', () => { this.editingConversions[inp.dataset.i].from_unit = inp.value; }));
+      el.querySelectorAll('.cv-to-qty').forEach(inp => inp.addEventListener('input', () => { this.editingConversions[inp.dataset.i].to_qty = parseFloat(inp.value) || 1; }));
+      el.querySelectorAll('.cv-to-unit').forEach(inp => inp.addEventListener('input', () => { this.editingConversions[inp.dataset.i].to_unit = inp.value; }));
+      el.querySelectorAll('.cv-label').forEach(inp => inp.addEventListener('input', () => { this.editingConversions[inp.dataset.i].label = inp.value; }));
+      el.querySelectorAll('.cv-rm').forEach(b => b.addEventListener('click', () => {
+        this.editingConversions.splice(parseInt(b.dataset.i, 10), 1);
+        renderConversions();
+      }));
+    };
+    renderConversions();
+    document.getElementById('pf-add-conv')?.addEventListener('click', () => {
+      const u = document.getElementById('pf-unit')?.value || 'each';
+      this.editingConversions.push({ from_qty: 1, from_unit: 'case', to_qty: 24, to_unit: u, label: 'Case' });
+      renderConversions();
+    });
+    const syncPackOfUnit = () => {
+      const stock = document.getElementById('pf-unit')?.value;
+      const ofUnit = document.getElementById('pf-pack-of-unit');
+      if (stock && ofUnit && !ofUnit.dataset.touched) ofUnit.value = stock;
+    };
+    document.getElementById('pf-unit')?.addEventListener('change', syncPackOfUnit);
+    document.getElementById('pf-pack-of-unit')?.addEventListener('change', (e) => { e.target.dataset.touched = '1'; });
+
     document.getElementById('add-opt-group')?.addEventListener('click', () => {
       this.editingOptionGroups.push({ name: 'Choose one', choices: [{ name: '', extra_price: 0 }], min_select: 1, max_select: 1, is_required: false });
       renderOptionGroups();
@@ -373,6 +491,27 @@ const ProductsPage = {
 
     document.getElementById('save-prod').addEventListener('click', () => this.saveProduct());
 
+    this._customFields = [];
+    try {
+      const cfRes = product?.id
+        ? await API.getCustomFieldValues('product', product.id)
+        : await API.getCustomFields('product');
+      this._customFields = cfRes.data || [];
+    } catch (_) { this._customFields = []; }
+    const cfEl = document.getElementById('pf-custom-fields');
+    if (cfEl) {
+      if (!this._customFields.length) {
+        cfEl.innerHTML = '<p class="muted">No custom fields yet. Add them in Admin → Custom Fields.</p>';
+      } else {
+        cfEl.innerHTML = `<div class="form-grid">${this._customFields.map(f => {
+          const id = f.field_id || f.id;
+          const type = f.field_type === 'number' ? 'number' : f.field_type === 'date' ? 'date' : 'text';
+          return `<div class="field"><label>${f.field_label || f.field_name}${f.is_required ? ' *' : ''}</label>
+            <input id="cfv-${id}" data-field-id="${id}" type="${type}" value="${f.value || ''}"></div>`;
+        }).join('')}</div>`;
+      }
+    }
+
     if (this.picturePath) await Utils.setImagePreview('pf-image-preview', this.picturePath);
   },
 
@@ -381,6 +520,35 @@ const ProductsPage = {
     btn.disabled = true;
     btn.textContent = 'Saving…';
     const unit = document.getElementById('pf-unit')?.value || 'each';
+    const packLabel = (document.getElementById('pf-pack-label')?.value || '').trim();
+    const packQty = parseFloat(document.getElementById('pf-pack-qty')?.value) || 1;
+    const packOfUnit = document.getElementById('pf-pack-of-unit')?.value || unit;
+    const purchaseUnit = document.getElementById('pf-purchase-unit')?.value || packLabel || unit;
+    const conversions = [...(this.editingConversions || [])]
+      .filter(c => c.from_unit?.trim() && c.to_unit?.trim() && Number(c.to_qty) > 0)
+      .map(c => ({
+        from_qty: Number(c.from_qty) > 0 ? Number(c.from_qty) : 1,
+        from_unit: c.from_unit.trim(),
+        to_qty: Number(c.to_qty),
+        to_unit: c.to_unit.trim(),
+        label: (c.label || '').trim() || null
+      }));
+    if (packLabel && packQty > 0) {
+      const packUnitCode = (purchaseUnit || packLabel).toLowerCase();
+      const exists = conversions.some(c =>
+        String(c.from_unit).toLowerCase() === packUnitCode &&
+        String(c.to_unit).toLowerCase() === String(packOfUnit).toLowerCase()
+      );
+      if (!exists) {
+        conversions.unshift({
+          from_qty: 1,
+          from_unit: purchaseUnit || packLabel,
+          to_qty: packQty,
+          to_unit: packOfUnit,
+          label: packLabel
+        });
+      }
+    }
     const prev = this.editingProduct || {};
     this.syncModifiersFromDom();
     const modifiers = this.flattenModifiers();
@@ -397,6 +565,9 @@ const ProductsPage = {
       min_stock: parseFloat(document.getElementById('pf-min').value) || 5,
       unit,
       stock_unit: unit,
+      purchase_unit: purchaseUnit || null,
+      purchase_unit_qty: packQty > 0 ? packQty : 1,
+      purchase_unit_label: packLabel || null,
       picture_path: this.picturePath,
       description: document.getElementById('pf-desc').value.trim(),
       is_active: parseInt(document.getElementById('pf-status').value),
@@ -404,9 +575,9 @@ const ProductsPage = {
       options_style: document.getElementById('pf-options-style')?.value || 'radio',
       option_groups_meta: this._optionGroupsMeta || [],
       modifiers,
-      conversions: prev.conversions || [],
-      recipe: prev.recipe || []
+      conversions
     };
+    if (prev.recipe?.length) data.recipe = prev.recipe;
 
     if (!data.name) { Utils.toast('Product name is required', 'error'); btn.disabled = false; btn.textContent = 'Save Product'; return; }
     if (Number.isNaN(data.selling_price) || !data.selling_price || data.selling_price <= 0) {
@@ -421,6 +592,16 @@ const ProductsPage = {
         btn.disabled = false;
         btn.textContent = 'Save Product';
         return;
+      }
+      const productId = result.data?.id || result.data || prev.id;
+      if (productId && this._customFields?.length) {
+        const values = {};
+        this._customFields.forEach(f => {
+          const id = f.field_id || f.id;
+          const inp = document.getElementById(`cfv-${id}`);
+          if (inp) values[id] = inp.value;
+        });
+        await API.saveCustomFieldValues('product', productId, values, this.app.user);
       }
       Utils.hideModal();
       Utils.sessionCacheClear('products_page');

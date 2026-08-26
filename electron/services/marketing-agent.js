@@ -430,6 +430,54 @@ function saveTask(data, actor) {
   return task;
 }
 
+function digitsPhone(p) {
+  return String(p || '').replace(/\D/g, '').replace(/^27/, '').replace(/^0/, '');
+}
+
+function phonesMatchSimple(a, b) {
+  const x = digitsPhone(a);
+  const y = digitsPhone(b);
+  if (!x || !y) return false;
+  return x === y || x.endsWith(y) || y.endsWith(x);
+}
+
+function linkPosCustomer(fullName, phone, actor) {
+  const db = getDb();
+  let pos = null;
+  if (phone?.trim()) {
+    const all = db.prepare(`SELECT * FROM customers WHERE phone IS NOT NULL AND TRIM(phone) != ''`).all();
+    pos = all.find((c) => phonesMatchSimple(phone, c.phone)) || null;
+  }
+  if (!pos && fullName?.trim()) {
+    pos = db.prepare(`SELECT * FROM customers WHERE LOWER(name) = LOWER(?)`).get(fullName.trim()) || null;
+  }
+  if (!pos && fullName?.trim()) {
+    try {
+      pos = require('./store').saveCustomer({
+        name: fullName.trim(),
+        phone: phone || null,
+        notes: 'Created from Marketing Agent'
+      }, actor?.id, actor?.username || actor?.full_name);
+    } catch (_) {
+      if (phone?.trim()) {
+        const all = db.prepare(`SELECT * FROM customers WHERE phone IS NOT NULL AND TRIM(phone) != ''`).all();
+        pos = all.find((c) => phonesMatchSimple(phone, c.phone)) || null;
+      }
+      if (!pos && fullName?.trim()) {
+        pos = db.prepare(`SELECT * FROM customers WHERE LOWER(name) = LOWER(?)`).get(fullName.trim()) || null;
+      }
+    }
+  }
+  return pos?.id || null;
+}
+
+function attachPosCustomerId(rowId, posId) {
+  if (!rowId || !posId) return;
+  const db = getDb();
+  db.prepare(`UPDATE marketing_customers SET customer_id=? WHERE id=?`).run(posId, rowId);
+  db.prepare(`UPDATE marketing_referrals SET customer_id=? WHERE marketing_customer_id=?`).run(posId, rowId);
+}
+
 /* ─── Customers / recruitment ─── */
 function listMarketingCustomers(filters = {}, actor) {
   const user = requireAgentOrAdmin(actor);
@@ -477,9 +525,12 @@ function saveMarketingCustomer(data, actor) {
       user.id, data.id
     );
     const updated = db.prepare('SELECT * FROM marketing_customers WHERE id=?').get(data.id);
-    enqueueSync('marketing_customer', updated.uid, updated);
+    const posId = data.customer_id || updated.customer_id || linkPosCustomer(data.full_name, data.phone || updated.phone, user);
+    if (posId && Number(updated.customer_id) !== Number(posId)) attachPosCustomerId(updated.id, posId);
+    const linked = db.prepare('SELECT * FROM marketing_customers WHERE id=?').get(data.id);
+    enqueueSync('marketing_customer', linked.uid, linked);
     audit(user, 'update_marketing_customer', 'marketing_customer', data.id, {});
-    return updated;
+    return linked;
   }
   const customerUid = uid();
   const r = db.prepare(`
@@ -496,10 +547,13 @@ function saveMarketingCustomer(data, actor) {
   db.prepare(`
     INSERT INTO marketing_referrals (uid, agent_id, referral_code, marketing_customer_id, status, sync_status)
     VALUES (?,?,?,?, 'pending', 'pending')`).run(uid(), agentId, agent?.referral_code || '', created.id);
-  enqueueSync('marketing_customer', customerUid, created);
-  audit(user, 'create_marketing_customer', 'marketing_customer', created.id, { phone: data.phone });
+  const posId = data.customer_id || linkPosCustomer(data.full_name, data.phone, user);
+  if (posId) attachPosCustomerId(created.id, posId);
+  const linked = db.prepare('SELECT * FROM marketing_customers WHERE id=?').get(created.id);
+  enqueueSync('marketing_customer', customerUid, linked);
+  audit(user, 'create_marketing_customer', 'marketing_customer', created.id, { phone: data.phone, customer_id: posId });
   touchAgent(agentId);
-  return created;
+  return linked;
 }
 
 function markCustomerConverted(id, purchaseTotal, actor) {
@@ -508,14 +562,28 @@ function markCustomerConverted(id, purchaseTotal, actor) {
   const row = db.prepare('SELECT * FROM marketing_customers WHERE id=?').get(id);
   if (!row) throw new Error('Customer not found');
   if (!user.isAdmin && row.agent_id !== user.agent.id) throw new Error('Not your customer');
+  let total = money(purchaseTotal);
+  let firstAt = null;
+  let lastAt = null;
+  if (row.customer_id) {
+    const sales = db.prepare(`
+      SELECT COALESCE(SUM(total),0) as t, MIN(created_at) as first_at, MAX(created_at) as last_at
+      FROM sales WHERE customer_id=? AND IFNULL(status,'completed') NOT IN ('void','voided')
+    `).get(row.customer_id);
+    if (sales && Number(sales.t) > 0) total = money(sales.t);
+    firstAt = sales?.first_at || null;
+    lastAt = sales?.last_at || null;
+  }
   db.prepare(`
-    UPDATE marketing_customers SET conversion_status='converted', first_purchase_at=COALESCE(first_purchase_at, datetime('now')),
-      updated_at=datetime('now'), sync_status='pending' WHERE id=?`).run(id);
+    UPDATE marketing_customers SET conversion_status='converted',
+      first_purchase_at=COALESCE(?, first_purchase_at, datetime('now')),
+      last_purchase_at=COALESCE(?, last_purchase_at, datetime('now')),
+      updated_at=datetime('now'), sync_status='pending' WHERE id=?`).run(firstAt, lastAt, id);
   const ref = db.prepare('SELECT * FROM marketing_referrals WHERE marketing_customer_id=?').get(id);
   if (ref) {
     db.prepare(`
-      UPDATE marketing_referrals SET status='converted', first_purchase_total=?, revenue=COALESCE(revenue,0)+?, updated_at=datetime('now'), sync_status='pending'
-      WHERE id=?`).run(money(purchaseTotal), money(purchaseTotal), ref.id);
+      UPDATE marketing_referrals SET status='converted', first_purchase_total=?, revenue=?, updated_at=datetime('now'), sync_status='pending'
+      WHERE id=?`).run(total, total, ref.id);
   }
   return db.prepare('SELECT * FROM marketing_customers WHERE id=?').get(id);
 }
@@ -812,7 +880,7 @@ function listMessages(filters = {}, actor) {
   return getDb().prepare(sql).all(...params);
 }
 
-function saveMessage(data, actor) {
+async function saveMessage(data, actor) {
   const user = requireAgentOrAdmin(actor);
   const agentId = user.isAdmin ? (data.agent_id || user.agent?.id) : user.agent.id;
   const audience = data.audience || parseJson(data.audience_json, {});
@@ -833,8 +901,31 @@ function saveMessage(data, actor) {
     data.status === 'queued' ? 'queued' : 'draft'
   );
   const created = getDb().prepare('SELECT * FROM marketing_messages WHERE id=?').get(r.lastInsertRowid);
-  enqueueSync('marketing_message', msgUid, { ...created, recipients: recipients.map(r => ({ id: r.id, phone: r.phone, name: r.full_name })) });
+  enqueueSync('marketing_message', msgUid, { ...created, recipients: recipients.map(rec => ({ id: rec.id, phone: rec.phone, name: rec.full_name })) });
   audit(user, 'create_message', 'marketing_message', created.id, { recipients: recipients.length });
+
+  if (data.status === 'queued' && recipients.length) {
+    const whatsapp = require('./whatsapp');
+    let sent = 0;
+    let failed = 0;
+    const urls = [];
+    for (const rec of recipients) {
+      try {
+        const wr = await whatsapp.sendMessage({
+          phone: rec.phone,
+          body: body.trim(),
+          message_type: 'custom',
+          customer_id: rec.customer_id || null,
+          customer_name: rec.full_name
+        }, user);
+        sent++;
+        if (wr?.url) urls.push({ phone: rec.phone, name: rec.full_name, url: wr.url });
+      } catch (_) { failed++; }
+    }
+    const status = sent ? 'sent' : 'queued';
+    getDb().prepare(`UPDATE marketing_messages SET status=? WHERE id=?`).run(status, created.id);
+    return { ...created, status, recipients, _sent: sent, _failed: failed, urls };
+  }
   return { ...created, recipients };
 }
 

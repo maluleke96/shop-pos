@@ -11,7 +11,7 @@ function mergePrintSettings(settings, overrides = {}, localDevice = {}) {
   return {
     receiptPrinter: overrides.receiptPrinter || ps.receipt_printer || ds.receipt_printer || 'System Print',
     kitchenPrinter: overrides.kitchenPrinter || ps.kitchen_printer || ds.kitchen_printer || 'System Print',
-    invoicePrinter: ps.invoice_printer || 'System Print',
+    invoicePrinter: overrides.invoicePrinter || ps.invoice_printer || ds.invoice_printer || 'System Print',
     barcodePrinter: ps.barcode_printer || ps.receipt_printer || ds.receipt_printer || 'System Print',
     paperSize: overrides.paperSize || ps.paper_size || ds.paper_size || '80mm',
     silent: false,
@@ -119,7 +119,7 @@ async function printHtml(html, options = {}) {
   return { success: true };
 }
 
-async function openPreviewWindow(html, title = 'Print Preview') {
+async function openPreviewWindow(html, title = 'Print Preview', shareOpts = null) {
   const overlay = document.createElement('div');
   overlay.id = 'mobile-print-preview';
   overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:99999;display:flex;flex-direction:column;padding:12px';
@@ -148,7 +148,16 @@ async function openPreviewWindow(html, title = 'Print Preview') {
     try { frame.contentWindow.focus(); frame.contentWindow.print(); } catch (_) {}
   });
   overlay.querySelector('#mob-print-share')?.addEventListener('click', () => {
-    shareHtmlForPrint(html, title).catch(err => alert(err.message || 'Could not share'));
+    const run = async () => {
+      if (shareOpts?.bytes?.byteLength) {
+        const capFiles = require('../capacitorFiles');
+        const name = shareOpts.filename || `${String(title || 'document').replace(/[^a-zA-Z0-9._-]/g, '_')}.pdf`;
+        await capFiles.saveAndShare(name, shareOpts.bytes);
+        return;
+      }
+      await shareHtmlForPrint(html, title);
+    };
+    run().catch(err => alert(err.message || 'Could not share'));
   });
   return overlay;
 }
@@ -218,6 +227,10 @@ async function openCashDrawer() {
 let customerWindow = null;
 
 function openKitchenDisplay() {
+  if (isCapacitorNative() && typeof window.App?.openInAppDisplay === 'function') {
+    window.App.openInAppDisplay('kitchen');
+    return true;
+  }
   if (kitchenWindow && !kitchenWindow.closed) {
     kitchenWindow.focus();
     return kitchenWindow;
@@ -246,6 +259,10 @@ function refreshKitchenDisplay() {
 }
 
 function openCustomerDisplay() {
+  if (isCapacitorNative() && typeof window.App?.openInAppDisplay === 'function') {
+    window.App.openInAppDisplay('customer');
+    return true;
+  }
   if (customerWindow && !customerWindow.closed) {
     customerWindow.focus();
     return customerWindow;
@@ -263,9 +280,26 @@ function refreshCustomerDisplay() {
   refreshKitchenDisplay();
 }
 
+async function printPdfBuffer(buffer, filename = 'document.pdf') {
+  const { toUint8 } = require('../../electron/services/pdf-bytes');
+  const bytes = toUint8(buffer);
+  if (!bytes.byteLength) throw new Error('PDF was empty');
+  const blob = new Blob([bytes], { type: 'application/pdf' });
+  const url = URL.createObjectURL(blob);
+  const title = String(filename || 'document.pdf').replace(/\.pdf$/i, '');
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${title}</title>
+    <style>html,body{margin:0;height:100%;background:#525659} iframe{border:0;width:100%;height:100%}</style></head>
+    <body><iframe src="${url}" title="PDF"></iframe>
+    <script>setTimeout(function(){try{window.focus();}catch(e){}},200);</script></body></html>`;
+  await openPreviewWindow(html, 'Print PDF', { bytes, filename: filename || 'document.pdf' });
+  setTimeout(() => { try { URL.revokeObjectURL(url); } catch (_) {} }, 120000);
+  return { success: true };
+}
+
 module.exports = {
   mergePrintSettings,
   printHtml,
+  printPdfBuffer,
   openPreviewWindow,
   getPrintersFromWindow,
   enrichPrinters,

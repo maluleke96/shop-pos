@@ -1,6 +1,6 @@
 {
   "name": "shop-pos",
-  "version": "2.9.41",
+  "version": "2.10.20",
   "description": "Shop POS — Railway app + Supabase database (Web, Electron, Android)",
   "main": "electron/main.js",
   "author": "Happy",
@@ -21,6 +21,9 @@
     "build:release": "npm run build:electron && node scripts/create-release-zip.js && node scripts/create-source-zip.js",
     "build:mobile-www": "node scripts/build-mobile-www.js",
     "build:android": "npm run build:mobile-www && npx cap sync android && node scripts/run-gradle-android.js && node scripts/copy-android-apk.js",
+    "build:cloud-windows": "node scripts/build-cloud-windows-apps.js",
+    "build:cloud-android": "node scripts/build-cloud-android-apps.js",
+    "prepare:cloud-android": "node scripts/write-capacitor-cloud-apps.js",
     "postinstall": "echo Skipping native rebuild",
     "supabase:inventory": "node scripts/inventory-sqlite.js",
     "supabase:schema": "node scripts/generate-supabase-schema.js",

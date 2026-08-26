@@ -1,9 +1,26 @@
 const CustomersPage = {
   async render(el, app) {
     this.app = app;
-    const res = await API.getCustomers();
-    this.customers = res.data || [];
+    this._host = el;
+    const peek = window.DataCache?.peek?.('customers', ['']);
+    if (peek?.data) {
+      this.customers = peek.data || [];
+      this.paint(el);
+    } else {
+      el.innerHTML = `<div class="page-toolbar"><h3>Customers</h3></div><div class="card">${Utils.pageSkeleton(4)}</div>`;
+    }
+    try {
+      const res = await API.getCustomers();
+      this.customers = res.data || [];
+      this.paint(el);
+      window.DataCache?.clearStaleBanner?.(el);
+    } catch (err) {
+      if (!this.customers?.length) throw err;
+      window.DataCache?.showStaleBanner?.(el, 'Unable to refresh. Showing last updated data.');
+    }
+  },
 
+  paint(el) {
     el.innerHTML = `
       <div class="page-toolbar">
         <input type="search" id="cust-search" placeholder="Search customers…" style="padding:8px 14px;border:1.5px solid var(--border);border-radius:8px;width:260px">
@@ -22,6 +39,10 @@ const CustomersPage = {
       this.bindEvents();
     });
     this.bindEvents();
+  },
+
+  async activate(el, app) {
+    return this.render(el, app);
   },
 
   renderRows() {
@@ -57,14 +78,16 @@ const CustomersPage = {
 
   async showHistory(customerId) {
     const customer = this.customers.find(c => c.id === customerId);
-    const [summaryRes, ledgerRes] = await Promise.all([
+    const [summaryRes, ledgerRes, loyaltyRes] = await Promise.all([
       API.getCustomerPurchaseSummary(customerId),
-      API.getCreditLedger(customerId)
+      API.getCreditLedger(customerId),
+      API.getLoyaltyHistory(customerId)
     ]);
     const s = summaryRes.data || {};
     const currency = this.app.settings?.currency || 'R';
     const sales = s.sales || [];
     const ledger = ledgerRes.data || [];
+    const loyalty = loyaltyRes.data || [];
     Utils.showModal(`Customer: ${customer?.name || ''}`, `
       <div class="stats-grid" style="margin-bottom:16px">
         <div class="stat-card"><div class="label">Total Spent</div><div class="value">${Utils.formatMoney(s.totalSpent || 0, currency)}</div></div>
@@ -79,7 +102,10 @@ const CustomersPage = {
         ${sales.map(x => `<tr><td>${x.receipt_number}</td><td>${Utils.formatMoney(x.total, currency)}</td><td>${Utils.formatDateTime(x.created_at)}</td></tr>`).join('')}</table>`
         : '<p class="muted">No purchases yet</p>'}
       ${ledger.length ? `<h4 style="margin-top:16px">Credit Ledger</h4>
-        ${ledger.map(l => `<div style="padding:4px 0">${Utils.formatDateTime(l.created_at)} — ${l.type}: ${Utils.formatMoney(l.amount, currency)} ${l.notes || ''}</div>`).join('')}` : ''}`,
+        ${ledger.map(l => `<div style="padding:4px 0">${Utils.formatDateTime(l.created_at)} — ${l.type}: ${Utils.formatMoney(l.amount, currency)} ${l.notes || ''}</div>`).join('')}` : ''}
+      ${loyalty.length ? `<h4 style="margin-top:16px">Loyalty Points</h4>
+        <table style="width:100%"><tr><th>Date</th><th>Type</th><th>Points</th></tr>
+          ${loyalty.map(l => `<tr><td>${Utils.formatDateTime(l.created_at)}</td><td>${l.type || '—'}</td><td>${l.points}</td></tr>`).join('')}</table>` : ''}`,
       '<button class="btn btn-ghost" id="close-hist">Close</button>');
     document.getElementById('close-hist')?.addEventListener('click', Utils.hideModal);
   },

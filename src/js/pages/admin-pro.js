@@ -101,7 +101,7 @@
     const res = await API.getAutomationRules();
     const rules = res.data || [];
     el.innerHTML = `<div class="admin-section"><h3>Automation Rules</h3>
-      <p class="muted">Create rules that run automatically — low stock warnings, manager approval, backup reminders.</p>
+      <p class="muted">Before Sale prompts for a manager PIN. Low Stock and Shift Close create notifications (and a backup reminder on close).</p>
       <button class="btn btn-primary" id="add-rule" style="margin:12px 0">+ Add Rule</button>
       <div class="card"><div class="table-wrap"><table>
         <thead><tr><th>Name</th><th>Trigger</th><th>Active</th><th></th></tr></thead>
@@ -118,14 +118,20 @@
         <div class="field"><label>Trigger</label><select id="ar-trigger">
           <option value="before_sale">Before Sale</option><option value="low_stock">Low Stock</option><option value="shift_close">Shift Close</option></select></div>
         <div class="field"><label>Min Amount (for sales)</label><input type="number" id="ar-min" placeholder="5000"></div>
-        <div class="field"><label>Max Discount %</label><input type="number" id="ar-disc" placeholder="20"></div>`,
+        <div class="field"><label>Max Discount %</label><input type="number" id="ar-disc" placeholder="20"></div>
+        <div class="field"><label>Alert when stock is below</label><input type="number" id="ar-stock" placeholder="10"></div>`,
         '<button class="btn btn-primary" id="save-rule">Save</button>');
       document.getElementById('save-rule').addEventListener('click', async () => {
+        const trigger = document.getElementById('ar-trigger').value;
         await API.saveAutomationRule({
           name: document.getElementById('ar-name').value.trim(),
-          trigger_type: document.getElementById('ar-trigger').value,
-          condition: { min_amount: parseFloat(document.getElementById('ar-min').value)||0, max_discount_pct: parseFloat(document.getElementById('ar-disc').value)||0 },
-          action: { require_manager: true, notify: true },
+          trigger_type: trigger,
+          condition: {
+            min_amount: parseFloat(document.getElementById('ar-min').value) || 0,
+            max_discount_pct: parseFloat(document.getElementById('ar-disc').value) || 0,
+            min_stock: parseFloat(document.getElementById('ar-stock').value) || 0
+          },
+          action: { require_manager: trigger === 'before_sale', notify: true },
           is_active: true
         });
         Utils.hideModal();
@@ -178,18 +184,25 @@
         <div class="field"><label>Invoice Prefix</label><input id="fmt-inv" value="${s.invoice_prefix||'INV'}"></div>
         <div class="field"><label>Quote Prefix</label><input id="fmt-qt" value="${s.quote_prefix||'QT'}"></div>
         <div class="field"><label>Receipt Prefix</label><input id="fmt-rcp" value="${s.receipt_prefix||'RCP'}"></div>
-        <div class="field"><label>Currency Position</label><select id="fmt-cur"><option value="before">Before (R100)</option><option value="after">After (100R)</option></select></div>
+        <div class="field"><label>Currency Position</label><select id="fmt-cur">
+          <option value="before" ${s.currency_position!=='after'?'selected':''}>Before (R100)</option>
+          <option value="after" ${s.currency_position==='after'?'selected':''}>After (100R)</option>
+        </select></div>
       </div>
       <button class="btn btn-primary" id="save-formats" style="margin-top:16px">Save</button>
       </div></div></div>`;
     document.getElementById('save-formats').addEventListener('click', async () => {
-      await API.saveSettings({
+      const patch = {
         date_format: document.getElementById('fmt-date').value,
         time_format: document.getElementById('fmt-time').value,
         invoice_prefix: document.getElementById('fmt-inv').value.trim(),
         quote_prefix: document.getElementById('fmt-qt').value.trim(),
-        receipt_prefix: document.getElementById('fmt-rcp').value.trim()
-      }, this.app.user);
+        receipt_prefix: document.getElementById('fmt-rcp').value.trim(),
+        currency_position: document.getElementById('fmt-cur').value
+      };
+      await API.saveSettings(patch, this.app.user);
+      this.settings = { ...this.settings, ...patch };
+      if (this.app) this.app.settings = { ...this.app.settings, ...patch };
       Utils.toast('Format settings saved', 'success');
     });
   };
@@ -198,7 +211,7 @@
     const res = await API.getDeveloperInfo(this.app.user);
     const info = res.data || {};
     el.innerHTML = `<div class="admin-section"><h3>Developer Mode</h3>
-      <p class="muted">Hidden section for software distribution, licensing, and debugging.</p>
+      <p class="muted">Local license flag only — it does not unlock cloud or phone sync. Shop POS runs fully without a key.</p>
       <div class="stats-grid" style="margin-top:16px">
         <div class="stat-card"><div class="label">Version</div><div class="value">${info.version||'1.1.0'}</div></div>
         <div class="stat-card"><div class="label">License</div><div class="value">${info.license?.status||'trial'}</div></div>

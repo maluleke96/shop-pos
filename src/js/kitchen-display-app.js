@@ -90,7 +90,7 @@ const KDS = {
         </header>
         <div class="order-meta">${this.elapsed(o.created_at)} · ${o.station || 'kitchen'}${o.table_number ? ` · Table ${o.table_number}` : ''}</div>
         <ul class="order-items">${(o.items || []).map(i =>
-          `<li><span class="qty">${i.quantity}×</span> ${i.product_name}${i.modifiers ? ` <em>(${i.modifiers})</em>` : ''}</li>`).join('')}</ul>
+          `<li><span class="qty">${i.quantity}×</span> ${i.product_name}${i.modifiers ? ` <em>(${i.modifiers})</em>` : ''}${i.notes ? ` <small class="allergen">${i.notes}</small>` : ''}</li>`).join('')}</ul>
         <footer class="order-actions">
           ${o.status === 'pending' ? `<button class="btn btn-start" data-id="${o.id}" data-action="preparing">Start</button>` : ''}
           ${o.status === 'preparing' ? `<button class="btn btn-ready" data-id="${o.id}" data-action="ready">Ready</button>` : ''}
@@ -104,7 +104,8 @@ const KDS = {
         e.stopPropagation();
         const id = parseInt(btn.dataset.id, 10);
         const action = btn.dataset.action;
-        const r = await API.updateKitchenStatus(id, action, window.App?.user || null);
+        const actor = window.App?.user || window.parent?.App?.user || null;
+        const r = await API.updateKitchenStatus(id, action, actor);
         if (r && r.success === false) {
           console.warn('Kitchen status update failed', r.error);
           await this.load();

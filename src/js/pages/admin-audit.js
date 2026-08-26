@@ -63,7 +63,7 @@
     }
     const d = res.data || {};
     const currency = this.settings.currency || 'R';
-    const alertNav = { inventory: ['products'], shifts: ['shifts'], returns: ['returnsmgmt'], backup: ['backup'], po: ['purchase-orders'], leave: ['staffhr'] };
+    const alertNav = { inventory: ['products'], shifts: ['staffhr'], returns: ['returnsmgmt'], backup: ['backup'], po: ['purchase-orders'], leave: ['staffhr'] };
     el.innerHTML = `<div class="admin-section"><h3>Business Health Dashboard</h3>
       ${Utils.dateFilterHTML('biz-dash-filter', rangeFrom, rangeTo)}
       ${(d.alerts || []).map((a, i) => `<div class="alert-banner alert-${a.level} dash-alert" data-action="${a.action || ''}" style="padding:10px 14px;margin-bottom:8px;border-radius:8px;cursor:${a.action ? 'pointer' : 'default'};background:${a.level==='red'?'#fef2f2':'#fffbeb'};border:1px solid ${a.level==='red'?'#fecaca':'#fde68a'}">${a.level==='red'?'🔴':'🟡'} ${a.message}</div>`).join('')}
@@ -131,9 +131,9 @@
     el.querySelectorAll('.dash-alert').forEach(banner => {
       banner.addEventListener('click', () => {
         const action = banner.dataset.action;
-        if (action === 'leave') {
+        if (action === 'leave' || action === 'shifts') {
           this.section = 'staffhr';
-          this.staffTab = 'leave';
+          this.staffTab = action === 'shifts' ? 'shifts' : 'leave';
           document.querySelectorAll('.admin-nav-btn').forEach(n => n.classList.toggle('active', n.dataset.section === 'staffhr'));
           return this.renderSection(document.getElementById('admin-content'));
         }
@@ -226,7 +226,7 @@
             <button class="btn btn-sm btn-ghost reprint-sale" data-id="${s.id}">Print</button>
             <button class="btn btn-sm btn-ghost invoice-sale" data-id="${s.id}">Invoice</button>
             <button class="btn btn-sm btn-ghost download-sale" data-id="${s.id}">PDF</button>
-            ${s.status==='completed'?`<button class="btn btn-sm btn-ghost refund-sale" data-id="${s.id}">Refund</button>
+            ${s.status==='completed' && this.app.user?.role === 'owner' ? `<button class="btn btn-sm btn-ghost refund-sale" data-id="${s.id}">Refund</button>
             <button class="btn btn-sm btn-ghost void-sale" data-id="${s.id}">Void</button>`:''}
           </td></tr>`;
         }).join('')||'<tr><td colspan="15" class="muted">No sales found</td></tr>'}
@@ -534,7 +534,7 @@
         shifts: ['Shifts', 'admin-staff'],
         returns: ['Returns', 'returns'],
         po: ['Purchase Orders', 'purchase-orders'],
-        backup: ['Backup', 'admin']
+        backup: ['Backup', 'backup']
       };
       const m = map[a.action];
       if (!m) return '';
@@ -554,11 +554,14 @@
       </div></div>`;
     el.querySelectorAll('.alert-go').forEach(b => b.addEventListener('click', () => {
       if (b.dataset.page === 'admin-staff') {
-        this.app.navigate('admin');
-        setTimeout(() => { AdminPage.section = 'staffhr'; AdminPage.staffTab = 'shifts'; AdminPage.render(document.getElementById('page-content'), this.app); }, 100);
-      } else {
-        this.app.navigate(b.dataset.page);
+        this.app.navigateToAdminSection?.('staffhr', 'shifts') || this.app.navigate('admin');
+        return;
       }
+      if (b.dataset.page === 'backup') {
+        this.app.navigateToAdminSection?.('backup') || this.app.navigate('admin');
+        return;
+      }
+      this.app.navigate(b.dataset.page);
     }));
   };
 

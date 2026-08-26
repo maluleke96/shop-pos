@@ -117,7 +117,7 @@
   const QR_TYPES = {
     website: { label: 'Website', build: (s) => s.website || 'https://example.com' },
     whatsapp: { label: 'WhatsApp', build: (s) => `https://wa.me/${String(s.phone || '').replace(/\D/g, '') || '27000000000'}` },
-    ordering: { label: 'Online Ordering', build: (s) => (s.website ? `${String(s.website).replace(/\/$/, '')}/order` : 'https://example.com/order') },
+    phone: { label: 'Call shop', build: (s) => `tel:${String(s.phone || '').replace(/\D/g, '') || ''}` },
     maps: { label: 'Google Maps', build: (s) => `https://maps.google.com/?q=${encodeURIComponent(s.address || s.shop_name || 'Shop')}` }
   };
 

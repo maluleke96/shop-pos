@@ -17,30 +17,41 @@ const PrinterUI = {
     ).join('');
   },
 
-  connectionPanelHtml(connection, statusElId = 'pr-conn-status') {
+  connectionPanelHtml(connection, statusElId = 'pr-conn-status', kind = 'thermal') {
+    const isA4 = kind === 'a4';
+    const label = isA4 ? 'A4 office printer' : 'thermal printer';
+    const titleUsb = isA4 ? 'USB A4 Printer' : 'USB Thermal Printer';
+    const titleBt = isA4 ? 'Bluetooth A4 Printer' : 'Bluetooth Thermal Printer';
+    const titleNet = isA4 ? 'Network / Wi-Fi A4 Printer' : 'Network / Wi-Fi Thermal Printer';
     const savedIp = localStorage.getItem('shoppos_network_printer_ip') || '';
     if (connection === 'usb') {
-      return `<div class="printer-connect-panel card" style="margin-top:12px;padding:12px;background:var(--bg-secondary)">
-        <strong>USB Thermal Printer</strong>
-        <p class="muted" style="margin:8px 0 0">Plug in your printer via USB, turn it on, then click <strong>Connect USB Printer</strong>. Windows will detect it on this PC or tablet.</p>
-        <button type="button" class="btn btn-primary btn-sm" id="pr-usb-connect" style="margin-top:10px">Connect USB Printer</button>
+      return `<div class="printer-connect-panel card printer-connect-${kind}" style="margin-top:12px;padding:14px;background:var(--bg-secondary);border:1px solid var(--border);border-radius:10px">
+        <strong>${titleUsb}</strong>
+        <p class="muted" style="margin:8px 0 0">Plug in your ${label} via USB, turn it on, then click <strong>Connect USB Printer</strong>. Available printers on this computer will appear in the list above — pick yours and Save.</p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+          <button type="button" class="btn btn-primary btn-sm" id="pr-usb-connect">Connect USB Printer</button>
+          <button type="button" class="btn btn-ghost btn-sm" id="pr-usb-refresh">Refresh list</button>
+        </div>
         <div id="${statusElId}" style="margin-top:8px"></div>
       </div>`;
     }
     if (connection === 'bluetooth') {
-      return `<div class="printer-connect-panel card" style="margin-top:12px;padding:12px;background:var(--bg-secondary)">
-        <strong>Bluetooth Thermal Printer</strong>
-        <p class="muted" style="margin:8px 0 0">Click connect to open Windows Bluetooth on this device. Pair your printer if needed — saved paired devices are detected automatically.</p>
-        <button type="button" class="btn btn-primary btn-sm" id="pr-bt-connect" style="margin-top:10px">Connect Bluetooth Printer</button>
+      return `<div class="printer-connect-panel card printer-connect-${kind}" style="margin-top:12px;padding:14px;background:var(--bg-secondary);border:1px solid var(--border);border-radius:10px">
+        <strong>${titleBt}</strong>
+        <p class="muted" style="margin:8px 0 0">Click connect to open Bluetooth settings on this device. Pair your ${label} if needed, then return here — paired printers are detected automatically.</p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+          <button type="button" class="btn btn-primary btn-sm" id="pr-bt-connect">Connect Bluetooth Printer</button>
+          <button type="button" class="btn btn-ghost btn-sm" id="pr-bt-refresh">Refresh list</button>
+        </div>
         <div id="${statusElId}" style="margin-top:8px"></div>
       </div>`;
     }
-    return `<div class="printer-connect-panel card" style="margin-top:12px;padding:12px;background:var(--bg-secondary)">
-      <strong>Network / Wi-Fi Thermal Printer</strong>
-      <p class="muted" style="margin:8px 0 0">Enter the printer IP on your Wi-Fi network. Shop POS configures the port on this computer, then selects the printer for receipts.</p>
+    return `<div class="printer-connect-panel card printer-connect-${kind}" style="margin-top:12px;padding:14px;background:var(--bg-secondary);border:1px solid var(--border);border-radius:10px">
+      <strong>${titleNet}</strong>
+      <p class="muted" style="margin:8px 0 0">Enter the printer IP on your Wi-Fi network. Shop POS configures the port on this computer, then selects the printer.</p>
       <div class="form-grid" style="margin-top:8px">
         <div class="field"><label>Printer IP Address</label><input id="pr-net-ip" placeholder="192.168.1.100" value="${savedIp}"></div>
-        <div class="field" style="display:flex;align-items:flex-end">
+        <div class="field" style="display:flex;align-items:flex-end;gap:8px">
           <button type="button" class="btn btn-primary btn-sm" id="pr-net-connect" style="width:100%">Connect Network Printer</button>
         </div>
       </div>
@@ -105,9 +116,9 @@ const PrinterUI = {
     return selected;
   },
 
-  bindConnectionPanel(connection, printerSelectId, currentPrinter, statusElId = 'pr-conn-status', panelContainerId = 'pr-conn-panel', onSelected) {
+  bindConnectionPanel(connection, printerSelectId, currentPrinter, statusElId = 'pr-conn-status', panelContainerId = 'pr-conn-panel', onSelected, kind = 'thermal') {
     const panelEl = document.getElementById(panelContainerId);
-    if (panelEl) panelEl.innerHTML = PrinterUI.connectionPanelHtml(connection, statusElId);
+    if (panelEl) panelEl.innerHTML = PrinterUI.connectionPanelHtml(connection, statusElId, kind);
 
     document.getElementById('pr-usb-connect')?.addEventListener('click', async () => {
       await PrinterUI.connectAndSelect('usb', printerSelectId, currentPrinter, statusElId, onSelected);
@@ -118,6 +129,14 @@ const PrinterUI = {
     document.getElementById('pr-net-connect')?.addEventListener('click', async () => {
       await PrinterUI.connectAndSelect('network', printerSelectId, currentPrinter, statusElId, onSelected);
     });
+    document.getElementById('pr-usb-refresh')?.addEventListener('click', async () => {
+      await PrinterUI.refreshPrinters('usb', printerSelectId, currentPrinter, statusElId);
+      Utils.toast('USB printer list refreshed', 'info');
+    });
+    document.getElementById('pr-bt-refresh')?.addEventListener('click', async () => {
+      await PrinterUI.refreshPrinters('bluetooth', printerSelectId, currentPrinter, statusElId);
+      Utils.toast('Bluetooth printer list refreshed', 'info');
+    });
   },
 
   async bindConnectionFilter(connSelectId, printerSelectId, currentPrinter, opts = {}) {
@@ -126,10 +145,11 @@ const PrinterUI = {
     const statusElId = opts.statusElId || 'pr-conn-status';
     const panelContainerId = opts.panelContainerId || 'pr-conn-panel';
     const onSelected = opts.onSelected;
+    const kind = opts.kind || 'thermal';
 
     const load = async () => {
       const conn = connEl.value || 'usb';
-      PrinterUI.bindConnectionPanel(conn, printerSelectId, currentPrinter, statusElId, panelContainerId, onSelected);
+      PrinterUI.bindConnectionPanel(conn, printerSelectId, currentPrinter, statusElId, panelContainerId, onSelected, kind);
       await PrinterUI.refreshPrinters(conn, printerSelectId, currentPrinter, statusElId);
     };
     connEl.onchange = load;

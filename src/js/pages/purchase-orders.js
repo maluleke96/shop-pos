@@ -1,35 +1,51 @@
 const PurchaseOrdersPage = {
   async render(el, app) {
     this.app = app;
-    const [poRes, supRes, prodRes] = await Promise.all([API.getPurchaseOrders(), API.getSuppliers(), API.getProducts()]);
-    this.orders = poRes.data || [];
-    this.suppliers = supRes.data || [];
-    this.products = prodRes.data || [];
     const currency = app.settings?.currency || 'R';
-
+    const isOwner = app.user?.role === 'owner';
     el.innerHTML = `
       <div class="page-toolbar"><h3>Purchase Orders</h3><button class="btn btn-primary" id="new-po">+ New Order</button></div>
       <div class="card"><div class="table-wrap"><table>
         <thead><tr><th>PO #</th><th>Supplier</th><th>Total</th><th>Status</th><th>Date</th><th></th></tr></thead>
-        <tbody>${this.orders.map(o => `<tr>
+        <tbody id="po-tbody"><tr><td colspan="6" class="muted">Loading…</td></tr></tbody>
+      </table></div></div>`;
+    document.getElementById('new-po').addEventListener('click', () => this.showForm());
+
+    const [poRes, supRes, prodRes] = await Promise.all([API.getPurchaseOrders(), API.getSuppliers(), API.getProducts()]);
+    this.orders = poRes.data || [];
+    this.suppliers = supRes.data || [];
+    this.products = prodRes.data || [];
+
+    document.getElementById('po-tbody').innerHTML = this.orders.map(o => `<tr>
           <td><strong>${o.po_number}</strong></td><td>${o.supplier_name || '—'}</td>
           <td>${Utils.formatMoney(o.total, currency)}</td>
           <td><span class="tag ${o.status === 'received' ? 'tag-ok' : o.status === 'partial' ? 'tag-low' : 'tag-low'}">${o.status}</span></td>
           <td>${Utils.formatDate(o.created_at)}</td>
-          <td>${o.status === 'pending' || o.status === 'partial' ? `
+          <td style="white-space:nowrap">
+            ${o.status === 'pending' || o.status === 'partial' ? `
             <button class="btn btn-sm btn-success recv-po" data-id="${o.id}">Receive All</button>
-            <button class="btn btn-sm btn-ghost partial-po" data-id="${o.id}">Partial</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="6" class="muted">No purchase orders</td></tr>'}
-        </tbody></table></div></div>`;
+            <button class="btn btn-sm btn-ghost partial-po" data-id="${o.id}">Partial</button>` : ''}
+            ${isOwner ? `<button class="btn btn-sm btn-ghost edit-po" data-id="${o.id}">Edit</button>
+            <button class="btn btn-sm btn-danger del-po" data-id="${o.id}">Delete</button>` : ''}
+          </td></tr>`).join('') || '<tr><td colspan="6" class="muted">No purchase orders</td></tr>';
 
-    document.getElementById('new-po').addEventListener('click', () => this.showForm());
     document.querySelectorAll('.recv-po').forEach(b => b.addEventListener('click', async () => {
-      const res = await API.receivePurchaseOrder(parseInt(b.dataset.id), app.user);
+      const res = await API.receivePurchaseOrder(parseInt(b.dataset.id, 10), app.user);
       if (!res.success) return Utils.toast(res.error || 'Receive failed', 'error');
       PurchaseOrdersPage.render(el, app);
       Utils.toast('Stock updated from PO', 'success');
     }));
     document.querySelectorAll('.partial-po').forEach(b => b.addEventListener('click', () =>
-      this.showPartialReceive(parseInt(b.dataset.id))));
+      this.showPartialReceive(parseInt(b.dataset.id, 10))));
+    document.querySelectorAll('.del-po').forEach(b => b.addEventListener('click', async () => {
+      if (!confirm('Delete this purchase order? Only the owner can do this.')) return;
+      const res = await API.deletePurchaseOrder(parseInt(b.dataset.id, 10), app.user);
+      if (!res.success) return Utils.toast(res.error || 'Delete failed', 'error');
+      PurchaseOrdersPage.render(el, app);
+      Utils.toast('Purchase order deleted', 'success');
+    }));
+    document.querySelectorAll('.edit-po').forEach(b => b.addEventListener('click', () =>
+      this.showEdit(parseInt(b.dataset.id, 10))));
   },
 
   async showPartialReceive(poId) {
@@ -94,6 +110,27 @@ const PurchaseOrdersPage = {
       Utils.hideModal();
       PurchaseOrdersPage.render(document.getElementById('page-content'), this.app);
       Utils.toast('Purchase order created', 'success');
+    });
+  },
+
+  async showEdit(poId) {
+    const res = await API.getPurchaseOrder(poId);
+    const po = res.data;
+    if (!po) return Utils.toast('PO not found', 'error');
+    Utils.showModal(`Edit PO ${po.po_number}`, `
+      <p class="muted">Owner only. Receive All / Partial still update stock.</p>
+      <div class="field"><label>Notes</label><textarea id="po-edit-notes">${Utils.escHtml(po.notes || '')}</textarea></div>
+      <div class="field"><label>Receiving date</label><input type="date" id="po-edit-date" value="${po.receiving_date || ''}"></div>`,
+      '<button class="btn btn-primary" id="po-edit-save">Save</button>');
+    document.getElementById('po-edit-save').addEventListener('click', async () => {
+      const r = await API.updatePurchaseOrder(poId, {
+        notes: document.getElementById('po-edit-notes').value,
+        receiving_date: document.getElementById('po-edit-date').value || null
+      }, this.app.user);
+      if (!r.success) return Utils.toast(r.error || 'Update failed', 'error');
+      Utils.hideModal();
+      PurchaseOrdersPage.render(document.getElementById('page-content'), this.app);
+      Utils.toast('Purchase order updated', 'success');
     });
   }
 };

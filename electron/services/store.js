@@ -61,16 +61,83 @@ function audit(userId, username, action, entityType, entityId, details) {
   `).run(userId, username, action, entityType, entityId, details ? JSON.stringify(details) : null);
 }
 
+function coerceCounterValue(raw) {
+  // node-pg returns int8/bigint as strings — `"35" + 1` becomes `"351"` (string concat) and corrupts counters.
+  // Oversized / non-numeric values return Infinity so callers can repair from sales history.
+  if (raw == null || raw === '') return 0;
+  if (typeof raw === 'bigint') {
+    if (raw < 0n) return 0;
+    if (raw > BigInt(Number.MAX_SAFE_INTEGER)) return Number.POSITIVE_INFINITY;
+    return Number(raw);
+  }
+  const s = String(raw).trim();
+  if (!/^\d+$/.test(s)) {
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n < 0) return 0;
+    if (n > Number.MAX_SAFE_INTEGER) return Number.POSITIVE_INFINITY;
+    return Math.floor(n);
+  }
+  if (s.length > 15) return Number.POSITIVE_INFINITY;
+  const n = Number(s);
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return Math.floor(n);
+}
+
+function repairCounterFromSales(db, kind) {
+  try {
+    const col = kind === 'receipt' ? 'receipt_number' : 'order_number';
+    const rows = db.prepare(`SELECT ${col} AS num FROM sales WHERE ${col} IS NOT NULL`).all();
+    let max = 0;
+    for (const r of rows) {
+      const m = String(r.num || '').match(/(\d+)\s*$/);
+      if (!m) continue;
+      const digits = m[1];
+      // Ignore string-concat corruption (e.g. 35111111 from `"35"+1` bigint strings)
+      if (digits.length > 6) continue;
+      if (/1{3,}$/.test(digits) && digits.length >= 4) continue;
+      max = Math.max(max, coerceCounterValue(digits));
+    }
+    return max;
+  } catch (_) {
+    return 0;
+  }
+}
+
 function nextReceiptNumber() {
   const db = getDb();
   const settings = getSettingsParsed();
   const rd = settings.receipt_design || {};
   const prefix = (rd.receipt_prefix || 'RCP').trim() || 'RCP';
-  const pad = Math.max(1, parseInt(rd.receipt_number_pad, 10) || 5);
+  const pad = Math.max(1, Math.min(12, parseInt(rd.receipt_number_pad, 10) || 5));
   const includeDate = rd.receipt_include_date !== false;
-  const row = db.prepare('SELECT last_number FROM receipt_counter WHERE id = 1').get();
-  const next = (row?.last_number || 0) + 1;
-  db.prepare('UPDATE receipt_counter SET last_number = ? WHERE id = 1').run(next);
+
+  let current = 0;
+  try {
+    const row = db.prepare('SELECT last_number FROM receipt_counter WHERE id = 1').get();
+    current = coerceCounterValue(row?.last_number);
+  } catch (_) {
+    current = 0;
+  }
+  // Corrupted by string-concat bumps (e.g. 35111111111111111111) — rebuild from existing sales
+  if (!Number.isFinite(current) || current > 99999999) {
+    current = repairCounterFromSales(db, 'receipt');
+    try {
+      db.prepare('UPDATE receipt_counter SET last_number = ? WHERE id = 1').run(current);
+    } catch (_) { /* ignore */ }
+  }
+
+  const next = current + 1;
+  try {
+    db.prepare('UPDATE receipt_counter SET last_number = ? WHERE id = 1').run(next);
+  } catch (_) {
+    try {
+      const bumped = db.prepare(
+        `UPDATE receipt_counter SET last_number = ? WHERE id = 1 RETURNING last_number`
+      ).get(next);
+      if (bumped) { /* ok */ }
+    } catch (__) { /* ignore */ }
+  }
+
   const numPart = String(next).padStart(pad, '0');
   if (includeDate) {
     const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
@@ -85,19 +152,33 @@ function nextOrderNumber() {
   const settings = getSettingsParsed();
   const rd = settings.receipt_design || {};
   const prefix = (rd.order_prefix || 'ORD').trim() || 'ORD';
-  const pad = Math.max(1, parseInt(rd.order_number_pad, 10) || 4);
+  const pad = Math.max(1, Math.min(12, parseInt(rd.order_number_pad, 10) || 4));
   const includeDate = rd.order_include_date !== false;
-  let row;
   try {
-    row = db.prepare('SELECT last_number FROM order_counter WHERE id = 1').get();
-  } catch (_) {
     db.prepare(`CREATE TABLE IF NOT EXISTS order_counter (
       id INTEGER PRIMARY KEY CHECK (id = 1), last_number INTEGER DEFAULT 0)`).run();
     db.prepare('INSERT OR IGNORE INTO order_counter (id, last_number) VALUES (1, 0)').run();
-    row = { last_number: 0 };
+  } catch (_) { /* exists */ }
+
+  let current = 0;
+  try {
+    const row = db.prepare('SELECT last_number FROM order_counter WHERE id = 1').get();
+    current = coerceCounterValue(row?.last_number);
+  } catch (_) {
+    current = 0;
   }
-  const next = (row?.last_number || 0) + 1;
-  db.prepare('UPDATE order_counter SET last_number = ? WHERE id = 1').run(next);
+  if (!Number.isFinite(current) || current > 99999999) {
+    current = repairCounterFromSales(db, 'order');
+    try {
+      db.prepare('UPDATE order_counter SET last_number = ? WHERE id = 1').run(current);
+    } catch (_) { /* ignore */ }
+  }
+
+  const next = current + 1;
+  try {
+    db.prepare('UPDATE order_counter SET last_number = ? WHERE id = 1').run(next);
+  } catch (_) { /* ignore */ }
+
   const numPart = String(next).padStart(pad, '0');
   if (includeDate) {
     const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
@@ -118,6 +199,19 @@ function calcTaxInclusiveTotals(grossTotal, discount, taxRatePct) {
   const total = afterDiscount;
   const subtotal = money(total - tax_amount);
   return { subtotal, tax_amount, total };
+}
+
+/** Match POS Utils.calcTaxTotals — supports tax-inclusive and tax-exclusive modes. */
+function calcSaleTaxTotals(grossTotal, discount, taxRatePct, taxInclusive) {
+  const afterDiscount = money(Math.max(0, (Number(grossTotal) || 0) - Math.max(0, Number(discount) || 0)));
+  const rate = Number(taxRatePct) || 0;
+  if (!rate) return { subtotal: afterDiscount, tax_amount: 0, total: afterDiscount };
+  const inclusive = taxInclusive !== false && taxInclusive !== 0 && taxInclusive !== '0';
+  if (!inclusive) {
+    const tax_amount = money(afterDiscount * rate / 100);
+    return { subtotal: afterDiscount, tax_amount, total: money(afterDiscount + tax_amount) };
+  }
+  return calcTaxInclusiveTotals(afterDiscount, 0, rate);
 }
 
 /** Active sales that still contribute to revenue (excludes fully returned / voided). */
@@ -151,10 +245,18 @@ function nextPONumber() {
 
 // ─── Auth ───────────────────────────────────────────────────────────────────
 
+function userAccountIsActive(user) {
+  if (!user) return false;
+  if (String(user.role || '') === 'owner') return true;
+  const v = user.is_active;
+  if (v === false || v === 0 || v === '0' || v === 'f' || v === 'false' || v === 'n') return false;
+  return true;
+}
+
 function login(username, password, pin) {
   const userAny = getDb().prepare('SELECT * FROM users WHERE username = ?').get(username);
   if (!userAny) return { success: false, error: 'Invalid username or password' };
-  if (!userAny.is_active) {
+  if (!userAccountIsActive(userAny)) {
     session.clearAll();
     return { success: false, error: 'Account deactivated — system access is frozen. Contact the administrator.' };
   }
@@ -357,6 +459,150 @@ function resetPasswordViaRecovery(secret, username, newPassword) {
   return { success: true, username: user.username };
 }
 
+/**
+ * Seed / update a local installer account after a successful Railway (Supabase Postgres) login.
+ * Applies cloud shop settings + catalog so Windows/Android match the browser shop.
+ */
+function seedInstallerAccountFromCloud(payload = {}) {
+  const username = String(payload.username || '').trim();
+  const password = payload.password;
+  if (!username) throw new Error('Username is required');
+  if (!password || String(password).length < 1) throw new Error('Password is required');
+
+  const cloudUser = payload.cloudUser || payload.user || {};
+  const settings = payload.settings || {};
+  const hash = bcrypt.hashSync(String(password), 10);
+  const pinRaw = payload.pin != null && String(payload.pin).trim() !== '' ? String(payload.pin).trim() : null;
+  const pinHash = pinRaw ? hashPin(pinRaw) : null;
+  const role = VALID_USER_ROLES.includes(cloudUser.role) ? cloudUser.role : 'owner';
+  const fullName = String(cloudUser.full_name || username).trim() || username;
+  const db = getDb();
+  const existing = db.prepare('SELECT id, pin FROM users WHERE username = ?').get(username);
+
+  if (existing) {
+    db.prepare(`
+      UPDATE users SET password_hash = ?, pin = COALESCE(?, pin), full_name = ?, role = ?, is_active = 1,
+        updated_at = datetime('now') WHERE id = ?
+    `).run(hash, pinHash, fullName, role, existing.id);
+  } else {
+    db.prepare(`
+      INSERT INTO users (username, password_hash, pin, full_name, role, is_active)
+      VALUES (?, ?, ?, ?, ?, 1)
+    `).run(username, hash, pinHash, fullName, role);
+  }
+
+  const before = db.prepare('SELECT shop_name FROM shop_settings WHERE id = 1').get();
+  const productCountBefore = db.prepare('SELECT COUNT(*) as c FROM products').get()?.c || 0;
+
+  const JSON_SETTING_KEYS = new Set([
+    'printer_settings', 'receipt_design', 'security_settings', 'customization',
+    'device_settings', 'discount_settings', 'backup_settings', 'loyalty_settings',
+    'payment_settings', 'account_settings', 'operating_hours_settings',
+    'notification_settings', 'staff_portal_settings', 'sync_settings', 'whatsapp_settings',
+    'sales_targets', 'shift_settings', 'eom_settings', 'account_settings_v2', 'social_media'
+  ]);
+
+  const patch = { setup_complete: 1 };
+  for (const k of SHOP_SETTING_FIELDS) {
+    if (k === 'setup_complete') continue;
+    if (settings[k] == null || settings[k] === '') continue;
+    let v = settings[k];
+    if (JSON_SETTING_KEYS.has(k) && typeof v === 'object') {
+      try { v = JSON.stringify(v); } catch (_) { continue; }
+    }
+    patch[k] = v;
+  }
+  if (!patch.shop_name && settings.shop_name) patch.shop_name = settings.shop_name;
+  if (!patch.shop_name) {
+    if (!before?.shop_name || before.shop_name === 'My Shop') {
+      patch.shop_name = settings.app_display_name || settings.shop_name || before?.shop_name || 'My Shop';
+    }
+  }
+  try { saveSettings(patch, null, 'cloud-login'); } catch (_) { /* ignore */ }
+
+  // Align catalog with cloud shop when local is empty or was a different / placeholder shop
+  try {
+    const cloudName = String(patch.shop_name || settings.shop_name || '').trim();
+    const localNameBefore = String(before?.shop_name || '').trim();
+    const needCatalog =
+      productCountBefore === 0 ||
+      !localNameBefore ||
+      localNameBefore === 'My Shop' ||
+      (cloudName && localNameBefore && cloudName !== localNameBefore);
+
+    const categories = Array.isArray(payload.categories) ? payload.categories : [];
+    const products = Array.isArray(payload.products) ? payload.products : [];
+
+    if (needCatalog && (categories.length || products.length)) {
+      const nameToId = new Map();
+      for (const c of categories) {
+        const name = String(c?.name || '').trim();
+        if (!name) continue;
+        let row = db.prepare('SELECT id FROM categories WHERE lower(name) = lower(?)').get(name);
+        if (!row) {
+          try {
+            const newId = saveCategory({
+              name,
+              sort_order: c.sort_order ?? 0,
+              show_on_pos: c.show_on_pos !== 0 && c.show_on_pos !== false ? 1 : 0,
+              color: c.color || null
+            }, null, 'cloud-login');
+            row = { id: newId || db.prepare('SELECT id FROM categories WHERE lower(name) = lower(?)').get(name)?.id };
+          } catch (_) {
+            row = db.prepare('SELECT id FROM categories WHERE lower(name) = lower(?)').get(name);
+          }
+        }
+        if (row?.id) nameToId.set(name.toLowerCase(), row.id);
+        if (c.id != null) nameToId.set(`cloud:${c.id}`, row?.id);
+      }
+
+      for (const p of products) {
+        const name = String(p?.name || '').trim();
+        if (!name) continue;
+        const price = Number(p.selling_price ?? p.price);
+        if (!(price > 0)) continue;
+        let categoryId = p.category_id != null ? nameToId.get(`cloud:${p.category_id}`) : null;
+        if (!categoryId && p.category_name) categoryId = nameToId.get(String(p.category_name).toLowerCase());
+        const barcode = p.barcode ? String(p.barcode) : null;
+        let existingProd = null;
+        if (barcode) {
+          existingProd = db.prepare('SELECT id FROM products WHERE barcode = ?').get(barcode);
+        }
+        if (!existingProd) {
+          existingProd = db.prepare('SELECT id FROM products WHERE lower(name) = lower(?)').get(name);
+        }
+        const row = {
+          id: existingProd?.id,
+          name,
+          selling_price: price,
+          buying_price: Number(p.buying_price || p.cost) || 0,
+          barcode,
+          sku: p.sku || null,
+          stock_quantity: Number(p.stock_quantity ?? p.stock) || 0,
+          unit: p.unit || p.stock_unit || 'each',
+          stock_unit: p.stock_unit || p.unit || 'each',
+          category_id: categoryId || null,
+          item_type: p.item_type || 'retail',
+          is_active: p.is_active === 0 || p.is_active === false ? 0 : 1,
+          min_stock: p.min_stock ?? 5,
+          description: p.description || null,
+          brand: p.brand || null
+        };
+        try { saveProduct(row, null, 'cloud-login'); } catch (_) { /* skip bad rows */ }
+      }
+    }
+  } catch (err) {
+    console.warn('[seedInstallerAccountFromCloud] catalog', err?.message || err);
+  }
+
+  audit(null, username, 'seed_installer_from_cloud', 'user', null, {
+    username,
+    role,
+    shop_name: patch.shop_name || settings.shop_name || null
+  });
+  return { success: true, username, shop_name: patch.shop_name || settings.shop_name || null };
+}
+
 async function clearOperationalData(password, actorId, actorName) {
   const user = getDb().prepare('SELECT * FROM users WHERE id = ?').get(actorId);
   if (!user || user.role !== 'owner') throw new Error('Only the owner can clear operational data');
@@ -528,18 +774,28 @@ function permanentlyDeleteUser(id, confirmUsername, actorId, actorName) {
 }
 
 function verifyUserSession(userId) {
-  const sess = session.getUserSession();
-  if (!sess?.id || Number(sess.id) !== Number(userId)) {
-    return { active: false };
+  if (userId == null || userId === '') return { active: true, skipped: true };
+  let user = null;
+  try {
+    user = getDb().prepare(`
+      SELECT id, username, full_name, role, is_active, permissions, branch_id FROM users WHERE id = ?`).get(userId);
+  } catch (_) {
+    return { active: true, skipped: true };
   }
-  const user = getDb().prepare(`
-    SELECT id, username, full_name, role, is_active, permissions, branch_id FROM users WHERE id = ?`).get(userId);
-  if (!user || !user.is_active) {
-    session.clearAll();
+  if (user && !userAccountIsActive(user)) {
+    const sess = session.getUserSession();
+    if (sess?.id && Number(sess.id) === Number(userId)) session.clearAll();
     return { active: false, frozen: true, error: 'Account deactivated — system access is frozen.' };
   }
-  try { enforceShiftCashoutDeadlines(); } catch (_) { /* ignore */ }
-  return { active: true, user };
+  if (user && userAccountIsActive(user)) {
+    const sess = session.getUserSession();
+    if (!sess?.id || Number(sess.id) !== Number(userId)) {
+      try { session.setUserSession(user); } catch (_) { /* ignore */ }
+    }
+    try { enforceShiftCashoutDeadlines(); } catch (_) { /* ignore */ }
+    return { active: true, user };
+  }
+  return { active: true, skipped: true };
 }
 
 function getUsers() {
@@ -843,10 +1099,30 @@ function cartProfitFloor(items) {
   let floor = 0;
   for (const it of items || []) {
     const qty = Number(it.quantity) || 0;
-    const cost = Number(it.buying_price != null ? it.buying_price : it.recipe_cost) || 0;
+    const buy = Number(it.buying_price);
+    const recipe = Number(it.recipe_cost);
+    // Prefer real food cost when buying_price is missing/zero (typical for recipe meals)
+    const cost =
+      Number.isFinite(buy) && buy > 0
+        ? buy
+        : Number.isFinite(recipe) && recipe > 0
+          ? recipe
+          : Number.isFinite(buy)
+            ? buy
+            : 0;
     floor += cost * qty;
   }
   return Math.round(floor * 100) / 100;
+}
+
+function lineCostForProduct(product, comboBuyingFallback) {
+  if (comboBuyingFallback != null && Number(comboBuyingFallback) > 0) return Number(comboBuyingFallback);
+  if (!product) return 0;
+  const buy = Number(product.buying_price) || 0;
+  const recipe = Number(product.recipe_cost) || 0;
+  if (Number(product.has_recipe) && recipe > 0) return recipe;
+  if (buy > 0) return buy;
+  return recipe > 0 ? recipe : buy;
 }
 
 function deleteCategory(id, actorId, actorName) {
@@ -1037,8 +1313,14 @@ function getProductByBarcode(barcode) {
   let p = getDb().prepare('SELECT * FROM products WHERE barcode = ? AND is_active = 1').get(code);
   if (!p) p = getDb().prepare('SELECT * FROM products WHERE sku = ? AND is_active = 1').get(code);
   if (!p) return null;
-  const mods = getProductModifiers(p.id);
-  return { ...p, modifiers: mods, options: mods.filter(m => m.modifier_type === 'option'), extras: mods.filter(m => m.modifier_type === 'extra'), removals: mods.filter(m => m.modifier_type === 'removal') };
+  const decorated = getProduct(p.id);
+  if (!decorated) return null;
+  try {
+    const [withCap] = require('./production-availability').applyCapacityToProducts([decorated]);
+    return withCap || decorated;
+  } catch (_) {
+    return decorated;
+  }
 }
 
 function saveProduct(data, actorId, actorName) {
@@ -1511,8 +1793,9 @@ function completeSale(saleData, actorId, actorName, actorRole) {
       unitPrice = Number(combo.final_price) || 0;
       productName = combo.name || productName;
       buyingPrice = (combo.items || []).reduce((s, ci) => {
-        const p = db.prepare('SELECT buying_price FROM products WHERE id = ?').get(ci.product_id);
-        return s + (Number(p?.buying_price) || 0) * (Number(ci.quantity) || 1);
+        const p = db.prepare('SELECT buying_price, recipe_cost, has_recipe FROM products WHERE id = ?').get(ci.product_id);
+        const unitCost = lineCostForProduct(p);
+        return s + unitCost * (Number(ci.quantity) || 1);
       }, 0);
       originalUnitPrice = Number(combo.normal_price) || null;
     } else if (item.product_id) {
@@ -1520,7 +1803,7 @@ function completeSale(saleData, actorId, actorName, actorRole) {
       if (!product) throw new Error(`Product not found: ${item.product_name || item.product_id}`);
       unitPrice = Number(product.selling_price) || 0;
       unitPrice += resolveModifierExtras(item.product_id, item.modifiers);
-      buyingPrice = Number(product.buying_price) || 0;
+      buyingPrice = lineCostForProduct(product);
       productName = product.name || productName;
       promoRequestId = product.promo_request_id || promoRequestId;
       originalUnitPrice = product.promo_active ? (product.original_price ?? null) : null;
@@ -1590,7 +1873,10 @@ function completeSale(saleData, actorId, actorName, actorRole) {
     }
     // Discount must not push sale below total cost (profit floor)
     const floor = cartProfitFloor(pricedItems.map(i => {
-      const p = getDb().prepare('SELECT buying_price, recipe_cost FROM products WHERE id=?').get(i.product_id);
+      if (i.combo_id) {
+        return { quantity: i.quantity, buying_price: i.buying_price, recipe_cost: i.buying_price };
+      }
+      const p = getDb().prepare('SELECT buying_price, recipe_cost, has_recipe FROM products WHERE id=?').get(i.product_id);
       return {
         quantity: i.quantity,
         buying_price: p?.buying_price,
@@ -1602,12 +1888,13 @@ function completeSale(saleData, actorId, actorName, actorRole) {
     }
   }
   const taxRate = settingsForTax.tax_enabled ? (settingsForTax.tax_rate || 0) : 0;
-  const preLoyaltyTotal = calcTaxInclusiveTotals(grossSubtotal, cartDiscount, taxRate).total;
+  const taxInclusive = settingsForTax.tax_inclusive;
+  const preLoyaltyTotal = calcSaleTaxTotals(grossSubtotal, cartDiscount, taxRate, taxInclusive).total;
   const loyaltyRedemption = saleData.customer_id && saleData.loyalty_redeem > 0
     ? features.calcLoyaltyRedemption(saleData.customer_id, saleData.loyalty_redeem, preLoyaltyTotal)
     : { points: 0, discount: 0 };
   const saleDiscount = money(cartDiscount + (loyaltyRedemption.discount || 0));
-  const taxTotals = calcTaxInclusiveTotals(grossSubtotal, saleDiscount, taxRate);
+  const taxTotals = calcSaleTaxTotals(grossSubtotal, saleDiscount, taxRate, taxInclusive);
   saleData.subtotal = taxTotals.subtotal;
   saleData.tax_amount = taxTotals.tax_amount;
   saleData.total = taxTotals.total;
@@ -2037,7 +2324,7 @@ function processReturn(data, actorId, actorName) {
     }
 
     const row = db.prepare('SELECT last_number FROM return_counter WHERE id = 1').get();
-    const next = (row?.last_number || 0) + 1;
+    const next = coerceCounterValue(row?.last_number) + 1;
     db.prepare('UPDATE return_counter SET last_number = ? WHERE id = 1').run(next);
     const returnNumber = `RET-${String(next).padStart(5, '0')}`;
 
@@ -3084,8 +3371,13 @@ function markNotificationRead(id) {
   getDb().prepare('UPDATE notifications SET is_read = 1 WHERE id = ?').run(id);
 }
 
-function markAllNotificationsRead() {
-  getDb().prepare('UPDATE notifications SET is_read = 1 WHERE is_read = 0').run();
+function markAllNotificationsRead(actorOrRole) {
+  const visible = getNotifications(actorOrRole);
+  if (!visible.length) return;
+  const ids = visible.map(n => n.id).filter(Boolean);
+  if (!ids.length) return;
+  const placeholders = ids.map(() => '?').join(',');
+  getDb().prepare(`UPDATE notifications SET is_read = 1 WHERE id IN (${placeholders})`).run(...ids);
 }
 
 const PAYROLL_WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -3329,7 +3621,7 @@ module.exports = {
   setUserSession: session.setUserSession,
   setEmployeeSession: session.setEmployeeSession,
   verifyBookkeepingPassword, setBookkeepingPassword, isBookkeepingUnlocked, requireBookkeepingAccess,
-  hasRecoverySecret, setRecoverySecret, getUsernamesForRecovery, resetPasswordViaRecovery, factoryResetBusiness, clearOperationalData,
+  hasRecoverySecret, setRecoverySecret, getUsernamesForRecovery, resetPasswordViaRecovery, seedInstallerAccountFromCloud, factoryResetBusiness, clearOperationalData,
   getSettings, getSettingsParsed, saveSettings, saveJsonSetting, completeSetup, parseJsonField,
   getCategories, saveCategory, deleteCategory, ensureOtherItemsCategory, saveOtherSellItem, suggestSellPrice, cartProfitFloor,
   getProducts, getProduct, getProductByBarcode, getProductModifiers, saveProductModifiers, saveProduct, deleteProduct,
@@ -3349,7 +3641,8 @@ module.exports = {
   normalizePhone, phonesMatch, importProducts,
   getAuditLog, getNotifications, markNotificationRead, markAllNotificationsRead, createTestNotification, refreshPaymentDueNotifications,
   globalSearch,
-  convertQuoteToSale: (quoteId, actorId, actorName) => features.convertQuoteToSale(quoteId, completeSale, actorId, actorName),
+  convertQuoteToSale: (quoteId, actorId, actorName, paymentOpts) =>
+    features.convertQuoteToSale(quoteId, completeSale, actorId, actorName, paymentOpts),
   completeStockCount: (countId, actorId) => features.completeStockCount(countId, adjustStock, actorId),
   recordWaste: (data, actorId) => features.recordWaste(data, adjustStock, actorId),
   approveWaste: (id, actorId, notes) => {

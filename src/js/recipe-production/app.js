@@ -20,9 +20,30 @@ const RecipePerms = {
 const RecipeProductionApp = {
   user: null,
   page: 'dashboard',
+  pageHistory: [],
   settings: null,
   _ingredients: [],
   _editingRecipe: null,
+  _open: false,
+
+  isOpen() {
+    return !!this._open;
+  },
+
+  /** Return true if handled (stayed inside Recipe). False = exit Recipe to POS/Admin. */
+  goBackInApp() {
+    if (this.pageHistory.length) {
+      this.page = this.pageHistory.pop();
+      const root = document.getElementById('recipe-production-root');
+      if (root) {
+        root.querySelectorAll('.rp-nav-btn[data-page]').forEach(x =>
+          x.classList.toggle('active', x.dataset.page === this.page));
+        this.renderPage();
+      }
+      return true;
+    }
+    return false;
+  },
 
   money(n) {
     const c = this.settings?.currency || 'R';
@@ -169,6 +190,8 @@ const RecipeProductionApp = {
     this.fromApp = !!opts.fromApp;
     this.user = null;
     this.page = 'dashboard';
+    this.pageHistory = [];
+    this._open = true;
     const root = document.getElementById('recipe-production-root');
     if (root) root.innerHTML = '<div class="rp-login-wrap"><p class="rp-muted" style="padding:24px;text-align:center">Opening Recipe &amp; Production…</p></div>';
     try {
@@ -190,6 +213,8 @@ const RecipeProductionApp = {
 
   close() {
     this.user = null;
+    this._open = false;
+    this.pageHistory = [];
     App.closeRecipeProduction();
   },
 
@@ -208,7 +233,7 @@ const RecipeProductionApp = {
         <p class="rp-muted" style="margin:0 0 18px">Owner / Admin: sign in with your POS username and password.<br>Staff need Recipe access granted by Admin. · ${shop}</p>
         <div class="field"><label>Username</label><input id="rp-user" autocomplete="username" autofocus></div>
         <div class="field"><label>Password</label><input type="password" id="rp-pass" autocomplete="current-password"></div>
-        <div class="field"><label>PIN <span class="rp-muted">(optional)</span></label><input type="password" id="rp-pin" maxlength="6" inputmode="numeric"></div>
+          <div class="field"><label>PIN <span class="rp-muted">(optional)</span></label><input type="password" id="rp-pin" maxlength="12" inputmode="numeric"></div>
         <p id="rp-login-err" class="error-msg hidden"></p>
         <button type="button" class="btn btn-primary btn-lg btn-block" id="rp-login-btn" style="margin-top:8px">Sign In to Recipe System</button>
         <button type="button" class="btn btn-ghost btn-block" id="rp-back" style="margin-top:10px">${this.fromApp ? '← Back to Admin / POS' : '← Back to POS Login'}</button>
@@ -242,6 +267,8 @@ const RecipeProductionApp = {
   navItems() {
     const all = [
       ['dashboard', 'Dashboard', 'view'],
+      ['categories', 'Categories', 'view'],
+      ['products', 'Products', 'view'],
       ['prep', 'Prep Board', 'view'],
       ['ingredients', 'Ingredients', 'view'],
       ['recipes', 'Recipe Builder', 'view'],
@@ -304,6 +331,10 @@ const RecipeProductionApp = {
     });
     document.getElementById('rp-sidebar-backdrop')?.addEventListener('click', closeRpMenu);
     root.querySelectorAll('.rp-nav-btn[data-page]').forEach(b => b.addEventListener('click', () => {
+      if (this.page && this.page !== b.dataset.page) {
+        this.pageHistory.push(this.page);
+        if (this.pageHistory.length > 30) this.pageHistory.shift();
+      }
       this.page = b.dataset.page;
       if (this.page === 'restock' || this.page === 'ingredients') this._ingredients = [];
       // Fast nav: update active state + content only (avoid full shell rebuild)
@@ -312,8 +343,26 @@ const RecipeProductionApp = {
       closeRpMenu();
       this.renderPage();
     }));
+    // In-app back (does not leave Recipe/POS without logout)
+    const backBtn = document.createElement('button');
+    backBtn.type = 'button';
+    backBtn.className = 'btn-icon';
+    backBtn.id = 'rp-nav-back';
+    backBtn.setAttribute('aria-label', 'Go back');
+    backBtn.title = 'Back';
+    backBtn.textContent = '←';
+    const topbar = root.querySelector('.rp-topbar');
+    const menuToggle = document.getElementById('rp-menu-toggle');
+    if (topbar && menuToggle) topbar.insertBefore(backBtn, menuToggle);
+    backBtn.addEventListener('click', () => {
+      if (!this.goBackInApp()) this.close();
+    });
     document.getElementById('rp-exit').onclick = () => this.close();
     document.getElementById('rp-logout').onclick = async () => {
+      if (this.fromApp && typeof App?.closeRecipeProduction === 'function') {
+        this.close();
+        return;
+      }
       try { await API.logout(); } catch (_) {}
       this.user = null;
       this.render();
@@ -326,7 +375,8 @@ const RecipeProductionApp = {
     const title = document.getElementById('rp-page-title');
     if (!el) return;
     const titles = {
-      dashboard: 'Dashboard', prep: 'Daily Prep Board', ingredients: 'Ingredient Master', recipes: 'Recipe Builder',
+      dashboard: 'Dashboard', categories: 'Categories', products: 'Products',
+      prep: 'Daily Prep Board', ingredients: 'Ingredient Master', recipes: 'Recipe Builder',
       restock: 'Restock Ingredients', 'purchase-orders': 'Recipe Purchase Orders',
       approvals: 'Recipe Approvals', production: 'Production Planning', waste: 'Waste Management',
       profits: 'Profits & Losses',
@@ -338,6 +388,8 @@ const RecipeProductionApp = {
     try {
       const map = {
         dashboard: () => this.pageDashboard(el),
+        categories: () => this.pageCategories(el),
+        products: () => this.pageProducts(el),
         prep: () => this.pagePrepBoard(el),
         ingredients: () => this.pageIngredients(el),
         recipes: () => this.pageRecipes(el),
@@ -357,6 +409,45 @@ const RecipeProductionApp = {
     } catch (err) {
       el.innerHTML = `<p class="error-msg">${err.message || 'Failed to load'}</p>`;
     }
+  },
+
+  async ensurePosCatalogPages() {
+    if (typeof App?.ensurePageScripts === 'function') {
+      await App.ensurePageScripts('categories');
+      await App.ensurePageScripts('products');
+    }
+    if (!window.CategoriesPage?.render && typeof Utils?.loadScript === 'function') {
+      try { await Utils.loadScript('js/pages/categories.js'); } catch (_) { /* ignore */ }
+    }
+    if (!window.ProductsPage?.render && typeof Utils?.loadScript === 'function') {
+      try { await Utils.loadScript('js/pages/products.js'); } catch (_) { /* ignore */ }
+    }
+  },
+
+  async pageCategories(el) {
+    await this.ensurePosCatalogPages();
+    if (!window.CategoriesPage?.render) {
+      el.innerHTML = '<p class="error-msg">Categories page failed to load. Open Categories from the main menu once, then return here.</p>';
+      return;
+    }
+    el.innerHTML = '<div class="rp-embed-pos" id="rp-categories-host"></div>';
+    const host = document.getElementById('rp-categories-host');
+    const appCtx = window.App || { user: this.user, settings: window.App?.settings || {} };
+    if (!appCtx.user) appCtx.user = this.user;
+    await CategoriesPage.render(host, appCtx);
+  },
+
+  async pageProducts(el) {
+    await this.ensurePosCatalogPages();
+    if (!window.ProductsPage?.render) {
+      el.innerHTML = '<p class="error-msg">Products page failed to load. Open Products from the main menu once, then return here.</p>';
+      return;
+    }
+    el.innerHTML = '<div class="rp-embed-pos" id="rp-products-host"></div>';
+    const host = document.getElementById('rp-products-host');
+    const appCtx = window.App || { user: this.user, settings: window.App?.settings || {} };
+    if (!appCtx.user) appCtx.user = this.user;
+    await ProductsPage.render(host, appCtx);
   },
 
   /* ── Dashboard ─────────────────────────────────────────────────────────── */
@@ -438,7 +529,14 @@ const RecipeProductionApp = {
           <tbody>${(d.best_sellers || []).map(b => `<tr><td>${b.product_name}</td><td>${b.sold}</td><td>${this.money(b.revenue)}</td></tr>`).join('') || '<tr><td colspan="3" class="rp-muted">No sales yet</td></tr>'}</tbody></table>
         </div>
         <div class="rp-panel"><h3>AI Suggestions</h3>
-          ${ai.length ? ai.map(a => `<div class="rp-ai-item ${a.severity || ''}"><strong>${a.title}</strong><div class="rp-muted">${a.message}</div></div>`).join('') : '<p class="rp-muted">No suggestions right now</p>'}
+          ${ai.length ? ai.map((a, idx) => `<div class="rp-ai-item ${a.severity || ''}" data-ai-idx="${idx}">
+            <strong>${a.title}</strong><div class="rp-muted">${a.message}</div>
+            ${a.type === 'price_review' && a.suggested_price && (a.product_id || a.recipe_id) && RecipePerms.can(this.user, 'edit')
+              ? `<button type="button" class="btn btn-sm btn-primary rp-ai-apply-price" style="margin-top:8px"
+                  data-recipe="${a.recipe_id || ''}" data-product="${a.product_id || ''}" data-price="${a.suggested_price}">
+                  Apply suggested sell price (${this.money(a.suggested_price)})
+                </button>` : ''}
+          </div>`).join('') : '<p class="rp-muted">No suggestions right now</p>'}
         </div>
       </div>
       <div class="rp-grid-2">
@@ -459,6 +557,18 @@ const RecipeProductionApp = {
     document.getElementById('rp-qa-restock')?.addEventListener('click', () => { this.page = 'restock'; this.render(); });
     document.getElementById('rp-qa-ing')?.addEventListener('click', () => { this.page = 'ingredients'; this.render(); });
     document.getElementById('rp-qa-rep')?.addEventListener('click', () => { this.page = 'reports'; this.render(); });
+    el.querySelectorAll('.rp-ai-apply-price').forEach(btn => {
+      btn.onclick = async () => {
+        const res = await API.recipeApplySuggestedPrice({
+          recipe_id: parseInt(btn.dataset.recipe, 10) || null,
+          product_id: parseInt(btn.dataset.product, 10) || null,
+          suggested_price: parseFloat(btn.dataset.price)
+        }, this.user);
+        if (!res.success) return Utils.toast(res.error || 'Could not apply price', 'error');
+        Utils.toast(`Sell price updated to ${this.money(res.data?.selling_price || btn.dataset.price)}`, 'success');
+        this.pageDashboard(el);
+      };
+    });
   },
 
   /* ── Ingredients ───────────────────────────────────────────────────────── */
@@ -466,23 +576,38 @@ const RecipeProductionApp = {
     const res = await API.recipePrepBoard(this.user);
     if (!res.success) throw new Error(res.error || 'Prep board failed');
     const b = res.data || {};
+    const card = (m) => `
+      <article class="rp-prep-card" data-path="${this.escapeAttr(m.picture_path || '')}">
+        <div class="rp-prep-card-media">${m.picture_path ? '<span class="rp-prep-ph">…</span>' : '<div class="rp-prep-ph-empty">Prep</div>'}</div>
+        <div class="rp-prep-card-body">
+          <strong>${m.name}</strong>
+          <div class="rp-muted">${m.production_capacity ?? 0} meals · ${m.prep_time_minutes || 0}+${m.cook_time_minutes || 0} min</div>
+          ${m.allergens ? `<div class="rp-allergen">Allergens: ${this.escapeAttr(m.allergens)}</div>` : ''}
+          <div class="rp-prep-steps">${(m.instructions || m.kitchen_notes || 'No prep steps yet')
+            .split(/\n+|·|\u2022/).map(s => s.trim()).filter(Boolean).slice(0, 5)
+            .map((s, i) => `<div class="rp-prep-step"><span>${i + 1}</span>${this.escapeAttr(s)}</div>`).join('') || '<div class="rp-muted">—</div>'}
+          </div>
+        </div>
+      </article>`;
     const section = (title, rows, empty) => `
       <div class="rp-panel"><h3>${title}</h3>
         ${!(rows || []).length ? `<p class="rp-muted">${empty}</p>` : `
-        <table class="rp-table"><thead><tr>
-          <th>Meal</th><th>Available</th><th>Limiting</th><th>Prep</th><th>Kitchen notes</th>
+        <div class="rp-prep-grid">${rows.map(card).join('')}</div>
+        <table class="rp-table" style="margin-top:12px"><thead><tr>
+          <th>Meal</th><th>Available</th><th>Limiting</th><th>Prep</th><th>Allergens</th><th>Kitchen notes</th>
         </tr></thead><tbody>
           ${rows.map(m => `<tr>
             <td><strong>${m.name}</strong></td>
             <td>${m.production_capacity ?? 0} meals</td>
             <td class="rp-muted">${m.limiting_ingredient_name || '—'}</td>
             <td class="rp-muted">${m.prep_time_minutes || 0} + ${m.cook_time_minutes || 0} min</td>
+            <td class="rp-muted">${m.allergens || '—'}</td>
             <td class="rp-muted">${m.kitchen_notes || m.instructions || '—'}</td>
           </tr>`).join('')}
         </tbody></table>`}
       </div>`;
     el.innerHTML = `
-      <p class="rp-muted" style="margin-top:0">Daily kitchen board for ${b.date || 'today'} — Available Today meals, low capacity, and out of stock.</p>
+      <p class="rp-muted" style="margin-top:0">Daily kitchen board for ${b.date || 'today'} — photo step cards, allergens, and a 7-day prep schedule from forecast.</p>
       <div class="rp-cards">
         <div class="rp-card"><div class="label">Available Today</div><div class="value">${b.totals?.available_today || 0}</div></div>
         <div class="rp-card"><div class="label">Low capacity</div><div class="value">${b.totals?.low || 0}</div></div>
@@ -493,20 +618,42 @@ const RecipeProductionApp = {
         <button class="btn btn-ghost" id="rp-prep-settings">Set Available Today…</button>
         ${this.docActionsHtml('rp-prep')}
       </div>
-      ${section('Available Today — make these', b.available_today, 'Mark meals as Available Today in Settings.')}
+      <div class="rp-panel">
+        <h3>Production calendar / prep schedule</h3>
+        <div class="rp-prep-calendar">
+          ${(b.prep_schedule || []).map(day => `
+            <div class="rp-prep-day ${day.date === b.date ? 'is-today' : ''}">
+              <div class="rp-prep-day-head"><strong>${day.weekday}</strong><span class="rp-muted">${day.date}</span></div>
+              <ul>${(day.meals || []).slice(0, 4).map(m => `<li>${m.name}${m.allergens ? ` <span class="rp-allergen-chip">${this.escapeAttr(m.allergens)}</span>` : ''}</li>`).join('') || '<li class="rp-muted">No Available Today meals</li>'}</ul>
+              ${(day.restock_focus || []).length ? `<div class="rp-muted" style="font-size:11px;margin-top:6px">Restock focus: ${day.restock_focus.map(f => f.name).join(', ')}</div>` : ''}
+            </div>`).join('') || '<p class="rp-muted">No schedule yet</p>'}
+        </div>
+      </div>
+      ${section('Photo step cards — Available Today', b.available_today, 'Mark meals as Available Today in Settings.')}
       ${section('Almost out (≤5 meals)', b.low_capacity, 'None running low.')}
       ${section('Out of stock / cannot make', b.out_of_stock, 'All meals can still be made.')}`;
     const prepRows = [
-      ...(b.available_today || []).map(m => ({ section: 'Available Today', meal: m.name, available: m.production_capacity ?? 0, limiting: m.limiting_ingredient_name || '—', prep_min: `${m.prep_time_minutes || 0}+${m.cook_time_minutes || 0}`, notes: m.kitchen_notes || m.instructions || '' })),
-      ...(b.low_capacity || []).map(m => ({ section: 'Low capacity', meal: m.name, available: m.production_capacity ?? 0, limiting: m.limiting_ingredient_name || '—', prep_min: `${m.prep_time_minutes || 0}+${m.cook_time_minutes || 0}`, notes: m.kitchen_notes || m.instructions || '' })),
-      ...(b.out_of_stock || []).map(m => ({ section: 'Out of stock', meal: m.name, available: m.production_capacity ?? 0, limiting: m.limiting_ingredient_name || '—', prep_min: `${m.prep_time_minutes || 0}+${m.cook_time_minutes || 0}`, notes: m.kitchen_notes || m.instructions || '' }))
+      ...(b.available_today || []).map(m => ({ section: 'Available Today', meal: m.name, available: m.production_capacity ?? 0, limiting: m.limiting_ingredient_name || '—', prep_min: `${m.prep_time_minutes || 0}+${m.cook_time_minutes || 0}`, allergens: m.allergens || '', notes: m.kitchen_notes || m.instructions || '' })),
+      ...(b.low_capacity || []).map(m => ({ section: 'Low capacity', meal: m.name, available: m.production_capacity ?? 0, limiting: m.limiting_ingredient_name || '—', prep_min: `${m.prep_time_minutes || 0}+${m.cook_time_minutes || 0}`, allergens: m.allergens || '', notes: m.kitchen_notes || m.instructions || '' })),
+      ...(b.out_of_stock || []).map(m => ({ section: 'Out of stock', meal: m.name, available: m.production_capacity ?? 0, limiting: m.limiting_ingredient_name || '—', prep_min: `${m.prep_time_minutes || 0}+${m.cook_time_minutes || 0}`, allergens: m.allergens || '', notes: m.kitchen_notes || m.instructions || '' }))
     ];
     this.bindDocActions('rp-prep', () => ({
       title: `Daily Prep Board — ${b.date || 'today'}`,
       filename: `prep-board-${b.date || 'today'}.pdf`,
       rows: prepRows,
-      keys: ['section', 'meal', 'available', 'limiting', 'prep_min', 'notes']
+      keys: ['section', 'meal', 'available', 'limiting', 'prep_min', 'allergens', 'notes']
     }));
+    el.querySelectorAll('.rp-prep-card[data-path]').forEach(async (cardEl) => {
+      const path = cardEl.dataset.path;
+      if (!path) return;
+      try {
+        const img = await API.getImageDataUrl(path);
+        const media = cardEl.querySelector('.rp-prep-card-media');
+        if (media && img.success && (img.dataUrl || img.data)) {
+          media.innerHTML = `<img src="${img.dataUrl || img.data}" alt="">`;
+        }
+      } catch (_) { /* ignore */ }
+    });
     document.getElementById('rp-prep-refresh')?.addEventListener('click', () => this.pagePrepBoard(el));
     document.getElementById('rp-prep-settings')?.addEventListener('click', () => {
       this.page = 'settings';
@@ -566,7 +713,9 @@ const RecipeProductionApp = {
               ${p.from_recipe ? '<span class="rp-tag ok">Shared</span>' : '<span class="rp-tag">Ready to use</span>'}</td>
             <td class="rp-muted">${p.used_in_meals || '— (pick in Recipe Builder)'}</td>
             <td><strong>${p.stock_quantity}</strong> <span class="rp-muted">left</span></td>
-            <td>${p.stock_unit || p.unit || 'each'}</td>
+            <td>${p.stock_unit || p.unit || 'each'}${p.purchase_unit_label || (p.purchase_unit && p.purchase_unit !== (p.stock_unit || p.unit))
+              ? ` <span class="rp-muted">· ${p.purchase_unit_label || p.purchase_unit}${p.purchase_unit_qty > 1 ? `×${p.purchase_unit_qty}` : ''}</span>`
+              : ''}</td>
             <td>${p.recipe_unit || '—'} <span class="rp-muted">${p.purchase_unit && p.purchase_unit !== (p.stock_unit || p.unit) ? `(buy: ${p.purchase_unit})` : ''}</span></td>
             <td>${this.money(p.buying_price)}</td>
             <td>${p.stock_quantity <= 0 ? '<span class="rp-tag danger">Out</span>' : p.stock_quantity <= (p.min_stock || 5) ? '<span class="rp-tag warn">Low</span>' : '<span class="rp-tag ok">OK</span>'}</td>
@@ -679,20 +828,73 @@ const RecipeProductionApp = {
     el.querySelectorAll('.rp-ing-edit').forEach(btn => btn.addEventListener('click', async () => {
       const p = list.find(x => Number(x.id) === Number(btn.dataset.id));
       if (!p) return;
+      const fullRes = await API.getProduct(p.id);
+      const full = fullRes.success ? (fullRes.data || p) : p;
+      const stockUnit = full.stock_unit || full.unit || 'g';
+      const units = Utils.getAllStockUnits();
+      const unitOpts = (sel) => units.map(u => `<option value="${u}" ${u === sel ? 'selected' : ''}>${u}</option>`).join('');
+      let convs = (full.conversions || []).map(c => ({
+        from_qty: Number(c.from_qty) > 0 ? Number(c.from_qty) : 1,
+        from_unit: c.from_unit || '',
+        to_qty: Number(c.to_qty) > 0 ? Number(c.to_qty) : 1,
+        to_unit: c.to_unit || stockUnit,
+        label: c.label || ''
+      }));
       Utils.showModal('Edit Ingredient', `
-        <div class="field"><label>Name</label><input id="rp-ie-name" value="${this.escapeAttr(p.name)}"></div>
-        <div class="field"><label>Unit</label><input id="rp-ie-unit" value="${this.escapeAttr(p.stock_unit || p.unit || 'g')}"></div>
-        <div class="field"><label>Min stock</label><input type="number" id="rp-ie-min" step="0.001" value="${p.min_stock ?? 5}"></div>
-        <div class="field"><label>Avg / buy cost</label><input type="number" id="rp-ie-cost" step="0.01" value="${p.buying_price || 0}"></div>
-        <p class="rp-muted">Used in: ${p.used_in_meals || '—'}</p>`,
+        <div class="form-grid">
+          <div class="field"><label>Name</label><input id="rp-ie-name" value="${this.escapeAttr(full.name || p.name)}"></div>
+          <div class="field"><label>Stock unit</label><select id="rp-ie-unit">${unitOpts(stockUnit)}</select></div>
+          <div class="field"><label>Min stock</label><input type="number" id="rp-ie-min" step="0.001" value="${full.min_stock ?? p.min_stock ?? 5}"></div>
+          <div class="field"><label>Avg / buy cost</label><input type="number" id="rp-ie-cost" step="0.01" value="${full.buying_price || p.buying_price || 0}"></div>
+        </div>
+        <h4 style="margin:16px 0 8px">Package (how you buy)</h4>
+        <p class="rp-muted" style="margin:0 0 8px">Example: Case of 10 kg — restock 1 case adds 10 kg to stock.</p>
+        <div class="form-grid">
+          <div class="field"><label>Package name</label>
+            <input id="rp-ie-pack-label" list="rp-ie-pack-presets" value="${this.escapeAttr(full.purchase_unit_label || '')}" placeholder="Case, Box, Bag…">
+            <datalist id="rp-ie-pack-presets"><option value="Case"><option value="Box"><option value="Bag"><option value="Pack"><option value="Carton"></datalist>
+          </div>
+          <div class="field"><label>Contains</label><input type="number" id="rp-ie-pack-qty" step="0.001" min="0.001" value="${full.purchase_unit_qty > 0 ? full.purchase_unit_qty : 1}"></div>
+          <div class="field"><label>Purchase unit</label><select id="rp-ie-purchase">${unitOpts(full.purchase_unit || 'case')}</select></div>
+        </div>
+        <h4 style="margin:16px 0 8px">Extra conversions</h4>
+        <div id="rp-ie-conv"></div>
+        <button type="button" class="btn btn-ghost btn-sm" id="rp-ie-add-conv" style="margin-top:6px">+ Add conversion</button>
+        <p class="rp-muted" style="margin-top:12px">Used in: ${p.used_in_meals || '—'}</p>`,
         '<button class="btn btn-primary" id="rp-ie-save">Save</button>');
+      const drawConv = () => {
+        const box = document.getElementById('rp-ie-conv');
+        if (!box) return;
+        box.innerHTML = convs.map((c, i) => `
+          <div class="form-grid" style="margin-bottom:6px;align-items:end">
+            <div class="field"><label>From</label><input type="number" class="ie-fq" data-i="${i}" step="0.001" value="${c.from_qty}"></div>
+            <div class="field"><label>Unit</label><input class="ie-fu" data-i="${i}" value="${this.escapeAttr(c.from_unit)}"></div>
+            <div class="field"><label>= To</label><input type="number" class="ie-tq" data-i="${i}" step="0.001" value="${c.to_qty}"></div>
+            <div class="field"><label>Unit</label><input class="ie-tu" data-i="${i}" value="${this.escapeAttr(c.to_unit)}"></div>
+            <div class="field" style="display:flex;align-items:flex-end"><button type="button" class="btn btn-sm btn-danger ie-crm" data-i="${i}">×</button></div>
+          </div>`).join('') || '<p class="rp-muted">No extra conversions</p>';
+        box.querySelectorAll('.ie-fq').forEach(inp => inp.oninput = () => { convs[inp.dataset.i].from_qty = parseFloat(inp.value) || 1; });
+        box.querySelectorAll('.ie-fu').forEach(inp => inp.oninput = () => { convs[inp.dataset.i].from_unit = inp.value; });
+        box.querySelectorAll('.ie-tq').forEach(inp => inp.oninput = () => { convs[inp.dataset.i].to_qty = parseFloat(inp.value) || 1; });
+        box.querySelectorAll('.ie-tu').forEach(inp => inp.oninput = () => { convs[inp.dataset.i].to_unit = inp.value; });
+        box.querySelectorAll('.ie-crm').forEach(b => b.onclick = () => { convs.splice(parseInt(b.dataset.i, 10), 1); drawConv(); });
+      };
+      drawConv();
+      document.getElementById('rp-ie-add-conv')?.addEventListener('click', () => {
+        convs.push({ from_qty: 1, from_unit: 'kg', to_qty: 1000, to_unit: document.getElementById('rp-ie-unit')?.value || 'g', label: '' });
+        drawConv();
+      });
       document.getElementById('rp-ie-save').onclick = async () => {
         const r = await API.recipeUpdateIngredient({
           id: p.id,
           name: document.getElementById('rp-ie-name').value.trim(),
           unit: document.getElementById('rp-ie-unit').value.trim() || 'g',
           min_stock: parseFloat(document.getElementById('rp-ie-min').value) || 0,
-          buying_price: parseFloat(document.getElementById('rp-ie-cost').value) || 0
+          buying_price: parseFloat(document.getElementById('rp-ie-cost').value) || 0,
+          purchase_unit_label: document.getElementById('rp-ie-pack-label').value.trim() || null,
+          purchase_unit_qty: parseFloat(document.getElementById('rp-ie-pack-qty').value) || 1,
+          purchase_unit: document.getElementById('rp-ie-purchase').value.trim() || null,
+          conversions: convs
         }, this.user);
         if (!r.success) return Utils.toast(r.error || 'Update failed', 'error');
         Utils.hideModal();
@@ -797,8 +999,12 @@ const RecipeProductionApp = {
     const product = meal.product;
     // Saved ingredients catalog — reuse across meals; only amount changes per meal
     const catRes = await API.recipeRestockList(this.user);
-    let catalog = (catRes.success ? (catRes.data || []) : []).slice().sort((a, b) =>
-      String(a.name || '').localeCompare(String(b.name || ''), undefined, { sensitivity: 'base' }));
+    let catalog = (catRes.success ? (catRes.data || []) : [])
+      .filter(c => c && (c.from_recipe || c.item_type === 'ingredient' || !c.selling_price || Number(c.selling_price) === 0 || c.recipe_unit))
+      .slice()
+      .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), undefined, { sensitivity: 'base' }));
+    // Prefer dedicated ingredients; keep any restock-listed shared stock so recipes still work
+    if (!catalog.length && catRes.success) catalog = (catRes.data || []).slice();
     const catalogById = () => {
       const m = new Map();
       catalog.forEach(c => m.set(Number(c.id), c));
@@ -874,8 +1080,17 @@ const RecipeProductionApp = {
             : 'No ingredients saved yet for this meal.'}
         </p>
         <div class="form-grid" style="margin-top:12px">
-          <div class="field" style="flex:2"><label>Kitchen / allergen notes</label>
-            <textarea id="rr-kitchen" rows="2" ${canEdit ? '' : 'readonly'} placeholder="e.g. Contains dairy · Serve hot">${this.escapeAttr(meal.recipe_profile?.notes || '')}</textarea></div>
+          <div class="field"><label>Production mode</label>
+            <select id="rr-prod-mode" ${canEdit ? '' : 'disabled'}>
+              <option value="make_to_order" ${(meal.recipe_profile?.production_mode || 'make_to_order') !== 'make_to_stock' ? 'selected' : ''}>Make to order (deduct ingredients on POS sale)</option>
+              <option value="make_to_stock" ${meal.recipe_profile?.production_mode === 'make_to_stock' ? 'selected' : ''}>Make to stock (deduct when you Produce)</option>
+            </select></div>
+          <div class="field" style="flex:2"><label>Kitchen notes</label>
+            <textarea id="rr-kitchen" rows="2" ${canEdit ? '' : 'readonly'} placeholder="Serve hot · Plate garnish…">${this.escapeAttr(meal.recipe_profile?.notes || '')}</textarea></div>
+          <div class="field" style="flex:2"><label>Allergen labels</label>
+            <input id="rr-allergens" ${canEdit ? '' : 'readonly'} placeholder="e.g. Dairy, Gluten, Peanuts"
+              value="${this.escapeAttr(meal.recipe_profile?.allergens || product.allergens || '')}">
+            <small class="rp-muted">Shown on prep board, kitchen ticket, and receipt</small></div>
           <div class="field" style="flex:2"><label>Prep instructions</label>
             <textarea id="rr-instructions" rows="2" ${canEdit ? '' : 'readonly'} placeholder="Short kitchen steps…">${this.escapeAttr(meal.recipe_profile?.instructions || product.description || '')}</textarea></div>
         </div>
@@ -908,7 +1123,7 @@ const RecipeProductionApp = {
         </p>
         ${canEdit && catalog.length ? `
         <div class="rp-panel" style="margin:0 0 12px;padding:12px;background:var(--rp-surface-2, transparent);border:1px dashed var(--rp-border)">
-          <p class="rp-muted" style="margin:0 0 8px"><strong>Faster add:</strong> search → multi-select → Add selected. Or copy another meal’s recipe / paste lines.</p>
+          <p class="rp-muted" style="margin:0 0 8px"><strong>Choose ingredients:</strong> search → multi-select from Ingredient Master → Add selected. Or copy another meal’s recipe.</p>
           <div class="rp-toolbar" style="margin-bottom:8px;flex-wrap:wrap">
             <input type="search" id="rr-ing-filter" placeholder="Search ingredients…" style="min-width:200px;flex:1" autocomplete="off">
             <button type="button" class="btn btn-sm btn-ghost" id="rr-pick-all-vis">Select visible</button>
@@ -927,7 +1142,11 @@ const RecipeProductionApp = {
             <textarea id="rr-bulk-text" rows="4" placeholder="One per line: Chicken breast, 150, g&#10;Oil, 10, ml&#10;Paprika, 5, g" style="width:100%"></textarea>
             <button type="button" class="btn btn-sm btn-primary" id="rr-bulk-apply" style="margin-top:6px">Parse &amp; add lines</button>
           </div>
-        </div>` : ''}
+        </div>` : (canEdit ? `
+        <div class="rp-panel" style="margin:0 0 12px;padding:12px;border:1px dashed var(--rp-border)">
+          <p class="rp-muted" style="margin:0">No saved ingredients yet. Go to <strong>Ingredient Master</strong> to add chicken, oil, spices, etc., then come back and multi-select them here.</p>
+          <button type="button" class="btn btn-primary btn-sm" id="rr-goto-ing-master" style="margin-top:8px">Open Ingredient Master</button>
+        </div>` : '')}
         <datalist id="rr-ing-list">${catalog.map(c => `<option value="${this.escapeAttr(c.name)}"></option>`).join('')}</datalist>
         <datalist id="rr-unit-list">${unitSuggestions.map(u => `<option value="${u}">`).join('')}</datalist>
         <datalist id="rr-option-list">${optionSuggestions.map(u => `<option value="${this.escapeAttr(u)}">`).join('')}</datalist>
@@ -1353,6 +1572,7 @@ const RecipeProductionApp = {
     });
     document.getElementById('rr-target-profit')?.addEventListener('change', () => { setDirty(true); scheduleRecalc(); });
     document.getElementById('rr-kitchen')?.addEventListener('input', () => setDirty(true));
+    document.getElementById('rr-allergens')?.addEventListener('input', () => setDirty(true));
     document.getElementById('rr-instructions')?.addEventListener('input', () => setDirty(true));
     let baseQtys = items.map(i => Number(i.quantity) || 0);
     document.getElementById('rr-scale-apply')?.addEventListener('click', () => {
@@ -1381,6 +1601,11 @@ const RecipeProductionApp = {
       this.page = 'restock';
       this.render();
     });
+    document.getElementById('rr-goto-ing-master')?.addEventListener('click', () => leaveEditor(() => {
+      this._editingMealProductId = null;
+      this.page = 'ingredients';
+      this.render();
+    }));
     document.getElementById('rr-goto-report').onclick = () => leaveEditor(() => {
       this._editingMealProductId = null;
       this.page = 'reports';
@@ -1403,9 +1628,10 @@ const RecipeProductionApp = {
       const scaleN = Math.max(1, parseInt(document.getElementById('rr-scale')?.value, 10) || 1);
       const payload = {
         product_id: productId,
-        production_mode: 'make_to_order',
+        production_mode: document.getElementById('rr-prod-mode')?.value || 'make_to_order',
         target_profit_pct: parseFloat(document.getElementById('rr-target-profit')?.value) || 40,
         kitchen_notes: document.getElementById('rr-kitchen')?.value || '',
+        allergens: document.getElementById('rr-allergens')?.value || '',
         instructions: document.getElementById('rr-instructions')?.value || '',
         description: document.getElementById('rr-instructions')?.value || product.description || '',
         items: lines.map(i => ({
@@ -1460,11 +1686,12 @@ const RecipeProductionApp = {
     this._ingredients = ingredients;
     const can = RecipePerms.can(this.user, 'produce');
     el.innerHTML = `
+      <div class="rp-restock">
       <p class="rp-muted" style="margin-top:0">
         Restock once per <strong>shared ingredient</strong>. Enter target meals and tap <strong>Calculate for me</strong>
         — the system fills buy quantities from every recipe (main ingredient drives POS stock).
       </p>
-      <div class="rp-toolbar">
+      <div class="rp-toolbar rp-restock-toolbar">
         <label class="rp-muted">Target meals</label>
         <input type="number" id="rp-rs-target" min="1" step="1" value="20" style="width:80px">
         ${can ? '<button class="btn btn-primary" id="rp-rs-calc">Calculate for me</button>' : ''}
@@ -1475,7 +1702,7 @@ const RecipeProductionApp = {
         ${other.length ? `<span class="rp-tag">${other.length} not on a meal</span>` : ''}
         ${this.docActionsHtml('rp-rs')}
       </div>
-      <div class="rp-panel">
+      <div class="rp-panel rp-restock-hist">
         <h3>Stock usage history</h3>
         <div class="rp-toolbar">
           <label class="rp-muted">From</label><input type="date" id="rp-rs-hist-from" value="${this._rsHistFrom || new Date(Date.now() - 7 * 86400000).toLocaleDateString('en-CA')}">
@@ -1484,12 +1711,14 @@ const RecipeProductionApp = {
         </div>
         <div id="rp-rs-hist"><p class="rp-muted">Apply a date filter to see stock used / added per ingredient.</p></div>
       </div>
-      <div class="rp-panel">
-        <h3>Restock by line</h3>
-        <p class="rp-muted">Stock left is shown per ingredient. Also try: Calculate for me, Create PO, low-stock filter on Ingredients, Profits &amp; Losses tab.</p>
+      <div class="rp-panel rp-restock-lines">
+        <div class="rp-restock-lines-head">
+          <h3>Restock by line</h3>
+          <p class="rp-muted">Stock left is shown per ingredient. Also try: Calculate for me, Create PO, low-stock filter on Ingredients, Profits &amp; Losses tab.</p>
+        </div>
         ${!ingredients.length
           ? '<p class="rp-muted">No ingredients yet. Add them in Ingredient Master or Recipe Builder, then restock here.</p>'
-          : `<table class="rp-table"><thead><tr>
+          : `<div class="rp-restock-table-wrap"><table class="rp-table rp-restock-table"><thead><tr>
               <th>Ingredient</th><th>Used in meals</th><th>Now in stock</th><th>Qty bought</th><th>Buy unit</th><th>Total cost paid</th><th></th>
             </tr></thead>
             <tbody>${ingredients.map(p => {
@@ -1501,17 +1730,20 @@ const RecipeProductionApp = {
                 ${p.from_recipe ? '' : '<div class="rp-muted" style="font-size:11px">Not on a current recipe</div>'}
                 ${recipeU ? `<div class="rp-muted" style="font-size:11px">Recipe uses: ${recipeU}</div>` : ''}
               </td>
-              <td class="rp-muted" style="font-size:12px;max-width:220px">${p.used_in_meals || '—'}</td>
+              <td class="rp-muted rp-restock-meals">${p.used_in_meals || '—'}</td>
               <td><strong>${p.stock_quantity}</strong> <span class="rp-muted">${stockU}</span></td>
               <td><input type="number" step="0.001" class="rp-rs-qty" style="width:90px" placeholder="0"></td>
               <td><input class="rp-rs-unit" list="rp-rs-units" style="width:80px" value="${this.escapeAttr(buyU)}" title="Unit you bought in (converted to ${stockU} in stock)"></td>
               <td><input type="number" step="0.01" class="rp-rs-cost" style="width:100px" placeholder="0.00"></td>
               <td>${can ? `<button type="button" class="btn btn-sm btn-primary rp-rs-one">Add stock</button>` : ''}</td>
             </tr>`;
-            }).join('')}</tbody></table>
+            }).join('')}</tbody></table></div>
             <datalist id="rp-rs-units"><option value="g"><option value="kg"><option value="ml"><option value="L"><option value="litre"><option value="each"><option value="piece"></datalist>
-            ${can ? '<button class="btn btn-primary" id="rp-rs-all" style="margin-top:12px">Save all filled lines</button>' : ''}
-            <p class="rp-muted" style="margin-top:10px">Buy unit is converted into the stock unit shown (e.g. 1 kg → 1000 g). Use the same unit you pay for.</p>`}
+            <div class="rp-restock-footer">
+              ${can ? '<button class="btn btn-primary" id="rp-rs-all">Save all filled lines</button>' : ''}
+              <p class="rp-muted">Buy unit is converted into the stock unit shown (e.g. 1 kg → 1000 g). Use the same unit you pay for.</p>
+            </div>`}
+      </div>
       </div>`;
 
     this.bindDocActions('rp-rs', () => ({
@@ -1964,15 +2196,18 @@ const RecipeProductionApp = {
         <td style="white-space:nowrap">${can ? `<button class="btn btn-sm btn-success rp-appr" data-id="${x.id}">Approve</button>
           <button class="btn btn-sm btn-danger rp-rej" data-id="${x.id}">Reject</button>` : '<span class="rp-muted">View only</span>'}
           <button class="btn btn-sm btn-ghost rp-open" data-id="${x.id}" data-pid="${x.product_id || ''}">Open</button>
+          ${RecipePerms.can(this.user, 'delete') ? `<button class="btn btn-sm btn-danger rp-del" data-id="${x.id}">Delete</button>` : ''}
         </td></tr>`).join('') || '<tr><td colspan="4" class="rp-muted">No pending recipes</td></tr>'}
       </tbody></table></div>
       ${meals.length ? `<div class="rp-panel"><h3>Meals needing approval</h3>
         <table class="rp-table"><thead><tr><th>Meal</th><th>Status</th><th></th></tr></thead>
         <tbody>${meals.map(m => `<tr>
           <td>${m.name}</td><td>${this.statusTag(m.profile_status || 'draft')}</td>
-          <td>${can && m.profile_id ? `<button class="btn btn-sm btn-success rp-appr" data-id="${m.profile_id}">Approve</button>` : ''}
+          <td>${can && m.profile_id ? `<button class="btn btn-sm btn-success rp-appr" data-id="${m.profile_id}">Approve</button>
+            <button class="btn btn-sm btn-danger rp-rej" data-id="${m.profile_id}">Reject</button>` : ''}
             <button class="btn btn-sm btn-ghost rp-open-meal" data-pid="${m.product_id}">Open meal</button>
             ${can && m.product_id ? `<button class="btn btn-sm btn-primary rp-ensure" data-pid="${m.product_id}">Submit &amp; Approve</button>` : ''}
+            ${RecipePerms.can(this.user, 'delete') && m.profile_id ? `<button class="btn btn-sm btn-danger rp-del" data-id="${m.profile_id}">Delete</button>` : ''}
           </td></tr>`).join('')}</tbody></table></div>` : ''}`;
     this.bindDocActions('rp-appr', () => ({
       title: 'Pending Recipe Approvals',
@@ -1994,6 +2229,12 @@ const RecipeProductionApp = {
       const notes = prompt('Reason:') || '';
       const res = await API.recipeReject(parseInt(b.dataset.id, 10), notes, this.user);
       Utils.toast(res.success ? 'Rejected' : res.error, res.success ? 'success' : 'error');
+      this.pageApprovals(el);
+    });
+    el.querySelectorAll('.rp-del').forEach(b => b.onclick = async () => {
+      if (!confirm('Delete this recipe permanently? This cannot be undone.')) return;
+      const res = await API.recipeDelete(parseInt(b.dataset.id, 10), this.user);
+      Utils.toast(res.success ? 'Deleted' : res.error, res.success ? 'success' : 'error');
       this.pageApprovals(el);
     });
     el.querySelectorAll('.rp-open').forEach(b => b.onclick = async () => {
@@ -2060,7 +2301,8 @@ const RecipeProductionApp = {
               `<option value="${o.key}" data-profile="${o.profile_id || ''}" data-product="${o.product_id || ''}">${o.label}</option>`
             ).join('') || '<option value="">No meals with recipes yet</option>'}</select>
           </div>
-          <div class="field"><label>Quantity</label><input type="number" id="rp-prod-qty" value="10" min="1"></div>
+          <div class="field"><label>Quantity (planned)</label><input type="number" id="rp-prod-qty" value="10" min="1"></div>
+          <div class="field"><label>Actual yield (meals)</label><input type="number" id="rp-prod-actual" value="" min="0.01" step="0.01" placeholder="Same as planned if blank"></div>
         </div>
         <div class="rp-toolbar" style="margin-top:12px">
           <button class="btn btn-ghost" id="rp-prod-plan">Calculate Capacity & Cost</button>
@@ -2072,27 +2314,45 @@ const RecipeProductionApp = {
         <div id="rp-prod-result" class="rp-muted" style="margin-top:12px"></div>
       </div>
       <div class="rp-panel"><h3>Recent Batches</h3>
-        <table class="rp-table"><thead><tr><th>When</th><th>Recipe</th><th>Qty</th><th>Cost</th><th>Limiting</th><th>Status</th></tr></thead>
-        <tbody>${batches.map(b => `<tr>
+        <table class="rp-table"><thead><tr><th>When</th><th>Recipe</th><th>Planned</th><th>Actual</th><th>Variance</th><th>Cost</th><th>Limiting</th><th>Status</th></tr></thead>
+        <tbody>${batches.map(b => {
+          const planned = Number(b.planned_qty) || 0;
+          const actual = Number(b.produced_qty) || 0;
+          const variance = b.yield_variance_pct != null
+            ? b.yield_variance_pct
+            : (planned ? Math.round(((actual - planned) / planned) * 1000) / 10 : 0);
+          return `<tr>
           <td>${b.completed_at || b.created_at}</td><td>${b.recipe_name || b.recipe_profile_id}</td>
-          <td>${b.produced_qty}</td><td>${this.money(b.production_cost)}</td>
+          <td>${planned}</td><td>${actual}</td>
+          <td class="${variance < 0 ? 'rp-muted' : ''}">${variance > 0 ? '+' : ''}${variance}%</td>
+          <td>${this.money(b.production_cost)}</td>
           <td>${b.limiting_ingredient || '—'}</td><td>${b.status}</td>
-        </tr>`).join('') || '<tr><td colspan="6" class="rp-muted">No batches yet</td></tr>'}
+        </tr>`;
+        }).join('') || '<tr><td colspan="8" class="rp-muted">No batches yet</td></tr>'}
         </tbody></table>
       </div>`;
-    this._prodExportRows = batches.map(b => ({
-      when: b.completed_at || b.created_at,
-      recipe: b.recipe_name || b.recipe_profile_id,
-      qty: b.produced_qty,
-      cost: b.production_cost,
-      limiting: b.limiting_ingredient || '—',
-      status: b.status
-    }));
+    this._prodExportRows = batches.map(b => {
+      const planned = Number(b.planned_qty) || 0;
+      const actual = Number(b.produced_qty) || 0;
+      const variance = b.yield_variance_pct != null
+        ? b.yield_variance_pct
+        : (planned ? Math.round(((actual - planned) / planned) * 1000) / 10 : 0);
+      return {
+        when: b.completed_at || b.created_at,
+        recipe: b.recipe_name || b.recipe_profile_id,
+        planned,
+        actual,
+        variance: `${variance}%`,
+        cost: b.production_cost,
+        limiting: b.limiting_ingredient || '—',
+        status: b.status
+      };
+    });
     this.bindDocActions('rp-prod', () => {
       const rows = this._prodExportRows || [];
       const keys = rows[0]?.ingredient
-        ? ['recipe', 'qty', 'cost', 'limiting', 'status', 'ingredient', 'stock', 'per_meal', 'can_make']
-        : ['when', 'recipe', 'qty', 'cost', 'limiting', 'status'];
+        ? ['recipe', 'qty', 'cost', 'limiting', 'status', 'ingredient', 'stock', 'per_meal', 'can_make', 'planned_use']
+        : ['when', 'recipe', 'planned', 'actual', 'variance', 'cost', 'limiting', 'status'];
       return {
         title: rows[0]?.ingredient ? 'Production Capacity Plan' : 'Production Batches',
         filename: `production-${Date.now()}.pdf`,
@@ -2106,7 +2366,14 @@ const RecipeProductionApp = {
       const profile_id = parseInt(opt?.dataset?.profile, 10) || null;
       const product_id = parseInt(opt?.dataset?.product, 10) || null;
       const qty = parseFloat(document.getElementById('rp-prod-qty').value) || 1;
-      return { recipe_profile_id: profile_id || undefined, product_id: product_id || undefined, planned_qty: qty };
+      const actualRaw = document.getElementById('rp-prod-actual')?.value;
+      const actual_qty = actualRaw !== '' && actualRaw != null ? parseFloat(actualRaw) : null;
+      return {
+        recipe_profile_id: profile_id || undefined,
+        product_id: product_id || undefined,
+        planned_qty: qty,
+        actual_qty: Number.isFinite(actual_qty) ? actual_qty : undefined
+      };
     };
     const showPlan = async () => {
       const payload = selectedPayload();
@@ -2122,8 +2389,14 @@ const RecipeProductionApp = {
           <div><div class="rp-muted">Can Produce?</div><strong>${p.can_produce ? 'Yes' : 'No'}</strong></div>
         </div>
         ${p.missing?.length ? `<p class="rp-muted" style="color:var(--rp-danger)">Missing: ${p.missing.map(m => m.name).join(', ')}</p>` : ''}
-        <table class="rp-table" style="margin-top:10px"><thead><tr><th>Ingredient</th><th>Stock</th><th>Per meal</th><th>Can make</th></tr></thead>
-        <tbody>${(p.capacity?.breakdown || []).map(b => `<tr><td>${b.name}</td><td>${b.stock} ${b.unit}</td><td>${b.per_meal}</td><td>${b.can_make ?? '∞'}</td></tr>`).join('')}</tbody></table>`;
+        <p class="rp-muted" style="margin-top:10px">Planned ingredient use for ${payload.planned_qty} meal(s). Optional: override actual qty before Produce for variance.</p>
+        <table class="rp-table" style="margin-top:10px"><thead><tr><th>Ingredient</th><th>Stock</th><th>Per meal</th><th>Planned use</th><th>Actual use</th><th>Can make</th></tr></thead>
+        <tbody>${(p.capacity?.breakdown || []).map(b => `<tr data-ing="${b.ingredient_product_id || b.id || ''}">
+          <td>${b.name}</td><td>${b.stock} ${b.unit}</td><td>${b.per_meal}</td>
+          <td>${((Number(b.per_meal) || 0) * payload.planned_qty).toFixed(3)} ${b.unit || ''}</td>
+          <td><input type="number" step="0.001" class="rp-prod-ing-actual" style="width:90px" placeholder="same"></td>
+          <td>${b.can_make ?? '∞'}</td>
+        </tr>`).join('')}</tbody></table>`;
       this._prodExportRows = (p.capacity?.breakdown || []).map(b => ({
         when: new Date().toLocaleString(),
         recipe: document.getElementById('rp-prod-recipe')?.selectedOptions?.[0]?.textContent || '',
@@ -2134,6 +2407,7 @@ const RecipeProductionApp = {
         ingredient: b.name,
         stock: `${b.stock} ${b.unit || ''}`,
         per_meal: b.per_meal,
+        planned_use: ((Number(b.per_meal) || 0) * payload.planned_qty).toFixed(3),
         can_make: b.can_make ?? '∞'
       }));
     };
@@ -2142,9 +2416,24 @@ const RecipeProductionApp = {
     document.getElementById('rp-prod-go')?.addEventListener('click', async () => {
       const payload = selectedPayload();
       if (!payload.recipe_profile_id && !payload.product_id) return Utils.toast('Select a meal/recipe first', 'error');
+      const actualIngredients = [];
+      el.querySelectorAll('#rp-prod-result tr[data-ing]').forEach(tr => {
+        const id = parseInt(tr.dataset.ing, 10);
+        const val = tr.querySelector('.rp-prod-ing-actual')?.value;
+        if (!id || val === '' || val == null) return;
+        const actual_qty = parseFloat(val);
+        if (Number.isFinite(actual_qty)) actualIngredients.push({ ingredient_product_id: id, actual_qty });
+      });
+      if (actualIngredients.length) payload.actual_ingredients = actualIngredients;
       const res = await API.recipeCompleteProduction(payload, this.user);
       if (!res.success) return Utils.toast(res.error, 'error');
-      Utils.toast('Production completed — stock updated', 'success');
+      const v = res.data?.yield_variance_pct;
+      Utils.toast(
+        v != null && v !== 0
+          ? `Production completed — yield variance ${v > 0 ? '+' : ''}${v}%`
+          : 'Production completed — stock updated',
+        'success'
+      );
       this.pageProduction(el);
     });
     document.getElementById('rp-prod-restock').onclick = async () => {
@@ -2172,19 +2461,31 @@ const RecipeProductionApp = {
       const ing = await API.recipeIngredients({}, this.user);
       this._ingredients = ing.data || [];
     }
-    const list = await API.recipeWasteList({}, this.user);
+    const [list, mealsRes] = await Promise.all([
+      API.recipeWasteList({}, this.user),
+      API.recipeProductionMeals ? API.recipeProductionMeals(this.user) : Promise.resolve({ data: {} })
+    ]);
     const rows = list.data || [];
+    const mealOpts = (mealsRes.data?.meals || mealsRes.data?.approved_profiles || []).map(m => ({
+      id: m.profile_id || m.id,
+      name: m.name
+    })).filter(m => m.id);
     this._wastePhoto = null;
     el.innerHTML = `
       <div class="rp-panel">
         <h3>Record Waste</h3>
-        <p class="rp-muted">A photo of the wasted item is required before submit for approval.</p>
+        <p class="rp-muted">A photo of the wasted item is required before submit for approval. Link the meal that caused the waste when known.</p>
         <div class="form-grid">
           <div class="field"><label>Type</label>
             <select id="rw-type">${['Burnt Food','Expired Ingredients','Overcooked Meals','Spillage','Returned Meals','Damaged Ingredients','other'].map(t => `<option>${t}</option>`).join('')}</select>
           </div>
           <div class="field"><label>Product / Ingredient</label>
             <select id="rw-prod">${this._ingredients.map(p => `<option value="${p.id}">${p.name}</option>`).join('')}</select>
+          </div>
+          <div class="field"><label>Linked meal (optional)</label>
+            <select id="rw-meal"><option value="">— Not linked —</option>
+              ${mealOpts.map(m => `<option value="${m.id}">${m.name}</option>`).join('')}
+            </select>
           </div>
           <div class="field"><label>Qty</label><input type="number" step="0.01" id="rw-qty" value="1"></div>
           <div class="field"><label>Reason</label><input id="rw-reason"></div>
@@ -2202,10 +2503,11 @@ const RecipeProductionApp = {
       </div>
       <div class="rp-panel"><h3>Waste Log</h3>
         <div class="rp-toolbar" style="margin-bottom:8px">${this.docActionsHtml('rp-waste')}</div>
-        <table class="rp-table"><thead><tr><th>Photo</th><th>When</th><th>Type</th><th>Item</th><th>Qty</th><th>Cost</th><th>Status</th><th></th></tr></thead>
+        <table class="rp-table"><thead><tr><th>Photo</th><th>When</th><th>Type</th><th>Item</th><th>Meal</th><th>Qty</th><th>Cost</th><th>Status</th><th></th></tr></thead>
         <tbody>${rows.map(w => `<tr>
           <td class="rw-thumb" data-path="${this.escapeAttr(w.photo_path || '')}">${w.photo_path ? '…' : '—'}</td>
           <td>${w.created_at}</td><td>${w.waste_type}</td><td>${w.product_name}</td>
+          <td class="rp-muted">${w.meal_name || '—'}</td>
           <td>${w.quantity}</td><td>${this.money(w.cost)}</td><td>${this.statusTag(w.status)}</td>
           <td style="white-space:nowrap">
             <button class="btn btn-sm btn-ghost rw-view" data-id="${w.id}">View</button>
@@ -2216,7 +2518,7 @@ const RecipeProductionApp = {
             ${w.status === 'pending' && RecipePerms.can(this.user, 'waste_approve')
             ? `<button class="btn btn-sm btn-success rw-ok" data-id="${w.id}">Approve</button>
                <button class="btn btn-sm btn-danger rw-no" data-id="${w.id}">Reject</button>` : ''}
-          </td></tr>`).join('') || '<tr><td colspan="8" class="rp-muted">No waste records</td></tr>'}
+          </td></tr>`).join('') || '<tr><td colspan="9" class="rp-muted">No waste records</td></tr>'}
         </tbody></table>
       </div>`;
     this.bindDocActions('rp-waste', () => ({
@@ -2226,12 +2528,13 @@ const RecipeProductionApp = {
         when: w.created_at,
         type: w.waste_type,
         item: w.product_name,
+        meal: w.meal_name || '',
         qty: w.quantity,
         cost: w.cost,
         status: w.status,
         reason: w.reason || ''
       })),
-      keys: ['when', 'type', 'item', 'qty', 'cost', 'status', 'reason']
+      keys: ['when', 'type', 'item', 'meal', 'qty', 'cost', 'status', 'reason']
     }));
     // Load attached photo thumbnails for the log
     el.querySelectorAll('.rw-thumb[data-path]').forEach(async (cell) => {
@@ -2290,6 +2593,7 @@ const RecipeProductionApp = {
       const payload = {
         waste_type: document.getElementById('rw-type').value,
         product_id: parseInt(document.getElementById('rw-prod').value, 10),
+        recipe_profile_id: parseInt(document.getElementById('rw-meal')?.value, 10) || null,
         quantity: parseFloat(document.getElementById('rw-qty').value) || 0,
         reason: document.getElementById('rw-reason').value
       };

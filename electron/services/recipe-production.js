@@ -193,9 +193,29 @@ function listIngredients(filters = {}, actor) {
   }
   sql += ' ORDER BY p.name';
   const rows = getDb().prepare(sql).all(...params);
+  // Batch conversions — avoid N+1 getProductConversions per ingredient
+  let conversionsByProduct = new Map();
+  try {
+    const ids = rows.map((p) => Number(p.id)).filter(Boolean);
+    if (ids.length) {
+      const ph = ids.map(() => '?').join(',');
+      const convRows = getDb().prepare(
+        `SELECT * FROM product_conversions WHERE product_id IN (${ph})`
+      ).all(...ids);
+      for (const c of convRows) {
+        const pid = Number(c.product_id);
+        if (!conversionsByProduct.has(pid)) conversionsByProduct.set(pid, []);
+        conversionsByProduct.get(pid).push(c);
+      }
+    }
+  } catch (_) {
+    conversionsByProduct = null;
+  }
   return rows.map(p => ({
     ...p,
-    conversions: inventory.getProductConversions(p.id),
+    conversions: conversionsByProduct
+      ? (conversionsByProduct.get(Number(p.id)) || [])
+      : inventory.getProductConversions(p.id),
     purchase_unit: p.purchase_unit || p.unit,
     recipe_unit: p.stock_unit || p.unit || 'each'
   }));
@@ -289,19 +309,55 @@ function updateIngredient(data, actor) {
   const unit = (data.unit || data.stock_unit || row.stock_unit || row.unit || 'each').toString().trim() || 'each';
   const minStock = data.min_stock != null ? Number(data.min_stock) : (row.min_stock ?? 5);
   const buying = data.buying_price != null ? Number(data.buying_price) : (row.buying_price || 0);
+  const packLabel = (data.purchase_unit_label != null ? data.purchase_unit_label : row.purchase_unit_label) || null;
+  const packQty = data.purchase_unit_qty != null ? Number(data.purchase_unit_qty) : (Number(row.purchase_unit_qty) || 1);
+  const purchaseUnit = (data.purchase_unit || packLabel || row.purchase_unit || unit || '').toString().trim() || unit;
   try {
     db.prepare(`
-      UPDATE products SET name=?, unit=?, stock_unit=?, purchase_unit=COALESCE(?, purchase_unit),
-        min_stock=?, buying_price=?, item_type=COALESCE(item_type, 'ingredient'),
+      UPDATE products SET name=?, unit=?, stock_unit=?, purchase_unit=?, purchase_unit_qty=?, purchase_unit_label=?,
+        min_stock=?, buying_price=?, item_type=COALESCE(NULLIF(item_type,''), 'ingredient'),
         updated_at=datetime('now') WHERE id=?
-    `).run(name, unit, unit, data.purchase_unit || unit, minStock, buying, id);
+    `).run(name, unit, unit, purchaseUnit, packQty > 0 ? packQty : 1, packLabel, minStock, buying, id);
   } catch (_) {
-    db.prepare(`UPDATE products SET name=?, unit=?, updated_at=datetime('now') WHERE id=?`)
-      .run(name, unit, id);
+    try {
+      db.prepare(`
+        UPDATE products SET name=?, unit=?, stock_unit=?, purchase_unit=COALESCE(?, purchase_unit),
+          min_stock=?, buying_price=?, item_type=COALESCE(item_type, 'ingredient'),
+          updated_at=datetime('now') WHERE id=?
+      `).run(name, unit, unit, purchaseUnit, minStock, buying, id);
+    } catch (__) {
+      db.prepare(`UPDATE products SET name=?, unit=?, updated_at=datetime('now') WHERE id=?`)
+        .run(name, unit, id);
+    }
   }
-  logActivity(actor, 'update_ingredient', 'product', id, { name: row.name }, { name, unit });
+  if (Array.isArray(data.conversions)) {
+    const conversions = data.conversions
+      .filter(c => c.from_unit?.trim() && c.to_unit?.trim() && Number(c.to_qty) > 0)
+      .map(c => ({
+        from_qty: Number(c.from_qty) > 0 ? Number(c.from_qty) : 1,
+        from_unit: String(c.from_unit).trim(),
+        to_qty: Number(c.to_qty),
+        to_unit: String(c.to_unit).trim(),
+        label: (c.label || '').trim() || null
+      }));
+    if (packLabel && packQty > 0) {
+      const code = String(purchaseUnit || packLabel).toLowerCase();
+      if (!conversions.some(c => String(c.from_unit).toLowerCase() === code && String(c.to_unit).toLowerCase() === String(unit).toLowerCase())) {
+        conversions.unshift({
+          from_qty: 1,
+          from_unit: purchaseUnit || packLabel,
+          to_qty: packQty,
+          to_unit: unit,
+          label: packLabel
+        });
+      }
+    }
+    inventory.saveProductConversions(id, conversions);
+  }
+  logActivity(actor, 'update_ingredient', 'product', id, { name: row.name }, { name, unit, purchaseUnit, packQty, packLabel });
   try { require('./production-availability').refreshAffectedByIngredient(id); } catch (_) { /* ignore */ }
-  return db.prepare('SELECT * FROM products WHERE id=?').get(id);
+  const updated = db.prepare('SELECT * FROM products WHERE id=?').get(id);
+  return { ...updated, conversions: inventory.getProductConversions(id) };
 }
 
 function deleteIngredient(id, actor) {
@@ -625,6 +681,7 @@ function saveRecipe(data, actor) {
     instructions: data.instructions || null,
     video_url: data.video_url || null,
     notes: data.notes || null,
+    allergens: data.allergens !== undefined ? (String(data.allergens || '').trim() || null) : undefined,
     production_mode: data.production_mode === 'make_to_stock' ? 'make_to_stock' : 'make_to_order',
     price_mode: data.price_mode || 'profit_pct',
     target_profit_pct: Number(data.target_profit_pct) || 40,
@@ -652,39 +709,81 @@ function saveRecipe(data, actor) {
       db.prepare('UPDATE recipe_profiles SET version = version + 1 WHERE id = ?').run(profileId);
     }
     productId = prev.product_id || productId;
-    db.prepare(`
-      UPDATE recipe_profiles SET
-        name=?, category=?, description=?, prep_time_minutes=?, cook_time_minutes=?,
-        serving_size=?, yield_qty=?, yield_unit=?, image_path=?, instructions=?, video_url=?, notes=?,
-        production_mode=?, price_mode=?, target_profit_pct=?, suggested_price=?, override_price=?,
-        selling_price=?, recipe_cost=?, food_cost_pct=?, gross_profit=?, profit_margin=?,
-        available_today=?, new_arrival_days=?, status=?, updated_by=?, updated_at=datetime('now')
-      WHERE id=?
-    `).run(
-      fields.name, fields.category, fields.description, fields.prep_time_minutes, fields.cook_time_minutes,
-      fields.serving_size, fields.yield_qty, fields.yield_unit, fields.image_path, fields.instructions, fields.video_url, fields.notes,
-      fields.production_mode, fields.price_mode, fields.target_profit_pct, fields.suggested_price, fields.override_price,
-      fields.selling_price, fields.recipe_cost, fields.food_cost_pct, fields.gross_profit, fields.profit_margin,
-      fields.available_today, fields.new_arrival_days, fields.status === 'approved' ? prev.status : fields.status,
-      actor?.id || null, profileId
-    );
+    const allergensVal = fields.allergens !== undefined ? fields.allergens : (prev.allergens || null);
+    try {
+      db.prepare(`
+        UPDATE recipe_profiles SET
+          name=?, category=?, description=?, prep_time_minutes=?, cook_time_minutes=?,
+          serving_size=?, yield_qty=?, yield_unit=?, image_path=?, instructions=?, video_url=?, notes=?, allergens=?,
+          production_mode=?, price_mode=?, target_profit_pct=?, suggested_price=?, override_price=?,
+          selling_price=?, recipe_cost=?, food_cost_pct=?, gross_profit=?, profit_margin=?,
+          available_today=?, new_arrival_days=?, status=?, updated_by=?, updated_at=datetime('now')
+        WHERE id=?
+      `).run(
+        fields.name, fields.category, fields.description, fields.prep_time_minutes, fields.cook_time_minutes,
+        fields.serving_size, fields.yield_qty, fields.yield_unit, fields.image_path, fields.instructions, fields.video_url, fields.notes, allergensVal,
+        fields.production_mode, fields.price_mode, fields.target_profit_pct, fields.suggested_price, fields.override_price,
+        fields.selling_price, fields.recipe_cost, fields.food_cost_pct, fields.gross_profit, fields.profit_margin,
+        fields.available_today, fields.new_arrival_days, fields.status === 'approved' ? prev.status : fields.status,
+        actor?.id || null, profileId
+      );
+    } catch (_) {
+      db.prepare(`
+        UPDATE recipe_profiles SET
+          name=?, category=?, description=?, prep_time_minutes=?, cook_time_minutes=?,
+          serving_size=?, yield_qty=?, yield_unit=?, image_path=?, instructions=?, video_url=?, notes=?,
+          production_mode=?, price_mode=?, target_profit_pct=?, suggested_price=?, override_price=?,
+          selling_price=?, recipe_cost=?, food_cost_pct=?, gross_profit=?, profit_margin=?,
+          available_today=?, new_arrival_days=?, status=?, updated_by=?, updated_at=datetime('now')
+        WHERE id=?
+      `).run(
+        fields.name, fields.category, fields.description, fields.prep_time_minutes, fields.cook_time_minutes,
+        fields.serving_size, fields.yield_qty, fields.yield_unit, fields.image_path, fields.instructions, fields.video_url, fields.notes,
+        fields.production_mode, fields.price_mode, fields.target_profit_pct, fields.suggested_price, fields.override_price,
+        fields.selling_price, fields.recipe_cost, fields.food_cost_pct, fields.gross_profit, fields.profit_margin,
+        fields.available_today, fields.new_arrival_days, fields.status === 'approved' ? prev.status : fields.status,
+        actor?.id || null, profileId
+      );
+    }
   } else {
-    const r = db.prepare(`
-      INSERT INTO recipe_profiles (
-        product_id, name, category, description, prep_time_minutes, cook_time_minutes,
-        serving_size, yield_qty, yield_unit, image_path, instructions, video_url, notes,
-        status, production_mode, price_mode, target_profit_pct, suggested_price, override_price,
-        selling_price, recipe_cost, food_cost_pct, gross_profit, profit_margin,
-        available_today, new_arrival_days, created_by, updated_by
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-    `).run(
-      productId, fields.name, fields.category, fields.description, fields.prep_time_minutes, fields.cook_time_minutes,
-      fields.serving_size, fields.yield_qty, fields.yield_unit, fields.image_path, fields.instructions, fields.video_url, fields.notes,
-      'draft', fields.production_mode, fields.price_mode, fields.target_profit_pct, fields.suggested_price, fields.override_price,
-      fields.selling_price, fields.recipe_cost, fields.food_cost_pct, fields.gross_profit, fields.profit_margin,
-      fields.available_today, fields.new_arrival_days, actor?.id || null, actor?.id || null
-    );
+    let r;
+    try {
+      r = db.prepare(`
+        INSERT INTO recipe_profiles (
+          product_id, name, category, description, prep_time_minutes, cook_time_minutes,
+          serving_size, yield_qty, yield_unit, image_path, instructions, video_url, notes, allergens,
+          status, production_mode, price_mode, target_profit_pct, suggested_price, override_price,
+          selling_price, recipe_cost, food_cost_pct, gross_profit, profit_margin,
+          available_today, new_arrival_days, created_by, updated_by
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      `).run(
+        productId, fields.name, fields.category, fields.description, fields.prep_time_minutes, fields.cook_time_minutes,
+        fields.serving_size, fields.yield_qty, fields.yield_unit, fields.image_path, fields.instructions, fields.video_url, fields.notes, fields.allergens,
+        'draft', fields.production_mode, fields.price_mode, fields.target_profit_pct, fields.suggested_price, fields.override_price,
+        fields.selling_price, fields.recipe_cost, fields.food_cost_pct, fields.gross_profit, fields.profit_margin,
+        fields.available_today, fields.new_arrival_days, actor?.id || null, actor?.id || null
+      );
+    } catch (_) {
+      r = db.prepare(`
+        INSERT INTO recipe_profiles (
+          product_id, name, category, description, prep_time_minutes, cook_time_minutes,
+          serving_size, yield_qty, yield_unit, image_path, instructions, video_url, notes,
+          status, production_mode, price_mode, target_profit_pct, suggested_price, override_price,
+          selling_price, recipe_cost, food_cost_pct, gross_profit, profit_margin,
+          available_today, new_arrival_days, created_by, updated_by
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      `).run(
+        productId, fields.name, fields.category, fields.description, fields.prep_time_minutes, fields.cook_time_minutes,
+        fields.serving_size, fields.yield_qty, fields.yield_unit, fields.image_path, fields.instructions, fields.video_url, fields.notes,
+        'draft', fields.production_mode, fields.price_mode, fields.target_profit_pct, fields.suggested_price, fields.override_price,
+        fields.selling_price, fields.recipe_cost, fields.food_cost_pct, fields.gross_profit, fields.profit_margin,
+        fields.available_today, fields.new_arrival_days, actor?.id || null, actor?.id || null
+      );
+    }
     profileId = r.lastInsertRowid;
+  }
+  if (productId && fields.allergens !== undefined) {
+    try { db.prepare('UPDATE products SET allergens = ? WHERE id = ?').run(fields.allergens, productId); } catch (_) { /* until migrate */ }
   }
 
   if (productId && items.length) {
@@ -984,43 +1083,117 @@ function completeProduction(data, actor) {
   if (!plan.can_produce) throw new Error('Insufficient ingredients for this production quantity');
   const recipe = plan.recipe;
   const qty = plan.planned_qty;
+  const actualQty = data.actual_qty != null && data.actual_qty !== ''
+    ? Number(data.actual_qty)
+    : (data.produced_qty != null && data.produced_qty !== '' ? Number(data.produced_qty) : qty);
+  if (!(actualQty > 0)) throw new Error('Actual yield must be greater than zero');
+  const variancePct = qty > 0
+    ? Math.round(((actualQty - qty) / qty) * 1000) / 10
+    : 0;
   const db = getDb();
+  const actualOverrides = new Map();
+  for (const row of data.actual_ingredients || data.ingredient_actuals || []) {
+    const id = Number(row.ingredient_product_id || row.product_id || row.id);
+    if (!id) continue;
+    if (row.actual_qty != null && row.actual_qty !== '') actualOverrides.set(id, Number(row.actual_qty));
+  }
 
-  const batch = db.prepare(`
-    INSERT INTO production_batches (
-      recipe_profile_id, product_id, planned_qty, produced_qty, status, production_cost,
-      limiting_ingredient, max_capacity, notes, created_by, completed_by, started_at, completed_at
-    ) VALUES (?,?,?,?, 'completed', ?,?,?,?,?,?,?, datetime('now'), datetime('now'))
-  `).run(
-    recipe.id, recipe.product_id || null, qty, qty, plan.production_cost,
-    plan.capacity.limiting_ingredient, plan.capacity.max_meals, data.notes || null,
-    actor?.id || null, actor?.id || null
-  );
+  let batch;
+  try {
+    batch = db.prepare(`
+      INSERT INTO production_batches (
+        recipe_profile_id, product_id, planned_qty, produced_qty, status, production_cost,
+        limiting_ingredient, max_capacity, notes, yield_variance_pct, created_by, completed_by, started_at, completed_at
+      ) VALUES (?,?,?,?, 'completed', ?,?,?,?,?,?,?, datetime('now'), datetime('now'))
+    `).run(
+      recipe.id, recipe.product_id || null, qty, actualQty, plan.production_cost,
+      plan.capacity.limiting_ingredient, plan.capacity.max_meals, data.notes || null, variancePct,
+      actor?.id || null, actor?.id || null
+    );
+  } catch (_) {
+    batch = db.prepare(`
+      INSERT INTO production_batches (
+        recipe_profile_id, product_id, planned_qty, produced_qty, status, production_cost,
+        limiting_ingredient, max_capacity, notes, created_by, completed_by, started_at, completed_at
+      ) VALUES (?,?,?,?, 'completed', ?,?,?,?,?,?,?, datetime('now'), datetime('now'))
+    `).run(
+      recipe.id, recipe.product_id || null, qty, actualQty, plan.production_cost,
+      plan.capacity.limiting_ingredient, plan.capacity.max_meals, data.notes || null,
+      actor?.id || null, actor?.id || null
+    );
+  }
   const batchId = batch.lastInsertRowid;
 
+  const deductOnProduce = recipe.production_mode === 'make_to_stock';
   for (const item of recipe.items || []) {
     const ing = db.prepare('SELECT * FROM products WHERE id = ?').get(item.ingredient_product_id);
     if (!ing) continue;
     const waste = 1 + (Number(item.waste_pct) || 0) / 100;
-    let deductQty = (Number(item.quantity) || 0) * qty * waste;
+    let plannedDeduct = (Number(item.quantity) || 0) * qty * waste;
     const stockUnit = ing.stock_unit || ing.unit || 'each';
     if ((item.unit || stockUnit) !== stockUnit) {
-      deductQty = inventory.convertQuantity(ing.id, deductQty, item.unit || stockUnit, stockUnit);
+      plannedDeduct = inventory.convertQuantity(ing.id, plannedDeduct, item.unit || stockUnit, stockUnit);
     }
+    let deductQty = actualOverrides.has(ing.id) ? actualOverrides.get(ing.id) : plannedDeduct;
+    if (!(deductQty >= 0)) deductQty = plannedDeduct;
     const lineCost = deductQty * (ing.buying_price || 0);
-    db.prepare(`
-      INSERT INTO production_batch_items (batch_id, ingredient_product_id, quantity, unit, unit_cost, line_cost)
-      VALUES (?,?,?,?,?,?)
-    `).run(batchId, ing.id, deductQty, stockUnit, ing.buying_price || 0, lineCost);
-    store.adjustStock(ing.id, deductQty, 'remove', `Production batch #${batchId}`, actor?.id, 'production', batchId);
+    try {
+      db.prepare(`
+        INSERT INTO production_batch_items (batch_id, ingredient_product_id, quantity, unit, unit_cost, line_cost, planned_quantity)
+        VALUES (?,?,?,?,?,?,?)
+      `).run(batchId, ing.id, deductQty, stockUnit, ing.buying_price || 0, lineCost, plannedDeduct);
+    } catch (_) {
+      db.prepare(`
+        INSERT INTO production_batch_items (batch_id, ingredient_product_id, quantity, unit, unit_cost, line_cost)
+        VALUES (?,?,?,?,?,?)
+      `).run(batchId, ing.id, deductQty, stockUnit, ing.buying_price || 0, lineCost);
+    }
+    if (deductOnProduce) {
+      store.adjustStock(ing.id, deductQty, 'remove', `Production batch #${batchId}`, actor?.id, 'production', batchId);
+    }
   }
 
   if (recipe.product_id && recipe.production_mode === 'make_to_stock') {
-    store.adjustStock(recipe.product_id, qty, 'add', `Production batch #${batchId} yield`, actor?.id, 'production', batchId);
+    store.adjustStock(recipe.product_id, actualQty, 'add', `Production batch #${batchId} yield`, actor?.id, 'production', batchId);
   }
 
-  logActivity(actor, 'complete_production', 'production_batch', batchId, null, { qty, recipe_id: recipe.id });
+  logActivity(actor, 'complete_production', 'production_batch', batchId, null, {
+    qty, actual_qty: actualQty, yield_variance_pct: variancePct, recipe_id: recipe.id
+  });
   return db.prepare('SELECT * FROM production_batches WHERE id = ?').get(batchId);
+}
+
+/** One-click apply AI / costing suggested sell price onto linked POS product + recipe profile. */
+function applySuggestedSellPrice(data, actor) {
+  requireRecipePerm(actor, 'edit');
+  const db = getDb();
+  const recipeId = Number(data?.recipe_id || data?.id);
+  let recipe = recipeId ? db.prepare('SELECT * FROM recipe_profiles WHERE id = ?').get(recipeId) : null;
+  if (!recipe && data?.product_id) {
+    recipe = db.prepare('SELECT * FROM recipe_profiles WHERE product_id = ? ORDER BY id DESC LIMIT 1')
+      .get(Number(data.product_id));
+  }
+  if (!recipe) throw new Error('Recipe not found');
+  const price = data?.suggested_price != null && data.suggested_price !== ''
+    ? Number(data.suggested_price)
+    : Number(recipe.suggested_price);
+  if (!(price > 0)) throw new Error('No suggested sell price to apply');
+  const productId = recipe.product_id || Number(data?.product_id) || null;
+  if (!productId) throw new Error('Recipe is not linked to a POS product yet');
+  const product = db.prepare('SELECT id, name, selling_price FROM products WHERE id = ?').get(productId);
+  if (!product) throw new Error('Product not found');
+  db.prepare(`UPDATE products SET selling_price=?, updated_at=datetime('now') WHERE id=?`).run(price, productId);
+  db.prepare(`
+    UPDATE recipe_profiles SET selling_price=?, override_price=?, suggested_price=?,
+      updated_at=datetime('now'), updated_by=? WHERE id=?
+  `).run(price, price, price, actor?.id || null, recipe.id);
+  try { inventory.updateProductRecipeMetrics(productId, price); } catch (_) { /* ignore */ }
+  try {
+    const auditSvc = require('./audit');
+    auditSvc.logPriceChange?.(productId, product.name, product.selling_price, price, actor?.id, actor?.full_name || actor?.name);
+  } catch (_) { /* ignore */ }
+  logActivity(actor, 'apply_suggested_price', 'recipe', recipe.id, { selling_price: recipe.selling_price }, { selling_price: price });
+  return { recipe_id: recipe.id, product_id: productId, selling_price: price };
 }
 
 function listProductionBatches(filters = {}, actor) {
@@ -1143,10 +1316,12 @@ function listRecipeWaste(filters = {}, actor) {
   canAccessRecipeModule(actor);
   ensureRecipeWastePhotoSchema();
   let sql = `
-    SELECT w.*, p.name AS product_name, u.full_name AS recorded_by_name
+    SELECT w.*, p.name AS product_name, u.full_name AS recorded_by_name,
+      rp.name AS meal_name, rp.id AS linked_recipe_id
     FROM recipe_waste_logs w
     JOIN products p ON p.id = w.product_id
     LEFT JOIN users u ON u.id = w.recorded_by
+    LEFT JOIN recipe_profiles rp ON rp.id = w.recipe_profile_id
     WHERE 1=1
   `;
   const params = [];
@@ -1195,11 +1370,12 @@ function updateRecipeWaste(id, data, actor) {
   }
   if (!photoPath) throw new Error('Photo of the wasted item is required');
   getDb().prepare(`
-    UPDATE recipe_waste_logs SET waste_type=?, product_id=?, quantity=?, unit=?, cost=?, reason=?, photo_path=?
+    UPDATE recipe_waste_logs SET waste_type=?, product_id=?, recipe_profile_id=?, quantity=?, unit=?, cost=?, reason=?, photo_path=?
     WHERE id=?
   `).run(
     data.waste_type || row.waste_type || 'other',
     productId,
+    data.recipe_profile_id != null ? (Number(data.recipe_profile_id) || null) : row.recipe_profile_id,
     qty,
     data.unit || row.unit || p.stock_unit || p.unit,
     cost,
@@ -1485,70 +1661,159 @@ function getRecipeDashboard(actor) {
   canAccessRecipeModule(actor);
   const db = getDb();
   const t = today();
-  const producedToday = db.prepare(`
-    SELECT COALESCE(SUM(produced_qty),0) AS qty, COUNT(*) AS batches
-    FROM production_batches WHERE status='completed' AND date(completed_at)=?
-  `).get(t);
-  const soldToday = db.prepare(`
-    SELECT COALESCE(SUM(si.quantity),0) AS qty
-    FROM sale_items si
-    JOIN sales s ON s.id = si.sale_id
-    JOIN recipe_profiles r ON r.product_id = si.product_id
-    WHERE s.status='completed' AND date(s.created_at)=?
-  `).get(t);
-  const pending = db.prepare(`SELECT COUNT(*) AS c FROM recipe_profiles WHERE status='pending'`).get().c;
-  const created = db.prepare(`SELECT COUNT(*) AS c FROM recipe_profiles`).get().c;
-  const wasteToday = db.prepare(`
-    SELECT COALESCE(SUM(cost),0) AS cost, COALESCE(SUM(quantity),0) AS qty
-    FROM recipe_waste_logs WHERE date(created_at)=?
-  `).get(t);
-  const lowStock = db.prepare(`
-    SELECT COUNT(*) AS c FROM products WHERE is_active=1 AND stock_quantity <= COALESCE(min_stock,5)
-  `).get().c;
-  const outStock = db.prepare(`SELECT COUNT(*) AS c FROM products WHERE is_active=1 AND stock_quantity <= 0`).get().c;
-  const promos = db.prepare(`SELECT COUNT(*) AS c FROM recipe_promotions WHERE status='active'`).get().c;
-  const bestSellers = db.prepare(`
-    SELECT si.product_id, si.product_name, SUM(si.quantity) AS sold, SUM(si.total) AS revenue
-    FROM sale_items si JOIN sales s ON s.id = si.sale_id
-    JOIN recipe_profiles r ON r.product_id = si.product_id
-    WHERE s.status='completed' AND date(s.created_at) >= date('now','-30 day')
-    GROUP BY si.product_id ORDER BY sold DESC LIMIT 5
-  `).all();
-  const highProfit = db.prepare(`
-    SELECT id, name, profit_margin, selling_price, recipe_cost FROM recipe_profiles
-    WHERE status='approved' ORDER BY profit_margin DESC LIMIT 5
-  `).all();
-  const lowProfit = db.prepare(`
-    SELECT id, name, profit_margin, selling_price, recipe_cost, food_cost_pct FROM recipe_profiles
-    WHERE status='approved' ORDER BY profit_margin ASC LIMIT 5
-  `).all();
-  const activity = db.prepare(`SELECT * FROM recipe_activity_log ORDER BY created_at DESC LIMIT 15`).all();
-  const capacitySamples = db.prepare(`
-    SELECT id, name FROM recipe_profiles WHERE status='approved' AND product_id IS NOT NULL LIMIT 8
-  `).all().map(r => {
-    try { return { ...r, ...calcProductionCapacity(r.id, actor) }; } catch { return r; }
-  });
+  const softGet = (sql, params = [], fallback = null) => {
+    try { return db.prepare(sql).get(...params); }
+    catch (e) { console.warn('[recipe-dashboard]', e.message || e); return fallback; }
+  };
+  const softAll = (sql, params = [], fallback = []) => {
+    try { return db.prepare(sql).all(...params); }
+    catch (e) { console.warn('[recipe-dashboard]', e.message || e); return fallback; }
+  };
+
+  // Single worker round-trip: KPIs + lists + production meal/ingredient rows.
+  const dashQueries = [
+    {
+      method: 'get',
+      sql: `SELECT
+        (SELECT COALESCE(SUM(produced_qty),0) FROM production_batches
+          WHERE status='completed' AND date(completed_at)=?) AS produced_qty,
+        (SELECT COUNT(*) FROM production_batches
+          WHERE status='completed' AND date(completed_at)=?) AS produced_batches,
+        (SELECT COALESCE(SUM(si.quantity),0) FROM sale_items si
+          JOIN sales s ON s.id = si.sale_id
+          JOIN recipe_profiles r ON r.product_id = si.product_id
+          WHERE s.status='completed' AND date(s.created_at)=?) AS sold_qty,
+        (SELECT COUNT(*) FROM recipe_profiles WHERE status='pending') AS recipes_pending,
+        (SELECT COUNT(*) FROM recipe_profiles) AS recipes_created,
+        (SELECT COALESCE(SUM(cost),0) FROM recipe_waste_logs WHERE date(created_at)=?) AS waste_cost,
+        (SELECT COALESCE(SUM(quantity),0) FROM recipe_waste_logs WHERE date(created_at)=?) AS waste_qty,
+        (SELECT COUNT(*) FROM products WHERE is_active=1 AND stock_quantity <= COALESCE(min_stock,5)) AS low_stock,
+        (SELECT COUNT(*) FROM products WHERE is_active=1 AND stock_quantity <= 0) AS out_of_stock,
+        (SELECT COUNT(*) FROM recipe_promotions WHERE status='active') AS active_promotions`,
+      params: [t, t, t, t, t]
+    },
+    {
+      method: 'all',
+      sql: `SELECT si.product_id, MAX(si.product_name) AS product_name, SUM(si.quantity) AS sold, SUM(si.total) AS revenue
+            FROM sale_items si JOIN sales s ON s.id = si.sale_id
+            JOIN recipe_profiles r ON r.product_id = si.product_id
+            WHERE s.status='completed' AND date(s.created_at) >= date('now','-30 day')
+            GROUP BY si.product_id ORDER BY sold DESC LIMIT 5`,
+      params: []
+    },
+    {
+      method: 'all',
+      sql: `SELECT id, name, profit_margin, selling_price, recipe_cost FROM recipe_profiles
+            WHERE status='approved' ORDER BY profit_margin DESC LIMIT 5`,
+      params: []
+    },
+    {
+      method: 'all',
+      sql: `SELECT id, name, profit_margin, selling_price, recipe_cost, food_cost_pct FROM recipe_profiles
+            WHERE status='approved' ORDER BY profit_margin ASC LIMIT 5`,
+      params: []
+    },
+    {
+      method: 'all',
+      sql: `SELECT id, user_id, user_name, action, entity_type, entity_id, created_at
+            FROM recipe_activity_log ORDER BY created_at DESC LIMIT 15`,
+      params: []
+    },
+    {
+      method: 'all',
+      sql: `SELECT id, name, production_mode, stock_quantity, has_recipe,
+              production_capacity, limiting_ingredient_id, limiting_ingredient_name,
+              production_oos, production_oos_reason, production_breakdown_json,
+              production_capacity_updated_at
+            FROM products
+            WHERE is_active = 1
+              AND (has_recipe = 1 OR id IN (SELECT DISTINCT product_id FROM product_recipe_items))
+              AND (item_type IS NULL OR item_type != 'ingredient')`,
+      params: []
+    },
+    {
+      method: 'all',
+      sql: `SELECT id, name, stock_quantity, stock_unit, unit, min_stock,
+              CASE WHEN stock_quantity <= 0 THEN 1 ELSE 0 END AS is_out
+            FROM products
+            WHERE is_active = 1
+              AND (
+                item_type = 'ingredient'
+                OR id IN (SELECT ingredient_product_id FROM product_recipe_items)
+              )
+              AND stock_quantity <= COALESCE(NULLIF(min_stock, 0), 5)
+            ORDER BY stock_quantity ASC, name
+            LIMIT 80`,
+      params: []
+    }
+  ];
+
+  let kpis = {};
+  let bestSellers = [];
+  let highProfit = [];
+  let lowProfit = [];
+  let activity = [];
+  let mealRows = [];
+  let ingredientRows = [];
+  try {
+    if (typeof db.batch === 'function') {
+      const packed = db.batch(dashQueries);
+      kpis = packed[0] || {};
+      bestSellers = packed[1] || [];
+      highProfit = packed[2] || [];
+      lowProfit = packed[3] || [];
+      activity = packed[4] || [];
+      mealRows = packed[5] || [];
+      ingredientRows = packed[6] || [];
+    } else {
+      throw new Error('no-batch');
+    }
+  } catch (_) {
+    kpis = softGet(dashQueries[0].sql, dashQueries[0].params, {}) || {};
+    bestSellers = softAll(dashQueries[1].sql, dashQueries[1].params, []);
+    highProfit = softAll(dashQueries[2].sql, dashQueries[2].params, []);
+    lowProfit = softAll(dashQueries[3].sql, dashQueries[3].params, []);
+    activity = softAll(dashQueries[4].sql, dashQueries[4].params, []);
+    mealRows = softAll(dashQueries[5].sql, dashQueries[5].params, []);
+    ingredientRows = softAll(dashQueries[6].sql, dashQueries[6].params, []);
+  }
 
   let production = null;
   try {
-    production = require('./production-availability').getLiveProductionDashboard();
-  } catch (_) { /* ignore */ }
+    production = require('./production-availability').getLiveProductionDashboard({
+      mealRows,
+      ingredientRows,
+      // Prefer cached capacity columns; avoid N refresh queries on every open.
+      maxAgeMs: 5 * 60 * 1000
+    });
+  } catch (e) {
+    console.warn('[recipe-dashboard] production', e.message || e);
+  }
+
+  const capacitySamples = (production?.products || []).slice(0, 8).map((p) => ({
+    id: p.product_id,
+    name: p.name,
+    max_meals: p.available_meals,
+    limiting_ingredient: p.limiting_ingredient,
+    recipe_id: null,
+    breakdown: p.remaining_by_ingredient || []
+  }));
 
   return {
-    produced_today: producedToday,
-    sold_today: soldToday,
-    recipes_created: created,
-    recipes_pending: pending,
-    waste_today: wasteToday,
-    low_stock: lowStock,
-    out_of_stock: outStock,
-    active_promotions: promos,
-    best_sellers: bestSellers,
-    highest_profit: highProfit,
-    lowest_profit: lowProfit,
+    produced_today: { qty: kpis?.produced_qty || 0, batches: kpis?.produced_batches || 0 },
+    sold_today: { qty: kpis?.sold_qty || 0 },
+    recipes_created: kpis?.recipes_created || 0,
+    recipes_pending: kpis?.recipes_pending || 0,
+    waste_today: { cost: kpis?.waste_cost || 0, qty: kpis?.waste_qty || 0 },
+    low_stock: kpis?.low_stock || 0,
+    out_of_stock: kpis?.out_of_stock || 0,
+    active_promotions: kpis?.active_promotions || 0,
+    best_sellers: bestSellers || [],
+    highest_profit: highProfit || [],
+    lowest_profit: lowProfit || [],
     capacity: capacitySamples,
     production,
-    recent_activity: activity
+    recent_activity: activity || []
   };
 }
 
@@ -1590,7 +1855,7 @@ function getRecipeReports(type, filters = {}, actor) {
   }
   if (type === 'best_sellers') {
     return db.prepare(`
-      SELECT si.product_id, si.product_name, SUM(si.quantity) AS sold, SUM(si.total) AS revenue
+      SELECT si.product_id, MAX(si.product_name) AS product_name, SUM(si.quantity) AS sold, SUM(si.total) AS revenue
       FROM sale_items si JOIN sales s ON s.id = si.sale_id
       WHERE s.status='completed' AND date(s.created_at) BETWEEN ? AND ?
       GROUP BY si.product_id ORDER BY sold DESC LIMIT 50
@@ -1600,11 +1865,15 @@ function getRecipeReports(type, filters = {}, actor) {
     const day = filters.day || filters.date || from || today();
     const dayEnd = filters.day_to || filters.to || day;
     const sold = db.prepare(`
-      SELECT si.product_id, si.product_name AS meal,
+      SELECT si.product_id, MAX(si.product_name) AS meal,
         SUM(si.quantity) AS qty_sold,
         SUM(si.total) AS revenue,
         AVG(si.unit_price) AS avg_sell_price,
-        p.selling_price, p.buying_price, p.has_recipe, p.recipe_cost, c.name AS category_name
+        MAX(p.selling_price) AS selling_price,
+        MAX(p.buying_price) AS buying_price,
+        MAX(p.has_recipe) AS has_recipe,
+        MAX(p.recipe_cost) AS recipe_cost,
+        MAX(c.name) AS category_name
       FROM sale_items si
       JOIN sales s ON s.id = si.sale_id
       LEFT JOIN products p ON p.id = si.product_id
@@ -1787,14 +2056,20 @@ function isPromoActiveNow(p) {
 }
 
 /** Apply active Recipe promotions onto POS product prices (after POS promo requests). */
-function applyRecipePromoPricesToProducts(products) {
+function applyRecipePromoPricesToProducts(products, preloaded) {
   if (!products?.length) return products || [];
-  const promos = getDb().prepare(`SELECT * FROM recipe_promotions WHERE status='active'`).all().filter(isPromoActiveNow);
+  const promos = (preloaded?.promos
+    ? preloaded.promos
+    : getDb().prepare(`SELECT * FROM recipe_promotions WHERE status='active'`).all()
+  ).filter(isPromoActiveNow);
   if (!promos.length) return products;
 
-  const recipeProductMap = {};
-  getDb().prepare(`SELECT id, product_id FROM recipe_profiles WHERE product_id IS NOT NULL`).all()
-    .forEach(r => { recipeProductMap[r.id] = r.product_id; });
+  let recipeProductMap = preloaded?.recipeProductMap || null;
+  if (!recipeProductMap) {
+    recipeProductMap = {};
+    getDb().prepare(`SELECT id, product_id FROM recipe_profiles WHERE product_id IS NOT NULL`).all()
+      .forEach(r => { recipeProductMap[r.id] = r.product_id; });
+  }
 
   return products.map(p => {
     if (p.promo_active) return p; // POS promo request wins
@@ -1950,7 +2225,7 @@ function getAiSuggestions(actor) {
   const suggestions = [];
 
   const lowProfit = db.prepare(`
-    SELECT id, name, recipe_cost, selling_price, food_cost_pct, profit_margin, target_profit_pct
+    SELECT id, product_id, name, recipe_cost, selling_price, food_cost_pct, profit_margin, target_profit_pct
     FROM recipe_profiles WHERE status='approved' AND (food_cost_pct > 35 OR profit_margin < 25)
     ORDER BY food_cost_pct DESC LIMIT 10
   `).all();
@@ -1960,6 +2235,7 @@ function getAiSuggestions(actor) {
       type: 'price_review',
       severity: r.food_cost_pct > 40 ? 'high' : 'medium',
       recipe_id: r.id,
+      product_id: r.product_id || null,
       title: `Review price for ${r.name}`,
       message: `Food cost ${r.food_cost_pct}% / margin ${r.profit_margin}%. Suggested sell price R${suggested.suggested_price.toFixed(2)} for ${r.target_profit_pct || 40}% profit on cost.`,
       suggested_price: suggested.suggested_price
@@ -2086,11 +2362,15 @@ function getRecipeActivity(limit = 50, actor) {
   return getDb().prepare('SELECT * FROM recipe_activity_log ORDER BY created_at DESC LIMIT ?').all(limit);
 }
 
+let _lastClearExpiredAt = 0;
 function clearExpiredNewArrivals() {
+  // Throttle: at most once per 5 minutes per process (same SQL result).
+  if (Date.now() - _lastClearExpiredAt < 5 * 60 * 1000) return;
   getDb().prepare(`
     UPDATE products SET is_new_arrival = 0
     WHERE is_new_arrival = 1 AND new_arrival_until IS NOT NULL AND date(new_arrival_until) < date('now')
   `).run();
+  _lastClearExpiredAt = Date.now();
 }
 
 function setAvailableToday(recipeIds, actor) {
@@ -2116,7 +2396,7 @@ function getBestSellers(period, actor) {
   else if (period === 'year') days = 365;
   else if (period === 'all') days = 3650;
   return getDb().prepare(`
-    SELECT si.product_id, si.product_name, SUM(si.quantity) AS sold, SUM(si.total) AS revenue
+    SELECT si.product_id, MAX(si.product_name) AS product_name, SUM(si.quantity) AS sold, SUM(si.total) AS revenue
     FROM sale_items si JOIN sales s ON s.id = si.sale_id
     JOIN recipe_profiles r ON r.product_id = si.product_id
     WHERE s.status='completed' AND date(s.created_at) >= date('now', ?)
@@ -2160,9 +2440,17 @@ function listRestockIngredients(actor) {
   // Primary source of truth: ingredients currently on saved product recipes
   const onRecipes = db.prepare(`
     SELECT
-      p.id, p.name, p.stock_quantity, p.stock_unit, p.unit, p.purchase_unit,
-      p.buying_price, p.min_stock, p.item_type, p.is_active,
-      c.name AS category_name,
+      p.id,
+      MAX(p.name) AS name,
+      MAX(p.stock_quantity) AS stock_quantity,
+      MAX(p.stock_unit) AS stock_unit,
+      MAX(p.unit) AS unit,
+      MAX(p.purchase_unit) AS purchase_unit,
+      MAX(p.buying_price) AS buying_price,
+      MAX(p.min_stock) AS min_stock,
+      MAX(p.item_type) AS item_type,
+      MAX(p.is_active) AS is_active,
+      MAX(c.name) AS category_name,
       GROUP_CONCAT(DISTINCT meal.name) AS used_in_meals,
       COUNT(DISTINCT pri.product_id) AS meal_count,
       (
@@ -2176,7 +2464,7 @@ function listRestockIngredients(actor) {
     JOIN products meal ON meal.id = pri.product_id AND meal.is_active = 1
     LEFT JOIN categories c ON c.id = p.category_id
     GROUP BY p.id
-    ORDER BY p.name COLLATE NOCASE
+    ORDER BY MAX(p.name)
   `).all();
 
   const onRecipeIds = new Set(onRecipes.map(r => r.id));
@@ -2190,7 +2478,7 @@ function listRestockIngredients(actor) {
     FROM products p
     LEFT JOIN categories c ON c.id = p.category_id
     WHERE p.is_active = 1 AND p.item_type = 'ingredient'
-    ORDER BY p.name COLLATE NOCASE
+    ORDER BY p.name
   `).all().filter(p => !onRecipeIds.has(p.id));
 
   return [...onRecipes, ...orphans].map(p => {
@@ -2391,6 +2679,13 @@ function saveProductMealRecipe(data, actor) {
   if (data.picture_path !== undefined) {
     getDb().prepare('UPDATE products SET picture_path=? WHERE id=?').run(data.picture_path || null, productId);
   }
+  if (data.allergens !== undefined) {
+    try {
+      getDb().prepare('UPDATE products SET allergens=? WHERE id=?').run(
+        String(data.allergens || '').trim() || null, productId
+      );
+    } catch (_) { /* until migrate */ }
+  }
 
   // Keep / create recipe_profile linked to this product for approvals & dashboard
   let profile = getDb().prepare('SELECT * FROM recipe_profiles WHERE product_id = ? ORDER BY id DESC LIMIT 1').get(productId);
@@ -2405,6 +2700,7 @@ function saveProductMealRecipe(data, actor) {
     items,
     instructions: data.instructions != null ? String(data.instructions) : (profile?.instructions || null),
     notes: data.kitchen_notes != null ? String(data.kitchen_notes) : (profile?.notes || null),
+    allergens: data.allergens !== undefined ? String(data.allergens || '').trim() || null : (profile?.allergens || null),
     description: data.description != null ? String(data.description) : (profile?.description || null),
     image_path: data.picture_path !== undefined ? (data.picture_path || null) : (profile?.image_path || null),
     status: profile?.status === 'approved' ? 'approved' : (data.status || profile?.status || 'draft'),
@@ -2560,27 +2856,71 @@ function createRestockPurchaseOrder(data, actor) {
 function getPrepBoard(actor) {
   canAccessRecipeModule(actor);
   const db = getDb();
-  const meals = db.prepare(`
-    SELECT p.id, p.name, p.picture_path, p.available_today, p.selling_price,
-      p.production_capacity, p.limiting_ingredient_name, p.production_oos,
-      p.food_cost_pct, p.gross_profit, rp.instructions, rp.notes AS kitchen_notes,
-      rp.prep_time_minutes, rp.cook_time_minutes
-    FROM products p
-    LEFT JOIN recipe_profiles rp ON rp.product_id = p.id
-    WHERE p.is_active=1 AND p.has_recipe=1
-      AND (p.item_type IS NULL OR p.item_type != 'ingredient')
-    ORDER BY CASE WHEN p.available_today=1 THEN 0 ELSE 1 END,
-      COALESCE(p.production_capacity,0) ASC, p.name COLLATE NOCASE
-  `).all();
+  let meals = [];
+  try {
+    meals = db.prepare(`
+      SELECT p.id, p.name, p.picture_path, p.available_today, p.selling_price,
+        p.production_capacity, p.limiting_ingredient_name, p.production_oos,
+        p.food_cost_pct, p.gross_profit, p.allergens AS product_allergens,
+        rp.instructions, rp.notes AS kitchen_notes, rp.allergens AS allergens,
+        rp.prep_time_minutes, rp.cook_time_minutes, rp.id AS recipe_profile_id
+      FROM products p
+      LEFT JOIN recipe_profiles rp ON rp.product_id = p.id
+      WHERE p.is_active=1 AND p.has_recipe=1
+        AND (p.item_type IS NULL OR p.item_type != 'ingredient')
+      ORDER BY CASE WHEN p.available_today=1 THEN 0 ELSE 1 END,
+        COALESCE(p.production_capacity,0) ASC, p.name COLLATE NOCASE
+    `).all().map(m => ({
+      ...m,
+      allergens: m.allergens || m.product_allergens || null
+    }));
+  } catch (_) {
+    meals = db.prepare(`
+      SELECT p.id, p.name, p.picture_path, p.available_today, p.selling_price,
+        p.production_capacity, p.limiting_ingredient_name, p.production_oos,
+        p.food_cost_pct, p.gross_profit, rp.instructions, rp.notes AS kitchen_notes,
+        rp.prep_time_minutes, rp.cook_time_minutes, rp.id AS recipe_profile_id
+      FROM products p
+      LEFT JOIN recipe_profiles rp ON rp.product_id = p.id
+      WHERE p.is_active=1 AND p.has_recipe=1
+        AND (p.item_type IS NULL OR p.item_type != 'ingredient')
+      ORDER BY CASE WHEN p.available_today=1 THEN 0 ELSE 1 END,
+        COALESCE(p.production_capacity,0) ASC, p.name COLLATE NOCASE
+    `).all().map(m => ({ ...m, allergens: null }));
+  }
   const availableToday = meals.filter(m => Number(m.available_today) === 1);
   const lowCapacity = meals.filter(m => !m.production_oos && (m.production_capacity || 0) > 0 && (m.production_capacity || 0) <= 5);
   const outOfStock = meals.filter(m => m.production_oos || (m.production_capacity || 0) <= 0);
+  let forecast = [];
+  try { forecast = getStockForecast(actor, 7).slice(0, 12); } catch (_) { forecast = []; }
+  const prepSchedule = [];
+  for (let d = 0; d < 7; d++) {
+    const day = new Date();
+    day.setDate(day.getDate() + d);
+    const dateStr = day.toLocaleDateString('en-CA');
+    const weekday = day.toLocaleDateString(undefined, { weekday: 'short' });
+    prepSchedule.push({
+      date: dateStr,
+      weekday,
+      meals: availableToday.slice(0, 8).map(m => ({
+        id: m.id,
+        name: m.name,
+        prep_time_minutes: m.prep_time_minutes || 0,
+        cook_time_minutes: m.cook_time_minutes || 0,
+        picture_path: m.picture_path || null,
+        allergens: m.allergens || null
+      })),
+      restock_focus: forecast.filter(f => f.days_left <= (d + 2)).slice(0, 4)
+    });
+  }
   return {
     date: today(),
     available_today: availableToday,
     low_capacity: lowCapacity,
     out_of_stock: outOfStock,
     all_meals: meals,
+    prep_schedule: prepSchedule,
+    forecast,
     totals: {
       available_today: availableToday.length,
       low: lowCapacity.length,
@@ -2777,6 +3117,7 @@ module.exports = {
   calcProductionCapacity,
   planProduction,
   completeProduction,
+  applySuggestedSellPrice,
   listProductionBatches,
   smartRestock,
   recordRecipeWaste,

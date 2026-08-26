@@ -417,7 +417,7 @@ function buildCertificatePdf(record, shopName) {
   doc.setFontSize(11);
   doc.text('Congratulations on your outstanding contribution!', w / 2, nameY + 40, { align: 'center' });
   const filePath = path.join(getAssetsDir(), `eom-${record.month_year}-${record.employee_id}.pdf`);
-  fs.writeFileSync(filePath, Buffer.from(doc.output('arraybuffer')));
+  fs.writeFileSync(filePath, require('./pdf-bytes').pdfBytes(doc));
   getDb().prepare('UPDATE employee_of_month SET certificate_path=? WHERE id=?').run(filePath, record.id);
   return filePath;
 }

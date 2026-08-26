@@ -1,9 +1,34 @@
 const fs = require('fs');
 const path = require('path');
-const { app } = require('electron');
+const os = require('os');
+
+// Soft-require Electron so Railway / web (node server.js) can boot without Electron installed.
+let electronApp = null;
+try {
+  electronApp = require('electron').app;
+} catch (_) {
+  electronApp = null;
+}
+
+function getUserDataDir() {
+  if (electronApp && typeof electronApp.getPath === 'function') {
+    try {
+      return electronApp.getPath('userData');
+    } catch (_) {
+      /* Electron not ready */
+    }
+  }
+  return path.join(os.homedir(), '.shop-pos');
+}
 
 function getFilePath() {
-  return path.join(app.getPath('userData'), 'device-settings.json');
+  const dir = getUserDataDir();
+  try {
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  } catch (_) {
+    /* ignore */
+  }
+  return path.join(dir, 'device-settings.json');
 }
 
 function load() {

@@ -17,6 +17,7 @@ const Receipt = {
     let name = item.product_name || '';
     const mods = item.modifiers_text || item.modifiers;
     if (mods) name += ` (${typeof mods === 'string' ? mods : mods.map(m => m.name).join(', ')})`;
+    if (item.allergens) name += ` [Allergens: ${item.allergens}]`;
     return name;
   },
 
@@ -44,8 +45,20 @@ const Receipt = {
       `<div>${Utils.paymentLabels?.[p.payment_type] || p.payment_type || p.type}: ${fmt(p.amount)}</div>`
     ).join('');
 
-    const logoHtml = (ps.print_logo !== false && s.logo_path)
-      ? `<div class="center"><img src="file://${s.logo_path}" style="max-height:48px;margin-bottom:6px"></div>` : '';
+    const logoPath = String(s.logo_path || '').trim();
+    const logoOk =
+      logoPath &&
+      (/^https?:\/\//i.test(logoPath) ||
+        /^data:image\//i.test(logoPath) ||
+        (logoPath.startsWith('/') && !logoPath.startsWith('//')) ||
+        /^\.?\.?\/?assets\//i.test(logoPath));
+    const logoSrc = logoOk
+      ? (/^https?:\/\//i.test(logoPath) || /^data:/i.test(logoPath) ? logoPath : logoPath.replace(/^file:\/\//i, ''))
+      : '';
+    const logoHtml =
+      ps.print_logo !== false && logoSrc
+        ? `<div class="center"><img src="${logoSrc}" style="max-height:48px;margin-bottom:6px" onerror="this.style.display='none'"></div>`
+        : '';
 
     return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
       body { font-family: 'Courier New', monospace; font-size: 12px; max-width: ${s.receipt_width || 80}mm; margin: 0 auto; padding: 8px; }
@@ -155,9 +168,7 @@ const Receipt = {
   async printQuote(quote, settings, format = 'thermal') {
     if (format === 'a4') {
       const html = Receipt.buildQuoteA4(quote, settings);
-      const pr = await API.printA4(html);
-      if (!pr?.success) Utils.toast(pr?.error || 'A4 print failed', 'error');
-      return pr;
+      return Utils.printToA4(html);
     }
     const html = Receipt.buildQuote(quote, settings);
     const ps = Receipt._settings(settings).printer_settings || {};
@@ -183,8 +194,7 @@ const Receipt = {
     if (id && API.getQuotePdf) {
       const buf = await API.getQuotePdf(id);
       if (buf?.success && buf.data) {
-        await API.saveFile(`${quote.quote_number || 'quote'}.pdf`, [{ name: 'PDF', extensions: ['pdf'] }], buf.data);
-        Utils.toast('Quote PDF saved', 'success');
+        await Utils.savePdfBuffer(`${quote.quote_number || 'quote'}.pdf`, buf);
         return buf;
       }
     }
@@ -215,9 +225,15 @@ const Receipt = {
     const s = Receipt._settings(settings);
     const width = s.device_settings?.paper_size || s.printer_settings?.paper_size || '80mm';
     const w = width === '58mm' ? '58mm' : '80mm';
-    const lines = (items || []).map(i =>
-      `<div style="padding:8px 0;border-bottom:2px dashed #000;font-size:16px"><strong>${i.quantity}x ${Receipt.itemLabel(i)}</strong></div>`
-    ).join('');
+    const lines = (items || []).map(i => {
+      const label = (() => {
+        let name = i.product_name || '';
+        const mods = i.modifiers_text || i.modifiers;
+        if (mods) name += ` (${typeof mods === 'string' ? mods : mods.map(m => m.name).join(', ')})`;
+        return name;
+      })();
+      return `<div style="padding:8px 0;border-bottom:2px dashed #000;font-size:16px"><strong>${i.quantity}x ${label}</strong>${i.allergens ? `<div style="font-size:12px">Allergens: ${i.allergens}</div>` : ''}</div>`;
+    }).join('');
     return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
       body{font-family:'Courier New',monospace;font-size:14px;max-width:${w};margin:0 auto;padding:8px}
       .center{text-align:center}.bold{font-weight:bold;font-size:18px}
@@ -260,7 +276,7 @@ const Receipt = {
     const html = Receipt.build(sale, settings, docType);
     const ps = Receipt._settings(settings).printer_settings || {};
     if (docType === 'INVOICE') {
-      await API.printA4(html);
+      await Utils.printToA4(html);
     } else {
       await API.printReceipt(html, { silent: ps.silent_print, ...Receipt._devicePrintOpts(settings) });
     }

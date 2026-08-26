@@ -30,7 +30,19 @@ function renderUserTableRows(users, app, onAction) {
 const UsersPage = {
   async render(el, app) {
     this.app = app;
+    el.innerHTML = `
+      <div class="page-toolbar"><h3>User Management</h3><button class="btn btn-primary" id="add-user">+ Add User</button></div>
+      <p class="muted" style="margin:-8px 0 12px">Edit the full user profile, deactivate access, or permanently remove a user from the system.</p>
+      <div class="card"><div class="table-wrap"><table>
+        <thead><tr><th>Name</th><th>Username</th><th>Role</th><th>Status</th><th></th></tr></thead>
+        <tbody id="users-tbody"><tr><td colspan="5" class="muted">Loading users…</td></tr></tbody>
+      </table></div></div>`;
+    document.getElementById('add-user')?.addEventListener('click', () => this.showForm(null, () => this.render(el, app)));
     const res = await API.getUsers(app.user);
+    if (!res.success) {
+      document.getElementById('users-tbody').innerHTML = `<tr><td colspan="5" class="error-msg">${Utils.escHtml(res.error || 'Failed to load users')}</td></tr>`;
+      return;
+    }
     this.users = res.data || [];
     const active = this.users.filter(u => u.is_active);
     const inactive = this.users.filter(u => !u.is_active);

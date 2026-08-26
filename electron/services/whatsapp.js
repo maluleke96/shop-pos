@@ -67,13 +67,21 @@ const DEFAULT_TEMPLATES = [
   }
 ];
 
-const OWNER_ONLY_TYPES = new Set(['payslip', 'warning', 'leave_approval']);
+const OWNER_ONLY_TYPES = new Set([]);
+const HR_TYPES = new Set([
+  'payslip', 'warning', 'leave_approval', 'salary_advice', 'attendance', 'checklist_overdue',
+  'training_eval', 'training_result', 'hr_submission', 'probation_eval', 'probation_result'
+]);
 const MANAGER_TYPES = new Set(['promotion', 'announcement']);
 const STAFF_SEND_TYPES = new Set([
-  'sale_receipt', 'review_request', 'gift_card', 'flyer_share', 'campaign', 'quotation', 'supplier_payment',
-  'recruitment_hire', 'recruitment_reject', 'recruitment_interview'
+  'sale_receipt', 'review_request', 'gift_card', 'giftcard', 'flyer_share', 'campaign', 'quotation', 'supplier_payment',
+  'recruitment_hire', 'recruitment_reject', 'recruitment_interview', 'custom',
+  'layby', 'cashout', 'checklist', 'account_receipt', 'thank_you'
 ]);
-const CASHIER_ALLOWED_TYPES = new Set(['sale_receipt', 'review_request', 'gift_card', 'flyer_share', 'campaign', 'quotation', 'supplier_payment']);
+const CASHIER_ALLOWED_TYPES = new Set([
+  'sale_receipt', 'review_request', 'gift_card', 'giftcard', 'flyer_share', 'campaign', 'quotation',
+  'supplier_payment', 'layby', 'cashout', 'thank_you'
+]);
 
 function parseJson(v, fb = {}) {
   if (!v) return fb;
@@ -104,6 +112,42 @@ function buildWaUrl(phone, message) {
   if (!digits) throw new Error('Phone number required');
   const num = digits.startsWith('0') ? `27${digits.slice(1)}` : digits;
   return `https://wa.me/${num}?text=${encodeURIComponent(message || '')}`;
+}
+
+function e164Digits(phone) {
+  const digits = String(phone || '').replace(/\D/g, '');
+  if (!digits) return '';
+  return digits.startsWith('0') ? `27${digits.slice(1)}` : digits;
+}
+
+async function tryWhatsAppCloudSend(phone, body, settings) {
+  const token = String(settings?.api_key || '').trim();
+  const phoneId = String(settings?.phone_number_id || '').trim();
+  if (!token || !phoneId) return null;
+  const to = e164Digits(phone);
+  if (!to) return null;
+  try {
+    const res = await fetch(`https://graph.facebook.com/v21.0/${encodeURIComponent(phoneId)}/messages`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        messaging_product: 'whatsapp',
+        to,
+        type: 'text',
+        text: { preview_url: false, body: String(body || '').slice(0, 4096) }
+      })
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      return { ok: false, error: json?.error?.message || `WhatsApp API ${res.status}` };
+    }
+    return { ok: true, id: json?.messages?.[0]?.id || null };
+  } catch (err) {
+    return { ok: false, error: err.message || String(err) };
+  }
 }
 
 function renderTemplate(body, vars = {}) {
@@ -180,7 +224,9 @@ function normalizeRecipientType(type, messageType) {
   return 'customer';
 }
 
+let _defaultTemplatesReady = false;
 function ensureDefaultTemplates() {
+  if (_defaultTemplatesReady) return;
   const db = getDb();
   for (const t of DEFAULT_TEMPLATES) {
     const category = normalizeTemplateCategory(t.category, t.slug);
@@ -189,15 +235,14 @@ function ensureDefaultTemplates() {
       if (!ex) {
         db.prepare(`INSERT INTO whatsapp_templates (slug, name, category, body, is_builtin) VALUES (?,?,?,?,?)`)
           .run(t.slug, t.name, category, t.body, t.is_builtin ? 1 : 0);
-      } else if (t.is_builtin) {
-        db.prepare(`UPDATE whatsapp_templates SET body = ?, name = ?, category = ? WHERE slug = ? AND is_builtin = 1`)
-          .run(t.body, t.name, category, t.slug);
       }
+      // Do not UPDATE built-in bodies on every read — that caused ~2 queries × N templates per page open
     } catch (err) {
       // Never block receipt/review/supplier sends if one template row fails
       console.error('[whatsapp] ensureDefaultTemplates', t.slug, err.message);
     }
   }
+  _defaultTemplatesReady = true;
 }
 
 function getTemplates(filters = {}) {
@@ -434,18 +479,20 @@ function buildVars(data = {}) {
   return { ...map, ...vars };
 }
 
-function sendMessage(data, actor) {
+async function sendMessage(data, actor) {
   const msgType = data.message_type || 'custom';
   const slug = data.template_slug || msgType;
   let user;
   if (OWNER_ONLY_TYPES.has(msgType) || OWNER_ONLY_TYPES.has(slug)) {
     user = requireOwner(actor);
+  } else if (HR_TYPES.has(msgType) || HR_TYPES.has(slug)) {
+    user = requireRole(actor, ['owner', 'manager', 'supervisor', 'assistant_manager']);
   } else if (STAFF_SEND_TYPES.has(msgType) || STAFF_SEND_TYPES.has(slug)) {
     user = requireRole(actor, ['owner', 'manager', 'marketing_agent', 'cashier', 'supervisor', 'assistant_manager']);
   } else if (MANAGER_TYPES.has(msgType) || MANAGER_TYPES.has(slug)) {
-    user = requireRole(actor, ['owner', 'manager', 'marketing_agent']);
+    user = requireRole(actor, ['owner', 'manager', 'marketing_agent', 'assistant_manager']);
   } else {
-    user = requireRole(actor);
+    user = requireRole(actor, ['owner', 'manager', 'marketing_agent', 'assistant_manager', 'supervisor']);
   }
   actor = user;
 
@@ -475,6 +522,17 @@ function sendMessage(data, actor) {
 
   const branchId = data.branch_id ?? actor?.branch_id ?? settings.default_branch_id ?? null;
   const url = buildWaUrl(phone, body);
+  const cloud = await tryWhatsAppCloudSend(phone, body, settings);
+  const sentViaApi = !!(cloud && cloud.ok);
+  const status = sentViaApi ? 'sent' : 'pending';
+  const meta = {
+    url: sentViaApi ? null : url,
+    vars,
+    template_slug: data.template_slug || null,
+    via: sentViaApi ? 'cloud_api' : 'wa.me',
+    cloud_message_id: cloud?.id || null,
+    cloud_error: cloud && !cloud.ok ? cloud.error : null
+  };
 
   const recipientType = normalizeRecipientType(data.recipient_type, msgType);
   const r = db.prepare(`
@@ -491,19 +549,27 @@ function sendMessage(data, actor) {
     templateId,
     data.campaign_id || null,
     body,
-    'pending',
+    status,
     actor?.id || null,
     actor?.username || actor?.full_name || null,
     branchId,
     data.sale_id || null,
-    JSON.stringify({ url, vars, template_slug: data.template_slug || null })
+    JSON.stringify(meta)
   );
 
   audit(actor?.id, actor?.username, 'whatsapp_send', r.lastInsertRowid, {
-    type: msgType, phone: phone.trim(), recipient: data.recipient_name || data.name
+    type: msgType, phone: phone.trim(), recipient: data.recipient_name || data.name, via: meta.via
   });
 
-  return { id: r.lastInsertRowid, url, body, phone: phone.trim(), status: 'pending' };
+  return {
+    id: r.lastInsertRowid,
+    url: sentViaApi ? null : url,
+    body,
+    phone: phone.trim(),
+    status,
+    via: meta.via,
+    cloud_error: meta.cloud_error || null
+  };
 }
 
 function markMessageOpened(id, actor) {
@@ -557,7 +623,7 @@ function deleteCampaign(id, actor) {
   audit(actor?.id, actor?.username, 'whatsapp_campaign_delete', id, null);
 }
 
-function sendCampaign(campaignId, actor) {
+async function sendCampaign(campaignId, actor) {
   requireRole(actor);
   const campaign = getCampaign(campaignId);
   if (!campaign) throw new Error('Campaign not found');
@@ -570,6 +636,7 @@ function sendCampaign(campaignId, actor) {
   if (!recipients.length) throw new Error('No recipients match this audience');
 
   const shop = shopContext();
+  const settings = getWhatsAppSettingsRaw();
   const results = [];
   for (const r of recipients) {
     const vars = buildVars({
@@ -582,6 +649,8 @@ function sendCampaign(campaignId, actor) {
     });
     const body = renderTemplate(template.body, vars);
     const url = buildWaUrl(r.phone, body);
+    const cloud = await tryWhatsAppCloudSend(r.phone, body, settings);
+    const sentViaApi = !!(cloud && cloud.ok);
     const ins = getDb().prepare(`
       INSERT INTO whatsapp_messages (
         recipient_type, recipient_id, recipient_name, phone, message_type, template_id,
@@ -589,11 +658,20 @@ function sendCampaign(campaignId, actor) {
       ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
     `).run(
       r.recipient_type || 'customer', r.id, r.name, r.phone, template.slug || 'campaign',
-      template.id, campaignId, body, 'pending', actor?.id || null,
+      template.id, campaignId, body, sentViaApi ? 'sent' : 'pending', actor?.id || null,
       actor?.username || actor?.full_name || null, campaign.branch_id || null,
-      JSON.stringify({ url, campaign_id: campaignId })
+      JSON.stringify({
+        url: sentViaApi ? null : url,
+        campaign_id: campaignId,
+        via: sentViaApi ? 'cloud_api' : 'wa.me',
+        cloud_message_id: cloud?.id || null,
+        cloud_error: cloud && !cloud.ok ? cloud.error : null
+      })
     );
-    results.push({ id: ins.lastInsertRowid, recipient_id: r.id, name: r.name, phone: r.phone, url, body });
+    results.push({
+      id: ins.lastInsertRowid, recipient_id: r.id, name: r.name, phone: r.phone,
+      url: sentViaApi ? null : url, body, via: sentViaApi ? 'cloud_api' : 'wa.me'
+    });
   }
 
   getDb().prepare(`UPDATE whatsapp_campaigns SET status='sent', sent_count=?, sent_at=datetime('now'), updated_at=datetime('now') WHERE id=?`)

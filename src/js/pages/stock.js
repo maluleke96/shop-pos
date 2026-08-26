@@ -3,6 +3,7 @@ const StockPage = {
 
   async render(el, app) {
     this.app = app;
+    this._host = el;
     const canNonSelling = ['owner', 'manager', 'assistant_manager'].includes(app.user?.role);
     el.innerHTML = `
       <div class="page-toolbar"><h3>Stock Management</h3>
@@ -26,6 +27,10 @@ const StockPage = {
     if (this.tab === 'waste') return this.renderWaste(content);
     if (this.tab === 'nonselling') return this.renderNonSelling(content);
     return this.renderStock(content);
+  },
+
+  async activate(el, app) {
+    return this.render(el, app);
   },
 
   async renderWaste(el) {
@@ -67,11 +72,11 @@ const StockPage = {
   },
 
   async renderStock(el) {
-    const stockRes = await API.getStockReport();
-    const items = stockRes.data || [];
+    const peek = window.DataCache?.peek?.('stockReport', []);
     const currency = this.app.settings?.currency || 'R';
-    this._stockItems = items;
-    el.innerHTML = `<div class="card"><div class="table-wrap"><table>
+    const paint = (items) => {
+      this._stockItems = items;
+      el.innerHTML = `<div class="card"><div class="table-wrap"><table>
       <thead><tr><th>Product</th><th>Category</th><th>Qty</th><th>Min</th><th>Status</th><th>Value</th></tr></thead>
       <tbody>${items.map(p => `<tr>
         <td>${p.name}</td><td>${p.category_name || '—'}</td>
@@ -79,7 +84,18 @@ const StockPage = {
         <td>${Utils.stockTag(p.stock_quantity, p.min_stock)}</td>
         <td>${Utils.formatMoney(p.stock_quantity * p.buying_price, currency)}</td></tr>`).join('') || '<tr><td colspan="6" class="muted">No products</td></tr>'}
       </tbody></table></div></div>`;
-    document.getElementById('adjust-stock')?.addEventListener('click', () => this.showAdjustModal(items));
+      document.getElementById('adjust-stock')?.addEventListener('click', () => this.showAdjustModal(items));
+    };
+    if (peek?.data) paint(peek.data || []);
+    else el.innerHTML = Utils.pageSkeleton(4);
+    try {
+      const stockRes = await API.getStockReport();
+      paint(stockRes.data || []);
+      window.DataCache?.clearStaleBanner?.(this._host || el.parentElement);
+    } catch (err) {
+      if (!this._stockItems?.length) throw err;
+      window.DataCache?.showStaleBanner?.(this._host || el.parentElement, 'Unable to refresh. Showing last updated data.');
+    }
   },
 
   async renderMovements(el) {
@@ -149,8 +165,7 @@ const StockPage = {
       reload();
     });
     document.getElementById('ns-pdf')?.addEventListener('click', async () => {
-      const r = await API.getNonSellingProductsPdf(filters);
-      if (r.success) await API.saveFile(`non-selling-${Utils.today()}.pdf`, [{ name: 'PDF', extensions: ['pdf'] }], r.data);
+      await Utils.savePdfBuffer(`non-selling-${Utils.today()}.pdf`, await API.getNonSellingProductsPdf(filters));
     });
     document.getElementById('ns-excel')?.addEventListener('click', async () => {
       const r = await API.getNonSellingProductsExcel(filters);
@@ -217,24 +232,29 @@ const StockPage = {
       <div class="field"><label>Product</label><select id="sa-product">${opts}</select></div>
       <div class="field"><label>Type</label><select id="sa-type"><option value="add">Add Stock</option><option value="remove">Remove Stock</option><option value="adjust">Set Quantity</option></select></div>
       <div class="field"><label>Quantity</label><input type="number" id="sa-qty" min="0" step="0.01" value="1"></div>
+      <p class="muted" id="sa-min-stock">Min stock: ${products[0] ? Number(products[0].min_stock || 0).toFixed(2) : '—'}</p>
       <div class="field"><label>Notes</label><input id="sa-notes" placeholder="Reason for adjustment"></div>`,
       '<button class="btn btn-primary" id="sa-save">Save</button>');
+    const minEl = document.getElementById('sa-min-stock');
+    const prodSel = document.getElementById('sa-product');
+    const updateMin = () => {
+      const p = products.find(x => String(x.id) === String(prodSel.value));
+      if (minEl) minEl.textContent = `Min stock: ${Number(p?.min_stock || 0).toFixed(2)}`;
+    };
+    prodSel?.addEventListener('change', updateMin);
     document.getElementById('sa-save').addEventListener('click', async () => {
       const productId = parseInt(document.getElementById('sa-product').value);
       const type = document.getElementById('sa-type').value;
-      const qty = parseFloat(document.getElementById('sa-qty').value);
+      const qty = Math.round((parseFloat(document.getElementById('sa-qty').value) || 0) * 100) / 100;
       const notes = document.getElementById('sa-notes').value;
-      if (type === 'adjust') {
-        await API.adjustStock(productId, qty, 'set', notes, this.app.user);
-        Utils.hideModal();
-        StockPage.render(document.getElementById('page-content'), this.app);
-        Utils.toast('Stock updated', 'success');
-        return;
-      }
-      await API.adjustStock(productId, qty, type, notes, this.app.user);
+      const r = type === 'adjust'
+        ? await API.adjustStock(productId, qty, 'set', notes, this.app.user)
+        : await API.adjustStock(productId, qty, type, notes, this.app.user);
+      if (r?.success === false) return Utils.toast(r.error || 'Stock update failed', 'error');
+      const min = r?.data?.min_stock;
       Utils.hideModal();
       StockPage.render(document.getElementById('page-content'), this.app);
-      Utils.toast('Stock updated', 'success');
+      Utils.toast(min != null ? `Stock updated · min stock ${Number(min).toFixed(2)}` : 'Stock updated', 'success');
     });
   }
 };

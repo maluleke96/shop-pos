@@ -2,7 +2,9 @@
 (function () {
   if (!window.AdminPage) return;
 
-  AdminPage.sections.splice(6, 0, { id: 'quotes', label: '📄 Quotes', icon: 'quotes' });
+  if (!AdminPage.sections.some(s => s.id === 'quotes')) {
+    AdminPage.sections.splice(6, 0, { id: 'quotes', label: '📄 Quotes', icon: 'quotes' });
+  }
 
   const origRenderSection = AdminPage.renderSection.bind(AdminPage);
   AdminPage.renderSection = async function (el) {
@@ -49,7 +51,7 @@
     const currency = this.settings.currency || 'R';
     Utils.showModal(`Discount Quote ${q.quote_number}`, `
       <p class="muted">Supervisor/manager can adjust discount before converting to sale.</p>
-      <div class="field"><label>Manager PIN</label><input type="password" id="qc-mgr-pin" maxlength="6" inputmode="numeric"></div>
+      <div class="field"><label>Manager PIN</label><input type="password" id="qc-mgr-pin" maxlength="12" inputmode="numeric"></div>
       <div class="field"><label>Discount (${currency})</label><input type="number" id="qc-discount" step="0.01" min="0" value="${q.discount || 0}"></div>`,
       '<button class="btn btn-primary" id="qc-save">Apply & Convert</button><button class="btn btn-ghost" id="qc-convert-only">Convert Without Change</button>');
     document.getElementById('qc-convert-only')?.addEventListener('click', async () => {

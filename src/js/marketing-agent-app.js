@@ -181,7 +181,7 @@ const MarketingAgentApp = {
           <p class="mkt-login-sub">Sign in with a Marketing Agent account. Owners and managers can preview. · ${this.esc(shop)}</p>
           <div class="field"><label>Username</label><input type="text" id="mkt-login-user" autocomplete="username" autofocus></div>
           <div class="field"><label>Password</label><input type="password" id="mkt-login-pass" autocomplete="current-password"></div>
-          <div class="field"><label>PIN <span class="muted">(optional)</span></label><input type="password" id="mkt-login-pin" maxlength="6" inputmode="numeric"></div>
+          <div class="field"><label>PIN <span class="muted">(optional)</span></label><input type="password" id="mkt-login-pin" maxlength="12" inputmode="numeric"></div>
           <hr style="border:0;border-top:1px solid #e2e8f0;margin:16px 0">
           <div class="field"><label>Or temporary access token</label><input type="password" id="mkt-login-token" placeholder="Paste Admin-issued token" autocomplete="off"></div>
           <p id="mkt-login-err" class="error-msg hidden"></p>
@@ -1015,9 +1015,20 @@ const MarketingAgentApp = {
       if (!draft.id) return this.toast('Save the menu first', 'error');
       const html = await this.apiOk(API.mktMenuPrintHtml(draft.id, this.actor()), 'Print failed');
       if (!html) return;
+      const htmlStr = typeof html === 'string' ? html : String(html);
+      const pr = await API.printA4(htmlStr);
+      if (pr?.success) {
+        this.toast(pr.fallback ? 'Print preview opened — use Print / Save as PDF there' : 'Sent to printer', 'success');
+        return;
+      }
+      const preview = await API.printPreview?.(htmlStr, draft.title || 'Menu');
+      if (preview?.success) {
+        this.toast('Print preview opened — use Print / Save as PDF there', 'success');
+        return;
+      }
       const w = window.open('', '_blank', 'noopener,noreferrer,width=900,height=700');
       if (!w) return this.toast('Pop-up blocked — allow pop-ups to print', 'error');
-      w.document.write(typeof html === 'string' ? html : String(html));
+      w.document.write(htmlStr);
       w.document.close();
     });
 
@@ -1108,9 +1119,16 @@ const MarketingAgentApp = {
 
     el.querySelectorAll('.mkt-flyer-pdf').forEach((b) => {
       b.addEventListener('click', async () => {
-        const r = await API.getFlyerPdf(parseInt(b.dataset.id, 10));
+        const id = parseInt(b.dataset.id, 10);
+        const r = await API.getFlyerPdf(id);
         if (!r?.success) return this.toast(r?.error || 'PDF failed', 'error');
-        this.toast('PDF generated', 'success');
+        const buf = r.data;
+        const bytes = buf instanceof Uint8Array ? buf : buf instanceof ArrayBuffer ? new Uint8Array(buf) : new Uint8Array(buf);
+        const name = `flyer-${id}.pdf`;
+        const saved = await API.saveFile(name, [{ name: 'PDF', extensions: ['pdf'] }], bytes);
+        if (!saved?.success) return this.toast(saved?.error || 'PDF save failed', 'error');
+        try { await API.recordFlyerEvent?.(id, 'pdf'); } catch (_) { /* ignore */ }
+        this.toast(saved.path ? `PDF saved: ${saved.path}` : 'PDF exported', 'success');
       });
     });
   },
@@ -1289,7 +1307,14 @@ const MarketingAgentApp = {
         status: queued ? 'queued' : 'draft'
       }, this.actor()), 'Save message failed');
       if (!r) return;
-      this.toast(queued ? `Queued for ${r.recipients?.length || r.recipient_count || 0} recipients` : 'Draft saved', 'success');
+      if (queued && (r.urls?.length || r._sent)) {
+        await Utils.deliverWhatsApp({
+          success: true,
+          data: { urls: r.urls || [], via: r.urls?.length ? undefined : 'cloud_api', status: r._sent && !r.urls?.length ? 'sent' : undefined }
+        });
+      } else {
+        this.toast(queued ? `Queued for ${r.recipients?.length || r.recipient_count || 0} recipients` : 'Draft saved', 'success');
+      }
       this.renderMessaging(el);
     };
 

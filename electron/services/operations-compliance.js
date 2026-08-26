@@ -63,8 +63,28 @@ function audit(actorId, actorName, action, entityType, entityId, details) {
     .run(actorId || null, actorName || 'system', action, entityType, entityId || null, details ? JSON.stringify(details) : null);
 }
 
+function portalSettingsEnabled() {
+  try {
+    const { getLeavePortalSettings } = require('./staff');
+    return getLeavePortalSettings();
+  } catch (_) {
+    return { show_routines: true, show_morning_routines: true, show_closing_routines: true };
+  }
+}
+
 function addNotification(type, title, message, opts = {}) {
   try {
+    const ps = portalSettingsEnabled();
+    const t = String(type || '').toLowerCase();
+    if (['checklist_reminder', 'checklist_overdue', 'compliance'].includes(t) && ps.show_routines === false) {
+      return;
+    }
+    if (t.includes('opening') || t === 'checklist_reminder' && /morning|opening/i.test(String(title || message || ''))) {
+      if (ps.show_morning_routines === false) return;
+    }
+    if (t.includes('closing') || /closing/i.test(String(title || message || ''))) {
+      if (/closing|close/i.test(String(title || message || '')) && ps.show_closing_routines === false) return;
+    }
     const store = require('./store');
     const actionPage = opts.action_page
       || (type === 'compliance' || type === 'checklist_overdue' || type === 'checklist_reminder'
@@ -310,7 +330,8 @@ function addPdfSignatureBlock(doc, startY, shop) {
 }
 
 function pdfToBuffer(doc) {
-  return Buffer.from(doc.output('arraybuffer'));
+  const { pdfBytes } = require('./pdf-bytes');
+  return pdfBytes(doc);
 }
 
 function getRequiredIncompleteItems(run) {
@@ -1044,15 +1065,49 @@ function getChecklistWarnings(filters = {}) {
   return db.prepare(sql).all(...params);
 }
 
-function getStaffPortalChecklistWarnings(userId) {
-  if (!userId) return [];
+function getStaffPortalChecklistWarnings(userId, employeeId) {
+  const ps = portalSettingsEnabled();
+  if (ps.show_routines === false) return [];
   const db = getDb();
-  const user = db.prepare('SELECT id, role, full_name, username, phone FROM users WHERE id = ?').get(userId);
-  if (!user || !['owner', 'manager', 'assistant_manager', 'supervisor'].includes(user.role)) return [];
-  return db.prepare(`
-    SELECT * FROM compliance_checklist_warnings
-    WHERE manager_user_id = ? AND acknowledged = 0
-    ORDER BY created_at DESC LIMIT 20`).all(userId);
+  const alerts = [];
+  const empSess = require('./session').getEmployeeSession?.();
+  const empId = empSess?.employee_id != null ? Number(empSess.employee_id)
+    : (employeeId != null && employeeId !== '' ? Number(employeeId) : null);
+  if (empId) {
+    const todayStr = today();
+    const runs = db.prepare(`
+      SELECT id, run_type, run_date, status, failure_reason
+      FROM daily_checklist_runs
+      WHERE employee_id = ? AND run_date = ? AND status IN ('failed', 'in_progress')
+      ORDER BY id DESC LIMIT 10`).all(empId, todayStr);
+    for (const r of runs) {
+      if (r.run_type === 'opening' && ps.show_morning_routines === false) continue;
+      if (r.run_type === 'closing' && ps.show_closing_routines === false) continue;
+      alerts.push({
+        id: r.id,
+        run_id: r.id,
+        run_type: r.run_type,
+        run_date: r.run_date,
+        message: r.status === 'failed'
+          ? (r.failure_reason || 'Routine not submitted by deadline')
+          : 'Routine still in progress — submit before the deadline',
+        warning_type: r.status === 'failed' ? 'not_submitted' : 'in_progress',
+        acknowledged: 0,
+        _worker_run: true
+      });
+    }
+  }
+  if (userId) {
+    const user = db.prepare('SELECT id, role, full_name, username, phone FROM users WHERE id = ?').get(userId);
+    if (user && ['owner', 'manager', 'assistant_manager', 'supervisor'].includes(user.role)) {
+      const mgr = db.prepare(`
+        SELECT * FROM compliance_checklist_warnings
+        WHERE manager_user_id = ? AND acknowledged = 0
+        ORDER BY created_at DESC LIMIT 20`).all(userId);
+      alerts.push(...mgr);
+    }
+  }
+  return alerts;
 }
 
 function acknowledgeChecklistWarning(warningId, actor) {
@@ -1109,6 +1164,8 @@ function buildChecklistOverdueMessage(runType, runDate, manager, shop) {
 }
 
 function ensureChecklistReminderNotifications() {
+  const ps = portalSettingsEnabled();
+  if (ps.show_routines === false) return;
   const db = getDb();
   const todayStr = today();
   const deadlines = getChecklistDeadlines();
@@ -1121,6 +1178,8 @@ function ensureChecklistReminderNotifications() {
   ];
 
   for (const chk of checks) {
+    if (chk.run_type === 'opening' && ps.show_morning_routines === false) continue;
+    if (chk.run_type === 'closing' && ps.show_closing_routines === false) continue;
     if (!timeAt(chk.deadline)) continue;
     const runs = db.prepare(`
       SELECT * FROM daily_checklist_runs WHERE run_type = ? AND run_date = ? AND status != 'cancelled'
@@ -1135,6 +1194,8 @@ function ensureChecklistReminderNotifications() {
 }
 
 function ensureChecklistDeadlineWarnings() {
+  const ps = portalSettingsEnabled();
+  if (ps.show_routines === false) return;
   const db = getDb();
   const todayStr = today();
   const shop = getShopPdfSettings();
@@ -1148,6 +1209,8 @@ function ensureChecklistDeadlineWarnings() {
   ];
 
   for (const chk of checks) {
+    if (chk.run_type === 'opening' && ps.show_morning_routines === false) continue;
+    if (chk.run_type === 'closing' && ps.show_closing_routines === false) continue;
     if (!timePast(chk.deadline)) continue;
     const runs = db.prepare(`
       SELECT * FROM daily_checklist_runs WHERE run_type = ? AND run_date = ? AND status != 'cancelled'

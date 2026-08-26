@@ -853,12 +853,7 @@ const MarketingFlyersPage = {
       const phones = phone ? [phone] : Array.from(audSel?.selectedOptions || []).map(o => o.value).filter(Boolean);
       if (!phones.length) return Utils.toast('Enter a phone or select audience', 'error');
       const r = await API.shareFlyerCampaign(flyerId, { phones, message: msg, channel: 'whatsapp' }, this.app.user);
-      if (!r.success) return Utils.toast(r.error, 'error');
-      for (const u of (r.data?.urls || [])) {
-        if (window.API?.openExternal) await API.openExternal(u.url);
-        else window.open(u.url, '_blank');
-      }
-      Utils.toast(`Prepared ${r.data.urls?.length || 0} WhatsApp link(s)`, 'success');
+      await Utils.deliverWhatsApp(r);
     });
   },
 

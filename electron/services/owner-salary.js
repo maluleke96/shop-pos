@@ -69,11 +69,14 @@ function calcOwnerCompliance(profile, periodData) {
   const payroll = require('./payroll-compliance');
   const settings = payroll.getPayrollSettings();
   const earnings = (Number(periodData.basic_salary) || 0) + (Number(periodData.bonus) || 0) + (Number(periodData.allowances) || 0);
-  const uifEnabled = profile?.uif_enabled !== 0 && profile?.uif_enabled !== false;
-  const payeEnabled = profile?.paye_enabled !== 0 && profile?.paye_enabled !== false;
+  // Require explicit owner-profile allow AND company payroll settings enabled
+  const uifEnabled = !!(Number(profile?.uif_enabled) === 1 || profile?.uif_enabled === true)
+    && !!settings.uif_enabled && settings.uif_auto_calculate !== false;
+  const payeEnabled = !!(Number(profile?.paye_enabled) === 1 || profile?.paye_enabled === true)
+    && !!settings.paye_enabled && settings.paye_auto_calculate !== false;
   const uif = uifEnabled ? payroll.calcUif(earnings, settings) : { employee: 0, employer: 0 };
-  const paye = payeEnabled && settings.paye_enabled ? payroll.calcMonthlyPaye(earnings) : 0;
-  const sdl = settings.sdl_auto_calculate ? payroll.calcSdl(earnings, settings) : 0;
+  const paye = payeEnabled ? payroll.calcMonthlyPaye(earnings) : 0;
+  const sdl = settings.sdl_enabled && settings.sdl_auto_calculate ? payroll.calcSdl(earnings, settings) : 0;
   const draws = sumOwnerDraws(profile.id, periodData.period_start, periodData.period_end);
   const manualDed = Number(periodData.deductions) || Number(profile.default_deductions) || 0;
   const gross = calcPeriodGross(periodData);
@@ -186,8 +189,8 @@ function saveOwnerProfile(data) {
     employee_id: data.employee_id ? parseInt(data.employee_id, 10) : null,
     uif_registration: data.uif_registration?.trim() || null,
     tax_number: data.tax_number?.trim() || null,
-    uif_enabled: data.uif_enabled === false || data.uif_enabled === 0 ? 0 : 1,
-    paye_enabled: data.paye_enabled === false || data.paye_enabled === 0 ? 0 : 1
+    uif_enabled: data.uif_enabled === true || data.uif_enabled === 1 ? 1 : 0,
+    paye_enabled: data.paye_enabled === true || data.paye_enabled === 1 ? 1 : 0
   };
   if (existing) {
     try {
@@ -358,11 +361,14 @@ function getOwnerSalaryPeriods(profileId, filters = {}) {
 
 function getOwnerSalaryPayments(profileId) {
   return getDb().prepare(`
-    SELECT p.*, GROUP_CONCAT(a.period_id || ':' || a.amount) as allocations
+    SELECT p.id, MAX(p.profile_id) AS profile_id, MAX(p.amount) AS amount,
+      MAX(p.payment_date) AS payment_date, MAX(p.payment_method) AS payment_method,
+      MAX(p.notes) AS notes, MAX(p.created_at) AS created_at, MAX(p.created_by) AS created_by,
+      GROUP_CONCAT(a.period_id || ':' || a.amount) as allocations
     FROM owner_salary_payments p
     LEFT JOIN owner_salary_payment_allocations a ON a.payment_id = p.id
     WHERE p.profile_id = ?
-    GROUP BY p.id ORDER BY p.payment_date DESC, p.id DESC`).all(profileId);
+    GROUP BY p.id ORDER BY MAX(p.payment_date) DESC, p.id DESC`).all(profileId);
 }
 
 function payOwnerSalary(data, actor) {

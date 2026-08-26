@@ -1,10 +1,7 @@
 {
-  "appId": "com.shoppos.offline",
-  "appName": "Shop POS",
+  "appId": "com.shoppos.recipe",
+  "appName": "Recipe Production",
   "webDir": "www",
-  "server": {
-    "androidScheme": "https"
-  },
   "android": {
     "allowMixedContent": true
   }

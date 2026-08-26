@@ -1,3 +1,21 @@
+function decodeRpcValue(value) {
+  if (value == null || typeof value !== 'object') return value;
+  if (typeof value.__shoppos_b64 === 'string') {
+    try {
+      const bin = atob(value.__shoppos_b64);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      return bytes;
+    } catch (_) {
+      return new Uint8Array(0);
+    }
+  }
+  if (Array.isArray(value)) return value.map(decodeRpcValue);
+  const out = {};
+  for (const k of Object.keys(value)) out[k] = decodeRpcValue(value[k]);
+  return out;
+}
+
 const invoke = async (channel, ...args) => {
   if (!window.posAPI) {
     await new Promise(resolve => {
@@ -17,11 +35,14 @@ const invoke = async (channel, ...args) => {
   }
   try {
     const result = await fn(...args);
-    // Cloud RPC often wraps as { success, data }
-    if (window.__SHOP_POS_CLOUD__ && result && typeof result === 'object' && Object.prototype.hasOwnProperty.call(result, 'success')) {
-      return result;
+    const decoded = result && typeof result === 'object' ? decodeRpcValue(result) : result;
+    // Cloud RPC often wraps as { success, data }. Login may be { success, user }.
+    if (decoded && typeof decoded === 'object' && Object.prototype.hasOwnProperty.call(decoded, 'success')) {
+      if (window.__SHOP_POS_CLOUD__) return decoded;
+      // Installer / local: keep { success, user } and { success, data } as-is
+      return decoded;
     }
-    return result;
+    return decoded;
   } catch (err) {
     console.error('[API]', channel, err);
     return { success: false, error: (err && err.message) || String(err) };
@@ -33,17 +54,85 @@ function whenPosAPIReady(fn) {
   window.addEventListener('posAPIReady', fn, { once: true });
 }
 
+function isCloudBrowser() {
+  return typeof window !== 'undefined' && !!window.__SHOP_POS_CLOUD__;
+}
+
+function downloadBlob(filename, bytes, mime) {
+  let buf = bytes;
+  if (buf instanceof ArrayBuffer) buf = new Uint8Array(buf);
+  else if (buf?.type === 'Buffer' && Array.isArray(buf.data)) buf = new Uint8Array(buf.data);
+  else if (Array.isArray(buf)) buf = new Uint8Array(buf);
+  else if (!(buf instanceof Uint8Array) && buf != null) {
+    try { buf = new Uint8Array(buf); } catch (_) { buf = new Uint8Array(0); }
+  }
+  if (!buf || !buf.byteLength) throw new Error('File was empty — nothing to save');
+  const blob = new Blob([buf], { type: mime || 'application/octet-stream' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename || 'download';
+  a.style.display = 'none';
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { a.remove(); URL.revokeObjectURL(url); }, 1000);
+  return { success: true, path: filename };
+}
+
+function printHtmlBrowser(html, title) {
+  const w = window.open('', '_blank', 'noopener,noreferrer');
+  if (!w) return { success: false, error: 'Pop-up blocked. Allow pop-ups to print.' };
+  const doc = html && String(html).includes('<html')
+    ? String(html)
+    : `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${title || 'Print'}</title></head><body>${html || ''}</body></html>`;
+  w.document.open();
+  w.document.write(doc);
+  w.document.close();
+  setTimeout(() => { try { w.focus(); w.print(); } catch (_) {} }, 250);
+  return { success: true, preview: true };
+}
+
+function pickFileBrowser(accept) {
+  return new Promise((resolve) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = accept || '*/*';
+    input.style.cssText = 'position:fixed;top:-100px;opacity:0';
+    document.body.appendChild(input);
+    input.addEventListener('change', () => {
+      const file = input.files && input.files[0];
+      input.remove();
+      if (!file) return resolve({ success: false, cancelled: true });
+      const reader = new FileReader();
+      reader.onload = () => resolve({
+        success: true,
+        path: reader.result,
+        dataUrl: reader.result,
+        fileName: file.name,
+        name: file.name,
+        is_image: /^image\//.test(file.type)
+      });
+      reader.onerror = () => resolve({ success: false, error: 'Could not read file' });
+      reader.readAsDataURL(file);
+    }, { once: true });
+    input.click();
+  });
+}
+
 const API = {
   quitApp: () => invoke('app:quit'),
   onAppCloseBlocked: (cb) => whenPosAPIReady(() => window.posAPI.onAppCloseBlocked(cb)),
   login: (u, p, pin) => invoke('auth:login', u, p, pin),
   logout: () => invoke('auth:logout'),
+  seedInstallerAccount: (payload) => invoke('auth:seedInstallerAccount', payload),
   hasRecoverySecret: () => invoke('auth:hasRecovery'),
+  getRecoveryStatus: () => invoke('auth:getRecoveryStatus'),
   verifyRecoveryPhrase: (secret) => invoke('auth:recoverVerify', secret),
   resetPasswordViaRecovery: (secret, username, newPassword) => invoke('auth:recoverReset', secret, username, newPassword),
   setRecoverySecret: (secret, actor) => invoke('auth:setRecoverySecret', secret, actor),
-  factoryResetBusiness: (secret, confirmText) => invoke('auth:factoryReset', secret, confirmText),
-  clearOperationalData: (password, actor) => invoke('auth:clearOperationalData', password, actor),
+  factoryResetBusiness: (secret, confirmText, actor) => invoke('auth:factoryReset', secret, confirmText, actor),
+  clearOperationalData: (password, actor, categories) => invoke('auth:clearOperationalData', password, actor, categories),
+  listClearDataCategories: () => invoke('auth:listClearDataCategories'),
   getUsers: (actor) => invoke('auth:getUsers', actor),
   createUser: (data, actor) => invoke('auth:createUser', data, actor),
   updateUser: (id, data, actor) => invoke('auth:updateUser', id, data, actor),
@@ -63,6 +152,8 @@ const API = {
   updateSettingsRequest: (id, data, actor) => invoke('settings:updateRequest', id, data, actor),
   deleteSettingsRequest: (id, actor) => invoke('settings:deleteRequest', id, actor),
   completeSetup: (data) => invoke('settings:completeSetup', data),
+  detectExistingBusiness: () => invoke('settings:detectExistingBusiness'),
+  adoptExistingBusiness: () => invoke('settings:adoptExistingBusiness'),
 
   getCategories: (filters) => invoke('categories:get', filters || {}),
   saveCategory: (data, actor) => invoke('categories:save', data, actor),
@@ -109,6 +200,8 @@ const API = {
   savePurchaseOrder: (data, actor) => invoke('po:save', data, actor),
   receivePurchaseOrder: (id, actor) => invoke('po:receive', id, actor),
   receivePurchaseOrderPartial: (id, items, actor) => invoke('po:receivePartial', id, items, actor),
+  deletePurchaseOrder: (id, actor) => invoke('po:delete', id, actor),
+  updatePurchaseOrder: (id, data, actor) => invoke('po:update', id, data, actor),
 
   getDashboardStats: (from, to, actor) => invoke('dashboard:stats', from, to, actor),
   getInventoryStats: () => invoke('inventory:stats'),
@@ -143,6 +236,10 @@ const API = {
   closeShift: (id, data, actor) => invoke('shifts:close', id, data, actor),
   getShiftClosePreview: (id, actor) => invoke('shifts:closePreview', id, actor),
   getShifts: (limit) => invoke('shifts:get', limit),
+  getAllOpenShifts: (actor) => invoke('shifts:getOpenAll', actor),
+  forceCloseShift: (id, data, actor) => invoke('shifts:forceClose', id, data, actor),
+  updateShift: (id, data, actor) => invoke('shifts:update', id, data, actor),
+  deleteShift: (id, actor) => invoke('shifts:delete', id, actor),
   getOpenShift: (actor) => invoke('shifts:current', actor),
   getSalesTargets: () => invoke('settings:getSalesTargets'),
   saveSalesTargets: (data, actor) => invoke('settings:saveSalesTargets', data, actor),
@@ -153,7 +250,7 @@ const API = {
   getAuditLog: (filters) => invoke('audit:get', filters),
   getNotifications: (actor) => invoke('notifications:get', actor),
   markNotificationRead: (id) => invoke('notifications:read', id),
-  markAllNotificationsRead: () => invoke('notifications:readAll'),
+  markAllNotificationsRead: (actor) => invoke('notifications:readAll', actor),
   createTestNotification: () => invoke('notifications:createTest'),
   refreshPaymentDueNotifications: () => invoke('notifications:refreshPaymentDue'),
   ensureDemoNotificationSound: () => invoke('notifications:ensureDemoSound'),
@@ -165,29 +262,100 @@ const API = {
 
   backupCreate: (actor) => invoke('backup:create', actor),
   backupRestore: (actor) => invoke('backup:restore', actor),
+  backupRestoreSetup: () => invoke('backup:restoreSetup'),
   backupExport: (actor) => invoke('backup:export', actor),
   getBackupInfo: () => invoke('backup:getInfo'),
   getDeviceSettings: () => invoke('deviceSettings:get'),
   saveDeviceSettings: (data) => invoke('deviceSettings:save', data),
-  printPreview: (html, title) => invoke('print:preview', html, title),
-  printReceipt: (html, opts) => invoke('print:receipt', html, opts),
-  printKitchen: (html, opts) => invoke('print:kitchen', html, opts),
-  printA4: (html) => invoke('print:a4', html),
+  printPreview: (html, title) => isCloudBrowser()
+    ? Promise.resolve(printHtmlBrowser(html, title))
+    : invoke('print:preview', html, title),
+  printReceipt: (html, opts) => isCloudBrowser()
+    ? Promise.resolve(printHtmlBrowser(html, 'Receipt'))
+    : invoke('print:receipt', html, opts),
+  printKitchen: (html, opts) => isCloudBrowser()
+    ? Promise.resolve(printHtmlBrowser(html, 'Kitchen'))
+    : invoke('print:kitchen', html, opts),
+  printA4: (html, opts) => isCloudBrowser()
+    ? Promise.resolve(printHtmlBrowser(html, 'Document'))
+    : invoke('print:a4', html, opts || {}),
   openCashDrawer: () => invoke('print:openDrawer'),
   printBarcodeLabel: (product) => invoke('print:barcode', product),
   getPrinterStatus: (names) => invoke('printers:status', names),
-  openKitchenDisplay: () => invoke('kitchen:openDisplay'),
+  openKitchenDisplay: () => {
+    if (typeof window !== 'undefined') {
+      window.open('kitchen-display.html', 'shoppos-kitchen', 'noopener,noreferrer,width=1200,height=800');
+      return Promise.resolve({ success: true });
+    }
+    return invoke('kitchen:openDisplay');
+  },
   closeKitchenDisplay: () => invoke('kitchen:closeDisplay'),
   refreshKitchenDisplay: () => invoke('kitchen:refreshDisplay'),
-  openCustomerDisplay: () => invoke('customer:openDisplay'),
+  openCustomerDisplay: () => {
+    if (isCloudBrowser() && typeof window !== 'undefined') {
+      window.open('customer-display.html', 'shoppos-customer', 'noopener,noreferrer,width=1280,height=800');
+      return Promise.resolve({ success: true });
+    }
+    return invoke('customer:openDisplay');
+  },
   closeCustomerDisplay: () => invoke('customer:closeDisplay'),
   refreshCustomerDisplay: () => invoke('customer:refreshDisplay'),
-  saveFile: (name, filters, buffer) => invoke('file:save', name, filters, buffer),
-  openPdf: (buffer, filename) => invoke('file:openPdf', buffer, filename),
+  saveFile: async (name, filters, buffer) => {
+    if (isCloudBrowser()) {
+      try {
+        const mime = String(name || '').toLowerCase().endsWith('.pdf')
+          ? 'application/pdf'
+          : String(name || '').toLowerCase().endsWith('.xlsx')
+            ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            : 'application/octet-stream';
+        return downloadBlob(name, buffer, mime);
+      } catch (err) {
+        return { success: false, error: err.message || String(err) };
+      }
+    }
+    return invoke('file:save', name, filters, buffer);
+  },
+  openPdf: async (buffer, filename) => {
+    if (isCloudBrowser()) {
+      try { return downloadBlob(filename || 'document.pdf', buffer, 'application/pdf'); }
+      catch (err) { return { success: false, error: err.message || String(err) }; }
+    }
+    return invoke('file:openPdf', buffer, filename);
+  },
+  printPdf: async (buffer, filename) => {
+    if (isCloudBrowser()) {
+      try {
+        const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer || []);
+        const blob = new Blob([bytes], { type: 'application/pdf' });
+        const url = URL.createObjectURL(blob);
+        const w = window.open(url, '_blank', 'noopener,noreferrer');
+        if (!w) return downloadBlob(filename || 'document.pdf', bytes, 'application/pdf');
+        return { success: true, preview: true };
+      } catch (err) {
+        return { success: false, error: err.message || String(err) };
+      }
+    }
+    return invoke('file:printPdf', buffer, filename);
+  },
   openPath: (filePath) => invoke('file:openPath', filePath),
-  selectDocument: (prefix) => invoke('file:selectDocument', prefix),
+  openExternal: async (url) => {
+    if (!url) return { success: false, error: 'No URL' };
+    const viaApi = await invoke('file:openExternal', String(url));
+    if (viaApi?.success) return viaApi;
+    try {
+      window.open(String(url), '_blank', 'noopener,noreferrer');
+      return { success: true };
+    } catch (e) {
+      return { success: false, error: e.message || String(e) };
+    }
+  },
+  selectDocument: (prefix) => isCloudBrowser()
+    ? pickFileBrowser('.pdf,image/*,.png,.jpg,.jpeg,.webp,.doc,.docx')
+    : invoke('file:selectDocument', prefix),
   persistMobileDocument: (path) => invoke('file:persistMobileDocument', path),
-  selectImage: (prefix) => invoke('file:selectImage', prefix),
+  selectImage: (prefix) => isCloudBrowser()
+    ? pickFileBrowser('image/*')
+    : invoke('file:selectImage', prefix),
   getImageDataUrl: async (filePath) => {
     const r = await invoke('file:getImageDataUrl', filePath);
     if (!r || typeof r !== 'object') return r;
@@ -196,9 +364,35 @@ const API = {
     if (r.success && url) return { ...r, dataUrl: url, data: url };
     return r;
   },
-  exportPDF: (filename, title, headers, rows, company) => invoke('export:pdf', filename, title, headers, rows, company),
-  exportExcel: (filename, sheets) => invoke('export:excel', filename, sheets),
-  exportPrint: (title, headers, rows, company) => invoke('export:print', title, headers, rows, company),
+  exportPDF: async (filename, title, headers, rows, company) => {
+    const r = await invoke('export:pdf', filename, title, headers, rows, company);
+    if (isCloudBrowser() && r?.success !== false && (r?.data instanceof Uint8Array || r?.data?.byteLength)) {
+      try { return downloadBlob(filename || 'report.pdf', r.data, 'application/pdf'); }
+      catch (err) { return { success: false, error: err.message || String(err) }; }
+    }
+    return r;
+  },
+  exportExcel: async (filename, sheets) => {
+    const r = await invoke('export:excel', filename, sheets);
+    if (isCloudBrowser() && r?.success !== false && (r?.data instanceof Uint8Array || r?.data?.byteLength)) {
+      try {
+        return downloadBlob(
+          filename || 'export.xlsx',
+          r.data,
+          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        );
+      } catch (err) { return { success: false, error: err.message || String(err) }; }
+    }
+    return r;
+  },
+  exportPrint: async (title, headers, rows, company) => {
+    const r = await invoke('export:print', title, headers, rows, company);
+    if (isCloudBrowser()) {
+      const html = (typeof r?.data === 'string' && r.data.includes('<')) ? r.data : (r?.html || r?.data?.html);
+      if (html) return printHtmlBrowser(html, title);
+    }
+    return r;
+  },
   printReport: (title, headers, rows, company) => invoke('export:print', title, headers, rows, company),
 
   getDatabaseHealth: () => invoke('db:health'),
@@ -212,7 +406,7 @@ const API = {
   getQuotes: (f) => invoke('quotes:get', f),
   getQuote: (id) => invoke('quotes:getOne', id),
   saveQuote: (data, actor) => invoke('quotes:save', data, actor),
-  convertQuote: (id, actor) => invoke('quotes:convert', id, actor),
+  convertQuote: (id, actor, paymentOpts) => invoke('quotes:convert', id, actor, paymentOpts),
   deleteQuote: (id, actor) => invoke('quotes:delete', id, actor),
   markQuoteConverted: (id, saleId, actor) => invoke('quotes:markConverted', id, saleId, actor),
   reactivateQuote: (id, actor) => invoke('quotes:reactivate', id, actor),
@@ -221,7 +415,9 @@ const API = {
   verifyBookkeepingPassword: (password) => invoke('auth:verifyBookkeepingPassword', password),
   setBookkeepingPassword: (password, actor) => invoke('auth:setBookkeepingPassword', password, actor),
 
-  selectAudio: (prefix) => invoke('file:selectAudio', prefix),
+  selectAudio: (prefix) => isCloudBrowser()
+    ? pickFileBrowser('audio/*')
+    : invoke('file:selectAudio', prefix),
   getAudioDataUrl: (filePath) => invoke('file:getAudioDataUrl', filePath),
 
   getLaybyes: (f) => invoke('layby:get', f),
@@ -265,6 +461,8 @@ const API = {
   getCashUpByShift: (shiftId) => invoke('cashup:byShift', shiftId),
   createCashUp: (shiftId, data, actor) => invoke('cashup:create', shiftId, data, actor),
   approveCashUp: (id, notes, actor) => invoke('cashup:approve', id, notes, actor),
+  updateCashUp: (id, data, actor) => invoke('cashup:update', id, data, actor),
+  deleteCashUp: (id, actor) => invoke('cashup:delete', id, actor),
   getCashUpSummary: (from, to) => invoke('cashup:summary', from, to),
   getCashUpPdf: (id) => invoke('cashup:pdf', id),
 
@@ -275,6 +473,8 @@ const API = {
   getCustomFields: (type) => invoke('customfields:get', type),
   saveCustomField: (data) => invoke('customfields:save', data),
   deleteCustomField: (id) => invoke('customfields:delete', id),
+  getCustomFieldValues: (type, entityId) => invoke('customfields:values', type, entityId),
+  saveCustomFieldValues: (type, entityId, values, actor) => invoke('customfields:saveValues', type, entityId, values, actor),
 
   getTables: () => invoke('tables:get'),
   saveTable: (data, actor) => invoke('tables:save', data, actor),
@@ -327,6 +527,9 @@ const API = {
   saveEmployee: (data, actor) => invoke('staff:saveEmployee', data, actor),
   deleteEmployee: (id, actor) => invoke('staff:deleteEmployee', id, actor),
   staffLogin: (code, pin) => invoke('staff:login', code, pin),
+  adminOpenStaffPortal: (employeeId, actor) => invoke('staff:adminOpen', employeeId, actor),
+  staffLogout: () => invoke('staff:logout'),
+  validateEmployeeLinks: (data) => invoke('staff:validateLinks', data),
   saveStaffSelfie: (data) => invoke('staff:saveSelfie', data),
   getStaffSelfies: (filters, actor) => invoke('staff:getSelfies', filters, actor),
   getStaffSelfie: (id, actor) => invoke('staff:getSelfie', id, actor),
@@ -337,6 +540,7 @@ const API = {
   getStaffTodayAttendance: (id) => invoke('staff:getTodayAttendance', id),
   getStaffAttendanceSummary: (employeeId, from, to) => invoke('staff:getAttendanceSummary', employeeId, from, to),
   createStaffAttendance: (data, actor) => invoke('staff:createAttendance', data, actor),
+  deleteStaffAttendance: (id, actor) => invoke('staff:deleteAttendance', id, actor),
   addAttendancePenalty: (data, actor) => invoke('staff:addAttendancePenalty', data, actor),
   getAttendancePenalties: (filters, actor) => invoke('staff:getAttendancePenalties', filters, actor),
   cancelAttendancePenalty: (id, actor) => invoke('staff:cancelAttendancePenalty', id, actor),
@@ -354,6 +558,9 @@ const API = {
   generateStaffPayroll: (start, end, ids, actor) => invoke('staff:generatePayroll', start, end, ids, actor),
   payStaffSalary: (id, method, actor) => invoke('staff:paySalary', id, method, actor),
   getPayrollDashboard: (filters, actor) => invoke('staff:getPayrollDashboard', filters, actor),
+  previewStaffPayroll: (start, end, filters, actor) => invoke('staff:previewPayroll', start, end, filters, actor),
+  getMissedClockOutInbox: (filters, actor) => invoke('staff:getMissedClockOutInbox', filters, actor),
+  resolveMissedClockOut: (id, action, actor) => invoke('staff:resolveMissedClockOut', id, action, actor),
   saveEmployeeWorkSchedule: (employeeId, schedule, actor) => invoke('staff:saveWorkSchedule', employeeId, schedule, actor),
   saveHrDocument: (data, actor) => invoke('staff:saveHrDocument', data, actor),
   getHrDocuments: (employeeId, actor) => invoke('staff:getHrDocuments', employeeId, actor),
@@ -363,13 +570,13 @@ const API = {
   getStaffSchedules: (from, to, empId) => invoke('staff:getSchedules', from, to, empId),
   saveStaffSchedule: (data, actor) => invoke('staff:saveSchedule', data, actor),
   deleteStaffSchedule: (id, actor) => invoke('staff:deleteSchedule', id, actor),
-  autoGenerateStaffShifts: (weekStart, templates, employeeIds, employeeOverrides, actor) => invoke('staff:autoShifts', weekStart, templates, employeeIds, employeeOverrides, actor),
+  autoGenerateStaffShifts: (weekStart, templates, employeeIds, employeeOverrides, actor, options) => invoke('staff:autoShifts', weekStart, templates, employeeIds, employeeOverrides, actor, options || {}),
   getStaffDocuments: (id) => invoke('staff:getDocuments', id),
   saveStaffDocument: (data, actor) => invoke('staff:saveDocument', data, actor),
   getStaffDisciplinary: (id) => invoke('staff:getDisciplinary', id),
   saveStaffDisciplinary: (data, actor) => invoke('staff:saveDisciplinary', data, actor),
   respondStaffDisciplinary: (id, employeeId, response) => invoke('staff:respondDisciplinary', id, employeeId, response),
-  getAllStaffDisciplinary: (filters) => invoke('staff:getAllDisciplinary', filters),
+  getAllStaffDisciplinary: (filters, actor) => invoke('staff:getAllDisciplinary', filters, actor),
   getStaffDisciplinaryPdf: (id, copyType) => invoke('staff:disciplinaryPdf', id, copyType),
   markStaffDisciplinaryWa: (id) => invoke('staff:markDisciplinaryWa', id),
   getCustomerPhoneReport: (filters) => invoke('staff:getCustomerPhoneReport', filters),
@@ -395,6 +602,20 @@ const API = {
   saveHrContract: (data, actor) => invoke('hr:saveContract', data, actor),
   signHrContract: (contractId, role, sig, actor) => invoke('hr:signContract', contractId, role, sig, actor),
   getHrContractPdf: (id, actor) => invoke('hr:contractPdf', id, actor),
+  openHrContractResign: (id, opensAt, closesAt, actor) => invoke('hr:openContractResign', id, opensAt, closesAt, actor),
+  attachHrContractDoc: (contractId, filePath, fileName, actor) => invoke('hr:attachContractDoc', contractId, filePath, fileName, actor),
+  getHrContractsForEmployee: (employeeId, actor) => invoke('hr:getContractsForEmployee', employeeId, actor),
+  listSalaryClaims: (filters, actor) => invoke('salaryClaims:list', filters, actor),
+  getSalaryClaim: (id, actor) => invoke('salaryClaims:get', id, actor),
+  saveSalaryClaim: (data, actor) => invoke('salaryClaims:save', data, actor),
+  deleteSalaryClaim: (id, actor) => invoke('salaryClaims:delete', id, actor),
+  claimSalary: (id, notes, actor) => invoke('salaryClaims:claim', id, notes, actor),
+  approveSalaryClaim: (id, notes, actor) => invoke('salaryClaims:approve', id, notes, actor),
+  rejectSalaryClaim: (id, notes, actor) => invoke('salaryClaims:reject', id, notes, actor),
+  markSalaryClaimPaid: (id, actor) => invoke('salaryClaims:markPaid', id, actor),
+  getSalaryClaimPdf: (id, actor) => invoke('salaryClaims:pdf', id, actor),
+  createSalaryClaimsFromPayroll: (start, end, deadline, paymentDate, opensAt, actor) =>
+    invoke('salaryClaims:fromPayroll', start, end, deadline, paymentDate, opensAt, actor),
   getProbations: (filters, actor) => invoke('hr:getProbations', filters, actor),
   getProbation: (id, actor) => invoke('hr:getProbation', id, actor),
   saveProbation: (data, actor) => invoke('hr:saveProbation', data, actor),
@@ -553,7 +774,7 @@ const API = {
   getChecklistSettings: () => invoke('ops:getChecklistSettings'),
   saveChecklistSettings: (data, actor) => invoke('ops:saveChecklistSettings', data, actor),
   getChecklistWarnings: (filters) => invoke('ops:checklistWarnings', filters),
-  getStaffChecklistWarnings: (userId) => invoke('ops:staffChecklistWarnings', userId),
+  getStaffChecklistWarnings: (userId, employeeId) => invoke('ops:staffChecklistWarnings', userId, employeeId),
   ackChecklistWarning: (id, actor) => invoke('ops:ackChecklistWarning', id, actor),
   getChecklistReportPdf: (runId) => invoke('ops:checklistPdf', runId),
   getNonSellingProducts: (filters) => invoke('ops:nonSellingProducts', filters),
@@ -629,6 +850,7 @@ const API = {
   recipeDashboard: (actor) => invoke('recipe:dashboard', actor),
   recipeReports: (type, filters, actor) => invoke('recipe:reports', type, filters, actor),
   recipeAi: (actor) => invoke('recipe:ai', actor),
+  recipeApplySuggestedPrice: (data, actor) => invoke('recipe:applySuggestedPrice', data, actor),
   recipeActivity: (limit, actor) => invoke('recipe:activity', limit, actor),
   recipeBestSellers: (period, actor) => invoke('recipe:bestSellers', period, actor),
   recipeSetAvailableToday: (ids, actor) => invoke('recipe:setAvailableToday', ids, actor),
@@ -764,8 +986,8 @@ const API = {
   getActiveBranch: () => invoke('branches:getActive'),
   saveBranch: (data) => invoke('branches:save', data),
   setActiveBranch: (branchId) => invoke('branches:setActive', branchId),
-  getSyncStatus: () => ({ success: true, data: { enabled: false, registered: false, removed: true } }),
-  saveSyncSettings: async () => ({ success: false, error: 'Sync hub removed — use Supabase' }),
+  getSyncStatus: () => ({ success: true, data: { enabled: false, registered: false, removed: true, mode: (window.__SHOP_POS_CLOUD__ ? 'cloud' : 'local') } }),
+  saveSyncSettings: async () => ({ success: false, error: 'Sync hub removed — local tills stay on this device; set SHOP_POS_RPC_URL for cloud' }),
   registerSyncDevice: async () => ({ success: false, error: 'Sync hub removed' }),
   syncNow: async () => ({ success: true, data: { pushed: 0, newOrders: 0 } }),
   publishProductsToHub: async () => ({ success: false, error: 'Sync hub removed' }),

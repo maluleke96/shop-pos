@@ -12,8 +12,8 @@
   async function pdfAction(getBuf, filename, mode) {
     const r = await getBuf();
     if (!r.success) return Utils.toast(r.error || 'PDF failed', 'error');
-    if (mode === 'print') await API.openPdf(r.data, filename);
-    else await API.saveFile(filename, [{ name: 'PDF', extensions: ['pdf'] }], r.data);
+    if (mode === 'print') await Utils.printToA4(r, filename);
+    else await Utils.savePdfBuffer(filename, r);
   }
 
   const origRenderSection = AdminPage.renderSection.bind(AdminPage);
@@ -21,6 +21,10 @@
     if (this.section === 'opscompliance') return AdminOpsPage.render(el, this);
     AdminPage.toggleOpsComplianceLayout?.(false);
     return origRenderSection(el);
+  };
+
+  AdminPage.renderOpsCompliance = function (el) {
+    return AdminOpsPage.render(el, this);
   };
 
   const AdminOpsPage = {
@@ -209,6 +213,21 @@
       const deadlineVal = chkSettings[deadlineKey] || (type === 'opening' ? '11:00' : '22:00');
       const intervalVal = chkSettings[intervalKey] ?? 0;
       el.innerHTML = `<div class="card" style="margin-bottom:16px"><div class="card-body">
+        <h4>Show on Staff Portal</h4>
+        <p class="muted">If this is OFF, staff will not see ${type === 'opening' ? 'morning' : 'closing'} tasks and admin will not be notified about them.</p>
+        <label class="portal-switch" style="max-width:520px">
+          <span><strong>${type === 'opening' ? 'Morning opening routines' : 'Closing routines'}</strong>
+            <small class="muted">Toggle visibility for staff</small></span>
+          <input type="checkbox" id="chk-show-on-portal" ${
+            type === 'opening'
+              ? ((this.admin.settings?.staff_portal_settings?.show_morning_routines !== false) && (this.admin.settings?.staff_portal_settings?.show_routines !== false) ? 'checked' : '')
+              : ((this.admin.settings?.staff_portal_settings?.show_closing_routines !== false) && (this.admin.settings?.staff_portal_settings?.show_routines !== false) ? 'checked' : '')
+          }>
+          <span class="portal-switch-state">ON</span>
+        </label>
+        <button class="btn btn-primary btn-sm" id="chk-save-visibility" style="margin-top:8px">Save visibility</button>
+      </div></div>
+      <div class="card" style="margin-bottom:16px"><div class="card-body">
         <h4>Deadline &amp; Checkbox Interval</h4>
         <p class="muted">Set the daily reminder deadline and how many minutes staff must wait between ticking each task checkbox.</p>
         <div class="form-grid" style="max-width:420px">
@@ -238,6 +257,33 @@
         </tbody></table></div>`;
 
       await this.renderSubmittedRecords(el, type);
+
+      document.getElementById('chk-save-visibility')?.addEventListener('click', async () => {
+        const on = !!document.getElementById('chk-show-on-portal')?.checked;
+        const prev = this.admin.settings?.staff_portal_settings || {};
+        const data = {
+          ...prev,
+          show_routines: on ? true : (type === 'opening' ? prev.show_closing_routines !== false : prev.show_morning_routines !== false),
+          show_morning_routines: type === 'opening' ? on : prev.show_morning_routines !== false,
+          show_closing_routines: type === 'closing' ? on : prev.show_closing_routines !== false
+        };
+        if (type === 'opening' && on) data.show_routines = true;
+        if (type === 'closing' && on) data.show_routines = true;
+        const r = await API.saveJsonSetting('staff_portal_settings', data, this.app.user);
+        if (!r.success) return Utils.toast(r.error || 'Could not save', 'error');
+        this.admin.settings = { ...this.admin.settings, staff_portal_settings: data };
+        if (this.app) this.app.settings = { ...this.app.settings, staff_portal_settings: data };
+        const state = document.querySelector('#chk-show-on-portal')?.parentElement?.querySelector('.portal-switch-state');
+        if (state) state.textContent = on ? 'ON' : 'OFF';
+        Utils.toast(`${type === 'opening' ? 'Morning' : 'Closing'} routine is now ${on ? 'ON' : 'OFF'} for staff`, 'success');
+      });
+      const vis = document.getElementById('chk-show-on-portal');
+      const bumpVis = () => {
+        const state = vis?.parentElement?.querySelector('.portal-switch-state');
+        if (state) state.textContent = vis.checked ? 'ON' : 'OFF';
+      };
+      vis?.addEventListener('change', bumpVis);
+      bumpVis();
 
       document.getElementById('chk-save-deadline')?.addEventListener('click', async () => {
         const val = document.getElementById('chk-deadline').value;
@@ -371,11 +417,11 @@
 
       section.querySelectorAll('.chk-run-pdf').forEach(b => b.addEventListener('click', async () => {
         const r = await pdfRun(parseInt(b.dataset.id, 10));
-        if (r?.success) await API.saveFile(`checklist-${b.dataset.id}.pdf`, [{ name: 'PDF', extensions: ['pdf'] }], r.data);
+        if (r?.success) await Utils.savePdfBuffer(`checklist-${b.dataset.id}.pdf`, r);
       }));
       section.querySelectorAll('.chk-run-print').forEach(b => b.addEventListener('click', async () => {
         const r = await pdfRun(parseInt(b.dataset.id, 10));
-        if (r?.success) await API.openPdf(r.data, `checklist-${b.dataset.id}.pdf`);
+        if (r?.success) await Utils.printToA4(r, `checklist-${b.dataset.id}.pdf`);
       }));
       section.querySelectorAll('.chk-run-confirm').forEach(b => b.addEventListener('click', async () => {
         const id = parseInt(b.dataset.id, 10);

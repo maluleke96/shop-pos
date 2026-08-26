@@ -201,12 +201,19 @@ async function validateDatabaseFile(filePath) {
 async function initDatabase() {
   if (db) return db;
 
-  // Supabase / Postgres mode — schema already applied via COMPLETE_SUPABASE_SETUP.sql
+  // Postgres mode (Railway Postgres / Supabase) — auto-create schema if empty
   if (pgDb.isPgMode()) {
     usingPg = true;
     process.env.SHOP_POS_CLOUD = '1';
     db = await pgDb.initPgDatabase();
-    console.log('[DB] Using Supabase Postgres via DATABASE_URL');
+    try {
+      const { ensurePgSchema } = require('./ensure-pg-schema');
+      ensurePgSchema(db);
+    } catch (err) {
+      console.error('[DB] ensurePgSchema failed:', err.message || err);
+      throw err;
+    }
+    console.log('[DB] Using Postgres via SHOP_POS_DATABASE_URL / DATABASE_URL');
     return db;
   }
 
@@ -237,6 +244,22 @@ async function initDatabase() {
     console.log(`[DB] Legacy database detected — marking user_version=${legacyFloor} (will apply newer migrations only)`);
     setUserVersion(legacyFloor);
     current = legacyFloor;
+  }
+
+  // UPDATE SAFETY: timestamped backup before any schema migration on existing data
+  if (dbFileExisted && current < latest) {
+    try {
+      const backupDir = path.join(path.dirname(dbPath), 'backups');
+      if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir, { recursive: true });
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      const backupName = `ShopPOS_Backup_${stamp.replace('T', '_')}.db`;
+      const backupPath = path.join(backupDir, backupName);
+      fs.copyFileSync(dbPath, backupPath);
+      console.log(`[DB] Pre-migration backup created: ${backupPath}`);
+    } catch (err) {
+      console.error('[DB] Failed to create pre-migration backup:', err.message);
+      throw new Error('Could not backup database before upgrade. Update stopped to protect your data. ' + err.message);
+    }
   }
 
   if (!dbFileExisted || current === 0) {

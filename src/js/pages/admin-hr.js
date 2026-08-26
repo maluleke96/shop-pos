@@ -46,6 +46,7 @@
     },
 
     async renderContracts(el) {
+      try { await API.getHrContracts({}, this.app.user); } catch (_) { /* trigger expiry via other calls */ }
       const [contractsRes, empsRes, tplRes] = await Promise.all([
         API.getHrContracts({}, this.app.user),
         API.getEmployees({ status: 'Active' }),
@@ -56,15 +57,21 @@
       const templates = tplRes.data || [];
       el.innerHTML = `<div style="display:flex;gap:8px;margin:12px 0;flex-wrap:wrap">
         <button class="btn btn-primary" id="hr-new-contract">+ New Contract</button></div>
-        <div class="table-wrap"><table><thead><tr><th>Employee</th><th>Position</th><th>Status</th><th>Created</th><th></th></tr></thead>
+        <p class="muted">Set an <strong>expiry</strong> on contracts (incl. after probation). When expired, open a <strong>re-sign window</strong> (date/time). Staff re-sign in Staff Portal and must upload documents.</p>
+        <div class="table-wrap"><table><thead><tr><th>Employee</th><th>Position</th><th>Status</th><th>Expires</th><th>Re-sign window</th><th>Created</th><th></th></tr></thead>
         <tbody>${contracts.map(c => `<tr>
           <td><strong>${c.employee_name}</strong><br><small>${c.employee_code || ''}</small></td>
           <td>${c.emp_position || '—'}</td>
           <td><span class="tag">${c.status}</span></td>
+          <td>${c.expires_at ? Utils.formatDateTime(c.expires_at) : '—'}</td>
+          <td>${c.resign_opens_at ? `${Utils.formatDateTime(c.resign_opens_at)}${c.resign_closes_at ? ' → ' + Utils.formatDateTime(c.resign_closes_at) : ''}` : '—'}</td>
           <td>${Utils.formatDateTime(c.created_at)}</td>
-          <td><button class="btn btn-sm btn-ghost hr-edit-contract" data-id="${c.id}">Edit</button>
-            <button class="btn btn-sm btn-ghost hr-pdf-contract" data-id="${c.id}">PDF</button></td>
-        </tr>`).join('') || '<tr><td colspan="5" class="muted">No contracts yet</td></tr>'}
+          <td style="white-space:nowrap">
+            <button class="btn btn-sm btn-ghost hr-edit-contract" data-id="${c.id}">Edit</button>
+            <button class="btn btn-sm btn-ghost hr-pdf-contract" data-id="${c.id}">PDF</button>
+            ${['expired','active','pending_signatures'].includes(c.status) ? `<button class="btn btn-sm btn-warning hr-resign-contract" data-id="${c.id}">Open re-sign</button>` : ''}
+          </td>
+        </tr>`).join('') || '<tr><td colspan="7" class="muted">No contracts yet</td></tr>'}
         </tbody></table></div>`;
       document.getElementById('hr-new-contract').addEventListener('click', () => this.showContractBuilder(null, emps, templates));
       el.querySelectorAll('.hr-edit-contract').forEach(b => b.addEventListener('click', async () => {
@@ -72,9 +79,30 @@
         if (r.data) this.showContractBuilder(r.data, emps, templates);
       }));
       el.querySelectorAll('.hr-pdf-contract').forEach(b => b.addEventListener('click', async () => {
-        const buf = await API.getHrContractPdf(parseInt(b.dataset.id, 10), this.app.user);
-        if (buf.success) await API.saveFile(`contract-${b.dataset.id}.pdf`, [{ name: 'PDF', extensions: ['pdf'] }], buf.data);
-        else Utils.toast(buf.error || 'PDF failed', 'error');
+        await Utils.savePdfBuffer(`contract-${b.dataset.id}.pdf`, await API.getHrContractPdf(parseInt(b.dataset.id, 10), this.app.user));
+      }));
+      el.querySelectorAll('.hr-resign-contract').forEach(b => b.addEventListener('click', () => {
+        const id = parseInt(b.dataset.id, 10);
+        const local = new Date();
+        local.setMinutes(local.getMinutes() - local.getTimezoneOffset());
+        const defOpen = local.toISOString().slice(0, 16);
+        Utils.showModal('Open contract re-sign', `
+          <p class="muted">Employee must re-sign in Staff Portal. They will upload documents, then sign.</p>
+          <div class="form-grid">
+            <div class="field"><label>Re-sign opens (date &amp; time) *</label><input type="datetime-local" id="rs-open" value="${defOpen}"></div>
+            <div class="field"><label>Re-sign closes (optional)</label><input type="datetime-local" id="rs-close"></div>
+          </div>`,
+          '<button class="btn btn-warning" id="rs-go">Open re-sign window</button>');
+        document.getElementById('rs-go')?.addEventListener('click', async () => {
+          const opens = document.getElementById('rs-open')?.value;
+          const closes = document.getElementById('rs-close')?.value || null;
+          if (!opens) return Utils.toast('Set when re-sign opens', 'error');
+          const r = await API.openHrContractResign(id, new Date(opens).toISOString(), closes ? new Date(closes).toISOString() : null, this.app.user);
+          if (!r.success) return Utils.toast(r.error || 'Failed', 'error');
+          Utils.hideModal();
+          Utils.toast('Re-sign window opened', 'success');
+          this.renderContracts(el);
+        });
       }));
     },
 
@@ -167,10 +195,7 @@
         });
       }));
       el.querySelectorAll('.hr-eval-pdf').forEach(b => b.addEventListener('click', async () => {
-        const buf = await API.getHrTrainingEvalPdf(parseInt(b.dataset.id, 10), this.app.user);
-        if (!buf.success) return Utils.toast(buf.error || 'PDF failed', 'error');
-        await API.saveFile(`training-eval-${b.dataset.id}.pdf`, [{ name: 'PDF', extensions: ['pdf'] }], buf.data);
-        Utils.toast('Evaluation PDF saved', 'success');
+        await Utils.savePdfBuffer(`training-eval-${b.dataset.id}.pdf`, await API.getHrTrainingEvalPdf(parseInt(b.dataset.id, 10), this.app.user));
       }));
       el.querySelectorAll('.hr-eval-print').forEach(b => b.addEventListener('click', () => {
         const rec = records.find(x => x.id == b.dataset.id);
@@ -189,11 +214,9 @@
         const evals = (rec?.evaluations || []).slice(-3);
         const msg = `Training evaluation — ${rec?.employee_name || ''}\nStatus: ${rec?.status}\n` +
           evals.map(ev => `${ev.date || ''}: ${ev.notes || ''} (${(ev.items || []).length} items)`).join('\n');
-        const wa = await API.sendWhatsAppMessage({
+        await Utils.deliverWhatsApp(await API.sendWhatsAppMessage({
           phone, recipient_name: rec?.employee_name, message_type: 'training_eval', body: msg
-        }, this.app.user);
-        if (wa.success && wa.data?.url) window.open(wa.data.url, '_blank');
-        else Utils.openWhatsApp(phone, msg);
+        }, this.app.user), phone, msg);
       }));
       const setTrainingStatus = async (rec, status, extra = {}) => {
         const r = await API.saveHrTrainingRecord({
@@ -206,11 +229,9 @@
         const phone = empRes.data?.phone;
         const msg = `Training result — ${rec.employee_name}\nOutcome: ${status.toUpperCase()}\nStart: ${rec.start_date}\nExpiry: ${extra.expiry_date || rec.expiry_date || '—'}`;
         if (phone) {
-          const wa = await API.sendWhatsAppMessage({
+          await Utils.deliverWhatsApp(await API.sendWhatsAppMessage({
             phone, recipient_name: rec.employee_name, message_type: 'training_result', body: msg
-          }, this.app.user);
-          if (wa.success && wa.data?.url) window.open(wa.data.url, '_blank');
-          else Utils.openWhatsApp(phone, msg);
+          }, this.app.user), phone, msg);
         }
         Utils.toast(`Training marked ${status}` + (phone ? ' — WhatsApp opened' : ''), 'success');
         if (status === 'passed') {
@@ -421,11 +442,9 @@
         const phone = filled.phone || empRes.data?.phone;
         if (!phone) return Utils.toast('No phone on submission / employee', 'error');
         const msg = `${s.template_type} form — ${s.employee_name}\nStatus: ${s.status}\nPosition: ${filled.position || '—'}\nTrainer: ${filled.trainer || '—'}\nBranch: ${filled.branch || '—'}`;
-        const wa = await API.sendWhatsAppMessage({
+        await Utils.deliverWhatsApp(await API.sendWhatsAppMessage({
           phone, recipient_name: s.employee_name, message_type: 'hr_submission', body: msg
-        }, this.app.user);
-        if (wa.success && wa.data?.url) window.open(wa.data.url, '_blank');
-        else Utils.openWhatsApp(phone, msg);
+        }, this.app.user), phone, msg);
       }));
     },
 
@@ -579,8 +598,7 @@
       }));
       el.querySelectorAll('.hr-rec-prob').forEach(b => b.addEventListener('click', () => this.showRecommendation(parseInt(b.dataset.id, 10))));
       el.querySelectorAll('.hr-pdf-prob').forEach(b => b.addEventListener('click', async () => {
-        const buf = await API.getProbationPdf(parseInt(b.dataset.id, 10), this.app.user);
-        if (buf.success) await API.saveFile(`probation-${b.dataset.id}.pdf`, [{ name: 'PDF', extensions: ['pdf'] }], buf.data);
+        await Utils.savePdfBuffer(`probation-${b.dataset.id}.pdf`, await API.getProbationPdf(parseInt(b.dataset.id, 10), this.app.user));
       }));
       el.querySelectorAll('.hr-print-prob').forEach(b => b.addEventListener('click', () => {
         const p = probations.find(x => x.id == b.dataset.id);
@@ -646,9 +664,7 @@
         this.renderEvaluations(el);
       });
       el.querySelectorAll('.hr-hist-pdf').forEach(b => b.addEventListener('click', async () => {
-        const buf = await API.getProbationEvalReportPdf(parseInt(b.dataset.id, 10), this.app.user);
-        if (!buf.success) return Utils.toast(buf.error || 'PDF failed', 'error');
-        await API.saveFile(`probation-eval-${b.dataset.id}.pdf`, [{ name: 'PDF', extensions: ['pdf'] }], buf.data);
+        await Utils.savePdfBuffer(`probation-eval-${b.dataset.id}.pdf`, await API.getProbationEvalReportPdf(parseInt(b.dataset.id, 10), this.app.user));
       }));
       el.querySelectorAll('.hr-hist-print').forEach(b => b.addEventListener('click', () => {
         const h = history.find(x => x.id == b.dataset.id);
@@ -665,11 +681,9 @@
         const phone = empRes.data?.phone;
         if (!phone) return Utils.toast('No phone on employee profile', 'error');
         const msg = `Probation evaluation ${h.eval_date}\nScore: ${Number(h.overall_score).toFixed(2)}\n${h.comments || ''}`;
-        const wa = await API.sendWhatsAppMessage({
+        await Utils.deliverWhatsApp(await API.sendWhatsAppMessage({
           phone, recipient_name: empRes.data?.full_name, message_type: 'probation_eval', body: msg
-        }, this.app.user);
-        if (wa.success && wa.data?.url) window.open(wa.data.url, '_blank');
-        else Utils.openWhatsApp(phone, msg);
+        }, this.app.user), phone, msg);
       }));
     },
 
@@ -773,6 +787,7 @@
             <select id="cb-etype"><option>Permanent</option><option>Fixed-Term</option><option>Temporary</option><option>Casual</option><option>Part-Time</option></select></div>
           <div class="field"><label>Start Date</label><input type="date" id="cb-start" value="${d.start_date || Utils.today()}"></div>
           <div class="field"><label>End Date (if fixed-term)</label><input type="date" id="cb-end" value="${d.end_date || ''}"></div>
+          <div class="field"><label>Contract expires (date/time)</label><input type="datetime-local" id="cb-expires" value="${c.expires_at ? (() => { try { const x = new Date(c.expires_at); x.setMinutes(x.getMinutes()-x.getTimezoneOffset()); return x.toISOString().slice(0,16); } catch { return ''; } })() : ''}"></div>
           <div class="field"><label>Probation Period</label>
             <select id="cb-prob"><option>Two Weeks</option><option>One Month</option><option>Two Months</option><option selected>Three Months</option><option>Other</option></select></div>
           <div class="field"><label>Shift Start</label><input id="cb-shift-start" value="${d.shift_start || '08:00'}"></div>
@@ -892,7 +907,12 @@
         const r = await API.saveHrContract({
           id: c.id, employee_id: contractData.employee_id,
           template_id: tplId,
-          contract_data: contractData, status: c.status || 'draft'
+          contract_data: contractData, status: c.status || 'draft',
+          expires_at: (() => {
+            const v = document.getElementById('cb-expires')?.value;
+            if (!v) return contractData.end_date || null;
+            try { return new Date(v).toISOString(); } catch { return v; }
+          })()
         }, this.app.user);
         if (!r.success) return Utils.toast(r.error || 'Save failed', 'error');
         Utils.hideModal();
@@ -1022,9 +1042,7 @@
         Utils.hideModal();
         Utils.toast('Decision recorded' + (decision === 'confirm' ? ' — contract draft created' : ''), 'success');
         const buf = await API.getProbationLetterPdf(probationId, decision, this.app.user);
-        if (buf.success) {
-          await API.saveFile(`probation-letter-${probationId}.pdf`, [{ name: 'PDF', extensions: ['pdf'] }], buf.data);
-        }
+        await Utils.savePdfBuffer(`probation-letter-${probationId}.pdf`, buf);
         try {
           const probRes = await API.getProbation(probationId, this.app.user);
           const empId = probRes.data?.employee_id;
@@ -1033,11 +1051,9 @@
           const label = decision === 'confirm' ? 'PASSED / CONFIRMED' : decision === 'extend' ? 'EXTENDED' : 'TERMINATED';
           const msg = `Probation result — ${empRes?.data?.full_name || ''}\nOutcome: ${label}\n${reason ? `Notes: ${reason}\n` : ''}Please collect your letter from HR.`;
           if (phone) {
-            const wa = await API.sendWhatsAppMessage({
+            await Utils.deliverWhatsApp(await API.sendWhatsAppMessage({
               phone, recipient_name: empRes.data.full_name, message_type: 'probation_result', body: msg
-            }, this.app.user);
-            if (wa.success && wa.data?.url) window.open(wa.data.url, '_blank');
-            else Utils.openWhatsApp(phone, msg);
+            }, this.app.user), phone, msg);
           }
           Export.print(`Probation Decision — ${empRes?.data?.full_name || probationId}`,
             ['Field', 'Value'],

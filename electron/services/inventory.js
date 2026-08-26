@@ -8,8 +8,18 @@ const GLOBAL_CONVERSIONS = [
   { from_qty: 1, from_unit: 'cm', to_qty: 10, to_unit: 'mm' }
 ];
 
+let _conversionsCache = new Map();
+let _conversionsCacheAt = 0;
 function getProductConversions(productId) {
-  return getDb().prepare('SELECT * FROM product_conversions WHERE product_id = ? ORDER BY id').all(productId);
+  const id = Number(productId) || 0;
+  if (Date.now() - _conversionsCacheAt > 60 * 1000) {
+    _conversionsCache.clear();
+    _conversionsCacheAt = Date.now();
+  }
+  if (_conversionsCache.has(id)) return _conversionsCache.get(id);
+  const rows = getDb().prepare('SELECT * FROM product_conversions WHERE product_id = ? ORDER BY id').all(id);
+  _conversionsCache.set(id, rows);
+  return rows;
 }
 
 function saveProductConversions(productId, conversions = []) {
@@ -24,8 +34,24 @@ function saveProductConversions(productId, conversions = []) {
   }
 }
 
+let _recipeItemSchemaReady = false;
 function ensureRecipeItemSchema() {
+  if (_recipeItemSchemaReady) return;
   const db = getDb();
+  try {
+    const pg = require('../database/pg-db');
+    if (pg.isPgMode?.()) {
+      const col = db.prepare(`
+        SELECT 1 AS ok FROM information_schema.columns
+        WHERE table_schema='public' AND table_name='product_recipe_items' AND column_name='include_rule'
+        LIMIT 1
+      `).get();
+      if (col) {
+        _recipeItemSchemaReady = true;
+        return;
+      }
+    }
+  } catch (_) { /* fall through */ }
   for (const sql of [
     "ALTER TABLE product_recipe_items ADD COLUMN include_rule TEXT DEFAULT 'always'",
     'ALTER TABLE product_recipe_items ADD COLUMN option_name TEXT',
@@ -33,6 +59,7 @@ function ensureRecipeItemSchema() {
   ]) {
     try { db.exec(sql); } catch (_) { /* exists */ }
   }
+  _recipeItemSchemaReady = true;
 }
 
 function normalizeIncludeRule(rule) {
@@ -82,6 +109,9 @@ function getProductRecipe(productId) {
   return getDb().prepare(`
     SELECT r.*, p.name AS ingredient_name, p.buying_price, p.unit AS ingredient_stock_unit,
            COALESCE(p.stock_unit, p.unit, 'each') AS ingredient_unit,
+           COALESCE(p.stock_quantity, 0) AS ingredient_stock_quantity,
+           p.stock_quantity AS stock_quantity,
+           p.stock_unit, p.unit AS product_unit,
            COALESCE(NULLIF(r.include_rule, ''), 'always') AS include_rule,
            r.option_name,
            COALESCE(r.is_primary, 0) AS is_primary
@@ -205,7 +235,13 @@ function deductRecipeIngredients(productId, saleQty, notes, userId, refType, ref
     const fromId = Number(item.ingredient_product_id);
     const useId = Number(subMap[fromId] || subMap[String(fromId)] || fromId);
     const ing = getDb().prepare('SELECT * FROM products WHERE id = ?').get(useId);
-    if (!ing) continue;
+    if (!ing) {
+      throw new Error(
+        useId !== fromId
+          ? `Ingredient substitute #${useId} not found for recipe product #${productId}`
+          : `Recipe ingredient #${fromId} not found for product #${productId}`
+      );
+    }
     const waste = 1 + (item.waste_pct || 0) / 100;
     let deductQty = item.quantity * saleQty * waste;
     const stockUnit = ing.stock_unit || ing.unit || 'each';
@@ -215,7 +251,7 @@ function deductRecipeIngredients(productId, saleQty, notes, userId, refType, ref
     adjustStockFn(useId, deductQty, 'sale', notes, userId, refType, refId);
     deducted = true;
   }
-  return deducted || items.some(i => normalizeIncludeRule(i.include_rule) === 'always');
+  return deducted;
 }
 
 function restoreRecipeIngredients(productId, returnQty, notes, userId, refType, refId, adjustStockFn, selectedModifiers = [], substitutions = null) {

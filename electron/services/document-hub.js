@@ -173,7 +173,7 @@ function writeFlyerPdfToHub(flyerId, sizeOverride) {
   const dir = getAssetsDir();
   const suffix = sizeOverride ? `-${sizeOverride}` : '';
   const filePath = path.join(dir, `flyer-${flyerId}${suffix}.pdf`);
-  fs.writeFileSync(filePath, Buffer.from(pdfBuffer));
+  fs.writeFileSync(filePath, require('./pdf-bytes').toUint8(pdfBuffer));
   return filePath;
 }
 

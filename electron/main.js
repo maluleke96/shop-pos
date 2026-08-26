@@ -89,14 +89,24 @@ function ensureDemoNotificationSound() {
   }
 }
 
+const MODE = String(process.env.SHOP_POS_APP_MODE || 'admin').toLowerCase();
+process.env.SHOP_POS_LOCAL_INSTALLER = '1';
+
+const TITLES = {
+  admin: 'Shop POS Admin',
+  staff: 'Staff Portal',
+  marketing: 'Marketing Agent',
+  recipe: 'Recipe & Production'
+};
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
-    minWidth: 800,
-    minHeight: 600,
+    minWidth: 360,
+    minHeight: 560,
     fullscreenable: true,
-    title: 'Shop POS',
+    title: TITLES[MODE] || 'Shop POS',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -105,10 +115,10 @@ function createWindow() {
     show: false
   });
 
-  mainWindow.loadFile(path.join(__dirname, '../src/index.html'));
+  mainWindow.loadFile(path.join(__dirname, '../src/index.html'), { query: { app: MODE === 'admin' ? 'admin' : MODE } });
   mainWindow.once('ready-to-show', () => {
     mainWindow.show();
-    mainWindow.setFullScreen(true);
+    if (!process.env.SHOP_POS_APP_MODE) mainWindow.setFullScreen(true);
   });
   mainWindow.webContents.on('before-input-event', (event, input) => {
     if (input.key === 'F11' && input.type === 'keyDown') {
@@ -174,6 +184,11 @@ function registerIpc() {
 
   function scopedEmployeeId(requestedId) {
     const empSess = store.getEmployeeSession();
+    const userSess = store.getUserSession();
+    if (empSess?.adminOverride && userSess?.id) {
+      requireSession();
+      return requestedId != null ? Number(requestedId) : null;
+    }
     if (empSess?.employee_id != null) {
       const sid = Number(empSess.employee_id);
       if (requestedId != null && Number(requestedId) !== sid) {
@@ -183,6 +198,26 @@ function registerIpc() {
     }
     requireSession();
     return requestedId != null ? Number(requestedId) : null;
+  }
+
+  function portalEmployeeId(requestedId, actor) {
+    const empSess = store.getEmployeeSession?.();
+    if (empSess?.employee_id != null) {
+      if (requestedId != null && Number(requestedId) !== Number(empSess.employee_id)) {
+        throw new Error('Not authorised');
+      }
+      return Number(empSess.employee_id);
+    }
+    const actorEmp = actor?.employee_id != null ? Number(actor.employee_id) : null;
+    if (actorEmp != null) {
+      if (requestedId != null && Number(requestedId) !== actorEmp) throw new Error('Not authorised');
+      return actorEmp;
+    }
+    if (requestedId != null) {
+      store.requireActor(actor, ['owner', 'manager', 'supervisor', 'assistant_manager']);
+      return Number(requestedId);
+    }
+    throw new Error('Authentication required');
   }
 
   function assertSafeAppPath(filePath) {
@@ -197,19 +232,20 @@ function registerIpc() {
     return resolved;
   }
 
-  // Auth
-  ipcMain.handle('auth:login', (_e, u, p, pin) => store.login(u, p, pin));
+  // Auth — local SQLite first; if credentials only exist on Railway, seed local and allow login
+  const cloudAuth = require('../lib/installer-cloud-auth');
+  ipcMain.handle('auth:login', async (_e, u, p, pin) => cloudAuth.loginWithOnlineFallback(store, u, p, pin));
   ipcMain.handle('auth:logout', wrapSync(() => store.logout()));
   ipcMain.handle('auth:getUsers', wrapSync((actor) => {
     store.requireActor(actor, ['owner', 'manager']);
     return store.getUsers();
   }));
   ipcMain.handle('auth:createUser', wrapSync((data, actor) => {
-    store.requireActor(actor, ['owner']);
+    store.requireActor(actor, ['owner', 'manager']);
     return store.createUser(data, actor.id, actor.username);
   }));
   ipcMain.handle('auth:updateUser', wrapSync((id, data, actor) => {
-    store.requireActor(actor, ['owner']);
+    store.requireActor(actor, ['owner', 'manager']);
     store.updateUser(id, data, actor.id, actor.username);
     return true;
   }));
@@ -224,9 +260,22 @@ function registerIpc() {
     return true;
   }));
   ipcMain.handle('auth:verifySession', wrapSync((userId) => store.verifyUserSession(userId)));
-  ipcMain.handle('auth:hasRecovery', wrapSync(() => store.hasRecoverySecret()));
-  ipcMain.handle('auth:recoverVerify', wrapSync((secret) => store.getUsernamesForRecovery(secret)));
-  ipcMain.handle('auth:recoverReset', wrapSync((secret, username, newPassword) => store.resetPasswordViaRecovery(secret, username, newPassword)));
+  ipcMain.handle('auth:hasRecovery', async () => {
+    try {
+      const data = await cloudAuth.hasRecoveryWithOnlineFallback(store);
+      return { success: true, data: !!data };
+    } catch (_) {
+      return { success: true, data: !!store.hasRecoverySecret() };
+    }
+  });
+  ipcMain.handle('auth:getRecoveryStatus', wrapSync((actor) => {
+    store.requireActor(actor, ['owner']);
+    return store.getRecoveryStatus();
+  }));
+  ipcMain.handle('auth:recoverVerify', async (_e, secret) => cloudAuth.recoverVerifyWithOnlineFallback(store, secret));
+  ipcMain.handle('auth:recoverReset', async (_e, secret, username, newPassword) =>
+    cloudAuth.recoverResetWithOnlineFallback(store, secret, username, newPassword));
+  ipcMain.handle('auth:seedInstallerAccount', wrapSync((payload) => store.seedInstallerAccountFromCloud(payload || {})));
   ipcMain.handle('auth:setRecoverySecret', wrapSync((secret, actor) => {
     store.requireActor(actor, ['owner']);
     return store.setRecoverySecret(secret, actor.id, actor.username || 'owner');
@@ -239,10 +288,11 @@ function registerIpc() {
       return { success: false, error: err.message };
     }
   });
-  ipcMain.handle('auth:clearOperationalData', wrap(async (_e, password, actor) => {
+  ipcMain.handle('auth:clearOperationalData', wrap(async (_e, password, actor, categories) => {
     store.requireActor(actor, ['owner']);
-    return store.clearOperationalData(password, actor.id, actor.username || actor.full_name || 'owner');
+    return store.clearOperationalData(password, actor.id, actor.username || actor.full_name || 'owner', categories);
   }));
+  ipcMain.handle('auth:listClearDataCategories', wrapSync(() => store.listClearDataCategories()));
   ipcMain.handle('auth:verifyBookkeepingPassword', wrapSync((password) => store.verifyBookkeepingPassword(password)));
   ipcMain.handle('auth:setBookkeepingPassword', wrapSync((password, actor) => {
     store.requireActor(actor, ['owner', 'manager']);
@@ -252,13 +302,18 @@ function registerIpc() {
   // Settings
   ipcMain.handle('settings:getParsed', wrapSync(() => store.getSettingsParsed()));
   ipcMain.handle('settings:get', wrapSync(() => store.sanitizeSettingsResponse(store.getSettings())));
+  ipcMain.handle('settings:detectExistingBusiness', wrapSync(() => store.detectExistingBusiness()));
+  ipcMain.handle('settings:adoptExistingBusiness', wrapSync(() => store.adoptExistingBusiness()));
   ipcMain.handle('settings:save', wrapSync((data, actor) => {
     store.requireActor(actor, ['owner', 'manager']);
     store.saveSettings(data, actor.id, actor.username || actor.full_name);
     return true;
   }));
   ipcMain.handle('settings:saveJson', wrapSync((key, value, actor) => {
-    store.requireActor(actor, ['owner', 'manager']);
+    const roles = key === 'staff_portal_settings'
+      ? ['owner', 'manager', 'supervisor', 'assistant_manager']
+      : ['owner', 'manager'];
+    store.requireActor(actor, roles);
     store.saveJsonSetting(key, value, actor.id, actor.username || actor.full_name);
     return true;
   }));
@@ -410,6 +465,13 @@ function registerIpc() {
     return store.getShiftClosePreview(id, user.id);
   }));
   ipcMain.handle('shifts:get', wrapSync((limit) => store.getShifts(limit)));
+  ipcMain.handle('shifts:getOpenAll', wrapSync((actor) => {
+    store.requireActor(actor, ['owner', 'manager']);
+    return store.getAnyOpenShifts();
+  }));
+  ipcMain.handle('shifts:forceClose', wrapSync((id, data, actor) => store.adminForceCloseShift(id, data || {}, actor)));
+  ipcMain.handle('shifts:update', wrapSync((id, data, actor) => store.updateShiftRecord(id, data || {}, actor)));
+  ipcMain.handle('shifts:delete', wrapSync((id, actor) => store.deleteShiftRecord(id, actor)));
   ipcMain.handle('shifts:current', wrapSync((actor) => {
     const user = store.requireActor(actor, ['owner', 'manager', 'cashier', 'supervisor', 'assistant_manager']);
     return store.getOpenShift(user.id);
@@ -445,8 +507,12 @@ function registerIpc() {
     const role = actor?.role || sess?.role || null;
     return store.getNotifications(role);
   }));
-  ipcMain.handle('notifications:read', wrap((id) => store.markNotificationRead(id)));
-  ipcMain.handle('notifications:readAll', wrap(() => store.markAllNotificationsRead()));
+  ipcMain.handle('notifications:read', wrap((id) => { store.markNotificationRead(id); return true; }));
+  ipcMain.handle('notifications:readAll', wrapSync((actor) => {
+    const sess = store.getUserSession();
+    const role = actor?.role || sess?.role || null;
+    return store.markAllNotificationsRead(role || actor || sess);
+  }));
   ipcMain.handle('notifications:createTest', wrap(() => {
     store.requireActor(store.getUserSession(), ['owner', 'manager']);
     return store.createTestNotification();
@@ -492,6 +558,31 @@ function registerIpc() {
     fs.copyFileSync(filePaths[0], getDbPathForBackup());
     await initDatabase();
     return { success: true };
+  });
+
+  ipcMain.handle('backup:restoreSetup', async () => {
+    try {
+      const info = store.detectExistingBusiness();
+      if (info?.exists || info?.setup_complete) {
+        return {
+          success: false,
+          error: 'This device already has shop data. Sign in as owner and use Admin → Backup & Restore.'
+        };
+      }
+      const { filePaths } = await dialog.showOpenDialog(mainWindow, {
+        title: 'Restore Shop Database',
+        filters: [{ name: 'Database', extensions: ['db'] }],
+        properties: ['openFile']
+      });
+      if (!filePaths?.length) return { success: false, cancelled: true };
+      await validateDatabaseFile(filePaths[0]);
+      closeDatabase();
+      fs.copyFileSync(filePaths[0], getDbPathForBackup());
+      await initDatabase();
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: err.message || String(err) };
+    }
   });
 
   ipcMain.handle('backup:export', async (_e, actor) => {
@@ -564,20 +655,29 @@ function registerIpc() {
     }
   });
 
-  ipcMain.handle('print:a4', async (_e, html) => {
+  ipcMain.handle('print:a4', async (_e, html, opts = {}) => {
     try {
       const settings = store.getSettingsParsed();
-      const cfg = printService.mergePrintSettings(settings, { useInvoice: true });
-      if (!cfg.invoicePrinter) throw new Error('No A4 invoice printer configured in Admin');
-      await printService.printHtml(html, {
-        deviceName: cfg.invoicePrinter,
-        silent: cfg.silent,
-        copies: 1,
-        paperSize: 'A4'
-      });
-      return { success: true, printer: cfg.invoicePrinter };
+      const localDevice = deviceSettings.load();
+      const cfg = printService.mergePrintSettings(settings, opts || {}, localDevice);
+      if (cfg.invoicePrinter) {
+        await printService.printHtml(html, {
+          deviceName: cfg.invoicePrinter,
+          silent: opts?.silent ?? cfg.silent,
+          copies: 1,
+          paperSize: 'A4'
+        });
+        return { success: true, printer: cfg.invoicePrinter };
+      }
+      await printService.openPreviewWindow(html, 'A4 Print');
+      return { success: true, printer: 'Print preview', fallback: true };
     } catch (err) {
-      return { success: false, error: err.message };
+      try {
+        await printService.openPreviewWindow(html, 'A4 Print');
+        return { success: true, printer: 'Print preview', fallback: true };
+      } catch (_) {
+        return { success: false, error: err.message };
+      }
     }
   });
 
@@ -654,10 +754,21 @@ function registerIpc() {
 
   ipcMain.handle('export:print', async (_e, title, headers, rows, company) => {
     const buf = buildPdfBuffer(title, headers, rows, company || {});
-    const tmpPath = path.join(app.getPath('temp'), `report-${Date.now()}.pdf`);
-    fs.writeFileSync(tmpPath, buf);
-    await shell.openPath(tmpPath);
-    return { success: true };
+    const settings = store.getSettingsParsed();
+    const localDevice = deviceSettings.load();
+    const cfg = printService.mergePrintSettings(settings, {}, localDevice);
+    const invoicePrinter = cfg.invoicePrinter || '';
+    try {
+      return await printService.printPdfBuffer(buf, `report-${Date.now()}.pdf`, {
+        deviceName: invoicePrinter || undefined,
+        silent: !!invoicePrinter && cfg.silent !== false
+      });
+    } catch (err) {
+      const tmpPath = path.join(app.getPath('temp'), `report-${Date.now()}.pdf`);
+      fs.writeFileSync(tmpPath, buf);
+      await shell.openPath(tmpPath);
+      return { success: true, fallback: true, error: err.message };
+    }
   });
 
   ipcMain.handle('file:openPdf', async (_e, buffer, filename) => {
@@ -665,6 +776,29 @@ function registerIpc() {
     fs.writeFileSync(tmpPath, Buffer.from(buffer));
     await shell.openPath(tmpPath);
     return { success: true, path: tmpPath };
+  });
+
+  ipcMain.handle('file:printPdf', async (_e, buffer, filename) => {
+    const settings = store.getSettingsParsed();
+    const localDevice = deviceSettings.load();
+    const cfg = printService.mergePrintSettings(settings, {}, localDevice);
+    const invoicePrinter = cfg.invoicePrinter || '';
+    try {
+      return await printService.printPdfBuffer(buffer, filename || `doc-${Date.now()}.pdf`, {
+        deviceName: invoicePrinter || undefined,
+        silent: !!invoicePrinter && cfg.silent !== false
+      });
+    } catch (err) {
+      // Fallback: open in system PDF viewer so the user can still print
+      try {
+        const tmpPath = path.join(app.getPath('temp'), filename || `doc-${Date.now()}.pdf`);
+        fs.writeFileSync(tmpPath, Buffer.from(buffer));
+        await shell.openPath(tmpPath);
+        return { success: true, path: tmpPath, fallback: true };
+      } catch (err2) {
+        return { success: false, error: err.message || err2.message };
+      }
+    }
   });
 
   ipcMain.handle('printers:list', async () => {
@@ -753,6 +887,15 @@ function registerIpc() {
   ipcMain.handle('file:persistMobileDocument', async (_e, filePath) => {
     return { success: true, path: filePath };
   });
+
+  ipcMain.handle('file:openExternal', wrap(async (url) => {
+    const href = String(url || '').trim();
+    if (!/^https?:\/\//i.test(href) && !/^mailto:/i.test(href) && !/^tel:/i.test(href)) {
+      throw new Error('Only http(s), mailto, and tel links can be opened');
+    }
+    await shell.openExternal(href);
+    return true;
+  }));
 
   ipcMain.handle('file:openPath', async (_e, filePath) => {
     try {
@@ -1030,6 +1173,14 @@ function registerIpc() {
     const user = store.requireActor(actor, ['owner', 'manager', 'assistant_manager', 'supervisor']);
     return store.approveCashUp(id, user.id, notes);
   }));
+  ipcMain.handle('cashup:update', wrapF((id, data, actor) => {
+    const user = store.requireActor(actor, ['owner', 'manager', 'assistant_manager']);
+    return store.updateCashUp(id, data || {}, user.id);
+  }));
+  ipcMain.handle('cashup:delete', wrapF((id, actor) => {
+    const user = store.requireActor(actor, ['owner', 'manager', 'assistant_manager']);
+    return store.deleteCashUp(id, user.id);
+  }));
   ipcMain.handle('cashup:summary', wrapF((from, to) => { requireSession(); return store.getCashUpSummary(from, to); }));
   ipcMain.handle('cashup:pdf', wrapF((id) => {
     requireSession();
@@ -1054,6 +1205,11 @@ function registerIpc() {
   ipcMain.handle('customfields:delete', wrapF((id, actor) => {
     store.requireActor(actor || store.getUserSession(), ['owner', 'manager']);
     return store.deleteCustomField(id);
+  }));
+  ipcMain.handle('customfields:values', wrapF((type, entityId) => store.getCustomFieldValues(type, entityId)));
+  ipcMain.handle('customfields:saveValues', wrapF((type, entityId, values, actor) => {
+    store.requireActor(actor || store.getUserSession(), ['owner', 'manager', 'assistant_manager']);
+    return store.saveCustomFieldValues(type, entityId, values);
   }));
   // Restaurant
   ipcMain.handle('tables:get', wrapF(() => store.getTables()));
@@ -1135,6 +1291,14 @@ function registerIpc() {
     const user = store.requireActor(actor, ['owner', 'manager', 'supervisor', 'assistant_manager']);
     return store.receivePurchaseOrderPartial(id, items, user.id, user.username);
   }));
+  ipcMain.handle('po:delete', wrapF((id, actor) => {
+    const user = store.requireActor(actor, ['owner']);
+    return store.deletePurchaseOrder(id, user.id, user.username);
+  }));
+  ipcMain.handle('po:update', wrapF((id, data, actor) => {
+    const user = store.requireActor(actor, ['owner']);
+    return store.updatePurchaseOrder(id, data, user.id, user.username);
+  }));
   // Audit & sales management
   ipcMain.handle('audit:salesList', wrapF((f) => { requireSession(); return store.getSalesList(f); }));
   ipcMain.handle('audit:searchSales', wrapF((f) => store.searchSalesExplorer(f)));
@@ -1189,7 +1353,7 @@ function registerIpc() {
   ipcMain.handle('audit:topCustomers', wrapF((from, to, limit) => store.getTopCustomers(from, to, limit)));
   ipcMain.handle('audit:returnReasons', wrapF((from, to) => store.getReturnReasonsReport(from, to)));
   ipcMain.handle('audit:reopenReturn', wrapF((id, actor) => {
-    const user = store.requireActor(actor, ['owner', 'manager']);
+    const user = store.requireActor(actor, ['owner']);
     return store.reopenReturn(id, user.id, user.full_name);
   }));
   ipcMain.handle('auth:verifyManagerPin', wrapF((pin) => store.verifyManagerPin(pin)));
@@ -1218,6 +1382,12 @@ function registerIpc() {
     return store.deleteEmployee(id, actor.id, actor.username || actor.full_name);
   }));
   ipcMain.handle('staff:login', wrapF((code, pin) => store.verifyEmployeeCodePin(code, pin)));
+  ipcMain.handle('staff:adminOpen', wrapF((employeeId, actor) => store.adminOpenEmployeePortal(employeeId, actor || store.getUserSession())));
+  ipcMain.handle('staff:logout', wrapF(() => {
+    store.clearEmployeeSession();
+    return { ok: true };
+  }));
+  ipcMain.handle('staff:validateLinks', wrapF((data) => store.validateEmployeeLinks(data || {})));
   ipcMain.handle('staff:saveSelfie', wrapF((data, actor) => {
     const empSess = store.getEmployeeSession();
     const sessEmpId = empSess ? Number(empSess.id || empSess.employee_id) : null;
@@ -1248,7 +1418,10 @@ function registerIpc() {
       ? String(auth)
       : (auth?.pin != null ? String(auth.pin) : null);
     const actor = auth && typeof auth === 'object' && !Array.isArray(auth)
-      ? (auth.actor || (auth.id && auth.pin == null ? auth : null))
+      ? (auth.actor || (auth.id && auth.pin == null && auth.clientRequestId == null ? auth : null))
+      : null;
+    const clientRequestId = auth && typeof auth === 'object' && !Array.isArray(auth)
+      ? (auth.clientRequestId || auth.client_request_id || null)
       : null;
     const empId = Number(employeeId);
     const empSess = store.getEmployeeSession();
@@ -1256,17 +1429,17 @@ function registerIpc() {
 
     if (pin) {
       if (sessEmpId != null && sessEmpId !== empId) throw new Error('Authentication required');
-      return store.clockAction(empId, action, pin);
+      return store.clockAction(empId, action, pin, clientRequestId);
     }
     if (sessEmpId != null) {
       if (sessEmpId !== empId) throw new Error('Authentication required');
       if (!empSess.pinVerified) throw new Error('PIN required to clock');
-      // Prefer re-verified PIN via clockAction when provided; session PIN login already verified
-      return store.clockActionVerified(empId, action);
+      // Session already PIN-verified at login — do not keep raw PIN in the renderer
+      return store.clockActionVerified(empId, action, clientRequestId);
     }
     const userActor = actor || store.getUserSession();
-    store.requireActor(userActor, ['owner', 'manager', 'supervisor']);
-    return store.clockActionVerified(empId, action);
+    store.requireActor(userActor, ['owner', 'manager', 'supervisor', 'assistant_manager']);
+    return store.clockActionVerified(empId, action, clientRequestId);
   }));
   ipcMain.handle('staff:getAttendance', wrapF((filters) => { requireSession(); return store.getAttendance(filters); }));
   ipcMain.handle('staff:getTodayAttendance', wrapF((id) => store.getTodayAttendance(scopedEmployeeId(id))));
@@ -1275,15 +1448,19 @@ function registerIpc() {
   ipcMain.handle('staff:getAllLeave', wrapF((status) => { requireSession(); return store.getAllLeave(status); }));
   ipcMain.handle('staff:saveLeave', wrapF((data, actor) => {
     const empSess = store.getEmployeeSession();
+    const userSess = store.getUserSession();
+    if (empSess?.adminOverride && userSess?.id) {
+      return store.saveLeave(data, userSess);
+    }
     const sessEmpId = empSess ? Number(empSess.id || empSess.employee_id) : null;
     if (sessEmpId != null && sessEmpId === Number(data?.employee_id)) {
       return store.saveLeave(data, null);
     }
-    const user = store.requireActor(actor || store.getUserSession(), []);
+    const user = store.requireActor(actor || userSess, []);
     return store.saveLeave(data, user);
   }));
   ipcMain.handle('staff:approveLeave', wrapF((id, actor, approve) => {
-    const user = store.requireActor(actor, ['owner', 'manager']);
+    const user = store.requireActor(actor, ['owner', 'manager', 'supervisor', 'assistant_manager']);
     return store.approveLeave(id, user.id, approve !== false, user.full_name || user.username, user);
   }));
   ipcMain.handle('staff:leavePdf', wrapF((id) => {
@@ -1325,10 +1502,84 @@ function registerIpc() {
     store.refreshPaymentDueNotifications();
     return true;
   }));
+  ipcMain.handle('salaryClaims:list', wrapF((filters, actor) => {
+    try {
+      if (store.getEmployeeSession?.()?.employee_id != null || actor?.employee_id != null) {
+        const id = portalEmployeeId((filters && filters.employee_id) || actor?.employee_id, actor);
+        return store.listSalaryClaims({ ...(filters || {}), employee_id: id });
+      }
+      store.requireActor(actor, ['owner', 'manager']);
+      return store.listSalaryClaims(filters || {});
+    } catch (err) {
+      if (/no such table|does not exist/i.test(String(err.message || ''))) return [];
+      throw err;
+    }
+  }));
+  ipcMain.handle('salaryClaims:get', wrapF((id, actor) => {
+    const c = store.getSalaryClaim(id);
+    if (!c) throw new Error('Claim not found');
+    const empSess = store.getEmployeeSession?.();
+    if (empSess?.employee_id != null) {
+      if (Number(c.employee_id) !== Number(empSess.employee_id)) throw new Error('Not authorised');
+      return c;
+    }
+    store.requireActor(actor, ['owner', 'manager']);
+    return c;
+  }));
+  ipcMain.handle('salaryClaims:save', wrapF((data, actor) => {
+    store.requireActor(actor, ['owner', 'manager']);
+    return store.saveSalaryClaim(data, actor.id, actor.username || actor.full_name);
+  }));
+  ipcMain.handle('salaryClaims:delete', wrapF((id, actor) => {
+    store.requireActor(actor, ['owner', 'manager']);
+    return store.deleteSalaryClaim(id, actor.id, actor.username || actor.full_name);
+  }));
+  ipcMain.handle('salaryClaims:claim', wrapF((id, notes, actor) => {
+    const empSess = store.getEmployeeSession?.();
+    const empId = empSess?.employee_id ?? actor?.employee_id;
+    if (empId == null) throw new Error('Employee login required to claim salary');
+    return store.claimSalaryByEmployee(id, notes, empId);
+  }));
+  ipcMain.handle('salaryClaims:approve', wrapF((id, notes, actor) => {
+    store.requireActor(actor, ['owner', 'manager']);
+    return store.approveSalaryClaim(id, notes, actor.id, actor.username || actor.full_name);
+  }));
+  ipcMain.handle('salaryClaims:reject', wrapF((id, notes, actor) => {
+    store.requireActor(actor, ['owner', 'manager']);
+    return store.rejectSalaryClaim(id, notes, actor.id, actor.username || actor.full_name);
+  }));
+  ipcMain.handle('salaryClaims:markPaid', wrapF((id, actor) => {
+    store.requireActor(actor, ['owner', 'manager']);
+    return store.markSalaryClaimPaid(id, actor.id, actor.username || actor.full_name);
+  }));
+  ipcMain.handle('salaryClaims:pdf', wrapF((id, actor) => {
+    const c = store.getSalaryClaim(id);
+    if (!c) throw new Error('Claim not found');
+    const empSess = store.getEmployeeSession?.();
+    if (empSess?.employee_id != null) {
+      if (Number(c.employee_id) !== Number(empSess.employee_id)) throw new Error('Not authorised');
+    } else {
+      store.requireActor(actor, ['owner', 'manager']);
+    }
+    return store.buildSalaryClaimPdf(id, store.getSettingsParsed());
+  }));
+  ipcMain.handle('salaryClaims:fromPayroll', wrapF((start, end, deadline, paymentDate, opensAt, actor) => {
+    store.requireActor(actor, ['owner', 'manager']);
+    return store.createClaimsFromPayroll(start, end, deadline, paymentDate, opensAt, actor.id, actor.username || actor.full_name);
+  }));
   ipcMain.handle('staff:getPayrollDashboard', wrapF((filters, actor) => {
     store.requireActor(actor, ['owner', 'manager']);
     return store.getPayrollDashboard(filters || {});
   }));
+  ipcMain.handle('staff:previewPayroll', wrapF((start, end, filters, actor) => {
+    store.requireActor(actor, ['owner', 'manager']);
+    return store.previewPayroll(start, end, filters || {});
+  }));
+  ipcMain.handle('staff:getMissedClockOutInbox', wrapF((filters, actor) => {
+    store.requireActor(actor, ['owner', 'manager', 'supervisor', 'assistant_manager']);
+    return store.getMissedClockOutInbox(filters || {});
+  }));
+  ipcMain.handle('staff:resolveMissedClockOut', wrapF((id, action, actor) => store.resolveMissedClockOut(id, action, actor)));
   ipcMain.handle('staff:saveWorkSchedule', wrapF((employeeId, schedule, actor) => {
     store.requireActor(actor, ['owner', 'manager']);
     return store.saveEmployeeWorkSchedule(employeeId, schedule, actor.id, actor.username || actor.full_name || 'manager');
@@ -1361,6 +1612,7 @@ function registerIpc() {
     store.requireActor(actor, ['owner', 'manager']);
     return store.updateAttendance(id, data, actor.id, actor.username || actor.full_name || 'manager');
   }));
+  ipcMain.handle('staff:deleteAttendance', wrapF((id, actor) => store.deleteAttendance(id, actor)));
   ipcMain.handle('staff:createAttendance', wrapF((data, actor) => store.createManualAttendance(data, actor)));
   ipcMain.handle('staff:addAttendancePenalty', wrapF((data, actor) => store.addAttendancePenalty(data, actor)));
   ipcMain.handle('staff:getAttendancePenalties', wrapF((filters, actor) => {
@@ -1369,18 +1621,28 @@ function registerIpc() {
   }));
   ipcMain.handle('staff:cancelAttendancePenalty', wrapF((id, actor) => store.cancelAttendancePenalty(id, actor)));
   ipcMain.handle('staff:getAttendanceSummary', wrapF((employeeId, from, to) => store.getAttendanceSummary(scopedEmployeeId(employeeId), from, to)));
-  ipcMain.handle('staff:getSchedules', wrapF((from, to, empId) => store.getSchedules(from, to, empId)));
+  ipcMain.handle('staff:getSchedules', wrapF((from, to, empId) => {
+    const empSess = store.getEmployeeSession();
+    const userSess = store.getUserSession();
+    if (empSess?.adminOverride && userSess?.id) {
+      requireSession();
+      return store.getSchedules(from, to, empId);
+    }
+    if (empSess?.employee_id != null) return store.getSchedules(from, to, empSess.employee_id);
+    requireSession();
+    return store.getSchedules(from, to, empId);
+  }));
   ipcMain.handle('staff:saveSchedule', wrapF((data, actor) => {
-    store.requireActor(actor, ['owner', 'manager', 'supervisor']);
+    store.requireActor(actor, ['owner', 'manager', 'supervisor', 'assistant_manager']);
     return store.saveSchedule(data);
   }));
   ipcMain.handle('staff:deleteSchedule', wrapF((id, actor) => {
-    store.requireActor(actor, ['owner', 'manager', 'supervisor']);
+    store.requireActor(actor, ['owner', 'manager', 'supervisor', 'assistant_manager']);
     return store.deleteSchedule(id);
   }));
-  ipcMain.handle('staff:autoShifts', wrapF((weekStart, templates, employeeIds, employeeOverrides, actor) => {
-    store.requireActor(actor, ['owner', 'manager', 'supervisor']);
-    return store.autoGenerateShifts(weekStart, templates, employeeIds, employeeOverrides);
+  ipcMain.handle('staff:autoShifts', wrapF((weekStart, templates, employeeIds, employeeOverrides, actor, options) => {
+    store.requireActor(actor, ['owner', 'manager', 'supervisor', 'assistant_manager']);
+    return store.autoGenerateShifts(weekStart, templates, employeeIds, employeeOverrides, options || {});
   }));
   ipcMain.handle('staff:getDocuments', wrapF((id) => store.getEmployeeDocuments(id)));
   ipcMain.handle('staff:saveDocument', wrapF((data, actor) => {
@@ -1396,7 +1658,10 @@ function registerIpc() {
     assertEmployeeActor(actor || store.getUserSession(), employeeId);
     return store.respondDisciplinary(id, employeeId, response);
   }));
-  ipcMain.handle('staff:getAllDisciplinary', wrapF((filters) => store.getAllDisciplinary(filters)));
+  ipcMain.handle('staff:getAllDisciplinary', wrapF((filters, actor) => {
+    store.requireActor(actor || store.getUserSession(), ['owner', 'manager', 'supervisor']);
+    return store.getAllDisciplinary(filters || {});
+  }));
   ipcMain.handle('staff:disciplinaryPdf', wrapF((id, copyType) => store.buildDisciplinaryPdfBuffer(id, copyType || 'staff')));
   ipcMain.handle('staff:markDisciplinaryWa', wrapF((id, actor) => {
     store.requireActor(actor || store.getUserSession(), ['owner', 'manager', 'supervisor']);
@@ -1473,10 +1738,44 @@ function registerIpc() {
     return store.saveContract(data, actor.id, hrActor(actor));
   }));
   ipcMain.handle('hr:signContract', wrapF((contractId, role, sig, actor) => {
+    const empSess = store.getEmployeeSession?.();
+    if (empSess?.employee_id != null) {
+      return store.signContract(contractId, 'employee', sig, null, empSess.full_name || `employee:${empSess.employee_id}`);
+    }
     store.requireActor(actor, hrWriteRoles);
     return store.signContract(contractId, role, sig, actor.id, hrActor(actor));
   }));
+  ipcMain.handle('hr:openContractResign', wrapF((id, opensAt, closesAt, actor) => {
+    store.requireActor(actor, hrWriteRoles);
+    return store.openContractResign(id, opensAt, closesAt, actor.id, hrActor(actor));
+  }));
+  ipcMain.handle('hr:attachContractDoc', wrapF((contractId, filePath, fileName, actor) => {
+    const empSess = store.getEmployeeSession?.();
+    const empId = empSess?.employee_id ?? actor?.employee_id;
+    if (empId == null) {
+      store.requireActor(actor, hrWriteRoles);
+      const c = store.getContract(contractId);
+      return store.attachContractResignDoc(contractId, filePath, fileName, c.employee_id);
+    }
+    return store.attachContractResignDoc(contractId, filePath, fileName, empId);
+  }));
+  ipcMain.handle('hr:getContractsForEmployee', wrapF((employeeId, actor) => {
+    const empId = portalEmployeeId(employeeId, actor);
+    try { store.ensureContractExpiry?.(); } catch (_) { /* ignore */ }
+    try {
+      return store.getContracts({ employee_id: empId });
+    } catch (err) {
+      if (/no such table|does not exist/i.test(String(err.message || ''))) return [];
+      throw err;
+    }
+  }));
   ipcMain.handle('hr:contractPdf', wrapF((id, actor) => {
+    const empSess = store.getEmployeeSession?.();
+    if (empSess?.employee_id != null) {
+      const c = store.getContract(id);
+      if (!c || Number(c.employee_id) !== Number(empSess.employee_id)) throw new Error('Not authorised');
+      return store.buildContractPdf(id, store.getSettingsParsed());
+    }
     store.requireActor(actor, hrReadRoles);
     return store.buildContractPdf(id, store.getSettingsParsed());
   }));
@@ -1886,7 +2185,7 @@ function registerIpc() {
   ipcMain.handle('ops:getChecklistSettings', wrapF(() => store.getChecklistSettings()));
   ipcMain.handle('ops:saveChecklistSettings', wrapF((data, actor) => store.saveChecklistSettings(data, actor)));
   ipcMain.handle('ops:checklistWarnings', wrapF((filters) => store.getChecklistWarnings(filters)));
-  ipcMain.handle('ops:staffChecklistWarnings', wrapF((userId) => store.getStaffPortalChecklistWarnings(userId)));
+  ipcMain.handle('ops:staffChecklistWarnings', wrapF((userId, employeeId) => store.getStaffPortalChecklistWarnings(userId, employeeId)));
   ipcMain.handle('ops:ackChecklistWarning', wrapF((id, actor) => store.acknowledgeChecklistWarning(id, actor)));
   ipcMain.handle('ops:checklistPdf', wrapF((runId) => {
     const s = store.getSettingsParsed();
@@ -1973,6 +2272,7 @@ function registerIpc() {
   ipcMain.handle('recipe:dashboard', wrapF((actor) => store.getRecipeDashboard(actor)));
   ipcMain.handle('recipe:reports', wrapF((type, filters, actor) => store.getRecipeReports(type, filters || {}, actor)));
   ipcMain.handle('recipe:ai', wrapF((actor) => store.getAiSuggestions(actor)));
+  ipcMain.handle('recipe:applySuggestedPrice', wrapF((data, actor) => store.applySuggestedSellPrice(data || {}, actor)));
   ipcMain.handle('recipe:activity', wrapF((limit, actor) => store.getRecipeActivity(limit || 50, actor)));
   ipcMain.handle('recipe:bestSellers', wrapF((period, actor) => store.getBestSellers(period || 'month', actor)));
   ipcMain.handle('recipe:setAvailableToday', wrapF((ids, actor) => { store.setAvailableToday(ids || [], actor); return true; }));
@@ -2055,7 +2355,7 @@ function registerIpc() {
   ipcMain.handle('mkt:updateMenuPrices', wrapF((id, actor) => store.updateMenuPricesFromPos(id, mktActor(actor))));
   ipcMain.handle('mkt:msgTemplates', wrapF(() => store.listMessageTemplates()));
   ipcMain.handle('mkt:messages', wrapF((f, actor) => store.listMessages(f || {}, mktActor(actor))));
-  ipcMain.handle('mkt:saveMessage', wrapF((data, actor) => store.saveMessage(data || {}, mktActor(actor))));
+  ipcMain.handle('mkt:saveMessage', wrap((data, actor) => store.saveMessage(data || {}, mktActor(actor))));
   ipcMain.handle('mkt:saveReport', wrapF((data, actor) => store.saveProgressReport(data || {}, mktActor(actor))));
   ipcMain.handle('mkt:reports', wrapF((f, actor) => store.listProgressReports(f || {}, mktActor(actor))));
   ipcMain.handle('mkt:respondReport', wrapF((id, response, actor) => store.respondProgressReport(id, response, mktActor(actor))));
@@ -2084,14 +2384,14 @@ function registerIpc() {
   ipcMain.handle('whatsapp:saveTemplate', wrapF((data, actor) => store.saveTemplate(data, actor)));
   ipcMain.handle('whatsapp:deleteTemplate', wrapF((id, actor) => { store.deleteTemplate(id, actor); return true; }));
   ipcMain.handle('whatsapp:getMessages', wrapF((filters) => store.getMessages(filters)));
-  ipcMain.handle('whatsapp:send', wrapF((data, actor) => store.sendMessage(data, actor)));
+  ipcMain.handle('whatsapp:send', wrap((data, actor) => store.sendMessage(data, actor)));
   ipcMain.handle('whatsapp:markOpened', wrapF((id, actor) => store.markMessageOpened(id, actor)));
   ipcMain.handle('whatsapp:getAudience', wrapF((filter) => store.getAudience(filter)));
   ipcMain.handle('whatsapp:getCampaigns', wrapF((filters) => store.getCampaigns(filters)));
   ipcMain.handle('whatsapp:getCampaign', wrapF((id) => store.getCampaign(id)));
   ipcMain.handle('whatsapp:saveCampaign', wrapF((data, actor) => store.saveCampaign(data, actor)));
   ipcMain.handle('whatsapp:deleteCampaign', wrapF((id, actor) => { store.deleteCampaign(id, actor); return true; }));
-  ipcMain.handle('whatsapp:sendCampaign', wrapF((id, actor) => store.sendCampaign(id, actor)));
+  ipcMain.handle('whatsapp:sendCampaign', wrap((id, actor) => store.sendCampaign(id, actor)));
   ipcMain.handle('whatsapp:getSettings', wrapF(() => store.getWhatsAppSettings()));
   ipcMain.handle('whatsapp:saveSettings', wrapF((data, actor) => store.saveWhatsAppSettings(data, actor)));
 

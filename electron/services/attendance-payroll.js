@@ -19,6 +19,9 @@ function defaultWorkSchedule() {
     hours_per_month: 173,
     period_type: 'day',
     bonus_rate: 0,
+    max_payment: 0,
+    allow_overtime_pay: true,
+    allow_hours_beyond_limit: true,
     shift_start: '08:00',
     shift_end: '17:00',
     grace_minutes: 5,
@@ -125,13 +128,20 @@ function calcDayAttendance(emp, att, sched, settings) {
 
   const lateHours = Math.max(0, (lateMin - grace) / 60);
   const earlyHours = Math.max(0, (earlyMin - grace) / 60);
-  const missedHours = Math.max(0, scheduledH - worked - lateHours - earlyHours);
+  const allowBeyond = sched.allow_hours_beyond_limit !== false;
+  const allowOtPay = sched.allow_overtime_pay !== false;
+  const dayLimit = dayHourLimit(sched);
+  // Hours used for pay follow admin day limit unless admin allows beyond-limit hours
+  const paidWorked = allowBeyond ? worked : Math.min(worked, dayLimit);
+  const missedHours = Math.max(0, scheduledH - paidWorked - lateHours - earlyHours);
   const otMult = Number(sched.overtime_rate_multiplier) || Number(settings.overtime_multiplier) || 1.5;
   const bonusRate = Number(sched.bonus_rate) || 0;
-  const dayLimit = dayHourLimit(sched);
-  let overtimeHours = overtimeMin > 0 ? overtimeMin / 60 : Math.max(0, worked - dayLimit);
-  const normalHours = Math.min(worked, dayLimit);
-  let bonusHours = bonusRate > 0 ? Math.max(0, worked - dayLimit) : 0;
+  let overtimeHours = 0;
+  if (allowOtPay && allowBeyond) {
+    overtimeHours = overtimeMin > 0 ? overtimeMin / 60 : Math.max(0, worked - dayLimit);
+  }
+  const normalHours = Math.min(paidWorked, dayLimit);
+  let bonusHours = (allowOtPay && allowBeyond && bonusRate > 0) ? Math.max(0, worked - dayLimit) : 0;
   if (bonusHours > 0) overtimeHours = 0;
 
   const lateDeduction = sched.deduct_late ? lateHours * hourly : 0;
@@ -140,7 +150,9 @@ function calcDayAttendance(emp, att, sched, settings) {
   const normalPay = normalHours * hourly;
   const bonusPay = bonusHours * bonusRate;
   const overtimePay = bonusHours > 0 ? 0 : overtimeHours * hourly * otMult;
-  const gross = normalPay + overtimePay + bonusPay;
+  let gross = normalPay + overtimePay + bonusPay;
+  const maxPay = Number(sched.max_payment) || 0;
+  if (maxPay > 0) gross = Math.min(gross, maxPay);
   const totalDeduction = lateDeduction + earlyDeduction + absenceDeduction;
 
   return {
@@ -148,6 +160,7 @@ function calcDayAttendance(emp, att, sched, settings) {
     status: att.status || 'present',
     scheduled_hours: scheduledH,
     hours_worked: Math.round(worked * 100) / 100,
+    hours_paid: Math.round(paidWorked * 100) / 100,
     hours_missed: Math.round(missedHours * 100) / 100,
     late_minutes: lateMin,
     early_minutes: earlyMin,
@@ -162,6 +175,7 @@ function calcDayAttendance(emp, att, sched, settings) {
     absence_deduction: Math.round(absenceDeduction * 100) / 100,
     overtime_pay: Math.round(overtimePay * 100) / 100,
     normal_pay: Math.round(normalPay * 100) / 100,
+    max_payment: maxPay || null,
     gross: Math.round(Math.max(0, gross - totalDeduction) * 100) / 100,
     total_deduction: Math.round(totalDeduction * 100) / 100
   };
@@ -209,7 +223,9 @@ function calculateEmployeePeriodPayroll(employeeId, periodStart, periodEnd) {
 
   const bonusRate = Number(sched.bonus_rate) || 0;
   const pt = sched.period_type || 'day';
-  if (bonusRate > 0 && (pt === 'week' || pt === 'month')) {
+  const allowBeyond = sched.allow_hours_beyond_limit !== false;
+  const allowOtPay = sched.allow_overtime_pay !== false;
+  if (allowOtPay && allowBeyond && bonusRate > 0 && (pt === 'week' || pt === 'month')) {
     const limit = periodHourLimit(sched);
     const beyond = Math.max(0, totals.hours_worked - limit);
     const dailyBonus = totals.bonus_pay;
@@ -229,16 +245,35 @@ function calculateEmployeePeriodPayroll(employeeId, periodStart, periodEnd) {
       totals.gross = Math.round((totals.normal_pay + totals.bonus_pay - totals.late_deduction - totals.early_deduction - totals.absence_deduction) * 100) / 100;
     }
   }
+  if (!allowOtPay) {
+    totals.overtime_pay = 0;
+    totals.bonus_pay = 0;
+    totals.bonus_hours = 0;
+    totals.overtime_hours = 0;
+    totals.gross = Math.round((totals.normal_pay - totals.late_deduction - totals.early_deduction - totals.absence_deduction) * 100) / 100;
+  }
+  const maxPay = Number(sched.max_payment) || 0;
+  if (maxPay > 0 && totals.gross > maxPay) {
+    totals.gross = maxPay;
+    totals.max_payment_applied = maxPay;
+  }
 
   const attendanceDeductions = totals.late_deduction + totals.early_deduction + totals.absence_deduction;
-  const basicFromAttendance = sched.pay_type === 'monthly'
+  let basicFromAttendance = sched.pay_type === 'monthly'
     ? Math.min(Number(sched.monthly_salary) || Number(emp.basic_salary) || 0, totals.gross + attendanceDeductions)
     : totals.normal_pay;
+  let otForStatutory = allowOtPay ? (totals.overtime_pay + totals.bonus_pay) : 0;
+  if (maxPay > 0) {
+    // Cap combined basic + OT so period pay cannot exceed admin max
+    const room = Math.max(0, maxPay - basicFromAttendance);
+    if (otForStatutory > room) otForStatutory = room;
+    if (basicFromAttendance > maxPay) basicFromAttendance = maxPay;
+  }
 
   const statutory = payroll.calculatePayrollBreakdown({
     ...emp,
     basic_salary: basicFromAttendance,
-    overtime_rate: totals.overtime_pay + totals.bonus_pay,
+    overtime_rate: otForStatutory,
     bonus: Number(emp.bonus) || 0,
     commission: Number(emp.commission) || 0,
     allowances: Number(emp.allowances) || 0,

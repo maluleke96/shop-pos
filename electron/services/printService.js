@@ -26,7 +26,7 @@ function mergePrintSettings(settings, overrides = {}, localDevice = {}) {
   return {
     receiptPrinter: overrides.receiptPrinter || ps.receipt_printer || ds.receipt_printer || '',
     kitchenPrinter: overrides.kitchenPrinter || ps.kitchen_printer || ds.kitchen_printer || '',
-    invoicePrinter: ps.invoice_printer || '',
+    invoicePrinter: overrides.invoicePrinter || ps.invoice_printer || ds.invoice_printer || '',
     barcodePrinter: ps.barcode_printer || ps.receipt_printer || ds.receipt_printer || '',
     paperSize: overrides.paperSize || ps.paper_size || ds.paper_size || '80mm',
     silent: overrides.silent ?? ps.silent_print ?? true,
@@ -34,6 +34,7 @@ function mergePrintSettings(settings, overrides = {}, localDevice = {}) {
     kitchenAuto: ps.kitchen_auto !== false,
     receiptConnection: ps.receipt_connection || ds.receipt_connection || 'usb',
     kitchenConnection: ps.kitchen_connection || ds.kitchen_connection || 'usb',
+    invoiceConnection: ps.invoice_connection || ds.invoice_connection || 'usb',
     printDuplicate: !!ps.print_duplicate
   };
 }
@@ -334,6 +335,42 @@ function refreshCustomerDisplay() {
   refreshKitchenDisplay();
 }
 
+/**
+ * Open the system print dialog for a PDF buffer (does not only save the file).
+ */
+async function printPdfBuffer(buffer, filename = 'document.pdf', printOpts = {}) {
+  const safeName = String(filename || 'document.pdf').replace(/[^a-zA-Z0-9._-]/g, '_');
+  const tmpPath = path.join(electronApp.getPath('temp'), `print-${Date.now()}-${safeName}`);
+  fs.writeFileSync(tmpPath, Buffer.from(buffer));
+  const deviceName = printOpts.deviceName || undefined;
+  const silent = !!printOpts.silent && !!deviceName;
+  const printWin = new BrowserWindow({
+    show: !silent,
+    webPreferences: { nodeIntegration: false, contextIsolation: true }
+  });
+  try {
+    await printWin.loadFile(tmpPath);
+    await new Promise((resolve, reject) => {
+      const tryPrint = () => {
+        printWin.webContents.print({
+          silent,
+          printBackground: true,
+          deviceName
+        }, (success, failureReason) => {
+          if (!success && failureReason && !/cancel/i.test(failureReason)) {
+            reject(new Error(failureReason));
+          } else resolve();
+        });
+      };
+      setTimeout(tryPrint, silent ? 600 : 400);
+    });
+    return { success: true, path: tmpPath, printer: deviceName || null };
+  } finally {
+    try { if (!printWin.isDestroyed()) printWin.close(); } catch (_) { /* ignore */ }
+    setTimeout(() => { try { fs.unlinkSync(tmpPath); } catch (_) { /* ignore */ } }, 60000);
+  }
+}
+
 module.exports = {
   getPrintersFromWindow,
   mergePrintSettings,
@@ -343,6 +380,7 @@ module.exports = {
   classifyPrinterConnection,
   connectPrinter,
   printHtml,
+  printPdfBuffer,
   openPreviewWindow,
   openKitchenDisplay,
   closeKitchenDisplay,

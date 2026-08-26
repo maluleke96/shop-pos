@@ -117,6 +117,7 @@ function getSoldProductsReport(from, to) {
 }
 
 function getLowPerformanceProducts(days = 30) {
+  const n = Math.max(1, Number(days) || 30);
   return getDb().prepare(`
     SELECT p.id, p.name, p.stock_quantity, p.selling_price,
       (SELECT MAX(s.created_at) FROM sale_items si JOIN sales s ON si.sale_id=s.id
@@ -125,10 +126,10 @@ function getLowPerformanceProducts(days = 30) {
     AND p.id NOT IN (
       SELECT DISTINCT si.product_id FROM sale_items si
       JOIN sales s ON si.sale_id=s.id
-      WHERE date(s.created_at) >= date('now', '-' || ? || ' days') AND s.status='completed' AND si.product_id IS NOT NULL
+      WHERE date(s.created_at) >= date('now', ?) AND s.status='completed' AND si.product_id IS NOT NULL
     )
     ORDER BY p.stock_quantity DESC LIMIT 20
-  `).all(days);
+  `).all(`-${n} days`);
 }
 
 function getReturnDetail(id) {
@@ -280,96 +281,104 @@ function getAdminDashboardFull(from, to) {
   const saleDate = "date(created_at, 'localtime')";
   const saleItemDate = "date(s.created_at, 'localtime')";
   const returnDate = "date(created_at, 'localtime')";
+  const soft = (label, fn, fallback) => {
+    try { return fn(); }
+    catch (err) {
+      console.warn('[admin-dashboard]', label, err.message || err);
+      return fallback;
+    }
+  };
 
-  const periodSales = db.prepare(`SELECT COALESCE(SUM(total),0) as total, COUNT(*) as count FROM sales WHERE ${saleDate} BETWEEN date(?) AND date(?) AND status='completed'`).get(rangeFrom, rangeTo);
-  const yesterdaySales = db.prepare(`SELECT COALESCE(SUM(total),0) as total, COUNT(*) as count FROM sales WHERE ${saleDate}=date(?) AND status='completed'`).get(yesterday);
-  const monthSales = db.prepare(`SELECT COALESCE(SUM(total),0) as total, COUNT(*) as count FROM sales WHERE ${saleDate}>=date(?) AND status='completed'`).get(monthStart);
+  const coreQueries = [
+    { method: 'get', sql: `SELECT COALESCE(SUM(total),0) as total, COUNT(*) as count FROM sales WHERE ${saleDate} BETWEEN date(?) AND date(?) AND status='completed'`, params: [rangeFrom, rangeTo] },
+    { method: 'get', sql: `SELECT COALESCE(SUM(total),0) as total, COUNT(*) as count FROM sales WHERE ${saleDate}=date(?) AND status='completed'`, params: [yesterday] },
+    { method: 'get', sql: `SELECT COALESCE(SUM(total),0) as total, COUNT(*) as count FROM sales WHERE ${saleDate}>=date(?) AND status='completed'`, params: [monthStart] },
+    { method: 'get', sql: `SELECT COALESCE(SUM(si.quantity),0) as qty FROM sale_items si JOIN sales s ON si.sale_id=s.id WHERE ${saleItemDate} BETWEEN date(?) AND date(?) AND s.status='completed'`, params: [rangeFrom, rangeTo] },
+    { method: 'get', sql: `SELECT COALESCE(SUM(si.buying_price * si.quantity),0) as cost FROM sale_items si JOIN sales s ON si.sale_id=s.id WHERE ${saleItemDate} BETWEEN date(?) AND date(?) AND s.status='completed'`, params: [rangeFrom, rangeTo] },
+    { method: 'get', sql: `SELECT COALESCE(SUM(amount),0) as total FROM expenses WHERE date(expense_date) BETWEEN date(?) AND date(?)`, params: [rangeFrom, rangeTo] },
+    { method: 'get', sql: `SELECT COALESCE(SUM(total_refund),0) as total FROM returns WHERE ${returnDate} BETWEEN date(?) AND date(?)`, params: [rangeFrom, rangeTo] },
+    { method: 'get', sql: `SELECT COALESCE(SUM(discount),0) as total FROM sales WHERE ${saleDate} BETWEEN date(?) AND date(?) AND status='completed'`, params: [rangeFrom, rangeTo] },
+    { method: 'all', sql: `SELECT si.product_name, SUM(si.quantity) as qty, SUM(si.total) as revenue FROM sale_items si JOIN sales s ON si.sale_id=s.id WHERE ${saleItemDate} BETWEEN date(?) AND date(?) AND s.status='completed' GROUP BY si.product_name ORDER BY qty DESC LIMIT 10`, params: [rangeFrom, rangeTo] },
+    { method: 'all', sql: `SELECT COALESCE(c.name, 'Uncategorised') as category_name, SUM(si.total) as revenue, SUM(si.quantity) as qty FROM sale_items si JOIN sales s ON si.sale_id=s.id LEFT JOIN products p ON si.product_id=p.id LEFT JOIN categories c ON p.category_id=c.id WHERE ${saleItemDate} BETWEEN date(?) AND date(?) AND s.status='completed' GROUP BY COALESCE(c.name, 'Uncategorised') ORDER BY revenue DESC LIMIT 10`, params: [rangeFrom, rangeTo] },
+    { method: 'all', sql: `SELECT name, stock_quantity, min_stock FROM products WHERE is_active=1 AND stock_quantity <= min_stock AND stock_quantity > 0 ORDER BY stock_quantity LIMIT 10`, params: [] },
+    { method: 'all', sql: `SELECT name FROM products WHERE is_active=1 AND stock_quantity <= 0 LIMIT 10`, params: [] },
+    { method: 'all', sql: `SELECT sp.payment_type, SUM(sp.amount) as total FROM sale_payments sp JOIN sales s ON sp.sale_id=s.id WHERE ${saleItemDate} BETWEEN date(?) AND date(?) AND s.status='completed' GROUP BY sp.payment_type`, params: [rangeFrom, rangeTo] },
+    { method: 'all', sql: `SELECT u.full_name, COUNT(s.id) as orders, SUM(s.total) as revenue FROM sales s JOIN users u ON s.user_id=u.id WHERE ${saleItemDate} BETWEEN date(?) AND date(?) AND s.status='completed' GROUP BY u.id, u.full_name ORDER BY revenue DESC`, params: [rangeFrom, rangeTo] },
+    { method: 'get', sql: `SELECT COALESCE(SUM(stock_quantity * buying_price),0) as val FROM products WHERE is_active=1`, params: [] },
+    { method: 'get', sql: `SELECT COUNT(*) as c FROM shifts WHERE status='open'`, params: [] },
+    { method: 'get', sql: `SELECT COUNT(*) as c FROM shifts WHERE status='closed' AND date(closed_at, 'localtime')=date(?)`, params: [rangeTo] },
+    { method: 'all', sql: `SELECT ${saleDate} as day, SUM(total) as total FROM sales WHERE ${saleDate} BETWEEN date(?) AND date(?) AND status='completed' GROUP BY ${saleDate} ORDER BY day`, params: [rangeFrom, rangeTo] },
+    { method: 'get', sql: `SELECT COUNT(*) as c FROM employee_leave WHERE status='pending'`, params: [] }
+  ];
 
-  const periodItems = db.prepare(`
-    SELECT COALESCE(SUM(si.quantity),0) as qty FROM sale_items si JOIN sales s ON si.sale_id=s.id
-    WHERE ${saleItemDate} BETWEEN date(?) AND date(?) AND s.status='completed'
-  `).get(rangeFrom, rangeTo);
+  let core;
+  if (typeof db.batch === 'function') {
+    core = db.batch(coreQueries);
+  } else {
+    core = coreQueries.map((q) => {
+      const st = db.prepare(q.sql);
+      return q.method === 'get' ? st.get(...(q.params || [])) : st.all(...(q.params || []));
+    });
+  }
 
-  const periodCost = db.prepare(`
-    SELECT COALESCE(SUM(si.buying_price * si.quantity),0) as cost FROM sale_items si JOIN sales s ON si.sale_id=s.id
-    WHERE ${saleItemDate} BETWEEN date(?) AND date(?) AND s.status='completed'
-  `).get(rangeFrom, rangeTo);
+  const [
+    periodSales, yesterdaySales, monthSales, periodItems, periodCost, periodExpenses, periodRefunds, periodDiscounts,
+    topProducts, topCategories, lowStock, outOfStock, paymentBreakdown, cashierPerf, inventoryValue, openShiftsRow,
+    closedShiftsRow, salesGraph, pendingLeaveRow
+  ] = core;
 
-  const periodExpenses = db.prepare(`SELECT COALESCE(SUM(amount),0) as total FROM expenses WHERE expense_date BETWEEN date(?) AND date(?)`).get(rangeFrom, rangeTo);
-  const periodRefunds = db.prepare(`SELECT COALESCE(SUM(total_refund),0) as total FROM returns WHERE ${returnDate} BETWEEN date(?) AND date(?)`).get(rangeFrom, rangeTo);
-  const periodDiscounts = db.prepare(`SELECT COALESCE(SUM(discount),0) as total FROM sales WHERE ${saleDate} BETWEEN date(?) AND date(?) AND status='completed'`).get(rangeFrom, rangeTo);
+  const grossProfit = (periodSales?.total || 0) - (periodCost?.cost || 0);
+  const netProfit = grossProfit - (periodExpenses?.total || 0) - (periodRefunds?.total || 0);
 
-  const grossProfit = periodSales.total - periodCost.cost;
-  const netProfit = grossProfit - periodExpenses.total - periodRefunds.total;
-
-  const topProducts = db.prepare(`
-    SELECT si.product_name, SUM(si.quantity) as qty, SUM(si.total) as revenue
-    FROM sale_items si JOIN sales s ON si.sale_id=s.id
-    WHERE ${saleItemDate} BETWEEN date(?) AND date(?) AND s.status='completed'
-    GROUP BY si.product_name ORDER BY qty DESC LIMIT 10
-  `).all(rangeFrom, rangeTo);
-
-  const topCategories = db.prepare(`
-    SELECT COALESCE(c.name, 'Uncategorised') as category_name, SUM(si.total) as revenue, SUM(si.quantity) as qty
-    FROM sale_items si JOIN sales s ON si.sale_id=s.id
-    LEFT JOIN products p ON si.product_id=p.id LEFT JOIN categories c ON p.category_id=c.id
-    WHERE ${saleItemDate} BETWEEN date(?) AND date(?) AND s.status='completed'
-    GROUP BY category_name ORDER BY revenue DESC LIMIT 10
-  `).all(rangeFrom, rangeTo);
-
-  const mostReturned = db.prepare(`
+  const mostReturned = soft('mostReturned', () => db.prepare(`
     SELECT ri.product_name, SUM(ri.quantity) as qty, SUM(ri.total) as refund_total
     FROM return_items ri JOIN returns r ON ri.return_id=r.id
     WHERE date(r.created_at, 'localtime') >= date('now', 'localtime', '-30 days')
     GROUP BY ri.product_name ORDER BY qty DESC LIMIT 10
-  `).all();
+  `).all(), []);
 
-  const lowStock = db.prepare(`SELECT name, stock_quantity, min_stock FROM products WHERE is_active=1 AND stock_quantity <= min_stock AND stock_quantity > 0 ORDER BY stock_quantity LIMIT 10`).all();
-  const outOfStock = db.prepare(`SELECT name FROM products WHERE is_active=1 AND stock_quantity <= 0 LIMIT 10`).all();
-
-  const recentSales = getSalesList({ from: rangeFrom, to: rangeTo, limit: 20 });
-  const hourlySales = rangeFrom === rangeTo ? db.prepare(`
-    SELECT strftime('%H', created_at, 'localtime') as hour, SUM(total) as total FROM sales
-    WHERE ${saleDate}=date(?) AND status='completed' GROUP BY hour ORDER BY hour
-  `).all(rangeFrom) : [];
-
-  const paymentBreakdown = db.prepare(`
-    SELECT sp.payment_type, SUM(sp.amount) as total FROM sale_payments sp
-    JOIN sales s ON sp.sale_id=s.id WHERE ${saleItemDate} BETWEEN date(?) AND date(?) AND s.status='completed'
-    GROUP BY sp.payment_type
-  `).all(rangeFrom, rangeTo);
-
-  const cashierPerf = db.prepare(`
-    SELECT u.full_name, COUNT(s.id) as orders, SUM(s.total) as revenue
-    FROM sales s JOIN users u ON s.user_id=u.id
-    WHERE ${saleItemDate} BETWEEN date(?) AND date(?) AND s.status='completed'
-    GROUP BY u.id ORDER BY revenue DESC
-  `).all(rangeFrom, rangeTo);
-
-  const inventoryValue = db.prepare(`SELECT COALESCE(SUM(stock_quantity * buying_price),0) as val FROM products WHERE is_active=1`).get();
-  const openShifts = db.prepare("SELECT COUNT(*) as c FROM shifts WHERE status='open'").get().c;
-  const closedShifts = db.prepare("SELECT COUNT(*) as c FROM shifts WHERE status='closed' AND date(closed_at, 'localtime')=date(?)").get(rangeTo).c;
-
-  const salesGraph = db.prepare(`
-    SELECT ${saleDate} as day, SUM(total) as total FROM sales
-    WHERE ${saleDate} BETWEEN date(?) AND date(?) AND status='completed'
-    GROUP BY day ORDER BY day
-  `).all(rangeFrom, rangeTo);
-
-  const recentActivity = getActivityTimeline(rangeFrom, rangeTo).slice(0, 15);
-  const alerts = getAdminAlerts();
-  const pendingLeave = db.prepare("SELECT COUNT(*) as c FROM employee_leave WHERE status='pending'").get().c;
+  const recentSales = soft('recentSales', () => getSalesList({ from: rangeFrom, to: rangeTo, limit: 20 }), []);
+  const hourlySales = rangeFrom === rangeTo
+    ? soft('hourlySales', () => db.prepare(`
+        SELECT strftime('%H', created_at, 'localtime') as hour, SUM(total) as total FROM sales
+        WHERE ${saleDate}=date(?) AND status='completed' GROUP BY hour ORDER BY hour
+      `).all(rangeFrom), [])
+    : [];
+  const recentActivity = soft('activity', () => getActivityTimeline(rangeFrom, rangeTo).slice(0, 15), []);
+  const alerts = soft('alerts', () => getAdminAlerts(), []);
 
   return {
     from: rangeFrom, to: rangeTo,
-    today: { sales: periodSales.total, orders: periodSales.count, items: periodItems.qty, grossProfit, netProfit,
-      expenses: periodExpenses.total, refunds: periodRefunds.total, discounts: periodDiscounts.total,
-      avgOrder: periodSales.count ? periodSales.total / periodSales.count : 0 },
-    yesterday: { sales: yesterdaySales.total, orders: yesterdaySales.count },
-    month: { sales: monthSales.total, orders: monthSales.count },
-    topProducts, topCategories, mostReturned, lowStock, outOfStock, recentSales, hourlySales, paymentBreakdown,
-    cashierPerf, inventoryValue: inventoryValue.val, openShifts, closedShifts,
-    salesGraph, recentActivity, alerts, pendingLeave
+    today: {
+      sales: periodSales?.total || 0,
+      orders: periodSales?.count || 0,
+      items: periodItems?.qty || 0,
+      grossProfit,
+      netProfit,
+      expenses: periodExpenses?.total || 0,
+      refunds: periodRefunds?.total || 0,
+      discounts: periodDiscounts?.total || 0,
+      avgOrder: periodSales?.count ? periodSales.total / periodSales.count : 0
+    },
+    yesterday: { sales: yesterdaySales?.total || 0, orders: yesterdaySales?.count || 0 },
+    month: { sales: monthSales?.total || 0, orders: monthSales?.count || 0 },
+    topProducts: topProducts || [],
+    topCategories: topCategories || [],
+    mostReturned,
+    lowStock: lowStock || [],
+    outOfStock: outOfStock || [],
+    recentSales,
+    hourlySales,
+    paymentBreakdown: paymentBreakdown || [],
+    cashierPerf: cashierPerf || [],
+    inventoryValue: inventoryValue?.val || 0,
+    openShifts: openShiftsRow?.c || 0,
+    closedShifts: closedShiftsRow?.c || 0,
+    salesGraph: salesGraph || [],
+    recentActivity,
+    alerts,
+    pendingLeave: pendingLeaveRow?.c || 0,
+    widgetErrors: []
   };
 }
 

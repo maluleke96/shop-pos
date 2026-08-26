@@ -1,4 +1,4 @@
-/** Shared staff login selfie capture (camera / file upload) */
+/** Shared staff login selfie capture (camera / gallery / optional skip) */
 const StaffSelfieCapture = {
   _stream: null,
   _capturing: false,
@@ -9,6 +9,10 @@ const StaffSelfieCapture = {
 
   getCameraPlugin() {
     return window.Capacitor?.Plugins?.Camera || null;
+  },
+
+  selfieRequired() {
+    return !!(window.App?.settings?.staff_portal_settings?.require_login_selfie);
   },
 
   stopCamera() {
@@ -30,8 +34,9 @@ const StaffSelfieCapture = {
     const Camera = this.getCameraPlugin();
     if (!Camera?.requestPermissions) return true;
     try {
-      const result = await Camera.requestPermissions({ permissions: ['camera'] });
-      return result.camera === 'granted' || result.camera === 'limited';
+      const result = await Camera.requestPermissions({ permissions: ['camera', 'photos'] });
+      return result.camera === 'granted' || result.camera === 'limited'
+        || result.photos === 'granted' || result.photos === 'limited';
     } catch {
       return false;
     }
@@ -53,20 +58,19 @@ const StaffSelfieCapture = {
     }
   },
 
-  async captureNativeSelfie() {
+  async captureNativePhoto(source) {
     const Camera = this.getCameraPlugin();
     if (!Camera?.getPhoto) return null;
     const allowed = await this.requestNativeCameraPermission();
-    if (!allowed) throw new Error('Camera permission denied');
+    if (!allowed) throw new Error(source === 'photos' ? 'Photos permission denied' : 'Camera permission denied');
 
-    // Base64 is more reliable than dataUrl on Android Capacitor (avoids blank WebView returns).
     let photo;
     try {
       photo = await Camera.getPhoto({
         quality: 70,
         allowEditing: false,
         resultType: 'base64',
-        source: 'camera',
+        source: source === 'photos' ? 'photos' : 'camera',
         direction: 'front',
         saveToGallery: false,
         correctOrientation: true,
@@ -74,13 +78,12 @@ const StaffSelfieCapture = {
         height: 480
       });
     } catch (err) {
-      // Fallback: uri / webPath then convert
       try {
         photo = await Camera.getPhoto({
           quality: 70,
           allowEditing: false,
           resultType: 'uri',
-          source: 'camera',
+          source: source === 'photos' ? 'photos' : 'camera',
           direction: 'front',
           saveToGallery: false,
           correctOrientation: true,
@@ -104,21 +107,37 @@ const StaffSelfieCapture = {
     return null;
   },
 
+  async captureNativeSelfie() {
+    return this.captureNativePhoto('camera');
+  },
+
+  readFileAsDataUrl(file) {
+    return new Promise((resolve, reject) => {
+      if (!file) return reject(new Error('No file selected'));
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error('Could not read photo'));
+      reader.readAsDataURL(file);
+    });
+  },
+
   async render(container, employee, onComplete) {
     this.stopCamera();
     this._capturing = false;
     this.ensureStaffPortalScreen();
     if (!container) return;
+    const required = this.selfieRequired();
+    const name = Utils.escHtml(employee?.full_name || 'Employee');
 
     const paintShell = () => {
       container.innerHTML = `<div class="staff-gate card" style="max-width:480px;margin:24px auto;padding:24px;text-align:center">
         <h2>📸 Verification Selfie</h2>
-        <p class="muted">Hi <strong>${employee.full_name}</strong> — take a selfie to open the staff portal.</p>
+        <p class="muted">Hi <strong>${name}</strong> — ${required ? 'a live verification selfie is required to open the staff portal.' : 'take a live selfie with the camera to open the staff portal.'}</p>
         <div id="selfie-preview-wrap" style="margin:16px 0;min-height:180px;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.04);border-radius:12px">
           <video id="selfie-video" autoplay playsinline muted style="width:100%;max-width:360px;border-radius:12px;background:#111;display:none"></video>
           <img id="selfie-preview" alt="Selfie preview" style="width:100%;max-width:360px;border-radius:12px;display:none;object-fit:cover">
           <canvas id="selfie-canvas" style="display:none"></canvas>
-          <p id="selfie-placeholder" class="muted" style="padding:24px">Tap <strong>Open Camera</strong> to take your verification photo.</p>
+          <p id="selfie-placeholder" class="muted" style="padding:24px">Tap <strong>Open Camera</strong>, then <strong>Take Selfie</strong>.</p>
         </div>
         <div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-top:12px">
           <button type="button" class="btn btn-primary" id="selfie-start-cam">Open Camera</button>
@@ -126,7 +145,8 @@ const StaffSelfieCapture = {
           <button type="button" class="btn btn-ghost" id="selfie-retake" style="display:none">Retake</button>
         </div>
         <button type="button" class="btn btn-primary btn-lg" id="selfie-confirm" style="width:100%;margin-top:16px;display:none">Continue to Portal</button>
-        <p class="muted" style="font-size:12px;margin-top:12px">Your photo is saved for attendance verification.</p>
+        ${required ? '' : `<button type="button" class="btn btn-ghost btn-sm" id="selfie-skip" style="width:100%;margin-top:10px">Continue without selfie</button>`}
+        <p class="muted" style="font-size:12px;margin-top:12px">${required ? 'Camera only — gallery upload is not allowed for verification.' : 'Use the camera for your selfie. Gallery upload is disabled.'}</p>
       </div>`;
     };
 
@@ -141,12 +161,18 @@ const StaffSelfieCapture = {
       confirmBtn: document.getElementById('selfie-confirm'),
       startBtn: document.getElementById('selfie-start-cam'),
       retakeBtn: document.getElementById('selfie-retake'),
+      skipBtn: document.getElementById('selfie-skip'),
       placeholder: document.getElementById('selfie-placeholder')
     });
 
+    const finish = (emp) => {
+      this.stopCamera();
+      this.ensureStaffPortalScreen();
+      if (onComplete) onComplete(emp || employee);
+    };
+
     const showPhoto = (dataUrl) => {
       this.ensureStaffPortalScreen();
-      // If Android wiped the selfie UI while the camera was open, rebuild it.
       if (!document.getElementById('selfie-preview') || !container.contains(document.getElementById('selfie-preview'))) {
         paintShell();
         bindControls();
@@ -179,7 +205,7 @@ const StaffSelfieCapture = {
     };
 
     const bindControls = () => {
-      const { video, preview, canvas, snapBtn, confirmBtn, startBtn, retakeBtn } = els();
+      const { video, preview, canvas, snapBtn, confirmBtn, startBtn, retakeBtn, skipBtn } = els();
       const useNativeCamera = this.isNative() && !!this.getCameraPlugin();
 
       startBtn?.addEventListener('click', async () => {
@@ -189,18 +215,17 @@ const StaffSelfieCapture = {
           startBtn.disabled = true;
           startBtn.textContent = 'Opening camera…';
           try {
-            const dataUrl = await this.captureNativeSelfie();
+            const dataUrl = await this.captureNativePhoto('camera');
             this.ensureStaffPortalScreen();
             if (!dataUrl) throw new Error('No photo captured');
             showPhoto(dataUrl);
           } catch (err) {
             this.ensureStaffPortalScreen();
-            // Rebuild shell if camera activity left a blank root
             if (!document.getElementById('selfie-start-cam')) {
               paintShell();
               bindControls();
             }
-            Utils.toast(err.message || 'Camera unavailable — allow camera access and try again', 'error');
+            Utils.toast(err.message || 'Camera unavailable — allow camera access, then try again', 'error');
             const again = els().startBtn;
             if (again) {
               again.disabled = false;
@@ -233,7 +258,7 @@ const StaffSelfieCapture = {
           if (preview) preview.style.display = 'none';
           if (snapBtn) snapBtn.style.display = 'inline-flex';
         } catch (err) {
-          Utils.toast('Camera unavailable — please allow camera access and try again', 'error');
+          Utils.toast('Camera unavailable — allow camera access, then try again', 'error');
         }
       });
 
@@ -253,8 +278,13 @@ const StaffSelfieCapture = {
         bindControls();
       });
 
+      skipBtn?.addEventListener('click', () => {
+        if (this.selfieRequired()) return Utils.toast('Admin requires a verification selfie', 'error');
+        finish(employee);
+      });
+
       confirmBtn?.addEventListener('click', async () => {
-        if (!photoData) return Utils.toast('Take or upload a selfie first', 'error');
+        if (!photoData) return Utils.toast('Take a selfie with the camera first', 'error');
         const btn = els().confirmBtn;
         if (btn) {
           btn.disabled = true;
@@ -272,16 +302,22 @@ const StaffSelfieCapture = {
               btn.disabled = false;
               btn.textContent = 'Continue to Portal';
             }
+            if (!this.selfieRequired()) {
+              Utils.toast((r.error || 'Could not save selfie') + ' — continuing without saving', 'error');
+              return finish(employee);
+            }
             return Utils.toast(r.error || 'Could not save selfie', 'error');
           }
-          this.stopCamera();
           Utils.toast('Verification complete', 'success');
-          this.ensureStaffPortalScreen();
-          if (onComplete) onComplete(employee);
+          finish(employee);
         } catch (err) {
           if (btn) {
             btn.disabled = false;
             btn.textContent = 'Continue to Portal';
+          }
+          if (!this.selfieRequired()) {
+            Utils.toast((err.message || 'Could not save selfie') + ' — continuing without saving', 'error');
+            return finish(employee);
           }
           Utils.toast(err.message || 'Could not save selfie', 'error');
         }
@@ -289,7 +325,6 @@ const StaffSelfieCapture = {
     };
 
     bindControls();
-    // Do NOT auto-open the native camera — on Android that often returns to a blank WebView.
   }
 };
 

@@ -33,7 +33,8 @@ const PaymentUI = {
       confirmLabel = 'Complete Sale',
       onConfirm,
       gcBalancesRef = {},
-      onAddCustomer
+      onAddCustomer,
+      onDismiss
     } = options;
 
     const types = PaymentUI.enabledTypes(settings);
@@ -274,6 +275,17 @@ const PaymentUI = {
         <button type="button" class="btn btn-ghost btn-sm" id="pay-add-customer" style="margin-top:8px">+ Add Customer (to earn/redeem points)</button>`}`,
       `<button type="button" class="btn btn-success btn-lg" id="confirm-pay" style="min-width:200px">${confirmLabel}</button>`);
 
+    const dismissedOnce = { done: false };
+    const dismissOnce = () => {
+      if (dismissedOnce.done) return;
+      dismissedOnce.done = true;
+      try { onDismiss?.(); } catch (_) { /* ignore */ }
+    };
+    document.getElementById('modal-close')?.addEventListener('click', dismissOnce, { once: true });
+    document.getElementById('modal-overlay')?.addEventListener('click', (e) => {
+      if (e.target === e.currentTarget) dismissOnce();
+    }, { once: true });
+
     const dueDisplay = document.getElementById('pay-due-display');
     if (dueDisplay) dueDisplay.textContent = `Amount due: ${Utils.formatMoney(total, currency)}`;
 
@@ -409,6 +421,7 @@ const PaymentUI = {
           loyaltyDiscount,
           amountDue
         });
+        dismissOnce();
       } catch (err) {
         Utils.toast(err.message || 'Payment failed', 'error');
       } finally {

@@ -399,12 +399,10 @@ const BookkeepingPage = {
     html += '</div></div>';
     out.innerHTML = html;
     document.getElementById('bk-rpt-pdf')?.addEventListener('click', async () => {
-      const buf = await API.getFinancialReportPdf(type, this.from, this.to);
-      if (buf.success) await API.saveFile(`${type}-${this.from}.pdf`, [{ name: 'PDF', extensions: ['pdf'] }], buf.data);
+      await Utils.savePdfBuffer(`${type}-${this.from}.pdf`, await API.getFinancialReportPdf(type, this.from, this.to));
     });
     document.getElementById('bk-rpt-print')?.addEventListener('click', async () => {
-      const buf = await API.getFinancialReportPdf(type, this.from, this.to);
-      if (buf.success) await API.saveFile(`${type}-${this.from}.pdf`, [{ name: 'PDF', extensions: ['pdf'] }], buf.data);
+      await Utils.printToA4(await API.getFinancialReportPdf(type, this.from, this.to), `${type}-${this.from}.pdf`);
     });
   },
 
@@ -597,14 +595,16 @@ const BookkeepingPage = {
           <td>${d.donation_number}</td><td>${d.donation_date}</td><td>${d.donation_type}</td>
           <td>${d.recipient_org || '—'}</td><td>${Utils.formatMoney(d.amount, currency)}</td>
           <td>${d.tax_ref_number || '—'}</td><td>${d.status}</td>
-          <td><button class="btn btn-sm btn-ghost don-view" data-id="${d.id}">View</button></td>
+          <td>
+            <button class="btn btn-sm btn-ghost don-view" data-id="${d.id}">View</button>
+            ${['draft', 'rejected'].includes(d.status) ? `<button class="btn btn-sm btn-danger don-del" data-id="${d.id}">Delete</button>` : ''}
+          </td>
         </tr>`).join('') || '<tr><td colspan="8" class="muted">No donations recorded</td></tr>'}
         </tbody></table></div>`;
 
     document.getElementById('don-new').addEventListener('click', () => this.showDonationForm(types));
     document.getElementById('don-export-pdf').addEventListener('click', async () => {
-      const r = await API.getDonationsReportPdf({ from: this.from, to: this.to });
-      if (r.success) await API.saveFile(`donations-${this.from}-${this.to}.pdf`, [{ name: 'PDF', extensions: ['pdf'] }], r.data);
+      await Utils.savePdfBuffer(`donations-${this.from}-${this.to}.pdf`, await API.getDonationsReportPdf({ from: this.from, to: this.to }));
     });
     document.getElementById('don-export-xlsx').addEventListener('click', async () => {
       const r = await API.getDonationsReportExcel({ from: this.from, to: this.to });
@@ -613,6 +613,13 @@ const BookkeepingPage = {
     el.querySelectorAll('.don-view').forEach(b => b.addEventListener('click', async () => {
       const r = await API.getDonation(parseInt(b.dataset.id, 10));
       if (r.success) this.showDonationForm(types, r.data, role);
+    }));
+    el.querySelectorAll('.don-del').forEach(b => b.addEventListener('click', async () => {
+      if (!confirm('Delete this draft/rejected donation?')) return;
+      const r = await API.deleteDonation(parseInt(b.dataset.id, 10), this.app.user);
+      if (!r.success) return Utils.toast(r.error || 'Could not delete', 'error');
+      Utils.toast('Donation deleted', 'success');
+      this.renderTab();
     }));
   },
 

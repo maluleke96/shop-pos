@@ -20,7 +20,10 @@ function assertUserActor(actor, allowedRoles = []) {
   }
 
   const user = loadUserById(sess.id);
-  if (!user || !user.is_active) {
+  const inactive = user && (user.is_active === false || user.is_active === 0 || user.is_active === '0' || user.is_active === 'f');
+  if (user && String(user.role || '') === 'owner') {
+    /* owners are never frozen by a bad is_active flag */
+  } else if (!user || inactive) {
     session.clearAll();
     throw new Error('Account deactivated — system access is frozen. Contact the administrator.');
   }

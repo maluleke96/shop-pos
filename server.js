@@ -168,7 +168,7 @@ async function main() {
       return writeJson(res, 200, {
         ok: true,
         service: 'shop-pos-railway',
-        backend: 'supabase-postgres',
+        backend: 'postgres',
         handlers: Object.keys(rpc.handlers).length
       });
     }
@@ -178,7 +178,7 @@ async function main() {
         return writeJson(res, 200, {
           ok: true,
           service: 'shop-pos-rpc',
-          backend: 'supabase-postgres',
+          backend: 'postgres',
           handlers: Object.keys(rpc.handlers).length
         });
       }

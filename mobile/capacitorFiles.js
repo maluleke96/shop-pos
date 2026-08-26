@@ -1,6 +1,25 @@
-const { Capacitor } = require('@capacitor/core');
-const { Filesystem, Directory } = require('@capacitor/filesystem');
-const { Share } = require('@capacitor/share');
+let Capacitor = null;
+let Filesystem = null;
+let Directory = null;
+let Share = null;
+try {
+  Capacitor = require('@capacitor/core').Capacitor;
+} catch (_) {
+  Capacitor = null;
+}
+try {
+  const fsMod = require('@capacitor/filesystem');
+  Filesystem = fsMod.Filesystem;
+  Directory = fsMod.Directory;
+} catch (_) {
+  Filesystem = null;
+  Directory = null;
+}
+try {
+  Share = require('@capacitor/share').Share;
+} catch (_) {
+  Share = null;
+}
 
 const EXPORT_DIR = 'ShopPOS/exports';
 const BACKUP_DIR = 'ShopPOS/backups';
@@ -9,7 +28,7 @@ const LIVE_DB_NAME = 'shop-pos.db';
 const LIVE_DB_PATH = `${DATA_DIR}/${LIVE_DB_NAME}`;
 
 function isNative() {
-  return typeof Capacitor !== 'undefined' && Capacitor.isNativePlatform();
+  return !!(Capacitor && typeof Capacitor.isNativePlatform === 'function' && Capacitor.isNativePlatform());
 }
 
 function uint8ToBase64(bytes) {

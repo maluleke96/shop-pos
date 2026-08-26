@@ -11,6 +11,100 @@ function today() {
   return new Date().toLocaleDateString('en-CA');
 }
 
+function addDaysIso(dateStr, n) {
+  const d = new Date(`${dateStr}T12:00:00`);
+  d.setDate(d.getDate() + n);
+  return d.toLocaleDateString('en-CA');
+}
+
+function yesterday() {
+  return addDaysIso(today(), -1);
+}
+
+function jsDayToMonBased(jsDay) {
+  return (jsDay + 6) % 7;
+}
+
+function scheduleTimeToDate(dateStr, timeStr) {
+  if (!dateStr || !timeStr) return null;
+  const t = String(timeStr).length === 5 ? `${timeStr}:00` : String(timeStr);
+  const dt = new Date(`${dateStr}T${t}`);
+  return Number.isNaN(dt.getTime()) ? null : dt;
+}
+
+function isOvernightSched(sched) {
+  if (!sched?.start_time || !sched?.end_time) return false;
+  return String(sched.end_time).slice(0, 5) <= String(sched.start_time).slice(0, 5);
+}
+
+function scheduleWindow(sched) {
+  if (!sched) return { start: null, end: null, overnight: false };
+  const start = scheduleTimeToDate(sched.shift_date, sched.start_time);
+  let end = scheduleTimeToDate(sched.shift_date, sched.end_time);
+  const overnight = isOvernightSched(sched);
+  if (start && end && overnight) end = new Date(end.getTime() + 24 * 60 * 60 * 1000);
+  return { start, end, overnight };
+}
+
+function defaultWorkDaysFromSchedule(ws) {
+  if (Array.isArray(ws?.work_days) && ws.work_days.length) return ws.work_days;
+  const n = Math.min(7, Math.max(1, Number(ws?.expected_days_per_week) || 5));
+  return Array.from({ length: n }, (_, i) => i);
+}
+
+/** Generated shift row, or virtual hours from employee work_schedule when admin never generated shifts. */
+function getEmployeeScheduleForDate(employeeId, dateStr) {
+  const row = getDb().prepare(
+    'SELECT * FROM employee_schedules WHERE employee_id = ? AND shift_date = ?'
+  ).get(employeeId, dateStr);
+  if (row) return row.is_rest_day ? null : row;
+  const emp = getDb().prepare('SELECT work_schedule FROM employees WHERE id = ?').get(employeeId);
+  if (!emp) return null;
+  const ws = attendancePayroll.getEmployeeWorkSchedule({ work_schedule: emp.work_schedule });
+  if (!ws.shift_start || !ws.shift_end) return null;
+  const monDay = jsDayToMonBased(new Date(`${dateStr}T12:00:00`).getDay());
+  if (!defaultWorkDaysFromSchedule(ws).includes(monDay)) return null;
+  return {
+    employee_id: employeeId,
+    shift_date: dateStr,
+    shift_name: 'Default hours',
+    start_time: ws.shift_start,
+    end_time: ws.shift_end,
+    is_rest_day: 0,
+    _from_work_schedule: true
+  };
+}
+
+function getActiveShiftContext(employeeId, now = new Date()) {
+  const d = today();
+  const y = yesterday();
+  const yestSched = getEmployeeScheduleForDate(employeeId, y);
+  if (yestSched && isOvernightSched(yestSched)) {
+    const { start, end } = scheduleWindow(yestSched);
+    if (end && now <= end) return { workDate: y, sched: yestSched, start, end };
+  }
+  const todaySched = getEmployeeScheduleForDate(employeeId, d);
+  if (todaySched) {
+    const { start, end } = scheduleWindow(todaySched);
+    return { workDate: d, sched: todaySched, start, end };
+  }
+  return null;
+}
+
+function attendanceWorkDate(employeeId) {
+  return getActiveShiftContext(employeeId)?.workDate || today();
+}
+
+function assertSessionCanAccessEmployee(employeeId) {
+  const session = require('./session');
+  const empSess = session.getEmployeeSession();
+  if (empSess?.employee_id != null) {
+    if (Number(empSess.employee_id) !== Number(employeeId)) throw new Error('Authentication required');
+    return;
+  }
+  if (!session.getUserSession()?.id) throw new Error('Authentication required');
+}
+
 function calcNetSalary(emp) {
   const basic = Number(emp.basic_salary) || 0;
   const ot = Number(emp.overtime_rate) || 0;
@@ -60,7 +154,9 @@ function getEmployee(id) {
 }
 
 function getEmployeeByCode(code) {
-  return getDb().prepare('SELECT * FROM employees WHERE employee_code = ?').get(String(code || '').trim());
+  const c = String(code || '').trim();
+  if (!c) return null;
+  return getDb().prepare('SELECT * FROM employees WHERE lower(employee_code) = lower(?)').get(c);
 }
 
 function verifyEmployeePin(employeeId, pin) {
@@ -76,38 +172,13 @@ function verifyEmployeePin(employeeId, pin) {
   return emp;
 }
 
-function checkEmployeeShiftForPortal(emp) {
-  let sec = {};
-  try {
-    const raw = getDb().prepare('SELECT security_settings FROM shop_settings WHERE id = 1').get()?.security_settings;
-    sec = raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : {};
-  } catch (_) { /* ignore */ }
-  if (!sec.shift_login_enforcement) return { ok: true };
-  if (emp.user_id) {
-    const u = getDb().prepare('SELECT role FROM users WHERE id = ?').get(emp.user_id);
-    if (u && ['owner', 'manager', 'supervisor', 'assistant_manager'].includes(u.role)) {
-      return { ok: true };
-    }
-  }
-  const today = new Date().toLocaleDateString('en-CA');
-  const onLeave = getDb().prepare(`
-    SELECT 1 FROM employee_leave WHERE employee_id = ? AND status = 'approved'
-    AND date(?) BETWEEN date(start_date) AND date(COALESCE(end_date, start_date))`).get(emp.id, today);
-  if (onLeave) return { ok: false, error: 'You are on approved leave and cannot open the Staff Portal.' };
-  const sched = getDb().prepare(`
-    SELECT 1 FROM employee_schedules WHERE employee_id = ? AND shift_date = ? AND is_rest_day = 0`).get(emp.id, today);
-  if (!sched) return { ok: false, error: 'You are not scheduled for a shift today. Staff Portal is locked until your shift.' };
-  return { ok: true };
-}
-
 function verifyEmployeeCodePin(code, pin) {
   const session = require('./session');
   const emp = getEmployeeByCode(code);
   if (!emp) throw new Error('Employee ID not found');
   verifyEmployeePin(emp.id, pin);
   const full = getEmployee(emp.id);
-  const shiftOk = checkEmployeeShiftForPortal(full);
-  if (!shiftOk.ok) throw new Error(shiftOk.error);
+  // Shift lock applies to clock-in only — portal login must still open for payslips, leave, HR.
   session.setEmployeeSession({
     employee_id: full.id,
     user_id: full.user_id || null,
@@ -117,8 +188,118 @@ function verifyEmployeeCodePin(code, pin) {
   return sanitizeEmployee(full);
 }
 
+/** Owner/manager/supervisor opens a worker portal without the employee PIN. */
+function adminOpenEmployeePortal(employeeId, actor) {
+  const { assertUserActor } = require('./authz');
+  assertUserActor(actor, ['owner', 'manager', 'supervisor', 'assistant_manager']);
+  const emp = getEmployee(employeeId);
+  if (!emp) throw new Error('Employee not found');
+  const session = require('./session');
+  session.setEmployeeSession({
+    employee_id: emp.id,
+    user_id: emp.user_id || null,
+    full_name: emp.full_name,
+    employee_code: emp.employee_code,
+    pinVerified: true,
+    adminOverride: true
+  });
+  return sanitizeEmployee(emp);
+}
+
+/**
+ * Validate employee ↔ user ↔ branch ↔ role ↔ schedule linkage before save.
+ * Hard errors block save; warnings are returned for the admin UI.
+ */
+function validateEmployeeLinks(data = {}) {
+  const errors = [];
+  const warnings = [];
+  const db = getDb();
+  const status = data.status || 'Active';
+  const isActive = status === 'Active';
+  const empId = data.id ? Number(data.id) : 0;
+
+  if (!data.full_name?.trim()) errors.push('Employee full name is required');
+
+  const code = (data.employee_code || '').trim();
+  if (code) {
+    const dup = db.prepare('SELECT id, full_name FROM employees WHERE employee_code = ? AND id != ?').get(code, empId || 0);
+    if (dup) errors.push(`Employee ID "${code}" is already used by ${dup.full_name}`);
+  } else if (!empId) {
+    warnings.push('Employee ID will be auto-generated');
+  }
+
+  const userId = data.user_id != null && data.user_id !== '' ? parseInt(data.user_id, 10) : null;
+  if (userId) {
+    const user = db.prepare('SELECT id, username, full_name, role, is_active, permissions FROM users WHERE id = ?').get(userId);
+    if (!user) {
+      errors.push('Linked user account was not found — select a valid POS user or clear the link');
+    } else {
+      if (Number(user.is_active) === 0) {
+        errors.push(`Linked user "${user.username}" is inactive — reactivate the user or choose another account`);
+      }
+      const other = db.prepare('SELECT id, full_name, employee_code FROM employees WHERE user_id = ? AND id != ?')
+        .get(userId, empId || 0);
+      if (other) {
+        errors.push(`User "${user.username}" is already linked to ${other.full_name} (${other.employee_code})`);
+      }
+      if (!user.role) warnings.push('Linked user has no role assigned');
+    }
+  } else if (isActive) {
+    warnings.push('No POS user account linked — staff can still use Employee ID + PIN in Staff Portal, but cashier login will not open their portal automatically');
+  }
+
+  if (isActive && !(data.branch || '').trim()) {
+    warnings.push('Branch is not set — assign a branch so schedules and reports stay correct');
+  }
+  if (isActive && !(data.position || '').trim()) {
+    warnings.push('Position/role title is not set');
+  }
+
+  if (empId) {
+    const existing = db.prepare('SELECT pin, work_schedule FROM employees WHERE id = ?').get(empId);
+    if (existing && !existing.pin && !data.pin) {
+      errors.push('Employee PIN is missing — set a PIN so Staff Portal login works');
+    }
+    let hasSchedule = false;
+    if (existing?.work_schedule) {
+      try {
+        const ws = typeof existing.work_schedule === 'string' ? JSON.parse(existing.work_schedule) : existing.work_schedule;
+        hasSchedule = !!(ws && (ws.shift_start || ws.hours_per_day || ws.pay_type));
+      } catch (_) { /* ignore */ }
+    }
+    if (data.work_schedule) {
+      const ws = typeof data.work_schedule === 'string' ? JSON.parse(data.work_schedule) : data.work_schedule;
+      hasSchedule = !!(ws && (ws.shift_start || ws.hours_per_day || ws.pay_type));
+    }
+    try {
+      const upcoming = db.prepare(`
+        SELECT COUNT(*) AS c FROM employee_schedules
+        WHERE employee_id = ? AND date(shift_date) >= date('now') AND COALESCE(is_rest_day, 0) = 0`).get(empId);
+      if (isActive && !hasSchedule && !(upcoming?.c > 0)) {
+        warnings.push('No work schedule / upcoming shifts — clock-in will fail until shifts are assigned (Admin → Staff → Shifts)');
+      }
+    } catch (_) {
+      if (isActive && !hasSchedule) {
+        warnings.push('No work schedule — clock-in will fail until shifts are assigned (Admin → Staff → Shifts)');
+      }
+    }
+  } else if (isActive && !data.pin) {
+    warnings.push('PIN will be auto-generated if left blank — share it with the employee securely');
+  }
+
+  return { ok: errors.length === 0, errors, warnings };
+}
+
 function saveEmployee(data, actorId) {
+  const linkCheck = validateEmployeeLinks(data);
+  if (!linkCheck.ok) {
+    throw new Error(linkCheck.errors.join(' · '));
+  }
   if (!data.full_name?.trim()) throw new Error('Full name is required');
+  // Empty date/text fields from forms must be null (Postgres rejects '' for some casts)
+  for (const k of ['date_of_birth', 'date_hired', 'payment_date', 'photo_path', 'email', 'phone', 'address']) {
+    if (data[k] === '') data[k] = null;
+  }
   const net = calcNetSalary(data);
   let pin = data.pin ? String(data.pin).trim() : null;
   if (!data.id && !pin) {
@@ -155,7 +336,8 @@ function saveEmployee(data, actorId) {
       data.leave_family != null ? Number(data.leave_family) : 3,
       data.notes || null, data.user_id || null, data.id
     );
-    return getEmployee(data.id);
+    const saved = getEmployee(data.id);
+    return { ...saved, _link_warnings: linkCheck.warnings };
   }
   const code = data.employee_code?.trim() || nextEmployeeCode();
   const dup = getDb().prepare('SELECT id FROM employees WHERE employee_code = ?').get(code);
@@ -184,7 +366,8 @@ function saveEmployee(data, actorId) {
     data.leave_family != null ? Number(data.leave_family) : 3,
     data.notes || null, data.user_id || null
   );
-  return getEmployee(r.lastInsertRowid);
+  const saved = getEmployee(r.lastInsertRowid);
+  return { ...saved, _link_warnings: linkCheck.warnings, _generated_pin: !data.id && pin ? pin : undefined };
 }
 
 function deleteEmployee(id, actorId, actorName) {
@@ -200,58 +383,77 @@ function deleteEmployee(id, actorId, actorName) {
 }
 
 function getTodayAttendance(employeeId) {
-  try { autoCloseOpenAttendance(); } catch (_) { /* ignore */ }
+  try { autoCloseOpenAttendance(employeeId); } catch (_) { /* ignore */ }
+  const open = getDb().prepare(`
+    SELECT * FROM employee_attendance
+    WHERE employee_id = ? AND clock_in IS NOT NULL AND (clock_out IS NULL OR clock_out = '')
+    ORDER BY work_date DESC, id DESC LIMIT 1`).get(employeeId);
+  if (open) return open;
+  const d = attendanceWorkDate(employeeId);
   return getDb().prepare('SELECT * FROM employee_attendance WHERE employee_id = ? AND work_date = ? ORDER BY id DESC LIMIT 1')
-    .get(employeeId, today());
+    .get(employeeId, d);
 }
 
 function assertCanClockIn(employeeId) {
-  const d = today();
+  const now = new Date();
+  const ctx = getActiveShiftContext(employeeId, now);
+  const workDate = ctx?.workDate || today();
   const onLeave = getDb().prepare(`
     SELECT 1 FROM employee_leave WHERE employee_id = ? AND status = 'approved'
-    AND date(?) BETWEEN date(start_date) AND date(COALESCE(end_date, start_date))`).get(employeeId, d);
+    AND date(?) BETWEEN date(start_date) AND date(COALESCE(end_date, start_date))`).get(employeeId, workDate);
   if (onLeave) throw new Error('You are on approved leave — clock-in is not allowed.');
-  const sched = getEmployeeScheduleForDate(employeeId, d);
-  if (!sched) {
-    throw new Error('You can only clock in on your scheduled shift day. Ask admin to assign a shift.');
+
+  const ps = getLeavePortalSettings();
+  // Admin turned off shift enforcement — staff may clock in/out without assigned shifts
+  if (ps.require_scheduled_shift === false) {
+    return ctx || { workDate, sched: null };
   }
-  const now = new Date();
-  const start = scheduleTimeToDate(d, sched.start_time);
-  const end = scheduleTimeToDate(d, sched.end_time);
+
+  if (!ctx?.sched) {
+    throw new Error('You can only clock in on your scheduled shift day. Ask admin to assign a shift (Admin → Staff → Shifts) or set default hours on your employee profile.');
+  }
+  const { start, end } = ctx;
   if (start && now < new Date(start.getTime() - 60 * 60000)) {
-    throw new Error(`Clock-in opens 60 minutes before your shift (${sched.start_time}).`);
+    throw new Error(`Clock-in opens 60 minutes before your shift (${ctx.sched.start_time}).`);
   }
   if (end && now > end) {
-    throw new Error(`Your shift ended at ${sched.end_time}. Clock-in is closed for today.`);
+    throw new Error(`Your shift ended at ${ctx.sched.end_time}. Clock-in is closed.`);
   }
-  return sched;
+  return ctx;
 }
 
-function autoCloseOpenAttendance() {
+function autoCloseOpenAttendance(employeeId) {
   const db = getDb();
   const now = new Date();
-  const openRows = db.prepare(`
-    SELECT a.*, s.end_time, s.shift_date, e.full_name
+  let sql = `
+    SELECT a.*, e.full_name
     FROM employee_attendance a
-    JOIN employee_schedules s ON s.employee_id = a.employee_id AND s.shift_date = a.work_date AND s.is_rest_day = 0
     JOIN employees e ON e.id = a.employee_id
     WHERE a.clock_in IS NOT NULL AND (a.clock_out IS NULL OR a.clock_out = '')
-  `).all();
+  `;
+  const params = [];
+  if (employeeId != null && employeeId !== '') {
+    sql += ' AND a.employee_id = ?';
+    params.push(parseInt(employeeId, 10));
+  }
+  const openRows = db.prepare(sql).all(...params);
   for (const row of openRows) {
-    const end = scheduleTimeToDate(row.shift_date, row.end_time);
+    const sched = getEmployeeScheduleForDate(row.employee_id, row.work_date);
+    if (!sched) continue;
+    const { end } = scheduleWindow(sched);
     if (!end || now < end) continue;
     const outIso = end.toISOString();
     if (row.break_start && !row.break_end) {
       db.prepare('UPDATE employee_attendance SET break_end = ? WHERE id = ?').run(outIso, row.id);
     }
-    const note = `[Auto-closed at shift end ${row.end_time} — failed to clock out]`;
+    const note = `[Auto-closed at shift end ${sched.end_time} — failed to clock out]`;
     db.prepare(`UPDATE employee_attendance SET clock_out = ?, auto_closed = 1, status = CASE WHEN status = 'present' THEN 'auto_closed' ELSE status END,
       notes = TRIM(COALESCE(notes,'') || char(10) || ?) WHERE id = ?`).run(outIso, note, row.id);
     applyAttendanceScheduleVariance(row.id, row.employee_id);
     recalcAttendanceHours(row.id);
     try {
       require('./store').addNotification('attendance_auto_close', 'Missed clock-out',
-        `${row.full_name} was auto clocked out at shift end (${row.end_time}). Admin may apply a penalty.`, {
+        `${row.full_name} was auto clocked out at shift end (${sched.end_time}). Admin may apply a penalty.`, {
           entity_type: 'employee_attendance',
           entity_id: row.id,
           action_page: 'staffhr:attendance',
@@ -261,52 +463,87 @@ function autoCloseOpenAttendance() {
   }
 }
 
-function performClockAction(employeeId, action) {
-  autoCloseOpenAttendance();
-  const now = new Date().toISOString();
-  const d = today();
-  let row = getDb().prepare('SELECT * FROM employee_attendance WHERE employee_id = ? AND work_date = ? ORDER BY id DESC LIMIT 1')
-    .get(employeeId, d);
+function performClockAction(employeeId, action, clientRequestId) {
+  autoCloseOpenAttendance(employeeId);
+  const nowIso = new Date().toISOString();
+  const db = getDb();
+  const reqId = clientRequestId ? String(clientRequestId).slice(0, 80) : null;
+  const openRow = db.prepare(`
+    SELECT * FROM employee_attendance
+    WHERE employee_id = ? AND clock_in IS NOT NULL AND (clock_out IS NULL OR clock_out = '')
+    ORDER BY work_date DESC, id DESC LIMIT 1`).get(employeeId);
+  const d = (action === 'clock_in' ? (getActiveShiftContext(employeeId)?.workDate || today())
+    : (openRow?.work_date || attendanceWorkDate(employeeId)));
+
+  if (reqId) {
+    try {
+      const prior = db.prepare(`
+        SELECT a.*, e.full_name, e.employee_code FROM employee_attendance a
+        JOIN employees e ON e.id = a.employee_id
+        WHERE a.employee_id = ? AND a.work_date = ? AND a.client_request_id = ?`).get(employeeId, d, reqId);
+      if (prior) return prior;
+    } catch (_) { /* column may not exist on very old DBs until migration */ }
+  }
+
+  let row = action === 'clock_in'
+    ? db.prepare('SELECT * FROM employee_attendance WHERE employee_id = ? AND work_date = ? ORDER BY id DESC LIMIT 1').get(employeeId, d)
+    : (openRow || db.prepare('SELECT * FROM employee_attendance WHERE employee_id = ? AND work_date = ? ORDER BY id DESC LIMIT 1').get(employeeId, d));
   if (!row) {
-    const ins = getDb().prepare(`INSERT INTO employee_attendance (employee_id, work_date, status) VALUES (?,?, 'present')`).run(employeeId, d);
-    row = getDb().prepare('SELECT * FROM employee_attendance WHERE id = ?').get(ins.lastInsertRowid);
+    const ins = db.prepare(`INSERT INTO employee_attendance (employee_id, work_date, status) VALUES (?,?, 'present')`).run(employeeId, d);
+    row = db.prepare('SELECT * FROM employee_attendance WHERE id = ?').get(ins.lastInsertRowid);
   }
   const id = row.id;
+  row = db.prepare('SELECT * FROM employee_attendance WHERE id = ?').get(id) || row;
+
   if (action === 'clock_in') {
     if (row.clock_in) throw new Error('Already clocked in today');
     assertCanClockIn(employeeId);
-    getDb().prepare('UPDATE employee_attendance SET clock_in = ?, status = ? WHERE id = ?').run(now, 'present', id);
+    try {
+      db.prepare('UPDATE employee_attendance SET clock_in = ?, status = ?, client_request_id = COALESCE(?, client_request_id) WHERE id = ? AND clock_in IS NULL')
+        .run(nowIso, 'present', reqId, id);
+    } catch (_) {
+      db.prepare('UPDATE employee_attendance SET clock_in = ?, status = ? WHERE id = ? AND clock_in IS NULL').run(nowIso, 'present', id);
+    }
+    const after = db.prepare('SELECT clock_in FROM employee_attendance WHERE id = ?').get(id);
+    if (!after?.clock_in) throw new Error('Already clocked in today');
   } else if (action === 'clock_out') {
     if (!row.clock_in) throw new Error('Clock in first');
     if (row.clock_out) throw new Error('Already clocked out');
     if (row.break_start && !row.break_end) {
-      getDb().prepare('UPDATE employee_attendance SET break_end = ? WHERE id = ?').run(now, id);
+      db.prepare('UPDATE employee_attendance SET break_end = ? WHERE id = ?').run(nowIso, id);
     }
-    getDb().prepare('UPDATE employee_attendance SET clock_out = ? WHERE id = ?').run(now, id);
+    try {
+      db.prepare('UPDATE employee_attendance SET clock_out = ?, client_request_id = COALESCE(?, client_request_id) WHERE id = ? AND (clock_out IS NULL OR clock_out = \'\')')
+        .run(nowIso, reqId, id);
+    } catch (_) {
+      db.prepare('UPDATE employee_attendance SET clock_out = ? WHERE id = ? AND (clock_out IS NULL OR clock_out = \'\')').run(nowIso, id);
+    }
+    const after = db.prepare('SELECT clock_out FROM employee_attendance WHERE id = ?').get(id);
+    if (!after?.clock_out) throw new Error('Already clocked out');
   } else if (action === 'break_start') {
     if (!row.clock_in) throw new Error('Clock in first');
     if (row.clock_out) throw new Error('Already clocked out');
     if (row.break_start && !row.break_end) throw new Error('Break already started');
-    getDb().prepare('UPDATE employee_attendance SET break_start = ?, break_end = NULL WHERE id = ?').run(now, id);
+    db.prepare('UPDATE employee_attendance SET break_start = ?, break_end = NULL WHERE id = ?').run(nowIso, id);
   } else if (action === 'break_end') {
     if (!row.break_start) throw new Error('Start break first');
     if (row.break_end) throw new Error('Break already ended');
-    getDb().prepare('UPDATE employee_attendance SET break_end = ? WHERE id = ?').run(now, id);
+    db.prepare('UPDATE employee_attendance SET break_end = ? WHERE id = ?').run(nowIso, id);
   } else throw new Error('Unknown action');
   applyAttendanceScheduleVariance(id, employeeId);
   recalcAttendanceHours(id);
-  return getDb().prepare(`
+  return db.prepare(`
     SELECT a.*, e.full_name, e.employee_code FROM employee_attendance a
     JOIN employees e ON e.id = a.employee_id WHERE a.id = ?`).get(id);
 }
 
-function clockAction(employeeId, action) {
-  verifyEmployeePin(employeeId, arguments[2] || null);
-  return performClockAction(employeeId, action);
+function clockAction(employeeId, action, pin, clientRequestId) {
+  verifyEmployeePin(employeeId, pin);
+  return performClockAction(employeeId, action, clientRequestId);
 }
 
-function clockActionVerified(employeeId, action) {
-  return performClockAction(employeeId, action);
+function clockActionVerified(employeeId, action, clientRequestId) {
+  return performClockAction(employeeId, action, clientRequestId);
 }
 
 function recalcHours(attendanceId) {
@@ -437,6 +674,19 @@ function updateAttendance(id, data, actorId, actorName) {
     WHERE a.id = ?`).get(id);
 }
 
+function deleteAttendance(id, actor) {
+  const { assertUserActor } = require('./authz');
+  const user = assertUserActor(actor, ['owner', 'manager']);
+  const row = getDb().prepare('SELECT * FROM employee_attendance WHERE id = ?').get(id);
+  if (!row) throw new Error('Attendance record not found');
+  getDb().prepare('DELETE FROM attendance_penalties WHERE attendance_id = ?').run(id);
+  getDb().prepare('DELETE FROM employee_attendance WHERE id = ?').run(id);
+  getDb().prepare(`INSERT INTO audit_log (user_id, username, action, entity_type, entity_id, details) VALUES (?,?,?,?,?,?)`)
+    .run(user.id, user.username || user.full_name || 'manager', 'delete_attendance', 'employee_attendance', id,
+      JSON.stringify({ employee_id: row.employee_id, work_date: row.work_date }));
+  return { ok: true, id };
+}
+
 function createManualAttendance(data, actor) {
   const { assertUserActor } = require('./authz');
   const user = assertUserActor(actor, ['owner', 'manager']);
@@ -541,7 +791,7 @@ function applyPendingPenaltiesToPayroll(employeeId, payrollId, hourlyRate) {
 }
 
 function getAttendanceSummary(employeeId, from, to) {
-  autoCloseOpenAttendance();
+  try { autoCloseOpenAttendance(employeeId); } catch (_) { /* ignore */ }
   const rows = getAttendance({ employee_id: employeeId, from, to, include_scheduled: false });
   const totalHours = rows.reduce((s, r) => s + (Number(r.hours_worked) || 0), 0);
   const byDate = {};
@@ -572,7 +822,18 @@ function getLeavePortalSettings() {
     min_leave_notice_days: ps.min_leave_notice_days ?? 1,
     max_leave_requests_per_month: ps.max_leave_requests_per_month ?? null,
     max_leave_requests_per_year: ps.max_leave_requests_per_year ?? null,
-    leave_blackouts: Array.isArray(ps.leave_blackouts) ? ps.leave_blackouts : []
+    leave_blackouts: Array.isArray(ps.leave_blackouts) ? ps.leave_blackouts : [],
+    require_login_selfie: !!ps.require_login_selfie,
+    show_disciplinary: ps.show_disciplinary !== false,
+    show_payslips: ps.show_payslips !== false,
+    require_disciplinary_response: ps.require_disciplinary_response !== false,
+    show_routines: ps.show_routines !== false,
+    show_morning_routines: ps.show_morning_routines !== false,
+    show_closing_routines: ps.show_closing_routines !== false,
+    show_shifts: ps.show_shifts !== false,
+    require_scheduled_shift: ps.require_scheduled_shift !== false,
+    show_hr_docs: ps.show_hr_docs !== false,
+    show_company_rules: ps.show_company_rules !== false
   };
 }
 
@@ -601,8 +862,9 @@ function isLeaveRangeBlocked(startDate, endDate, blackouts) {
 }
 
 function countLeaveRequestsForMonth(employeeId, yearMonth, excludeSick = true, excludeId = null) {
+  // PG-safe month match (also covered by strftime rewriter)
   let sql = `SELECT COUNT(*) as c FROM employee_leave WHERE employee_id = ?
-    AND status IN ('pending', 'approved') AND strftime('%Y-%m', start_date) = ?`;
+    AND status IN ('pending', 'approved') AND to_char(start_date::timestamp, 'YYYY-MM') = ?`;
   const params = [employeeId, yearMonth];
   if (excludeSick) sql += " AND leave_type NOT LIKE '%sick%'";
   if (excludeId) { sql += ' AND id != ?'; params.push(excludeId); }
@@ -611,7 +873,7 @@ function countLeaveRequestsForMonth(employeeId, yearMonth, excludeSick = true, e
 
 function countLeaveRequestsForYear(employeeId, year, excludeSick = true, excludeId = null) {
   let sql = `SELECT COUNT(*) as c FROM employee_leave WHERE employee_id = ?
-    AND status IN ('pending', 'approved') AND strftime('%Y', start_date) = ?`;
+    AND status IN ('pending', 'approved') AND to_char(start_date::timestamp, 'YYYY') = ?`;
   const params = [employeeId, String(year)];
   if (excludeSick) sql += " AND leave_type NOT LIKE '%sick%'";
   if (excludeId) { sql += ' AND id != ?'; params.push(excludeId); }
@@ -685,36 +947,75 @@ function isLeaveManager(actor) {
   if (!actor?.id) return false;
   try {
     const { assertUserActor } = require('./authz');
-    assertUserActor(actor, ['owner', 'manager']);
+    assertUserActor(actor, ['owner', 'manager', 'supervisor', 'assistant_manager']);
     return true;
   } catch {
     return false;
   }
 }
 
+function assertLeaveBalance(employeeId, leaveType, days) {
+  const bal = getLeaveBalance(employeeId);
+  const type = String(leaveType || '').toLowerCase();
+  let bucket = null;
+  if (type.includes('annual')) bucket = bal.annual;
+  else if (type.includes('sick')) bucket = bal.sick;
+  else if (type.includes('family')) bucket = bal.family;
+  if (bucket && Number(bucket.total) > 0) {
+    const remaining = Number(bucket.total) - Number(bucket.used || 0);
+    if (Number(days) > remaining + 0.001) {
+      throw new Error(`Insufficient leave balance (remaining ${remaining} days)`);
+    }
+  }
+}
+
+function attachLeaveApprovalPdf(id, byId, approverLabel) {
+  const db = getDb();
+  const row = db.prepare(`
+    SELECT l.*, e.full_name, e.employee_code FROM employee_leave l
+    JOIN employees e ON e.id = l.employee_id WHERE l.id = ?`).get(id);
+  if (!row) throw new Error('Leave request not found');
+  const now = new Date().toISOString();
+  const shop = hrPdf.getShopPdfSettings();
+  const buf = hrPdf.buildLeaveApprovalPdf({ ...row, approved_at: now }, shop, approverLabel || 'Management');
+  const pdfPath = hrPdf.savePdfBuffer(buf, `leave-${id}`);
+  db.prepare(`UPDATE employee_leave SET status = 'approved', approved_by = ?, approved_at = ?, pdf_path = ? WHERE id = ?`)
+    .run(byId || null, now, pdfPath, id);
+  return db.prepare('SELECT * FROM employee_leave WHERE id = ?').get(id);
+}
+
 function saveLeave(data, actor) {
   validateLeaveRequest(data);
   const end = data.end_date || data.start_date;
   const manager = isLeaveManager(actor);
-  // Strip client-supplied status unless owner/manager (DB-backed role)
-  const status = manager && data.status ? data.status : 'pending';
+  const needsApproval = getLeavePortalSettings().leave_requires_approval !== false;
+  const status = manager && data.status
+    ? data.status
+    : (needsApproval ? 'pending' : 'approved');
+  const days = Number(data.days) || 1;
+  if (status === 'approved') assertLeaveBalance(data.employee_id, data.leave_type, days);
+  let id = data.id;
   if (data.id) {
     getDb().prepare(`UPDATE employee_leave SET leave_type=?, start_date=?, end_date=?, days=?, status=?, notes=? WHERE id=?`)
-      .run(data.leave_type, data.start_date, end, Number(data.days) || 1, status, data.notes || null, data.id);
-    return getDb().prepare('SELECT * FROM employee_leave WHERE id = ?').get(data.id);
+      .run(data.leave_type, data.start_date, end, days, status, data.notes || null, data.id);
+  } else {
+    const r = getDb().prepare(`INSERT INTO employee_leave (employee_id, leave_type, start_date, end_date, days, status, notes)
+      VALUES (?,?,?,?,?,?,?)`).run(data.employee_id, data.leave_type, data.start_date, end, days, status, data.notes || null);
+    id = r.lastInsertRowid;
   }
-  const r = getDb().prepare(`INSERT INTO employee_leave (employee_id, leave_type, start_date, end_date, days, status, notes)
-    VALUES (?,?,?,?,?,?,?)`).run(data.employee_id, data.leave_type, data.start_date, end, Number(data.days) || 1, 'pending', data.notes || null);
-  return getDb().prepare('SELECT * FROM employee_leave WHERE id = ?').get(r.lastInsertRowid);
+  if (status === 'approved') {
+    return attachLeaveApprovalPdf(id, actor?.id || null, actor?.full_name || actor?.username || 'Management');
+  }
+  return getDb().prepare('SELECT * FROM employee_leave WHERE id = ?').get(id);
 }
 
 function approveLeave(id, approvedBy, approve = true, approverName, actor) {
   if (actor) {
     const { assertUserActor } = require('./authz');
-    assertUserActor(actor, ['owner', 'manager']);
+    assertUserActor(actor, ['owner', 'manager', 'supervisor', 'assistant_manager']);
   } else if (approvedBy) {
     const { assertUserActor } = require('./authz');
-    assertUserActor({ id: approvedBy }, ['owner', 'manager']);
+    assertUserActor({ id: approvedBy }, ['owner', 'manager', 'supervisor', 'assistant_manager']);
   } else {
     throw new Error('Authentication required');
   }
@@ -726,29 +1027,14 @@ function approveLeave(id, approvedBy, approve = true, approverName, actor) {
   const now = new Date().toISOString();
   const byId = actor?.id || approvedBy;
   if (approve) {
-    const bal = getLeaveBalance(row.employee_id);
-    const type = String(row.leave_type || '').toLowerCase();
-    let bucket = null;
-    if (type.includes('annual')) bucket = bal.annual;
-    else if (type.includes('sick')) bucket = bal.sick;
-    else if (type.includes('family')) bucket = bal.family;
-    if (bucket && Number(bucket.total) > 0) {
-      const remaining = Number(bucket.total) - Number(bucket.used || 0);
-      if (Number(row.days) > remaining + 0.001) {
-        throw new Error(`Insufficient leave balance (remaining ${remaining} days)`);
-      }
-    }
-    const shop = hrPdf.getShopPdfSettings();
+    assertLeaveBalance(row.employee_id, row.leave_type, row.days);
     const approver = approverName || db.prepare('SELECT full_name, username FROM users WHERE id = ?').get(byId);
-    const approverLabel = approver?.full_name || approver?.username || 'Management';
-    const buf = hrPdf.buildLeaveApprovalPdf({ ...row, approved_at: now }, shop, approverLabel);
-    const pdfPath = hrPdf.savePdfBuffer(buf, `leave-${id}`);
-    db.prepare(`UPDATE employee_leave SET status = 'approved', approved_by = ?, approved_at = ?, pdf_path = ? WHERE id = ?`)
-      .run(byId, now, pdfPath, id);
-  } else {
-    db.prepare(`UPDATE employee_leave SET status = 'rejected', approved_by = ?, approved_at = ? WHERE id = ?`)
-      .run(byId, now, id);
+    const approverLabel = (typeof approver === 'string' ? approver : null)
+      || approver?.full_name || approver?.username || 'Management';
+    return attachLeaveApprovalPdf(id, byId, approverLabel);
   }
+  db.prepare(`UPDATE employee_leave SET status = 'rejected', approved_by = ?, approved_at = ? WHERE id = ?`)
+    .run(byId, now, id);
   return db.prepare('SELECT * FROM employee_leave WHERE id = ?').get(id);
 }
 
@@ -819,6 +1105,173 @@ function getLeaveBalance(employeeId) {
     sick: { total: emp.leave_sick, used: map['Sick'] || map['Sick Leave'] || 0 },
     family: { total: emp.leave_family, used: map['Family'] || map['Family Responsibility'] || 0 }
   };
+}
+
+function getMissedClockOutInbox(filters = {}) {
+  const db = getDb();
+  const days = Math.max(1, Math.min(90, Number(filters.days) || 21));
+  const open = db.prepare(`
+    SELECT a.*, e.full_name, e.employee_code, e.branch, e.phone, e.position
+    FROM employee_attendance a
+    JOIN employees e ON e.id = a.employee_id
+    WHERE e.status = 'Active'
+      AND a.clock_in IS NOT NULL
+      AND (a.clock_out IS NULL OR a.clock_out = '')
+    ORDER BY a.work_date DESC, a.clock_in DESC
+    LIMIT 300`).all();
+  const autoClosed = db.prepare(`
+    SELECT a.*, e.full_name, e.employee_code, e.branch, e.phone, e.position
+    FROM employee_attendance a
+    JOIN employees e ON e.id = a.employee_id
+    WHERE e.status = 'Active'
+      AND a.auto_closed = 1
+      AND date(a.work_date) >= date('now', ?)
+      AND IFNULL(a.notes, '') NOT LIKE '%Auto-close reviewed OK%'
+    ORDER BY a.work_date DESC, a.id DESC
+    LIMIT 200`).all(`-${days} days`);
+
+  const now = new Date();
+  const enrich = (row, kind) => {
+    const sched = getEmployeeScheduleForDate(row.employee_id, row.work_date);
+    const { end } = sched ? scheduleWindow(sched) : { end: null };
+    const shiftEnded = !!(end && now >= end);
+    const hoursOpen = row.clock_in
+      ? Math.max(0, Math.round(((now - new Date(row.clock_in)) / 3600000) * 10) / 10)
+      : 0;
+    return {
+      ...row,
+      inbox_kind: kind,
+      scheduled_end: sched?.end_time || null,
+      shift_ended: shiftEnded,
+      hours_open: hoursOpen,
+      needs_action: kind === 'open' || kind === 'auto_closed'
+    };
+  };
+
+  const rows = [
+    ...open.map(r => enrich(r, 'open')),
+    ...autoClosed.map(r => enrich(r, 'auto_closed'))
+  ];
+  // Prefer open; de-dupe by id
+  const seen = new Set();
+  const unique = [];
+  for (const r of rows) {
+    if (seen.has(r.id)) continue;
+    seen.add(r.id);
+    unique.push(r);
+  }
+  unique.sort((a, b) => {
+    if (a.inbox_kind !== b.inbox_kind) return a.inbox_kind === 'open' ? -1 : 1;
+    return String(b.work_date).localeCompare(String(a.work_date));
+  });
+  return unique;
+}
+
+function resolveMissedClockOut(id, action, actor) {
+  const { assertUserActor } = require('./authz');
+  const user = assertUserActor(actor, ['owner', 'manager', 'supervisor', 'assistant_manager']);
+  const row = getDb().prepare(`
+    SELECT a.*, e.full_name FROM employee_attendance a
+    JOIN employees e ON e.id = a.employee_id WHERE a.id = ?`).get(id);
+  if (!row) throw new Error('Attendance record not found');
+
+  if (action === 'clock_out_now') {
+    if (row.clock_out) throw new Error('Already clocked out');
+    const nowIso = new Date().toISOString();
+    if (row.break_start && !row.break_end) {
+      getDb().prepare('UPDATE employee_attendance SET break_end = ? WHERE id = ?').run(nowIso, id);
+    }
+    const note = `[Admin clock-out now by ${user.full_name || user.username} at ${nowIso}]`;
+    getDb().prepare(`UPDATE employee_attendance SET clock_out = ?, edited_by = ?, edited_at = datetime('now'),
+      notes = TRIM(COALESCE(notes,'') || char(10) || ?) WHERE id = ?`)
+      .run(nowIso, user.id, note, id);
+    recalcAttendanceHours(id);
+    applyAttendanceScheduleVariance(id, row.employee_id);
+  } else if (action === 'clock_out_shift_end') {
+    if (row.clock_out && !row.auto_closed) throw new Error('Already clocked out');
+    const sched = getEmployeeScheduleForDate(row.employee_id, row.work_date);
+    if (!sched) throw new Error('No schedule for that day — use Clock out now or Edit');
+    const { end } = scheduleWindow(sched);
+    if (!end) throw new Error('Schedule has no end time');
+    const outIso = end.toISOString();
+    if (row.break_start && !row.break_end) {
+      getDb().prepare('UPDATE employee_attendance SET break_end = ? WHERE id = ?').run(outIso, id);
+    }
+    const note = `[Admin closed at shift end ${sched.end_time} by ${user.full_name || user.username}]`;
+    getDb().prepare(`UPDATE employee_attendance SET clock_out = ?, auto_closed = 1,
+      status = CASE WHEN status = 'present' THEN 'auto_closed' ELSE status END,
+      edited_by = ?, edited_at = datetime('now'),
+      notes = TRIM(COALESCE(notes,'') || char(10) || ?) WHERE id = ?`)
+      .run(outIso, user.id, note, id);
+    recalcAttendanceHours(id);
+    applyAttendanceScheduleVariance(id, row.employee_id);
+  } else if (action === 'dismiss_auto_close') {
+    getDb().prepare(`UPDATE employee_attendance SET notes = TRIM(COALESCE(notes,'') || char(10) || ?),
+      edited_by = ?, edited_at = datetime('now') WHERE id = ?`)
+      .run(`[Auto-close reviewed OK by ${user.full_name || user.username}]`, user.id, id);
+  } else {
+    throw new Error('Unknown action');
+  }
+
+  getDb().prepare(`INSERT INTO audit_log (user_id, username, action, entity_type, entity_id, details) VALUES (?,?,?,?,?,?)`)
+    .run(user.id, user.username || user.full_name, 'resolve_missed_clock_out', 'employee_attendance', id,
+      JSON.stringify({ action, work_date: row.work_date, employee_id: row.employee_id }));
+
+  return getDb().prepare(`
+    SELECT a.*, e.full_name, e.employee_code, e.branch FROM employee_attendance a
+    JOIN employees e ON e.id = a.employee_id WHERE a.id = ?`).get(id);
+}
+
+function previewPayroll(periodStart, periodEnd, filters = {}) {
+  if (!periodStart || !periodEnd) throw new Error('Select period start and end dates');
+  if (String(periodEnd) < String(periodStart)) throw new Error('Period end must be on or after period start');
+  const db = getDb();
+  let emps = getEmployees({ status: 'Active' });
+  if (filters.employee_id) emps = emps.filter(e => e.id === parseInt(filters.employee_id, 10));
+  if (filters.branch) emps = emps.filter(e => (e.branch || '') === filters.branch);
+  return emps.map(emp => {
+    const calc = attendancePayroll.calculateEmployeePeriodPayroll(emp.id, periodStart, periodEnd);
+    const sched = calc.work_schedule || {};
+    const existing = db.prepare(`
+      SELECT id, status, net_salary FROM employee_payroll
+      WHERE employee_id = ? AND period_start = ? AND period_end = ?`).get(emp.id, periodStart, periodEnd);
+    const maxPay = Number(sched.max_payment) || 0;
+    const flags = [];
+    if (maxPay > 0 && (calc.totals.max_payment_applied || calc.totals.gross >= maxPay)) {
+      flags.push(`Max pay cap R${maxPay.toFixed(2)}`);
+    }
+    if (sched.allow_overtime_pay === false) flags.push('OT pay off');
+    if (sched.allow_hours_beyond_limit === false) flags.push('Hours capped');
+    if (Number(calc.totals.overtime_hours || 0) > 0 && sched.allow_overtime_pay !== false) {
+      flags.push(`OT ${Number(calc.totals.overtime_hours).toFixed(1)}h`);
+    }
+    if (existing) flags.push(existing.status === 'paid' ? 'Already paid' : 'Already generated');
+    return {
+      employee_id: emp.id,
+      full_name: emp.full_name,
+      employee_code: emp.employee_code,
+      branch: emp.branch,
+      period_start: periodStart,
+      period_end: periodEnd,
+      scheduled_hours: calc.totals.scheduled_hours,
+      hours_worked: calc.totals.hours_worked,
+      hours_missed: calc.totals.hours_missed,
+      late_minutes: calc.totals.late_minutes,
+      overtime_hours: calc.totals.overtime_hours,
+      overtime_pay: calc.totals.overtime_pay,
+      attendance_deductions: calc.totals.attendance_deductions,
+      gross_pay: calc.payroll.gross,
+      total_deductions: calc.payroll.totalDeductions,
+      net_salary: calc.net_salary,
+      max_payment: maxPay || null,
+      allow_overtime_pay: sched.allow_overtime_pay !== false,
+      allow_hours_beyond_limit: sched.allow_hours_beyond_limit !== false,
+      already_generated: !!existing,
+      existing_payroll_id: existing?.id || null,
+      existing_status: existing?.status || null,
+      flags
+    };
+  });
 }
 
 function getPayroll(employeeId) {
@@ -943,7 +1396,39 @@ function getSchedules(from, to, employeeId) {
     sql += ' AND s.employee_id = ?';
     params.push(parseInt(employeeId, 10));
   }
-  return getDb().prepare(sql + ' ORDER BY s.shift_date, s.start_time').all(...params);
+  const rows = getDb().prepare(sql + ' ORDER BY s.shift_date, s.start_time').all(...params);
+  if (employeeId == null || employeeId === '' || !from || !to) return rows;
+  const empId = parseInt(employeeId, 10);
+  const existing = new Set(rows.map(r => r.shift_date));
+  const emp = getDb().prepare('SELECT full_name, employee_code, work_schedule FROM employees WHERE id = ?').get(empId);
+  const ws = attendancePayroll.getEmployeeWorkSchedule({ work_schedule: emp?.work_schedule });
+  const workDays = defaultWorkDaysFromSchedule(ws);
+  const d = new Date(`${from}T12:00:00`);
+  const end = new Date(`${to}T12:00:00`);
+  while (d <= end) {
+    const dateStr = d.toLocaleDateString('en-CA');
+    if (!existing.has(dateStr) && ws.shift_start && ws.shift_end) {
+      const monDay = jsDayToMonBased(d.getDay());
+      if (workDays.includes(monDay)) {
+        rows.push({
+          employee_id: empId,
+          shift_date: dateStr,
+          shift_name: 'Default hours',
+          start_time: ws.shift_start,
+          end_time: ws.shift_end,
+          is_rest_day: 0,
+          _from_work_schedule: true,
+          full_name: emp?.full_name,
+          employee_code: emp?.employee_code,
+          id: null
+        });
+      }
+    }
+    d.setDate(d.getDate() + 1);
+  }
+  rows.sort((a, b) => String(a.shift_date).localeCompare(String(b.shift_date))
+    || String(a.start_time || '').localeCompare(String(b.start_time || '')));
+  return rows;
 }
 
 function saveSchedule(data) {
@@ -969,31 +1454,35 @@ function getDefaultWorkDays(expectedDaysPerWeek) {
   return Array.from({ length: n }, (_, i) => i);
 }
 
-function jsDayToMonBased(jsDay) {
-  return (jsDay + 6) % 7;
-}
-
 function isEmployeeOnLeave(employeeId, date) {
   return !!getDb().prepare(`
     SELECT 1 FROM employee_leave WHERE employee_id = ? AND status = 'approved'
     AND date(?) BETWEEN date(start_date) AND date(COALESCE(end_date, start_date))`).get(employeeId, date);
 }
 
-function autoGenerateShifts(weekStart, shiftTemplates, employeeIds, employeeOverrides = {}) {
+function autoGenerateShifts(weekStart, shiftTemplates, employeeIds, employeeOverrides = {}, options = {}) {
   let emps = getEmployees({ status: 'Active' });
   if (employeeIds?.length) emps = emps.filter(e => employeeIds.includes(e.id));
-  const weekEndDate = (() => {
-    const d = new Date(weekStart + 'T12:00:00');
-    d.setDate(d.getDate() + 6);
-    return d.toLocaleDateString('en-CA');
-  })();
+  const start = weekStart;
+  let days = 7;
+  if (options?.endDate) {
+    const s = new Date(`${start}T12:00:00`);
+    const e = new Date(`${options.endDate}T12:00:00`);
+    days = Math.round((e - s) / 86400000) + 1;
+  } else if (options?.days != null) {
+    days = Number(options.days);
+  } else if (options?.weeks != null) {
+    days = Number(options.weeks) * 7;
+  }
+  days = Math.max(1, Math.min(92, Math.floor(days) || 7));
+  const weekEndDate = addDaysIso(start, days - 1);
   for (const emp of emps) {
     getDb().prepare('DELETE FROM employee_schedules WHERE employee_id = ? AND shift_date >= ? AND shift_date <= ?')
-      .run(emp.id, weekStart, weekEndDate);
+      .run(emp.id, start, weekEndDate);
   }
   const created = [];
-  for (let day = 0; day < 7; day++) {
-    const dt = new Date(weekStart + 'T12:00:00');
+  for (let day = 0; day < days; day++) {
+    const dt = new Date(start + 'T12:00:00');
     dt.setDate(dt.getDate() + day);
     const shiftDate = dt.toLocaleDateString('en-CA');
     const monDay = jsDayToMonBased(dt.getDay());
@@ -1035,8 +1524,11 @@ function getDisciplinary(employeeId) {
 
 function saveDisciplinary(data, actorId) {
   const db = getDb();
+  const requireResp = data.requires_response != null
+    ? !!data.requires_response
+    : getLeavePortalSettings().require_disciplinary_response !== false;
   const r = db.prepare(`INSERT INTO employee_disciplinary (employee_id, record_type, incident_date, description, action_taken, notes, created_by, requires_response, status)
-    VALUES (?,?,?,?,?,?,?,?,?)`).run(data.employee_id, data.record_type, data.incident_date, data.description, data.action_taken, data.notes, actorId, data.requires_response ? 1 : 0, data.status || 'open');
+    VALUES (?,?,?,?,?,?,?,?,?)`).run(data.employee_id, data.record_type, data.incident_date, data.description, data.action_taken, data.notes, actorId, requireResp ? 1 : 0, data.status || 'open');
   const id = r.lastInsertRowid;
   const record = db.prepare(`
     SELECT d.*, e.full_name, e.employee_code FROM employee_disciplinary d
@@ -1053,6 +1545,9 @@ function saveDisciplinary(data, actorId) {
 
 function buildDisciplinaryPdfBuffer(id, copyType = 'staff') {
   const db = getDb();
+  const owner = db.prepare('SELECT employee_id FROM employee_disciplinary WHERE id = ?').get(id);
+  if (!owner) throw new Error('Disciplinary record not found');
+  assertSessionCanAccessEmployee(owner.employee_id);
   const record = db.prepare(`
     SELECT d.*, e.full_name, e.employee_code FROM employee_disciplinary d
     JOIN employees e ON e.id = d.employee_id WHERE d.id = ?`).get(id);
@@ -1128,6 +1623,9 @@ function getStaffNotifications() {
 }
 
 function buildPayslipPdf(payrollId, shopName, currency) {
+  const owner = getDb().prepare('SELECT employee_id FROM employee_payroll WHERE id = ?').get(payrollId);
+  if (!owner) throw new Error('Payroll record not found');
+  assertSessionCanAccessEmployee(owner.employee_id);
   const row = getDb().prepare(`
     SELECT p.*, e.full_name, e.employee_code, e.position, e.department,
       e.paye_registered, e.uif_registered, e.pension_registered, e.medical_registered, e.sdl_registered
@@ -1139,19 +1637,28 @@ function buildPayslipPdf(payrollId, shopName, currency) {
   return payroll.buildEnhancedPayslipPdf(row, deductions, shopName, currency || 'R', settings);
 }
 
+function generatedScheduleRows(from, to, employeeId) {
+  return getSchedules(from, to, employeeId).filter((r) => r.id && !r._from_work_schedule);
+}
+
 function buildSchedulePdf(from, to, shopName) {
-  const rows = getSchedules(from, to);
+  const rows = generatedScheduleRows(from, to);
   const doc = new jsPDF({ orientation: 'landscape' });
   doc.setFontSize(14);
   doc.text(`${shopName || 'Shop POS'} — Shift Schedule`, 14, 16);
   doc.setFontSize(10);
-  doc.text(`${from} to ${to}`, 14, 22);
+  doc.text(`${from} to ${to} · ${rows.length} generated shift(s)`, 14, 22);
+  const { pdfBytes } = require('./pdf-bytes');
+  if (!rows.length) {
+    doc.text('No generated shifts in this range. Generate shifts in Staff & HR first.', 14, 36);
+    return pdfBytes(doc);
+  }
   doc.autoTable({
     startY: 28,
     head: [['Date', 'Employee', 'Shift', 'Start', 'End', 'Branch']],
     body: rows.map(r => [r.shift_date, r.full_name, r.shift_name, r.start_time || '—', r.end_time || '—', r.branch || '—'])
   });
-  return doc.output('arraybuffer');
+  return pdfBytes(doc);
 }
 
 function buildStaffReportPdf(type, data, shopName, currency) {
@@ -1197,23 +1704,12 @@ function buildStaffReportPdf(type, data, shopName, currency) {
       body: data.map(p => [p.full_name || p.employee_id, `${p.period_start}–${p.period_end}`, `${currency}${Number(p.net_salary).toFixed(2)}`, p.status, p.payment_method])
     });
   }
-  return doc.output('arraybuffer');
-}
-
-function scheduleTimeToDate(dateStr, timeStr) {
-  if (!dateStr || !timeStr) return null;
-  const t = timeStr.length === 5 ? `${timeStr}:00` : timeStr;
-  return new Date(`${dateStr}T${t}`);
-}
-
-function getEmployeeScheduleForDate(employeeId, dateStr) {
-  return getDb().prepare(`
-    SELECT * FROM employee_schedules WHERE employee_id = ? AND shift_date = ? AND is_rest_day = 0`).get(employeeId, dateStr);
+  return require('./pdf-bytes').pdfBytes(doc);
 }
 
 function minutesAfterScheduledStart(schedule, actualIso) {
   if (!schedule?.start_time) return 0;
-  const expected = scheduleTimeToDate(schedule.shift_date, schedule.start_time);
+  const { start: expected } = scheduleWindow(schedule);
   const actual = new Date(actualIso);
   if (!expected || Number.isNaN(expected.getTime())) return 0;
   const diff = actual - expected - (5 * 60000);
@@ -1222,7 +1718,7 @@ function minutesAfterScheduledStart(schedule, actualIso) {
 
 function minutesBeforeScheduledEnd(schedule, actualIso) {
   if (!schedule?.end_time) return 0;
-  const expected = scheduleTimeToDate(schedule.shift_date, schedule.end_time);
+  const { end: expected } = scheduleWindow(schedule);
   const actual = new Date(actualIso);
   if (!expected || Number.isNaN(expected.getTime())) return 0;
   const diff = expected - actual - (5 * 60000);
@@ -1277,7 +1773,7 @@ function getUserLoginEvents(filters = {}) {
 }
 
 function buildSchedulePrintHtml(from, to, shopName) {
-  const rows = getSchedules(from, to);
+  const rows = generatedScheduleRows(from, to);
   const body = rows.map(s => `<tr>
     <td>${s.shift_date}</td><td>${s.full_name || ''}</td><td>${s.shift_name || ''}</td>
     <td>${s.is_rest_day ? 'Rest day' : `${s.start_time || ''} – ${s.end_time || ''}`}</td></tr>`).join('');
@@ -1332,9 +1828,10 @@ function validateOnAccount(customerId, amount, accountSettings) {
 
 module.exports = {
   nextEmployeeCode, calcNetSalary, getEmployees, getEmployee, getEmployeeByCode, getEmployeeByUserId,
-  verifyEmployeePin, verifyEmployeeCodePin, saveEmployee, deleteEmployee,
+  verifyEmployeePin, verifyEmployeeCodePin, adminOpenEmployeePortal, validateEmployeeLinks, saveEmployee, deleteEmployee,
   getTodayAttendance, clockAction, clockActionVerified, getAttendance, updateAttendance,
-  createManualAttendance, addAttendancePenalty, getAttendancePenalties, cancelAttendancePenalty,
+  deleteAttendance, createManualAttendance, addAttendancePenalty, getAttendancePenalties, cancelAttendancePenalty,
+  getMissedClockOutInbox, resolveMissedClockOut, previewPayroll,
   getAttendanceSummary, autoCloseOpenAttendance,
   getLeave, getAllLeave, saveLeave, approveLeave, buildLeavePdf, submitLeaveProof, confirmLeaveProof, getPendingLeaveProofs, leaveNeedsProof,
   getLeaveBalance, getLeavePortalSettings, getLeavePolicyForEmployee, validateLeaveRequest,

@@ -124,12 +124,11 @@ const OperationsPage = {
       return r;
     };
     document.getElementById('routine-pdf')?.addEventListener('click', async () => {
-      const r = await pdfFn();
-      if (r?.success) await API.saveFile(`${type}-routine-${Utils.today()}.pdf`, [{ name: 'PDF', extensions: ['pdf'] }], r.data);
+      await Utils.savePdfBuffer(`${type}-routine-${Utils.today()}.pdf`, await pdfFn());
     });
     document.getElementById('routine-print')?.addEventListener('click', async () => {
       const r = await pdfFn();
-      if (r?.success) await API.openPdf(r.data, `${type}-routine.pdf`);
+      if (r?.success) await Utils.printToA4(r, `${type}-routine.pdf`);
     });
     document.getElementById('routine-wa')?.addEventListener('click', async () => {
       const phone = this.app.user?.phone || this.app.settings?.phone;
@@ -137,14 +136,14 @@ const OperationsPage = {
       const label = type === 'opening' ? 'Morning Opening' : 'Closing';
       const done = (activeRun.items || []).filter(i => i.item_status === 'done' || (!i.item_status && i.completed)).length;
       const total = (activeRun.items || []).length;
+      const body = `${label} routine submitted — ${activeRun.run_date}\nStatus: ${activeRun.status}\nCompleted: ${done}/${total} tasks`;
       const r = await API.sendWhatsAppMessage({
         phone,
         recipient_name: this.app.user?.full_name || 'Supervisor',
         message_type: 'checklist',
-        body: `${label} routine submitted — ${activeRun.run_date}\nStatus: ${activeRun.status}\nCompleted: ${done}/${total} tasks`
+        body
       }, this.app.user);
-      if (!r.success) return Utils.toast(r.error, 'error');
-      window.open(r.data.url, '_blank');
+      await Utils.deliverWhatsApp(r, phone, body);
     });
     el.querySelectorAll('.routine-check').forEach(cb => cb.addEventListener('change', async () => {
       if (!cb.checked) { cb.checked = true; return; }
@@ -159,6 +158,7 @@ const OperationsPage = {
     this._cuFrom = this._cuFrom || Utils.daysAgo(30);
     this._cuTo = this._cuTo || Utils.today();
     const canApprove = ['owner', 'manager', 'assistant_manager', 'supervisor'].includes(this.app.user?.role);
+    const canEdit = ['owner', 'manager', 'assistant_manager'].includes(this.app.user?.role);
     const [summaryRes, cashupsRes, dropsRes] = await Promise.all([
       API.getCashUpSummary(this._cuFrom, this._cuTo),
       API.getCashUps({ from: this._cuFrom, to: this._cuTo, limit: 500 }),
@@ -266,6 +266,8 @@ const OperationsPage = {
             : '<span class="tag" style="background:var(--warning)">Pending</span>'}</td>
           <td style="white-space:nowrap">
             ${canApprove && !c.manager_approved ? `<button class="btn btn-sm btn-success cu-approve" data-id="${c.id}">Approve</button>` : ''}
+            ${canEdit ? `<button class="btn btn-sm btn-ghost cu-edit" data-id="${c.id}">Edit</button>` : ''}
+            ${canEdit ? `<button class="btn btn-sm btn-danger cu-delete" data-id="${c.id}">Delete</button>` : ''}
             <button class="btn btn-sm btn-ghost cu-pdf" data-id="${c.id}">PDF</button>
             <button class="btn btn-sm btn-ghost cu-print" data-id="${c.id}">Print</button>
             <button class="btn btn-sm btn-ghost cu-wa" data-id="${c.id}">WhatsApp</button>
@@ -380,15 +382,51 @@ const OperationsPage = {
         this.renderCashUp(el);
       });
     }));
+    el.querySelectorAll('.cu-edit').forEach(b => b.addEventListener('click', () => {
+      if (!canEdit) return Utils.toast('Only owner or manager can edit cash-outs', 'error');
+      const id = parseInt(b.dataset.id, 10);
+      const row = cashups.find(c => c.id === id);
+      if (!row) return;
+      Utils.showModal('Edit Cash-Out', `
+        <p class="muted">Editing amounts will set status back to <strong>Pending</strong> for re-approval.</p>
+        <div class="form-grid">
+          <div class="field"><label>Opening cash</label><input type="number" step="0.01" id="cu-edit-open" value="${Number(row.opening_cash) || 0}"></div>
+          <div class="field"><label>Expected cash</label><input type="number" step="0.01" id="cu-edit-exp" value="${Number(row.expected_cash) || 0}"></div>
+          <div class="field"><label>Actual cash</label><input type="number" step="0.01" id="cu-edit-act" value="${Number(row.actual_cash) || 0}"></div>
+          <div class="field full"><label>Notes</label><input id="cu-edit-notes" value="${Utils.escHtml(row.notes || '')}"></div>
+        </div>`,
+        '<button class="btn btn-primary" id="cu-edit-go">Save</button>');
+      document.getElementById('cu-edit-go')?.addEventListener('click', async () => {
+        const btn = document.getElementById('cu-edit-go');
+        if (btn) btn.disabled = true;
+        const r = await API.updateCashUp(id, {
+          opening_cash: parseFloat(document.getElementById('cu-edit-open')?.value) || 0,
+          expected_cash: parseFloat(document.getElementById('cu-edit-exp')?.value) || 0,
+          actual_cash: parseFloat(document.getElementById('cu-edit-act')?.value) || 0,
+          notes: document.getElementById('cu-edit-notes')?.value || ''
+        }, this.app.user);
+        if (btn) btn.disabled = false;
+        if (!r.success) return Utils.toast(r.error || 'Update failed', 'error');
+        Utils.hideModal();
+        Utils.toast('Cash-out updated', 'success');
+        this.renderCashUp(el);
+      });
+    }));
+    el.querySelectorAll('.cu-delete').forEach(b => b.addEventListener('click', async () => {
+      if (!canEdit) return Utils.toast('Only owner or manager can delete cash-outs', 'error');
+      const id = parseInt(b.dataset.id, 10);
+      const row = cashups.find(c => c.id === id);
+      if (!confirm(`Delete cash-out for ${row?.user_name || 'cashier'} (${Utils.formatMoney(row?.actual_cash, currency)})?`)) return;
+      const r = await API.deleteCashUp(id, this.app.user);
+      if (!r.success) return Utils.toast(r.error || 'Delete failed', 'error');
+      Utils.toast('Cash-out deleted', 'success');
+      this.renderCashUp(el);
+    }));
     el.querySelectorAll('.cu-pdf').forEach(b => b.addEventListener('click', async () => {
-      const r = await API.getCashUpPdf(parseInt(b.dataset.id, 10));
-      if (!r.success) return Utils.toast(r.error, 'error');
-      await API.saveFile(`cashout-${b.dataset.id}.pdf`, [{ name: 'PDF', extensions: ['pdf'] }], r.data);
+      await Utils.savePdfBuffer(`cashout-${b.dataset.id}.pdf`, await API.getCashUpPdf(parseInt(b.dataset.id, 10)));
     }));
     el.querySelectorAll('.cu-print').forEach(b => b.addEventListener('click', async () => {
-      const r = await API.getCashUpPdf(parseInt(b.dataset.id, 10));
-      if (!r.success) return Utils.toast(r.error, 'error');
-      await API.openPdf(r.data, `cashout-${b.dataset.id}.pdf`);
+      await Utils.printToA4(await API.getCashUpPdf(parseInt(b.dataset.id, 10)), `cashout-${b.dataset.id}.pdf`);
     }));
     el.querySelectorAll('.cu-wa').forEach(b => b.addEventListener('click', async () => {
       const c = cashups.find(x => x.id === parseInt(b.dataset.id, 10));
@@ -397,8 +435,7 @@ const OperationsPage = {
       if (!adminPhone) return Utils.toast('Cashout WhatsApp number not configured — set it in Admin → Shift Management', 'error');
       const msg = `Cash-out — ${c.user_name || 'Cashier'}\nExpected: ${Utils.formatMoney(c.expected_cash, currency)}\nActual: ${Utils.formatMoney(c.actual_cash, currency)}\nDiff: ${Utils.formatMoney(c.difference, currency)}\nStatus: ${c.manager_approved ? 'Approved' : 'Pending approval'}`;
       const r = await API.sendWhatsAppMessage({ phone: adminPhone, recipient_name: 'Admin', message_type: 'cashout', body: msg }, this.app.user);
-      if (!r.success) return Utils.toast(r.error, 'error');
-      window.open(r.data.url, '_blank');
+      await Utils.deliverWhatsApp(r, adminPhone, msg);
     }));
   },
 

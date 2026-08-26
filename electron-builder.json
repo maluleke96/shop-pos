@@ -2,11 +2,13 @@
   "appId": "com.shoppos.offline",
   "productName": "Shop POS",
   "directories": {
-    "output": "dist"
+    "output": "dist",
+    "buildResources": "build"
   },
   "files": [
     "electron/**/*",
     "src/**/*",
+    "lib/**/*",
     "package.json"
   ],
   "win": {
@@ -22,11 +24,19 @@
     ]
   },
   "nsis": {
-    "oneClick": true,
-    "allowToChangeInstallationDirectory": false,
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "allowElevation": true,
     "createDesktopShortcut": true,
     "createStartMenuShortcut": true,
-    "artifactName": "Shop POS Setup ${arch}.${ext}"
+    "runAfterFinish": true,
+    "deleteAppDataOnUninstall": false,
+    "perMachine": false,
+    "include": "installer.nsh",
+    "installerLanguages": ["en_US"],
+    "displayLanguageSelector": false,
+    "artifactName": "Shop POS Setup ${arch}.${ext}",
+    "shortcutName": "Shop POS"
   },
   "portable": {
     "artifactName": "ShopPOS-Portable-${arch}.${ext}"

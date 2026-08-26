@@ -1,6 +1,7 @@
 const XLSX = require('xlsx');
 const { jsPDF } = require('jspdf');
 require('jspdf-autotable');
+const { pdfBytes } = require('./pdf-bytes');
 
 function buildExcelBuffer(sheets) {
   const wb = XLSX.utils.book_new();
@@ -8,7 +9,9 @@ function buildExcelBuffer(sheets) {
     const ws = XLSX.utils.json_to_sheet(sheet.data);
     XLSX.utils.book_append_sheet(wb, ws, sheet.name.slice(0, 31));
   }
-  return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  // 'array' works in browser bundle; 'buffer' needs Node Buffer
+  const arr = XLSX.write(wb, { type: 'array', bookType: 'xlsx' });
+  return arr instanceof Uint8Array ? arr : new Uint8Array(arr);
 }
 
 function buildPdfBuffer(title, headers, rows, company = {}) {
@@ -61,7 +64,7 @@ function buildPdfBuffer(title, headers, rows, company = {}) {
     doc.text(`${company.shop_name || 'Shop POS'} — Page ${i} of ${pageCount}`, 14, 290);
   }
 
-  return Buffer.from(doc.output('arraybuffer'));
+  return pdfBytes(doc);
 }
 
 function escapeHtml(s) {
@@ -186,7 +189,7 @@ function buildQuotePdf(quote, company = {}) {
     doc.text(noteLines, 14, finalY);
   }
 
-  return Buffer.from(doc.output('arraybuffer'));
+  return pdfBytes(doc);
 }
 
 module.exports = { buildExcelBuffer, buildPdfBuffer, buildReportHtml, buildQuotePdf };

@@ -200,7 +200,7 @@ const SuppliersPage = {
   },
 
   async printPaymentSlip(payment, supplier) {
-    await API.printA4(this.buildPaymentHtml(payment, supplier));
+    await Utils.printToA4(this.buildPaymentHtml(payment, supplier));
   },
 
   async savePaymentPdf(payment, supplier) {

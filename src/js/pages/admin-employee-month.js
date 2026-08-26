@@ -56,6 +56,7 @@
             <td>${r.bonus_amount ? Utils.formatMoney(r.bonus_amount, currency) : '—'}</td>
             <td>${r.phone || '—'}</td>
             <td style="white-space:nowrap">
+              <button class="btn btn-sm btn-primary eom-hist-edit" data-my="${r.month_year}">Edit</button>
               ${r.certificate_path ? `<button class="btn btn-sm btn-ghost eom-hist-pdf" data-my="${r.month_year}">PDF</button>
                 <button class="btn btn-sm btn-ghost eom-hist-print" data-my="${r.month_year}">Print</button>` : ''}
               <button class="btn btn-sm btn-success eom-hist-wa" data-my="${r.month_year}" ${!r.phone ? 'disabled title="No phone on file"' : ''}>WhatsApp</button>
@@ -83,11 +84,14 @@
 
       el.querySelectorAll('.eom-hist-pdf').forEach(b => b.addEventListener('click', () => openCert(b.dataset.my)));
       el.querySelectorAll('.eom-hist-print').forEach(b => b.addEventListener('click', () => openCert(b.dataset.my)));
+      el.querySelectorAll('.eom-hist-edit').forEach(b => b.addEventListener('click', () => {
+        this.monthYear = b.dataset.my;
+        this.tab = 'award';
+        this.render(this._rootEl || el.closest('.admin-section')?.parentElement || el, this.admin);
+      }));
       el.querySelectorAll('.eom-hist-wa').forEach(b => b.addEventListener('click', async () => {
         const r = await API.notifyEmployeeOfMonthWhatsApp(b.dataset.my, this.app.user);
-        if (!r.success) return Utils.toast(r.error, 'error');
-        if (r.data?.url) window.open(r.data.url, '_blank');
-        Utils.toast('WhatsApp prepared for employee', 'success');
+        await Utils.deliverWhatsApp(r);
       }));
       el.querySelectorAll('.eom-hist-del').forEach(b => b.addEventListener('click', async () => {
         if (!confirm(`Delete Employee of Month award for ${b.dataset.name} (${b.dataset.my})?`)) return;
@@ -156,6 +160,7 @@
           <button class="btn btn-primary" id="eom-save">Confirm &amp; Award</button>
           <button class="btn btn-success" id="eom-whatsapp">Send to Staff WhatsApp</button>
           ${record?.certificate_path ? `<button class="btn btn-ghost" id="eom-open-cert">Open Certificate</button>` : ''}
+          ${record?.id ? `<button class="btn btn-danger" id="eom-delete-award">Delete Award</button>` : ''}
         </div>
         ${record?.certificate_path ? `<p class="muted" style="margin-top:8px">Certificate ready · staff portal notification posted</p>` : ''}
         </div></div>`;
@@ -198,20 +203,27 @@
 
       document.getElementById('eom-whatsapp')?.addEventListener('click', async () => {
         const r = await API.notifyEmployeeOfMonthWhatsApp(this.monthYear, this.app.user);
-        if (!r.success) return Utils.toast(r.error, 'error');
-        if (r.data?.url) window.open(r.data.url, '_blank');
-        Utils.toast('WhatsApp prepared — send to employee phone', 'success');
+        await Utils.deliverWhatsApp(r);
       });
 
       document.getElementById('eom-open-cert')?.addEventListener('click', async () => {
         const path = record?.certificate_path;
         if (path) await API.openPath(path);
       });
+      document.getElementById('eom-delete-award')?.addEventListener('click', async () => {
+        if (!record?.id) return;
+        if (!confirm(`Delete Employee of Month award for ${this.monthYear}?`)) return;
+        const r = await API.deleteEmployeeOfMonth(record.id, this.app.user);
+        if (!r.success) return Utils.toast(r.error, 'error');
+        Utils.toast('Award deleted', 'success');
+        this.render(contentEl || el, admin);
+      });
     },
 
     async render(el, admin) {
       this.admin = admin;
       this.app = admin.app;
+      this._rootEl = el;
       this.monthYear = this.monthYear || this.currentMonthYear();
       this.tab = this.tab || 'award';
 

@@ -8,12 +8,23 @@
   <link rel="stylesheet" href="css/app.css">
   <link rel="preload" href="js/app.js" as="script">
   <link rel="preload" href="js/api.js" as="script">
-  <link rel="stylesheet" href="css/flyer-studio.css" media="print" onload="this.media='all'">
-  <link rel="stylesheet" href="css/recipe-production.css" media="print" onload="this.media='all'">
-  <link rel="stylesheet" href="css/marketing-agent.css" media="print" onload="this.media='all'">
+  <!-- Heavy feature CSS loads on demand when those screens open -->
 </head>
 <body>
   <div id="app">
+    <!-- Welcome / choose Sign in or Set up shop -->
+    <div id="screen-welcome" class="screen hidden">
+      <div class="login-card welcome-card">
+        <div class="login-logo" id="welcome-logo">🏪</div>
+        <h1 id="welcome-title">Shop POS</h1>
+        <p class="login-sub" id="welcome-sub">Sign in if you already have an account, or set up your shop to get started.</p>
+        <p id="welcome-status" class="muted welcome-status hidden"></p>
+        <button type="button" class="btn btn-primary btn-lg btn-block" id="welcome-signin">Sign In</button>
+        <button type="button" class="btn btn-ghost btn-lg btn-block" id="welcome-setup" style="margin-top:10px">Set Up My Shop</button>
+        <p class="muted" style="margin-top:18px;font-size:12px">Cloud till on Railway · your data stays in your shop database</p>
+      </div>
+    </div>
+
     <!-- Login Screen -->
     <div id="screen-login" class="screen hidden">
       <div class="login-card">
@@ -33,23 +44,20 @@
             <input type="password" id="login-password" autocomplete="current-password" required>
           </div>
           <div class="field" id="pin-field">
-            <label>PIN <span class="muted">(optional)</span></label>
-            <input type="password" id="login-pin" maxlength="6" inputmode="numeric">
+            <label>PIN <span class="muted">(required if your account has a PIN)</span></label>
+            <input type="password" id="login-pin" maxlength="12" inputmode="numeric">
           </div>
           <p id="login-error" class="error-msg hidden"></p>
           <button type="submit" class="btn btn-primary btn-lg btn-block">Sign In</button>
-          <button type="button" class="btn btn-ghost btn-lg btn-block" id="login-staff-portal" style="margin-top:10px">👷 Staff Portal Login</button>
-          <button type="button" class="btn btn-ghost btn-lg btn-block" id="login-marketing-agent" style="margin-top:8px">📣 Marketing Agent System</button>
-          <button type="button" class="btn btn-ghost btn-lg btn-block" id="login-recipe-production" style="margin-top:8px">🍳 Login to Recipe &amp; Production Management System</button>
+          <button type="button" class="btn btn-ghost btn-sm btn-block" id="login-back-welcome" style="margin-top:10px">← Back</button>
           <p style="text-align:center;margin-top:14px"><button type="button" class="btn btn-ghost btn-sm" id="login-forgot">Forgot username or password?</button></p>
-          <p style="text-align:center;margin-top:6px"><button type="button" class="btn btn-ghost btn-sm" id="login-reset-business" style="color:var(--danger);font-size:12px">Delete business & start over</button></p>
         </form>
       </div>
     </div>
 
     <!-- Standalone Staff Portal (login page entry) -->
     <div id="screen-staff-portal" class="screen hidden">
-      <div id="staff-portal-root" style="min-height:100vh;padding:16px;background:var(--bg)"></div>
+      <div id="staff-portal-root"></div>
     </div>
 
     <!-- Standalone Recipe & Production Management System -->
@@ -66,7 +74,15 @@
     <div id="screen-setup" class="screen hidden">
       <div class="setup-card">
         <h1>Welcome! Let's set up your shop</h1>
-        <p class="setup-sub">This only takes a minute. Everything stays on this computer.</p>
+        <p class="setup-sub">This only takes a minute. Create your shop and owner account.</p>
+        <p style="margin:0 0 16px"><button type="button" class="btn btn-ghost btn-sm" id="setup-back-welcome">← Back</button></p>
+        <div class="card" style="margin-bottom:20px;border:1px solid var(--border)">
+          <div class="card-body" style="padding:16px">
+            <h3 style="margin:0 0 6px;font-size:16px">Already have Shop POS data?</h3>
+            <p class="muted" style="margin:0 0 12px;font-size:13px">Upload a full <strong>.db</strong> export from another device to continue with that shop (products, staff, settings, and history).</p>
+            <button type="button" class="btn btn-ghost" id="setup-restore-db">Restore from backup file</button>
+          </div>
+        </div>
         <form id="setup-form">
           <div class="setup-grid">
             <div class="field"><label>Shop Name *</label><input type="text" id="setup-shop-name" required placeholder="Happy Restaurant"></div>
@@ -82,7 +98,7 @@
             <div class="field"><label>Your Name *</label><input type="text" id="setup-owner-name" required></div>
             <div class="field"><label>Username *</label><input type="text" id="setup-owner-username" required></div>
             <div class="field"><label>Password *</label><input type="password" id="setup-owner-password" required minlength="6"></div>
-            <div class="field"><label>PIN <span class="muted">(optional)</span></label><input type="password" id="setup-owner-pin" maxlength="6"></div>
+            <div class="field"><label>PIN <span class="muted">(optional)</span></label><input type="password" id="setup-owner-pin" maxlength="12"></div>
             <hr class="full">
             <h3 class="full">Private Recovery Phrase</h3>
             <p class="full muted" style="margin:0 0 8px;font-size:13px">Only you will know this phrase. It is used to recover your username or reset your password if you forget them. It is stored securely and never shown to anyone.</p>
@@ -117,6 +133,7 @@
         </div>
         <header class="topbar">
           <div class="topbar-left">
+            <button class="btn-icon" id="btn-nav-back" aria-label="Go back" title="Back">←</button>
             <button class="btn-icon" id="btn-sidebar-toggle" aria-label="Open menu">☰</button>
             <h2 id="page-title">Dashboard</h2>
           </div>
@@ -131,6 +148,14 @@
         <div class="page-content" id="page-content"></div>
       </main>
     </div>
+
+    <div id="screen-display" class="screen hidden">
+      <div class="display-overlay-bar">
+        <button type="button" class="btn btn-ghost" id="display-close">✕ Close display</button>
+        <strong id="display-title">Kitchen Display</strong>
+      </div>
+      <iframe id="display-frame" title="Display" class="display-overlay-frame"></iframe>
+    </div>
   </div>
 
   <!-- Modal -->
@@ -144,62 +169,27 @@
 
   <!-- Toast -->
   <div id="toast-container"></div>
+  <div id="shoppos-conn-status" class="conn-status conn-online" role="status" aria-live="polite">
+    <span class="conn-dot"></span><span class="conn-text">Online</span>
+  </div>
 
   <div id="mobile-loading" style="display:none;position:fixed;inset:0;align-items:center;justify-content:center;background:#0f172a;color:#e2e8f0;z-index:99999;flex-direction:column;gap:12px;font-family:system-ui,sans-serif"><p style="margin:0">Loading…</p></div>
-  <!-- defer: parse HTML first; load order preserved. No CDN (CSP + latency). RPC does not need supabase-js on the client. -->
+  <!-- Core only at startup — page modules load on first navigate (much faster sign-in) -->
   <script defer src="js/env.js"></script>
+  <script defer src="js/app-mode.js"></script>
+  <script defer src="js/connection-status.js"></script>
   <script defer src="js/offline-queue.js"></script>
   <script defer src="js/supabase-bootstrap.js"></script>
+  <script defer src="js/installer-sync.js"></script>
   <script defer src="js/sound.js"></script>
   <script defer src="js/api.js"></script>
   <script defer src="js/utils.js"></script>
+  <script defer src="js/data-cache.js"></script>
   <script defer src="js/admin-override.js"></script>
   <script defer src="js/payment-ui.js"></script>
   <script defer src="js/printer-ui.js"></script>
   <script defer src="js/receipt.js"></script>
   <script defer src="js/export.js"></script>
-  <script defer src="js/staff-selfie-ui.js"></script>
-  <script defer src="js/staff-portal-standalone.js"></script>
-  <script defer src="js/marketing-agent-app.js"></script>
-  <script defer src="js/recipe-production/app.js"></script>
-  <script defer src="js/pages/dashboard.js"></script>
-  <script defer src="js/pages/pos.js"></script>
-  <script defer src="js/pages/staff.js"></script>
-  <script defer src="js/pages/staff-owner-salary.js"></script>
-  <script defer src="js/pages/products.js"></script>
-  <script defer src="js/pages/categories.js"></script>
-  <script defer src="js/pages/stock.js"></script>
-  <script defer src="js/pages/customers.js"></script>
-  <script defer src="js/pages/suppliers.js"></script>
-  <script defer src="js/pages/expenses.js"></script>
-  <script defer src="js/pages/returns.js"></script>
-  <script defer src="js/pages/quotes.js"></script>
-  <script defer src="js/pages/layby.js"></script>
-  <script defer src="js/pages/giftcards.js"></script>
-  <script defer src="js/pages/operations.js"></script>
-  <script defer src="js/pages/restaurant.js"></script>
-  <script defer src="js/pages/purchase-orders.js"></script>
-  <script defer src="js/pages/reports.js"></script>
-  <script defer src="js/pages/bookkeeping.js"></script>
-  <script defer src="js/pages/users.js"></script>
-  <script defer src="js/pages/audit.js"></script>
-  <script defer src="js/pages/admin.js"></script>
-  <script defer src="js/pages/admin-pro.js"></script>
-  <script defer src="js/pages/admin-audit.js"></script>
-  <script defer src="js/pages/admin-staff.js"></script>
-  <script defer src="js/pages/admin-hr.js"></script>
-  <script defer src="js/pages/admin-operations.js"></script>
-  <script defer src="js/pages/admin-combos.js"></script>
-  <script defer src="js/pages/admin-quotes.js"></script>
-  <script defer src="js/pages/admin-payroll.js"></script>
-  <script defer src="js/pages/admin-employee-month.js"></script>
-  <script defer src="js/pages/admin-recruitment.js"></script>
-  <script defer src="js/pages/admin-marketing.js"></script>
-  <script defer src="js/pages/marketing-flyers.js"></script>
-  <script defer src="js/pages/marketing-flyers-studio.js"></script>
-  <script defer src="js/pages/document-hub.js"></script>
-  <script defer src="js/pages/whatsapp.js"></script>
-  <script defer src="js/pages/settings.js"></script>
   <script defer src="js/app.js"></script>
 </body>
 </html>

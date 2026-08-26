@@ -1,26 +1,32 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 // Inject Supabase env for shared cloud backend (same project as Netlify/Android).
+const isLocalInstaller = process.env.SHOP_POS_LOCAL_INSTALLER === '1';
 const supabaseUrl = process.env.SHOP_POS_SUPABASE_URL || process.env.SUPABASE_URL || '';
 const supabaseAnon = process.env.SHOP_POS_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || '';
-const rpcUrl = process.env.SHOP_POS_RPC_URL || process.env.RPC_URL || '';
+const rpcUrl = isLocalInstaller ? '' : (process.env.SHOP_POS_RPC_URL || process.env.RPC_URL || '');
+const syncUrl = process.env.SHOP_POS_SYNC_URL || 'https://peaceful-motivation-production-7dd2.up.railway.app';
+contextBridge.exposeInMainWorld('__SHOP_POS_LOCAL_INSTALLER__', isLocalInstaller);
 contextBridge.exposeInMainWorld('__SHOP_POS_ENV__', {
   SUPABASE_URL: supabaseUrl,
   SUPABASE_ANON_KEY: supabaseAnon,
   SHOP_POS_SUPABASE_URL: supabaseUrl,
   SHOP_POS_SUPABASE_ANON_KEY: supabaseAnon,
   RPC_URL: rpcUrl,
-  SHOP_POS_RPC_URL: rpcUrl
+  SHOP_POS_RPC_URL: rpcUrl,
+  SHOP_POS_SYNC_URL: syncUrl,
+  SHOP_POS_CLOUD_URL: syncUrl
 });
-contextBridge.exposeInMainWorld('__SHOP_POS_USE_SUPABASE__', !!(supabaseUrl && supabaseAnon) || !!rpcUrl);
+contextBridge.exposeInMainWorld('__SHOP_POS_USE_SUPABASE__', isLocalInstaller ? false : (!!(supabaseUrl && supabaseAnon) || !!rpcUrl));
 
 const channels = [
   'app:quit',
   'auth:login', 'auth:logout', 'auth:getUsers', 'auth:createUser', 'auth:updateUser', 'auth:deleteUser', 'auth:permanentlyDeleteUser', 'auth:verifySession',
-  'auth:hasRecovery', 'auth:recoverVerify', 'auth:recoverReset', 'auth:setRecoverySecret', 'auth:factoryReset',
-  'auth:clearOperationalData',
+  'auth:hasRecovery', 'auth:getRecoveryStatus', 'auth:recoverVerify', 'auth:recoverReset', 'auth:seedInstallerAccount', 'auth:setRecoverySecret', 'auth:factoryReset',
+  'auth:clearOperationalData', 'auth:listClearDataCategories',
   'auth:verifyBookkeepingPassword', 'auth:setBookkeepingPassword',
   'settings:get', 'settings:getParsed', 'settings:save', 'settings:saveJson', 'settings:completeSetup',
+  'settings:detectExistingBusiness', 'settings:adoptExistingBusiness',
   'settings:submitRequest', 'settings:getPendingRequests', 'settings:getRequestHistory', 'settings:approveRequest', 'settings:rejectRequest',
   'settings:updateRequest', 'settings:deleteRequest',
   'categories:get', 'categories:save', 'categories:delete',
@@ -32,9 +38,10 @@ const channels = [
   'expenses:get', 'expenses:save', 'expenses:delete',
   'customers:get', 'customers:getOne', 'customers:save', 'customers:delete', 'customers:history',
   'suppliers:get', 'suppliers:save', 'suppliers:pay', 'suppliers:payments',
-  'po:get', 'po:getDetail', 'po:save', 'po:receive', 'po:receivePartial',
+  'po:get', 'po:getDetail', 'po:save', 'po:receive', 'po:receivePartial', 'po:delete', 'po:update',
   'dashboard:stats', 'inventory:stats', 'analytics:sales',
-  'shifts:open', 'shifts:close', 'shifts:closePreview', 'shifts:get', 'shifts:current',
+  'shifts:open', 'shifts:close', 'shifts:closePreview', 'shifts:get', 'shifts:getOpenAll',
+  'shifts:forceClose', 'shifts:update', 'shifts:delete', 'shifts:current',
   'shifts:cashDrop', 'shifts:cashDrops', 'shifts:confirmCashDrop',
   'settings:getSalesTargets', 'settings:saveSalesTargets',
   'settings:getShiftSettings', 'settings:enforceCashoutDeadlines', 'settings:saveShiftSettings',
@@ -45,13 +52,13 @@ const channels = [
   'audit:get', 'notifications:get', 'notifications:read', 'notifications:readAll',
   'notifications:createTest', 'notifications:ensureDemoSound', 'notifications:refreshPaymentDue',
   'search:global', 'printers:list', 'printers:listByConnection', 'printers:connect', 'printers:status',
-  'backup:create', 'backup:restore', 'backup:export',
+  'backup:create', 'backup:restore', 'backup:restoreSetup', 'backup:export',
   'deviceSettings:get', 'deviceSettings:save',
   'print:receipt', 'print:kitchen', 'print:a4', 'print:preview', 'print:openDrawer', 'print:barcode',
   'kitchen:openDisplay', 'kitchen:closeDisplay', 'kitchen:refreshDisplay',
   'customer:openDisplay', 'customer:closeDisplay', 'customer:refreshDisplay',
   'export:excel', 'export:pdf', 'export:print',
-  'file:selectDocument', 'file:persistMobileDocument', 'file:selectImage', 'file:save', 'file:openPdf', 'file:openPath',
+  'file:selectDocument', 'file:persistMobileDocument', 'file:selectImage', 'file:save', 'file:openPdf', 'file:printPdf', 'file:openPath', 'file:openExternal',
   'file:copyImageToClipboard', 'file:shareNative', 'file:getImageDataUrl', 'file:selectAudio', 'file:getAudioDataUrl',
   'db:health', 'db:optimize', 'db:repair', 'db:resetDemo', 'db:archive', 'db:recalcStock', 'db:logs',
   'quotes:get', 'quotes:getOne', 'quotes:save', 'quotes:convert', 'quotes:delete', 'quotes:markConverted', 'quotes:reactivate', 'quotes:pdf',
@@ -62,9 +69,9 @@ const channels = [
   'operating:log',
   'stockcount:get', 'stockcount:getOne', 'stockcount:create', 'stockcount:updateLine', 'stockcount:complete',
   'waste:get', 'waste:record', 'waste:approve', 'waste:reject', 'waste:returnStock',
-  'cashup:get', 'cashup:getOne', 'cashup:byShift', 'cashup:create', 'cashup:approve', 'cashup:summary', 'cashup:pdf',
+  'cashup:get', 'cashup:getOne', 'cashup:byShift', 'cashup:create', 'cashup:approve', 'cashup:update', 'cashup:delete', 'cashup:summary', 'cashup:pdf',
   'automation:get', 'automation:save', 'automation:delete',
-  'customfields:get', 'customfields:save', 'customfields:delete',
+  'customfields:get', 'customfields:save', 'customfields:delete', 'customfields:values', 'customfields:saveValues',
   'tables:get', 'tables:save', 'kitchen:get', 'kitchen:status', 'kitchen:create',
   'dev:info', 'dev:activate', 'dev:resetTrial',
   'audit:salesList', 'audit:searchSales', 'audit:voidSale', 'audit:soldProducts', 'audit:lowPerformance',
@@ -73,14 +80,15 @@ const channels = [
   'audit:returnReasons', 'audit:reopenReturn', 'auth:verifyManagerPin',
   'security:generateCode', 'security:getTodayCode', 'security:verifyCode',
   'staff:getEmployees', 'staff:getEmployee', 'staff:getEmployeeByUserId', 'staff:saveEmployee', 'staff:deleteEmployee',
-  'staff:login', 'staff:saveSelfie', 'staff:getSelfies', 'staff:getSelfie', 'staff:updateSelfie', 'staff:deleteSelfie',
+  'staff:login', 'staff:adminOpen', 'staff:logout', 'staff:validateLinks', 'staff:saveSelfie', 'staff:getSelfies', 'staff:getSelfie', 'staff:updateSelfie', 'staff:deleteSelfie',
   'staff:clock', 'staff:getAttendance', 'staff:getTodayAttendance', 'staff:getPortalFeed',
   'staff:getLeave', 'staff:getAllLeave', 'staff:saveLeave', 'staff:approveLeave', 'staff:leavePdf',
   'staff:submitLeaveProof', 'staff:confirmLeaveProof', 'staff:getPendingLeaveProofs',
   'staff:getLeaveBalance', 'staff:getLeavePolicy',
   'staff:getPayroll', 'staff:generatePayroll', 'staff:paySalary',
-  'staff:getPayrollDashboard', 'staff:saveWorkSchedule', 'staff:updateAttendance',
-  'staff:createAttendance', 'staff:addAttendancePenalty', 'staff:getAttendancePenalties',
+  'staff:getPayrollDashboard', 'staff:previewPayroll', 'staff:getMissedClockOutInbox', 'staff:resolveMissedClockOut',
+  'staff:saveWorkSchedule', 'staff:updateAttendance',
+  'staff:deleteAttendance', 'staff:createAttendance', 'staff:addAttendancePenalty', 'staff:getAttendancePenalties',
   'staff:cancelAttendancePenalty', 'staff:getAttendanceSummary',
   'staff:saveHrDocument', 'staff:getHrDocuments', 'staff:getHrDocument', 'staff:buildHrDocumentHtml',
   'staff:getSchedules', 'staff:saveSchedule', 'staff:deleteSchedule', 'staff:autoShifts',
@@ -92,6 +100,10 @@ const channels = [
   'staff:validateAccount',
   'hr:getEvalCategories', 'hr:populateContract', 'hr:fillContractBody', 'hr:getContractTemplates', 'hr:saveContractTemplate', 'hr:deleteContractTemplate',
   'hr:getContracts', 'hr:getContract', 'hr:saveContract', 'hr:signContract', 'hr:contractPdf',
+  'hr:openContractResign', 'hr:attachContractDoc', 'hr:getContractsForEmployee',
+  'salaryClaims:list', 'salaryClaims:get', 'salaryClaims:save', 'salaryClaims:delete',
+  'salaryClaims:claim', 'salaryClaims:approve', 'salaryClaims:reject', 'salaryClaims:markPaid',
+  'salaryClaims:pdf', 'salaryClaims:fromPayroll',
   'hr:getProbations', 'hr:getProbation', 'hr:saveProbation', 'hr:deleteProbation', 'hr:getDecisionRules', 'hr:saveDecisionRule',
   'hr:saveDailyEvaluation', 'hr:getEvaluationHistory', 'hr:getRecommendation', 'hr:finalProbationDecision',
   'hr:getProbationDashboard', 'hr:probationPdf', 'hr:evaluationReportPdf', 'hr:probationLetterPdf', 'hr:getPersonnelFile',
@@ -146,7 +158,7 @@ const channels = [
   'recipe:wasteUpdate', 'recipe:wasteDelete', 'recipe:productionMeals', 'recipe:ingredientStockHistory',
   'recipe:profitsLosses', 'recipe:listPurchaseOrders', 'recipe:ensureMealProfile',
   'recipe:promos', 'recipe:promoSave', 'recipe:dashboard', 'recipe:reports',
-  'recipe:ai', 'recipe:activity', 'recipe:bestSellers', 'recipe:setAvailableToday',
+  'recipe:ai', 'recipe:applySuggestedPrice', 'recipe:activity', 'recipe:bestSellers', 'recipe:setAvailableToday',
   'recipe:requestSub', 'recipe:listSubs', 'recipe:approveSub', 'recipe:rejectSub', 'recipe:forecast',
   'recipe:mealProducts', 'recipe:getMeal', 'recipe:saveMeal', 'recipe:restockIngredient', 'recipe:ensureIngredient',
   'recipe:updateIngredient', 'recipe:deleteIngredient', 'recipe:restockPlan', 'recipe:setPosMenuFlags', 'recipe:restockList',

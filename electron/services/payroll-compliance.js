@@ -4,18 +4,19 @@ require('jspdf-autotable');
 
 function defaultPayrollSettings() {
   return {
-    uif_enabled: true,
+    // Off until admin explicitly enables in Payroll settings
+    uif_enabled: false,
     uif_registration_number: '',
     uif_employee_rate: 1,
     uif_employer_rate: 1,
     uif_ceiling: 17712,
     uif_auto_calculate: true,
     uif_on_payslip: true,
-    paye_enabled: true,
+    paye_enabled: false,
     paye_registration_number: '',
     tax_number: '',
     paye_auto_calculate: true,
-    sdl_enabled: true,
+    sdl_enabled: false,
     sdl_registration_number: '',
     sdl_rate: 1,
     sdl_auto_calculate: true,
@@ -161,15 +162,19 @@ function calculatePayrollBreakdown(emp, settings) {
   let coida = 0;
 
   const taxableForPaye = gross - pension - medical;
-  if (settings.paye_enabled && settings.paye_auto_calculate) {
+  // Company must enable + employee must be registered (admin allow) before PAYE/UIF/SDL apply
+  const empPaye = !!(emp.paye_registered === 1 || emp.paye_registered === true);
+  const empUif = !!(emp.uif_registered === 1 || emp.uif_registered === true);
+  const empSdl = !!(emp.sdl_registered === 1 || emp.sdl_registered === true);
+  if (settings.paye_enabled && settings.paye_auto_calculate && empPaye) {
     paye = calcMonthlyPaye(taxableForPaye);
   }
-  if (settings.uif_enabled && settings.uif_auto_calculate) {
+  if (settings.uif_enabled && settings.uif_auto_calculate && empUif) {
     const uif = calcUif(gross, settings);
     uifEmployee = uif.employee;
     uifEmployer = uif.employer;
   }
-  if (settings.sdl_enabled && settings.sdl_auto_calculate) {
+  if (settings.sdl_enabled && settings.sdl_auto_calculate && empSdl) {
     sdl = calcSdl(gross, settings);
   }
   if (settings.coida_enabled && settings.coida_auto_calculate) {

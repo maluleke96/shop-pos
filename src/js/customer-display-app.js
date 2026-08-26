@@ -7,9 +7,13 @@ const CDS = {
     setInterval(() => this.tickClock(), 1000);
     try {
       const bc = new BroadcastChannel('shoppos-kitchen');
-      bc.onmessage = (e) => { if (e.data?.type === 'refresh') this.load(); };
+      bc.onmessage = (e) => {
+        if (e.data?.type === 'cart:update') return this.showLiveCart(e.data);
+        if (e.data?.type === 'refresh') this.load();
+      };
     } catch (_) {}
     window.addEventListener('message', (e) => {
+      if (e.data?.type === 'cart:update') return this.showLiveCart(e.data);
       if (e.data?.type === 'kitchen:refresh' || e.data?.type === 'customer:refresh') this.load();
     });
     if (window.posAPI?.onKitchenRefresh) {
@@ -22,6 +26,26 @@ const CDS = {
   tickClock() {
     const el = document.getElementById('cds-clock');
     if (el) el.textContent = new Date().toLocaleString('en-ZA');
+  },
+
+  showLiveCart(data) {
+    const host = document.getElementById('cds-cart');
+    const lines = document.getElementById('cds-cart-lines');
+    const totalEl = document.getElementById('cds-cart-total');
+    if (!host || !lines) return;
+    const items = data?.items || [];
+    if (!items.length) {
+      host.hidden = true;
+      lines.innerHTML = '';
+      if (totalEl) totalEl.textContent = '';
+      return;
+    }
+    host.hidden = false;
+    const money = (n) => (typeof Utils !== 'undefined' && Utils.formatMoney)
+      ? Utils.formatMoney(n, data.currency || 'R')
+      : `${data.currency || 'R'}${Number(n || 0).toFixed(2)}`;
+    lines.innerHTML = items.map((i) => `<div>${i.quantity}× ${i.product_name} <span>${money(i.total)}</span></div>`).join('');
+    if (totalEl) totalEl.textContent = `${data.customer ? data.customer + ' · ' : ''}Total ${money(data.total)}`;
   },
 
   async load() {
@@ -59,7 +83,8 @@ const CDS = {
   },
 
   async markDone(id) {
-    const r = await API.updateKitchenStatus(id, 'completed', window.App?.user || null);
+    const actor = window.App?.user || window.parent?.App?.user || null;
+    const r = await API.updateKitchenStatus(id, 'completed', actor);
     if (r && r.success === false) {
       console.warn('Customer display update failed', r.error);
       await this.load();

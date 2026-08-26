@@ -1,6 +1,10 @@
-const { initDatabase, persistNow } = process.env.SHOP_POS_CLOUD
-  ? require('../electron/database/db')
-  : require('./db');
+/**
+ * Mobile / Capacitor handlers always use the local sql.js database (./db).
+ * Cloud/RPC mode never loads this module — supabase-bootstrap owns posAPI there.
+ * Do NOT read process.env here: this file is bundled into the browser renderer
+ * where Node's `process` global does not exist.
+ */
+const { initDatabase, persistNow, schedulePersist } = require('./db');
 
 function wrapSync(fn) {
   return async (...args) => {
@@ -40,6 +44,11 @@ function buildHandlers(store) {
 
   function scopedEmployeeId(requestedId) {
     const empSess = s.getEmployeeSession?.();
+    const userSess = s.getUserSession?.();
+    if (empSess?.adminOverride && userSess?.id) {
+      requireSession();
+      return requestedId != null ? Number(requestedId) : null;
+    }
     if (empSess?.employee_id != null) {
       const sid = Number(empSess.employee_id);
       if (requestedId != null && Number(requestedId) !== sid) {
@@ -51,24 +60,114 @@ function buildHandlers(store) {
     return requestedId != null ? Number(requestedId) : null;
   }
 
+  function portalEmployeeId(requestedId, actor) {
+    const empSess = s.getEmployeeSession?.();
+    if (empSess?.employee_id != null) {
+      if (requestedId != null && Number(requestedId) !== Number(empSess.employee_id)) {
+        throw new Error('Not authorised');
+      }
+      return Number(empSess.employee_id);
+    }
+    const actorEmp = actor?.employee_id != null ? Number(actor.employee_id) : null;
+    if (actorEmp != null) {
+      if (requestedId != null && Number(requestedId) !== actorEmp) throw new Error('Not authorised');
+      return actorEmp;
+    }
+    if (requestedId != null) {
+      try {
+        s.requireActor(actor, ['owner', 'manager', 'supervisor', 'assistant_manager']);
+        return Number(requestedId);
+      } catch (_) { /* fall through */ }
+    }
+    throw new Error('Authentication required');
+  }
+
   function persistCritical() {
-    try { persistNow(); } catch (_) { /* ignore */ }
+    try { schedulePersist(); } catch (_) { try { persistNow(); } catch (_) { /* ignore */ } }
   }
 
   add('app:quit', async () => ({ success: true }));
 
-  add('auth:login', (...a) => s.login(...a));
+  const CLOUD_SYNC =
+    (typeof window !== 'undefined' &&
+      (window.__SHOP_POS_ENV__?.SHOP_POS_SYNC_URL || window.__SHOP_POS_ENV__?.SHOP_POS_CLOUD_URL)) ||
+    'https://peaceful-motivation-production-7dd2.up.railway.app';
+
+  async function mobileCloudRpc(method, args) {
+    const base = String(CLOUD_SYNC).replace(/\/$/, '');
+    const r = await fetch(base + '/rpc', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ method, args: args || [] })
+    });
+    return r.json();
+  }
+
+  add('auth:login', async (u, p, pin) => {
+    let local;
+    try {
+      local = s.login(u, p, pin);
+    } catch (e) {
+      local = { success: false, error: e.message || String(e) };
+    }
+    if (local && local.success) return local;
+    const err = String(local?.error || '');
+    if (err && !/invalid username or password/i.test(err)) return local;
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) return local;
+    try {
+      const cloud = await mobileCloudRpc('auth_login', [u, p, pin || null]);
+      if (!cloud || cloud.success === false) return cloud && cloud.error ? cloud : local;
+      const user = cloud.user || cloud.data?.user || {};
+      let settings = {};
+      let categories = [];
+      let products = [];
+      try {
+        const sRes = await mobileCloudRpc('settings_getParsed', []);
+        if (sRes && sRes.success !== false) settings = sRes.data || {};
+      } catch (_) { /* ignore */ }
+      try {
+        const cRes = await mobileCloudRpc('categories_get', [{}]);
+        categories = Array.isArray(cRes?.data) ? cRes.data : (Array.isArray(cRes) ? cRes : []);
+      } catch (_) { /* ignore */ }
+      try {
+        const pRes = await mobileCloudRpc('products_get', [{}]);
+        products = Array.isArray(pRes?.data) ? pRes.data : (Array.isArray(pRes) ? pRes : []);
+      } catch (_) { /* ignore */ }
+      try {
+        s.seedInstallerAccountFromCloud({
+          username: u,
+          password: p,
+          pin: pin || null,
+          cloudUser: user,
+          settings,
+          categories,
+          products
+        });
+      } catch (seedErr) {
+        return { success: false, error: seedErr.message || 'Could not save online account on this device' };
+      }
+      const again = s.login(u, p, pin);
+      if (again && again.success) return { ...again, cloudLinked: true };
+      if (user && user.username) return { success: true, user, cloudLinked: true };
+      return again || local;
+    } catch (e) {
+      return {
+        success: false,
+        error: `${local?.error || 'Invalid username or password'} (online: ${e.message || e})`
+      };
+    }
+  });
   add('auth:logout', wrapSync(() => s.logout()));
   add('auth:getUsers', wrapSync((a) => {
     s.requireActor(a, ['owner', 'manager']);
     return s.getUsers();
   }));
   add('auth:createUser', wrapSync((d, a) => {
-    s.requireActor(a, ['owner']);
+    s.requireActor(a, ['owner', 'manager']);
     return s.createUser(d, a.id, a.username);
   }));
   add('auth:updateUser', wrapSync((id, d, a) => {
-    s.requireActor(a, ['owner']);
+    s.requireActor(a, ['owner', 'manager']);
     s.updateUser(id, d, a.id, a.username);
     return true;
   }));
@@ -82,18 +181,82 @@ function buildHandlers(store) {
     return s.permanentlyDeleteUser(id, confirm, a.id, a.username);
   }));
   add('auth:verifySession', wrapSync(userId => s.verifyUserSession(userId)));
-  add('auth:hasRecovery', wrapSync(() => s.hasRecoverySecret()));
-  add('auth:recoverVerify', wrapSync(sec => s.getUsernamesForRecovery(sec)));
-  add('auth:recoverReset', wrapSync((sec, u, p) => s.resetPasswordViaRecovery(sec, u, p)));
+  add('auth:hasRecovery', async () => {
+    try {
+      if (s.hasRecoverySecret()) return { success: true, data: true };
+    } catch (_) { /* ignore */ }
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) return { success: true, data: false };
+    try {
+      const cloud = await mobileCloudRpc('auth_hasRecovery', []);
+      const on = !!(cloud && cloud.success !== false && (cloud.data === true || cloud === true));
+      return { success: true, data: on, fromCloud: on };
+    } catch (_) {
+      return { success: true, data: false };
+    }
+  });
+  add('auth:getRecoveryStatus', wrapSync((a) => {
+    s.requireActor(a, ['owner']);
+    return s.getRecoveryStatus();
+  }));
+  add('auth:recoverVerify', async (sec) => {
+    try {
+      return { success: true, data: s.getUsernamesForRecovery(sec) };
+    } catch (localErr) {
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+        return { success: false, error: localErr.message };
+      }
+      try {
+        const cloud = await mobileCloudRpc('auth_recoverVerify', [sec]);
+        if (cloud && cloud.success !== false) {
+          return cloud.data != null ? { success: true, data: cloud.data, fromCloud: true } : cloud;
+        }
+        return cloud || { success: false, error: localErr.message };
+      } catch (e) {
+        return { success: false, error: localErr.message || e.message };
+      }
+    }
+  });
+  add('auth:recoverReset', async (sec, u, p) => {
+    try {
+      return s.resetPasswordViaRecovery(sec, u, p);
+    } catch (localErr) {
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+        return { success: false, error: localErr.message };
+      }
+      try {
+        const cloud = await mobileCloudRpc('auth_recoverReset', [sec, u, p]);
+        if (cloud && cloud.success !== false) {
+          try {
+            s.seedInstallerAccountFromCloud({
+              username: u,
+              password: p,
+              cloudUser: { username: u, role: 'owner', full_name: u },
+              settings: {}
+            });
+          } catch (_) { /* ignore */ }
+          return cloud;
+        }
+        return cloud || { success: false, error: localErr.message };
+      } catch (e) {
+        return { success: false, error: localErr.message || e.message };
+      }
+    }
+  });
+  add('auth:seedInstallerAccount', wrapSync((payload) => s.seedInstallerAccountFromCloud(payload || {})));
   add('auth:setRecoverySecret', wrapSync((sec, a) => {
     s.requireActor(a, ['owner']);
     return s.setRecoverySecret(sec, a.id, a.username || 'owner');
   }));
-  add('auth:factoryReset', wrapAsync((sec, t) => s.factoryResetBusiness(sec, t)));
-  add('auth:clearOperationalData', wrapAsync((pw, a) => {
-    s.requireActor(a, ['owner']);
-    return s.clearOperationalData(pw, a.id, a.username || a.full_name || 'owner');
+  add('auth:factoryReset', wrapAsync((sec, t) => {
+    // Server session only — never trust a client-supplied actor for wipe.
+    s.requireActor(s.getUserSession?.(), ['owner']);
+    return s.factoryResetBusiness(sec, t);
   }));
+  add('auth:clearOperationalData', wrapAsync((pw, a, categories) => {
+    s.requireActor(a, ['owner']);
+    return s.clearOperationalData(pw, a.id, a.username || a.full_name || 'owner', categories);
+  }));
+  add('auth:listClearDataCategories', wrapSync(() => s.listClearDataCategories()));
   add('auth:verifyBookkeepingPassword', wrapSync(p => s.verifyBookkeepingPassword(p)));
   add('auth:setBookkeepingPassword', wrapSync((p, a) => {
     s.requireActor(a, ['owner', 'manager']);
@@ -103,13 +266,18 @@ function buildHandlers(store) {
 
   add('settings:get', wrapSync(() => s.sanitizeSettingsResponse(s.getSettings())));
   add('settings:getParsed', wrapSync(() => s.getSettingsParsed()));
+  add('settings:detectExistingBusiness', wrapSync(() => s.detectExistingBusiness()));
+  add('settings:adoptExistingBusiness', wrapSync(() => s.adoptExistingBusiness()));
   add('settings:save', wrapSync((d, a) => {
     s.requireActor(a, ['owner', 'manager']);
     s.saveSettings(d, a.id, a.username || a.full_name);
     return true;
   }));
   add('settings:saveJson', wrapSync((k, v, a) => {
-    s.requireActor(a, ['owner', 'manager']);
+    const roles = k === 'staff_portal_settings'
+      ? ['owner', 'manager', 'supervisor', 'assistant_manager']
+      : ['owner', 'manager'];
+    s.requireActor(a, roles);
     s.saveJsonSetting(k, v, a.id, a.username || a.full_name);
     return true;
   }));
@@ -252,6 +420,14 @@ function buildHandlers(store) {
     const user = s.requireActor(a, ['owner', 'manager', 'supervisor', 'assistant_manager']);
     return s.receivePurchaseOrderPartial(id, items, user.id, user.username);
   }));
+  add('po:delete', wrapSync((id, a) => {
+    const user = s.requireActor(a, ['owner']);
+    return s.deletePurchaseOrder(id, user.id, user.username);
+  }));
+  add('po:update', wrapSync((id, data, a) => {
+    const user = s.requireActor(a, ['owner']);
+    return s.updatePurchaseOrder(id, data, user.id, user.username);
+  }));
 
   add('dashboard:stats', wrapSync((f, t, actor) => {
     requireSession();
@@ -275,6 +451,13 @@ function buildHandlers(store) {
     return s.getShiftClosePreview(id, user.id);
   }));
   add('shifts:get', wrapSync(l => s.getShifts(l)));
+  add('shifts:getOpenAll', wrapSync((a) => {
+    s.requireActor(a, ['owner', 'manager']);
+    return s.getAnyOpenShifts();
+  }));
+  add('shifts:forceClose', wrapSync((id, d, a) => s.adminForceCloseShift(id, d || {}, a)));
+  add('shifts:update', wrapSync((id, d, a) => s.updateShiftRecord(id, d || {}, a)));
+  add('shifts:delete', wrapSync((id, a) => s.deleteShiftRecord(id, a)));
   add('shifts:current', wrapSync(a => {
     const user = s.requireActor(a, ['owner', 'manager', 'cashier', 'supervisor', 'assistant_manager']);
     return s.getOpenShift(user.id);
@@ -297,7 +480,7 @@ function buildHandlers(store) {
   add('reports:sales', wrapSync((f, t) => { requireSession(); return s.getSalesReport(f, t); }));
   add('reports:profit', wrapSync((f, t) => { requireSession(); return s.getProfitReport(f, t); }));
   add('reports:cashier', wrapSync((f, t) => { requireSession(); return s.getCashierReport(f, t); }));
-  add('reports:product', wrapSync(() => { requireSession(); return s.getProductReport(); }));
+  add('reports:product', wrapSync((f, t) => { requireSession(); return s.getProductReport(f, t); }));
   add('reports:stock', wrapSync(() => { requireSession(); return s.getStockReport(); }));
   add('reports:expenses', wrapSync((f, t) => { requireSession(); return s.getExpenses({ from: f, to: t }); }));
   add('reports:hourly', wrapSync((f, t) => { requireSession(); return s.getHourlySalesReport(f, t); }));
@@ -324,7 +507,11 @@ function buildHandlers(store) {
   }));
   add('notifications:get', wrapSync(() => s.getNotifications()));
   add('notifications:read', wrapSync(id => { s.markNotificationRead(id); return true; }));
-  add('notifications:readAll', wrapSync(() => { s.markAllNotificationsRead(); return true; }));
+  add('notifications:readAll', wrapSync((actor) => {
+    const sess = s.getUserSession?.() || null;
+    const role = actor?.role || sess?.role || null;
+    return s.markAllNotificationsRead(role || actor || sess);
+  }));
   add('notifications:createTest', wrapSync(() => {
     s.requireActor(s.getUserSession?.(), ['owner', 'manager']);
     s.createTestNotification();
@@ -426,14 +613,19 @@ function buildHandlers(store) {
     return { success: true };
   });
   add('kitchen:openDisplay', async () => {
+    if (typeof window === 'undefined') {
+      return { success: true, client: true };
+    }
     require('./shims/printService').openKitchenDisplay();
     return { success: true };
   });
   add('kitchen:closeDisplay', async () => {
+    if (typeof window === 'undefined') return { success: true };
     require('./shims/printService').closeKitchenDisplay();
     return { success: true };
   });
   add('kitchen:refreshDisplay', async () => {
+    if (typeof window === 'undefined') return { success: true };
     require('./shims/printService').refreshKitchenDisplay();
     return { success: true };
   });
@@ -441,11 +633,27 @@ function buildHandlers(store) {
   const mobileFiles = require('./files');
   const capFiles = require('./capacitorFiles');
   const { getBackupInfo, scheduleDailyBackup } = require('./backup');
-  add('file:selectImage', (...a) => mobileFiles.selectImage(...a));
-  add('file:selectDocument', (...a) => mobileFiles.selectDocument(...a));
+  add('file:selectImage', (...a) => {
+    if (typeof document === 'undefined') return Promise.resolve({ success: false, error: 'Select the file in the browser' });
+    return mobileFiles.selectImage(...a);
+  });
+  add('file:selectDocument', (...a) => {
+    if (typeof document === 'undefined') return Promise.resolve({ success: false, error: 'Select the file in the browser' });
+    return mobileFiles.selectDocument(...a);
+  });
   add('file:persistMobileDocument', (...a) => mobileFiles.persistMobileDocument(...a));
   add('file:save', (...a) => mobileFiles.saveFile(...a));
   add('file:openPdf', async (buffer, filename) => mobileFiles.saveFile(filename || 'document.pdf', [{ name: 'PDF', extensions: ['pdf'] }], buffer));
+  add('file:printPdf', async (buffer, filename) => {
+    try {
+      const printService = require('./shims/printService');
+      if (typeof printService.printPdfBuffer === 'function') {
+        return await printService.printPdfBuffer(buffer, filename || 'document.pdf');
+      }
+    } catch (_) { /* fall through */ }
+    // Fallback: share/save so the user can open and print from a PDF app
+    return mobileFiles.saveFile(filename || 'document.pdf', [{ name: 'PDF', extensions: ['pdf'] }], buffer);
+  });
   add('file:openPath', (...a) => mobileFiles.openPath(...a));
   add('file:getImageDataUrl', (...a) => mobileFiles.getImageDataUrl(...a));
   add('file:selectAudio', (...a) => mobileFiles.selectAudio(...a));
@@ -513,6 +721,25 @@ function buildHandlers(store) {
       return { success: false, error: err.message };
     }
   });
+  add('backup:restoreSetup', async () => {
+    try {
+      const info = s.detectExistingBusiness();
+      if (info?.exists || info?.setup_complete) {
+        return {
+          success: false,
+          error: 'This device already has shop data. Sign in as owner and use Admin → Backup & Restore.'
+        };
+      }
+      const picked = await mobileFiles.selectDbFile();
+      if (!picked.success) return picked;
+      const { importDatabaseBytes, validateDatabaseBytes } = require('./db');
+      await validateDatabaseBytes(picked.bytes);
+      await importDatabaseBytes(picked.bytes);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
   add('backup:export', async (actor) => {
     try {
       s.requireActor(actor, ['owner']);
@@ -530,6 +757,9 @@ function buildHandlers(store) {
     try {
       const buf = require('../electron/services/export').buildExcelBuffer(sheets);
       const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+      if (typeof document === 'undefined') {
+        return { success: true, data: bytes, filename: filename || 'export.xlsx' };
+      }
       const name = filename || `export-${new Date().toISOString().slice(0, 10)}.xlsx`;
       return mobileFiles.saveFile(name, [{ name: 'Excel', extensions: ['xlsx'] }], bytes);
     } catch (err) {
@@ -540,6 +770,9 @@ function buildHandlers(store) {
     try {
       const buf = require('../electron/services/export').buildPdfBuffer(title, headers, rows, company || {});
       const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+      if (typeof document === 'undefined') {
+        return { success: true, data: bytes, filename: filename || 'report.pdf' };
+      }
       const name = filename || `${String(title || 'report').replace(/[^\w\-]+/g, '-')}.pdf`;
       return mobileFiles.saveFile(name, [{ name: 'PDF', extensions: ['pdf'] }], bytes);
     } catch (err) {
@@ -549,8 +782,11 @@ function buildHandlers(store) {
   add('export:print', async (title, headers, rows, company) => {
     try {
       const { buildReportHtml } = require('../electron/services/export');
-      const printService = require('./shims/printService');
       const html = buildReportHtml(title, headers, rows, company || {});
+      if (typeof document === 'undefined' || (typeof window !== 'undefined' && window.__SHOP_POS_CLOUD__)) {
+        return { success: true, data: html, html };
+      }
+      const printService = require('./shims/printService');
       await printService.openPreviewWindow(html, title || 'Print Report');
       return { success: true, preview: true };
     } catch (err) {
@@ -564,9 +800,9 @@ function buildHandlers(store) {
     const user = s.requireActor(a, ['owner', 'manager', 'cashier', 'supervisor', 'assistant_manager']);
     return s.saveQuote(d, user.id);
   }));
-  add('quotes:convert', wrapSync((id, a) => {
+  add('quotes:convert', wrapSync((id, a, paymentOpts) => {
     const user = s.requireActor(a, ['owner', 'manager', 'cashier', 'supervisor', 'assistant_manager']);
-    return s.convertQuoteToSale(id, user.id, user.full_name);
+    return s.convertQuoteToSale(id, user.id, user.full_name, paymentOpts || null);
   }));
   add('quotes:delete', wrapSync((id, a) => {
     const user = s.requireActor(a, ['owner', 'manager']);
@@ -690,6 +926,14 @@ function buildHandlers(store) {
     const user = s.requireActor(a, ['owner', 'manager', 'assistant_manager', 'supervisor']);
     return s.approveCashUp(id, user.id, notes);
   }));
+  add('cashup:update', wrapSync((id, data, a) => {
+    const user = s.requireActor(a, ['owner', 'manager', 'assistant_manager']);
+    return s.updateCashUp(id, data || {}, user.id);
+  }));
+  add('cashup:delete', wrapSync((id, a) => {
+    const user = s.requireActor(a, ['owner', 'manager', 'assistant_manager']);
+    return s.deleteCashUp(id, user.id);
+  }));
   add('cashup:summary', wrapSync((from, to) => { requireSession(); return s.getCashUpSummary(from, to); }));
   add('cashup:pdf', wrapSync(id => {
     requireSession();
@@ -715,6 +959,17 @@ function buildHandlers(store) {
   add('customfields:delete', wrapSync((id, actor) => {
     s.requireActor(actor || s.getUserSession?.(), ['owner', 'manager']);
     return s.deleteCustomField(id);
+  }));
+  add('customfields:values', wrapSync((t, id) => s.getCustomFieldValues(t, id)));
+  add('customfields:saveValues', wrapSync((t, id, values, actor) => {
+    s.requireActor(actor || s.getUserSession?.(), ['owner', 'manager', 'assistant_manager']);
+    return s.saveCustomFieldValues(t, id, values);
+  }));
+  add('file:openExternal', wrapAsync(async (url) => {
+    const href = String(url || '').trim();
+    if (!href) throw new Error('No URL');
+    window.open(href, '_blank', 'noopener,noreferrer');
+    return true;
   }));
 
   add('tables:get', wrapSync(() => s.getTables()));
@@ -776,7 +1031,19 @@ function buildHandlers(store) {
     return s.deleteEmployee(id, actor.id, actor.username || actor.full_name);
   }));
   add('staff:login', wrapSync((c, p) => s.verifyEmployeeCodePin(c, p)));
-  add('staff:saveSelfie', wrapSync(d => s.saveStaffSelfie(d)));
+  add('staff:adminOpen', wrapSync((id, a) => s.adminOpenEmployeePortal(id, a || s.getUserSession?.())));
+  add('staff:logout', wrapSync(() => {
+    s.clearEmployeeSession?.();
+    return { ok: true };
+  }));
+  add('staff:validateLinks', wrapSync((data) => s.validateEmployeeLinks(data || {})));
+  add('staff:saveSelfie', wrapSync((d, a) => {
+    const empSess = s.getEmployeeSession?.();
+    const sessEmpId = empSess ? Number(empSess.id || empSess.employee_id) : null;
+    if (sessEmpId != null && sessEmpId === Number(d?.employee_id)) return s.saveStaffSelfie(d);
+    s.requireActor(a || s.getUserSession?.(), ['owner', 'manager']);
+    return s.saveStaffSelfie(d);
+  }));
   add('staff:getSelfies', wrapSync((f, a) => {
     s.requireActor(a, ['owner', 'manager']);
     return s.getStaffSelfies(f || {});
@@ -798,22 +1065,26 @@ function buildHandlers(store) {
       ? String(auth)
       : (auth?.pin != null ? String(auth.pin) : null);
     const actor = auth && typeof auth === 'object' && !Array.isArray(auth)
-      ? (auth.actor || (auth.id && auth.pin == null ? auth : null))
+      ? (auth.actor || (auth.id && auth.pin == null && auth.clientRequestId == null ? auth : null))
+      : null;
+    const clientRequestId = auth && typeof auth === 'object' && !Array.isArray(auth)
+      ? (auth.clientRequestId || auth.client_request_id || null)
       : null;
     const empId = Number(employeeId);
     const empSess = s.getEmployeeSession?.();
     const sessEmpId = empSess ? Number(empSess.id || empSess.employee_id) : null;
     if (pin) {
       if (sessEmpId != null && sessEmpId !== empId) throw new Error('Authentication required');
-      return s.clockAction(empId, act, pin);
+      return s.clockAction(empId, act, pin, clientRequestId);
     }
     if (sessEmpId != null) {
       if (sessEmpId !== empId) throw new Error('Authentication required');
-      return s.clockActionVerified(empId, act);
+      if (empSess && !empSess.pinVerified) throw new Error('PIN required to clock');
+      return s.clockActionVerified(empId, act, clientRequestId);
     }
     const userActor = actor || s.getUserSession?.();
-    s.requireActor(userActor, ['owner', 'manager', 'supervisor']);
-    return s.clockActionVerified(empId, act);
+    s.requireActor(userActor, ['owner', 'manager', 'supervisor', 'assistant_manager']);
+    return s.clockActionVerified(empId, act, clientRequestId);
   }));
   add('staff:getAttendance', wrapSync(f => { requireSession(); return s.getAttendance(f); }));
   add('staff:getTodayAttendance', wrapSync(id => s.getTodayAttendance(scopedEmployeeId(id))));
@@ -821,15 +1092,19 @@ function buildHandlers(store) {
   add('staff:getAllLeave', wrapSync(st => { requireSession(); return s.getAllLeave(st); }));
   add('staff:saveLeave', wrapSync((d, a) => {
     const empSess = s.getEmployeeSession?.();
+    const userSess = s.getUserSession?.();
+    if (empSess?.adminOverride && userSess?.id) {
+      return s.saveLeave(d, userSess);
+    }
     const sessEmpId = empSess ? Number(empSess.id || empSess.employee_id) : null;
     if (sessEmpId != null && sessEmpId === Number(d?.employee_id)) {
       return s.saveLeave(d, null);
     }
-    const user = s.requireActor(a || s.getUserSession?.(), []);
+    const user = s.requireActor(a || userSess, []);
     return s.saveLeave(d, user);
   }));
   add('staff:approveLeave', wrapSync((id, a, ok) => {
-    const user = s.requireActor(a, ['owner', 'manager']);
+    const user = s.requireActor(a, ['owner', 'manager', 'supervisor', 'assistant_manager']);
     return s.approveLeave(id, user.id, ok !== false, user.full_name || user.username, user);
   }));
   add('staff:leavePdf', wrapSync(id => {
@@ -871,10 +1146,64 @@ function buildHandlers(store) {
     s.refreshPaymentDueNotifications();
     return true;
   }));
+  add('salaryClaims:list', wrapSync((f, a) => {
+    try {
+      const empId = (f && f.employee_id) || a?.employee_id;
+      if (s.getEmployeeSession?.()?.employee_id != null || a?.employee_id != null) {
+        const id = portalEmployeeId(empId, a);
+        return s.listSalaryClaims({ ...(f || {}), employee_id: id });
+      }
+      s.requireActor(a, ['owner', 'manager']);
+      return s.listSalaryClaims(f || {});
+    } catch (err) {
+      if (/no such table|does not exist/i.test(String(err.message || ''))) return [];
+      throw err;
+    }
+  }));
+  add('salaryClaims:get', wrapSync((id, a) => {
+    const c = s.getSalaryClaim(id);
+    if (!c) throw new Error('Claim not found');
+    const emp = s.getEmployeeSession?.();
+    if (emp?.employee_id != null && Number(c.employee_id) !== Number(emp.employee_id)) throw new Error('Not authorised');
+    if (emp?.employee_id == null) s.requireActor(a, ['owner', 'manager']);
+    return c;
+  }));
+  add('salaryClaims:save', wrapSync((d, a) => { s.requireActor(a, ['owner', 'manager']); return s.saveSalaryClaim(d, a.id, a.username || a.full_name); }));
+  add('salaryClaims:delete', wrapSync((id, a) => { s.requireActor(a, ['owner', 'manager']); return s.deleteSalaryClaim(id, a.id, a.username || a.full_name); }));
+  add('salaryClaims:claim', wrapSync((id, notes, a) => {
+    const emp = s.getEmployeeSession?.();
+    const empId = emp?.employee_id ?? a?.employee_id;
+    if (empId == null) throw new Error('Employee login required');
+    return s.claimSalaryByEmployee(id, notes, empId);
+  }));
+  add('salaryClaims:approve', wrapSync((id, notes, a) => { s.requireActor(a, ['owner', 'manager']); return s.approveSalaryClaim(id, notes, a.id, a.username || a.full_name); }));
+  add('salaryClaims:reject', wrapSync((id, notes, a) => { s.requireActor(a, ['owner', 'manager']); return s.rejectSalaryClaim(id, notes, a.id, a.username || a.full_name); }));
+  add('salaryClaims:markPaid', wrapSync((id, a) => { s.requireActor(a, ['owner', 'manager']); return s.markSalaryClaimPaid(id, a.id, a.username || a.full_name); }));
+  add('salaryClaims:pdf', wrapSync((id, a) => {
+    const c = s.getSalaryClaim(id);
+    if (!c) throw new Error('Claim not found');
+    const emp = s.getEmployeeSession?.();
+    if (emp?.employee_id != null && Number(c.employee_id) !== Number(emp.employee_id)) throw new Error('Not authorised');
+    if (emp?.employee_id == null) s.requireActor(a, ['owner', 'manager']);
+    return s.buildSalaryClaimPdf(id, s.getSettingsParsed());
+  }));
+  add('salaryClaims:fromPayroll', wrapSync((start, end, deadline, payDate, opensAt, a) => {
+    s.requireActor(a, ['owner', 'manager']);
+    return s.createClaimsFromPayroll(start, end, deadline, payDate, opensAt, a.id, a.username || a.full_name);
+  }));
   add('staff:getPayrollDashboard', wrapSync((f, a) => {
     s.requireActor(a, ['owner', 'manager']);
     return s.getPayrollDashboard(f || {});
   }));
+  add('staff:previewPayroll', wrapSync((start, end, f, a) => {
+    s.requireActor(a, ['owner', 'manager']);
+    return s.previewPayroll(start, end, f || {});
+  }));
+  add('staff:getMissedClockOutInbox', wrapSync((f, a) => {
+    s.requireActor(a, ['owner', 'manager', 'supervisor', 'assistant_manager']);
+    return s.getMissedClockOutInbox(f || {});
+  }));
+  add('staff:resolveMissedClockOut', wrapSync((id, action, a) => s.resolveMissedClockOut(id, action, a)));
   add('staff:saveWorkSchedule', wrapSync((empId, sched, a) => {
     s.requireActor(a, ['owner', 'manager']);
     return s.saveEmployeeWorkSchedule(empId, sched, a.id, a.username || a.full_name || 'manager');
@@ -907,6 +1236,7 @@ function buildHandlers(store) {
     s.requireActor(a, ['owner', 'manager']);
     return s.updateAttendance(id, d, a.id, a.username || a.full_name || 'manager');
   }));
+  add('staff:deleteAttendance', wrapSync((id, a) => s.deleteAttendance(id, a)));
   add('staff:createAttendance', wrapSync((d, a) => s.createManualAttendance(d, a)));
   add('staff:addAttendancePenalty', wrapSync((d, a) => s.addAttendancePenalty(d, a)));
   add('staff:getAttendancePenalties', wrapSync((f, a) => {
@@ -915,18 +1245,28 @@ function buildHandlers(store) {
   }));
   add('staff:cancelAttendancePenalty', wrapSync((id, a) => s.cancelAttendancePenalty(id, a)));
   add('staff:getAttendanceSummary', wrapSync((id, f, t) => s.getAttendanceSummary(scopedEmployeeId(id), f, t)));
-  add('staff:getSchedules', wrapSync((f, t, e) => s.getSchedules(f, t, e)));
+  add('staff:getSchedules', wrapSync((f, t, e) => {
+    const empSess = s.getEmployeeSession?.();
+    const userSess = s.getUserSession?.();
+    if (empSess?.adminOverride && userSess?.id) {
+      requireSession();
+      return s.getSchedules(f, t, e);
+    }
+    if (empSess?.employee_id != null) return s.getSchedules(f, t, empSess.employee_id);
+    requireSession();
+    return s.getSchedules(f, t, e);
+  }));
   add('staff:saveSchedule', wrapSync((d, a) => {
-    s.requireActor(a, ['owner', 'manager', 'supervisor']);
+    s.requireActor(a, ['owner', 'manager', 'supervisor', 'assistant_manager']);
     return s.saveSchedule(d);
   }));
   add('staff:deleteSchedule', wrapSync((id, a) => {
-    s.requireActor(a, ['owner', 'manager', 'supervisor']);
+    s.requireActor(a, ['owner', 'manager', 'supervisor', 'assistant_manager']);
     return s.deleteSchedule(id);
   }));
-  add('staff:autoShifts', wrapSync((w, t, ids, overrides, a) => {
-    s.requireActor(a, ['owner', 'manager', 'supervisor']);
-    return s.autoGenerateShifts(w, t, ids, overrides);
+  add('staff:autoShifts', wrapSync((w, t, ids, overrides, a, options) => {
+    s.requireActor(a, ['owner', 'manager', 'supervisor', 'assistant_manager']);
+    return s.autoGenerateShifts(w, t, ids, overrides, options || {});
   }));
   add('staff:getDocuments', wrapSync(id => s.getEmployeeDocuments(id)));
   add('staff:saveDocument', wrapSync((d, a) => {
@@ -938,8 +1278,17 @@ function buildHandlers(store) {
     s.requireActor(a, ['owner', 'manager']);
     return s.saveDisciplinary(d, a.id);
   }));
-  add('staff:respondDisciplinary', wrapSync((id, empId, resp) => s.respondDisciplinary(id, empId, resp)));
-  add('staff:getAllDisciplinary', wrapSync(f => s.getAllDisciplinary(f || {})));
+  add('staff:respondDisciplinary', wrapSync((id, empId, resp, a) => {
+    const empSess = s.getEmployeeSession?.();
+    const sessEmpId = empSess ? Number(empSess.id || empSess.employee_id) : null;
+    if (sessEmpId != null && sessEmpId === Number(empId)) return s.respondDisciplinary(id, empId, resp);
+    s.requireActor(a || s.getUserSession?.(), ['owner', 'manager', 'supervisor']);
+    return s.respondDisciplinary(id, empId, resp);
+  }));
+  add('staff:getAllDisciplinary', wrapSync((f, a) => {
+    s.requireActor(a || s.getUserSession?.(), ['owner', 'manager', 'supervisor']);
+    return s.getAllDisciplinary(f || {});
+  }));
   add('staff:disciplinaryPdf', wrapSync((id, copyType) => s.buildDisciplinaryPdfBuffer(id, copyType || 'staff')));
   add('staff:markDisciplinaryWa', wrapSync(id => { s.markDisciplinaryWhatsAppSent(id); return true; }));
   add('staff:getCustomerPhoneReport', wrapSync(f => s.getCustomerPhoneReport(f || {})));
@@ -988,8 +1337,47 @@ function buildHandlers(store) {
   add('hr:getContracts', wrapSync((f, a) => { s.requireActor(a, hrRead); return s.getContracts(f || {}); }));
   add('hr:getContract', wrapSync((id, a) => { s.requireActor(a, hrRead); return s.getContract(id); }));
   add('hr:saveContract', wrapSync((d, a) => { s.requireActor(a, hrWrite); return s.saveContract(d, a.id, hrActor(a)); }));
-  add('hr:signContract', wrapSync((cid, role, sig, a) => { s.requireActor(a, hrWrite); return s.signContract(cid, role, sig, a.id, hrActor(a)); }));
-  add('hr:contractPdf', wrapSync((id, a) => { s.requireActor(a, hrRead); return s.buildContractPdf(id, s.getSettingsParsed()); }));
+    add('hr:signContract', wrapSync((cid, role, sig, a) => {
+    const emp = s.getEmployeeSession?.();
+    if (emp?.employee_id != null) {
+      return s.signContract(cid, 'employee', sig, null, emp.full_name || ('employee:' + emp.employee_id));
+    }
+    s.requireActor(a, hrWrite);
+    return s.signContract(cid, role, sig, a.id, hrActor(a));
+  }));
+  add('hr:openContractResign', wrapSync((id, opens, closes, a) => {
+    s.requireActor(a, hrWrite);
+    return s.openContractResign(id, opens, closes, a.id, hrActor(a));
+  }));
+  add('hr:attachContractDoc', wrapSync((cid, fp, fn, a) => {
+    const emp = s.getEmployeeSession?.();
+    const empId = emp?.employee_id ?? a?.employee_id;
+    if (empId == null) {
+      s.requireActor(a, hrWrite);
+      return s.attachContractResignDoc(cid, fp, fn, s.getContract(cid).employee_id);
+    }
+    return s.attachContractResignDoc(cid, fp, fn, empId);
+  }));
+  add('hr:getContractsForEmployee', wrapSync((eid, a) => {
+    const empId = portalEmployeeId(eid, a);
+    try { s.ensureContractExpiry?.(); } catch (_) {}
+    try {
+      return s.getContracts({ employee_id: empId });
+    } catch (err) {
+      if (/no such table|does not exist/i.test(String(err.message || ''))) return [];
+      throw err;
+    }
+  }));
+  add('hr:contractPdf', wrapSync((id, a) => {
+    const emp = s.getEmployeeSession?.();
+    if (emp?.employee_id != null) {
+      const c = s.getContract(id);
+      if (!c || Number(c.employee_id) !== Number(emp.employee_id)) throw new Error('Not authorised');
+      return s.buildContractPdf(id, s.getSettingsParsed());
+    }
+    s.requireActor(a, hrRead);
+    return s.buildContractPdf(id, s.getSettingsParsed());
+  }));
   add('hr:getProbations', wrapSync((f, a) => { s.requireActor(a, hrRead); return s.getProbations(f || {}); }));
   add('hr:getProbation', wrapSync((id, a) => { s.requireActor(a, hrRead); return s.getProbation(id); }));
   add('hr:saveProbation', wrapSync((d, a) => { s.requireActor(a, hrWrite); return s.saveProbation(d, a.id, hrActor(a)); }));
@@ -1338,7 +1726,7 @@ function buildHandlers(store) {
   add('ops:getChecklistSettings', wrapSync(() => s.getChecklistSettings()));
   add('ops:saveChecklistSettings', wrapSync((d, a) => s.saveChecklistSettings(d, a)));
   add('ops:checklistWarnings', wrapSync(f => s.getChecklistWarnings(f)));
-  add('ops:staffChecklistWarnings', wrapSync(uid => s.getStaffPortalChecklistWarnings(uid)));
+  add('ops:staffChecklistWarnings', wrapSync((uid, eid) => s.getStaffPortalChecklistWarnings(uid, eid)));
   add('ops:ackChecklistWarning', wrapSync((id, a) => s.acknowledgeChecklistWarning(id, a)));
   add('ops:checklistPdf', wrapSync(runId => s.buildChecklistReportPdf(runId, s.getSettingsParsed()?.shop_name)));
   add('ops:nonSellingProducts', wrapSync(f => s.getNonSellingProducts(f)));
@@ -1420,6 +1808,7 @@ function buildHandlers(store) {
   add('recipe:dashboard', wrapSync(a => s.getRecipeDashboard(a)));
   add('recipe:reports', wrapSync((type, f, a) => s.getRecipeReports(type, f || {}, a)));
   add('recipe:ai', wrapSync(a => s.getAiSuggestions(a)));
+  add('recipe:applySuggestedPrice', wrapSync((d, a) => s.applySuggestedSellPrice(d || {}, a)));
   add('recipe:activity', wrapSync((limit, a) => s.getRecipeActivity(limit || 50, a)));
   add('recipe:bestSellers', wrapSync((period, a) => s.getBestSellers(period || 'month', a)));
   add('recipe:setAvailableToday', wrapSync((ids, a) => { s.setAvailableToday(ids || [], a); return true; }));
@@ -1500,7 +1889,7 @@ function buildHandlers(store) {
   add('mkt:updateMenuPrices', wrapSync((id, a) => s.updateMenuPricesFromPos(id, mktA(a))));
   add('mkt:msgTemplates', wrapSync(() => s.listMessageTemplates()));
   add('mkt:messages', wrapSync((f, a) => s.listMessages(f || {}, mktA(a))));
-  add('mkt:saveMessage', wrapSync((data, a) => s.saveMessage(data || {}, mktA(a))));
+  add('mkt:saveMessage', wrapAsync((data, a) => s.saveMessage(data || {}, mktA(a))));
   add('mkt:saveReport', wrapSync((data, a) => s.saveProgressReport(data || {}, mktA(a))));
   add('mkt:reports', wrapSync((f, a) => s.listProgressReports(f || {}, mktA(a))));
   add('mkt:respondReport', wrapSync((id, response, a) => s.respondProgressReport(id, response, mktA(a))));
@@ -1529,14 +1918,14 @@ function buildHandlers(store) {
   add('whatsapp:saveTemplate', wrapSync((d, a) => s.saveTemplate(d, a)));
   add('whatsapp:deleteTemplate', wrapSync((id, a) => { s.deleteTemplate(id, a); return true; }));
   add('whatsapp:getMessages', wrapSync(f => s.getMessages(f)));
-  add('whatsapp:send', wrapSync((d, a) => s.sendMessage(d, a)));
+  add('whatsapp:send', wrapAsync((d, a) => s.sendMessage(d, a)));
   add('whatsapp:markOpened', wrapSync((id, a) => s.markMessageOpened(id, a)));
   add('whatsapp:getAudience', wrapSync(f => s.getAudience(f)));
   add('whatsapp:getCampaigns', wrapSync(f => s.getCampaigns(f)));
   add('whatsapp:getCampaign', wrapSync(id => s.getCampaign(id)));
   add('whatsapp:saveCampaign', wrapSync((d, a) => s.saveCampaign(d, a)));
   add('whatsapp:deleteCampaign', wrapSync((id, a) => { s.deleteCampaign(id, a); return true; }));
-  add('whatsapp:sendCampaign', wrapSync((id, a) => s.sendCampaign(id, a)));
+  add('whatsapp:sendCampaign', wrapAsync((id, a) => s.sendCampaign(id, a)));
   add('whatsapp:getSettings', wrapSync(() => s.getWhatsAppSettings()));
   add('whatsapp:saveSettings', wrapSync((d, a) => s.saveWhatsAppSettings(d, a)));
 
@@ -1610,7 +1999,7 @@ function buildHandlers(store) {
   add('audit:topCustomers', wrapSync((f, t, l) => s.getTopCustomers(f, t, l)));
   add('audit:returnReasons', wrapSync((f, t) => s.getReturnReasonsReport(f, t)));
   add('audit:reopenReturn', wrapSync((id, a) => {
-    const user = s.requireActor(a, ['owner', 'manager']);
+    const user = s.requireActor(a, ['owner']);
     return s.reopenReturn(id, user.id, user.full_name);
   }));
 

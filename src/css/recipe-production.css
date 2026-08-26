@@ -269,6 +269,148 @@
 .rp-ai-item.high { border-left-color: var(--danger); }
 .rp-ai-item.medium { border-left-color: var(--warning); }
 
+/* Restock — visual polish only */
+.rp-restock { display: flex; flex-direction: column; gap: 0; }
+.rp-restock-toolbar {
+  padding: 12px 14px;
+  background: var(--rp-surface);
+  border: 1px solid var(--rp-border);
+  border-radius: var(--rp-radius);
+  margin-bottom: 16px;
+  box-shadow: var(--rp-shadow);
+}
+.rp-restock-lines-head { margin-bottom: 10px; }
+.rp-restock-lines-head h3 { margin-bottom: 4px; }
+.rp-restock-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--rp-border);
+  border-radius: 10px;
+  background: var(--rp-surface);
+}
+.rp-restock-table { margin: 0; }
+.rp-restock-table thead th {
+  position: sticky;
+  top: 0;
+  background: var(--rp-surface);
+  z-index: 1;
+  padding-top: 12px;
+  padding-bottom: 12px;
+}
+.rp-restock-table tbody tr:hover { background: rgba(37, 99, 235, 0.04); }
+.rp-restock-table .rp-rs-qty,
+.rp-restock-table .rp-rs-unit,
+.rp-restock-table .rp-rs-cost {
+  background: var(--surface);
+  border: 1.5px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.rp-restock-meals { font-size: 12px; max-width: 240px; }
+.rp-restock-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+  padding-top: 4px;
+}
+
+/* Prep board photo step cards + calendar */
+.rp-prep-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.rp-prep-card {
+  border: 1px solid var(--rp-border);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--rp-surface);
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+.rp-prep-card-media {
+  height: 120px;
+  background: linear-gradient(135deg, #e8eef7, #f5f7fb);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.rp-prep-card-media img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.rp-prep-ph-empty {
+  color: var(--rp-muted);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.rp-prep-card-body { padding: 12px; display: flex; flex-direction: column; gap: 6px; }
+.rp-prep-steps { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.rp-prep-step {
+  display: grid;
+  grid-template-columns: 22px 1fr;
+  gap: 8px;
+  align-items: start;
+  font-size: 12px;
+  color: var(--rp-text);
+}
+.rp-prep-step span {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--primary);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+}
+.rp-allergen, .rp-allergen-chip {
+  color: #b45309;
+  font-size: 12px;
+  font-weight: 600;
+}
+.rp-allergen-chip {
+  display: inline-block;
+  background: rgba(180, 83, 9, 0.1);
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  margin-left: 4px;
+}
+.rp-prep-calendar {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 10px;
+}
+.rp-prep-day {
+  border: 1px solid var(--rp-border);
+  border-radius: 10px;
+  padding: 10px;
+  background: var(--rp-surface);
+  min-height: 120px;
+}
+.rp-prep-day.is-today { border-color: var(--primary); box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.2); }
+.rp-prep-day-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+.rp-prep-day ul {
+  margin: 0;
+  padding-left: 16px;
+  font-size: 12px;
+}
+
 .rp-login-card p,
 .rp-login-card h1,
 .field label {

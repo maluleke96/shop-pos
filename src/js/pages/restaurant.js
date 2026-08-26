@@ -34,6 +34,7 @@ const RestaurantPage = {
           <div style="margin-top:10px;display:flex;gap:4px;justify-content:center;flex-wrap:wrap">
             <button class="btn btn-sm btn-ghost edit-table" data-id="${t.id}">Edit</button>
             <button class="btn btn-sm btn-ghost clear-table" data-id="${t.id}" ${!t.is_occupied && t.status === 'available' ? 'disabled' : ''}>Clear</button>
+            <button class="btn btn-sm btn-danger del-table" data-id="${t.id}" ${t.is_occupied ? 'disabled' : ''}>Delete</button>
           </div>
         </div>`).join('') || '<p class="muted">No tables configured</p>'}
       </div>`;
@@ -48,6 +49,16 @@ const RestaurantPage = {
       if (!t) return;
       await API.saveTable({ ...t, status: 'available' }, this.app.user);
       Utils.toast(`Table ${t.table_number} cleared`, 'success');
+      this.render(document.getElementById('page-content'), this.app);
+    }));
+    el.querySelectorAll('.del-table').forEach(b => b.addEventListener('click', async () => {
+      const t = tables.find(x => x.id == b.dataset.id);
+      if (!t || t.is_occupied) return Utils.toast('Clear the table first', 'error');
+      if (!confirm(`Delete table ${t.table_number}?`)) return;
+      const r = await API.deleteTable(t.id, this.app.user);
+      if (!r.success) return Utils.toast(r.error || 'Could not delete table', 'error');
+      Utils.toast(`Table ${t.table_number} deleted`, 'success');
+      Utils.sessionCacheClear?.('tables');
       this.render(document.getElementById('page-content'), this.app);
     }));
   },
@@ -112,6 +123,11 @@ const RestaurantPage = {
         }).join('')}
       </div>`;
       document.getElementById('open-kds')?.addEventListener('click', async () => {
+        const native = !!(window.Capacitor?.isNativePlatform?.() || window.__SHOP_POS_MOBILE__);
+        if (native && window.App?.openInAppDisplay) {
+          window.App.openInAppDisplay('kitchen');
+          return;
+        }
         const r = await API.openKitchenDisplay();
         Utils.toast(r.success ? 'Kitchen display opened' : (r.error || 'Failed'), r.success ? 'success' : 'error');
       });

@@ -161,7 +161,7 @@ function buildTrainingEvalPdf(recordId, actor) {
     });
     y += 4;
   });
-  return Buffer.from(doc.output('arraybuffer'));
+  return require('./pdf-bytes').pdfBytes(doc);
 }
 
 function saveTrainingEvaluation(recordId, evalEntry, actor) {

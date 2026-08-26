@@ -1,0 +1,46 @@
+{
+  "appId": "com.shoppos.staff",
+  "productName": "Staff Portal",
+  "directories": {
+    "output": "dist\\cloud-apps\\staff",
+    "buildResources": "build"
+  },
+  "files": [
+    "electron/**/*",
+    "src/**/*",
+    "mobile/**/*",
+    "lib/**/*",
+    "package.json"
+  ],
+  "extraMetadata": {
+    "main": "electron/cloud-shell-config-staff.js",
+    "name": "com.shoppos.staff"
+  },
+  "win": {
+    "target": [
+      {
+        "target": "nsis",
+        "arch": [
+          "x64"
+        ]
+      },
+      {
+        "target": "portable",
+        "arch": [
+          "x64"
+        ]
+      }
+    ]
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "artifactName": "ShopPOS-StaffPortal-Setup.${ext}",
+    "shortcutName": "Staff Portal"
+  },
+  "portable": {
+    "artifactName": "ShopPOS-StaffPortal-Portable.${ext}"
+  }
+}

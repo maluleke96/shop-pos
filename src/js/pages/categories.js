@@ -1,15 +1,16 @@
 const CategoriesPage = {
   async render(el, app) {
     this.app = app;
-    const res = await API.getCategories();
-    this.categories = res.data || [];
+    const cached = window.DataCache?.peek?.('categories', [{}]);
+    this.categories = Array.isArray(cached) ? cached : (this.categories || []);
 
-    el.innerHTML = `
+    const paint = () => {
+      el.innerHTML = `
       <div class="page-toolbar"><h3>Categories</h3><button class="btn btn-primary" id="add-cat">+ Add Category</button></div>
       <p class="muted" style="margin:0 0 12px">Activate/deactivate <strong>Show on POS</strong> to control which category tabs appear at checkout.</p>
       <div class="card"><div class="table-wrap"><table>
         <thead><tr><th>Image</th><th>Name</th><th>Color</th><th>Show on POS</th><th></th></tr></thead>
-        <tbody>${this.categories.map(c => `<tr>
+        <tbody>${(this.categories || []).map(c => `<tr>
           <td>${c.image_path ? `<img data-image-path="${c.image_path}" class="cat-thumb">` : '<span class="cat-thumb-placeholder">🏷️</span>'}</td>
           <td><strong>${c.name}</strong></td>
           <td><span style="display:inline-block;width:20px;height:20px;border-radius:4px;background:${c.color}"></span></td>
@@ -20,10 +21,23 @@ const CategoriesPage = {
               ${Number(c.show_on_pos) === 0 ? 'Activate on POS' : 'Deactivate on POS'}
             </button>
             <button class="btn btn-sm btn-danger del-cat" data-id="${c.id}">Delete</button>
-          </td></tr>`).join('') || '<tr><td colspan="5" class="muted">No categories</td></tr>'}
+          </td></tr>`).join('') || '<tr><td colspan="5" class="muted">Loading categories…</td></tr>'}
         </tbody></table></div></div>`;
+      this.bindEvents(el, app);
+    };
 
-    document.getElementById('add-cat').addEventListener('click', () => this.showForm());
+    paint();
+    const res = await API.getCategories();
+    if (res?.success === false) {
+      Utils.toast(res.error || 'Failed to load categories', 'error');
+      return;
+    }
+    this.categories = res.data || [];
+    paint();
+  },
+
+  bindEvents(el, app) {
+    document.getElementById('add-cat')?.addEventListener('click', () => this.showForm());
     document.querySelectorAll('.edit-cat').forEach(b => b.addEventListener('click', () =>
       this.showForm(this.categories.find(c => c.id == b.dataset.id))));
     document.querySelectorAll('.toggle-pos-cat').forEach(b => b.addEventListener('click', async () => {

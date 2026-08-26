@@ -18,10 +18,25 @@ function log(level, source, message, details) {
   } catch (_) {}
 }
 
+function coerceCounterValue(raw) {
+  if (raw == null || raw === '') return 0;
+  if (typeof raw === 'bigint') {
+    if (raw < 0n) return 0;
+    if (raw > BigInt(Number.MAX_SAFE_INTEGER)) return 0;
+    return Number(raw);
+  }
+  const s = String(raw).trim();
+  if (/^\d+$/.test(s) && s.length > 15) return 0;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return 0;
+  if (n > Number.MAX_SAFE_INTEGER) return 0;
+  return Math.floor(n);
+}
+
 function nextNumber(table, prefix) {
   const db = getDb();
   const row = db.prepare(`SELECT last_number FROM ${table} WHERE id = 1`).get();
-  const next = (row?.last_number || 0) + 1;
+  const next = coerceCounterValue(row?.last_number) + 1;
   db.prepare(`UPDATE ${table} SET last_number = ? WHERE id = 1`).run(next);
   const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
   return `${prefix}-${date}-${String(next).padStart(5, '0')}`;
@@ -251,16 +266,20 @@ function deleteQuote(id, actorId, actorName) {
   return { success: true };
 }
 
-function convertQuoteToSale(quoteId, completeSaleFn, actorId, actorName) {
+function convertQuoteToSale(quoteId, completeSaleFn, actorId, actorName, paymentOpts = null) {
   expireDueQuotes();
   const quote = getQuote(quoteId);
   if (!quote || quote.status !== 'open') throw new Error('Quote not available');
   if (quote.expires_at && quote.expires_at <= new Date().toISOString()) throw new Error('Quote has expired');
+  const payType = String(paymentOpts?.payment_type || paymentOpts?.type || 'cash').toLowerCase();
+  const amount = Number(paymentOpts?.amount != null ? paymentOpts.amount : quote.total) || Number(quote.total) || 0;
   const saleData = {
     customer_id: quote.customer_id,
     items: quote.items.map(i => ({ product_id: i.product_id, product_name: i.product_name, quantity: i.quantity, unit_price: i.unit_price, buying_price: 0, discount: i.discount, total: i.total })),
     subtotal: quote.subtotal, discount: quote.discount, tax_amount: quote.tax_amount, total: quote.total,
-    amount_paid: quote.total, change_amount: 0, payments: [{ type: 'cash', amount: quote.total }], notes: `From quote ${quote.quote_number}`
+    amount_paid: amount, change_amount: 0,
+    payments: [{ type: payType, amount }],
+    notes: `From quote ${quote.quote_number}`
   };
   const result = completeSaleFn(saleData, actorId, actorName);
   markQuoteConverted(quoteId, result.saleId, actorId, actorName);
@@ -1128,6 +1147,65 @@ function approveCashUp(id, actorId, notes) {
   return getCashUp(id);
 }
 
+function updateCashUp(id, data, actorId) {
+  const db = getDb();
+  const row = db.prepare('SELECT * FROM cashup_sessions WHERE id = ?').get(id);
+  if (!row) throw new Error('Cash-up not found');
+  const actor = db.prepare('SELECT role FROM users WHERE id = ?').get(actorId);
+  if (!['owner', 'manager', 'assistant_manager'].includes(actor?.role)) {
+    throw new Error('Only owner or manager can edit cash-outs');
+  }
+  const opening = data.opening_cash != null ? Number(data.opening_cash) : Number(row.opening_cash) || 0;
+  const expected = data.expected_cash != null ? Number(data.expected_cash) : Number(row.expected_cash) || 0;
+  const actual = data.actual_cash != null ? Number(data.actual_cash) : Number(row.actual_cash) || 0;
+  const notes = data.notes != null ? String(data.notes) : (row.notes || null);
+  const difference = actual - expected;
+  const amountsChanged = actual !== Number(row.actual_cash) || expected !== Number(row.expected_cash)
+    || opening !== Number(row.opening_cash);
+  try {
+    db.prepare(`
+      UPDATE cashup_sessions SET opening_cash=?, expected_cash=?, actual_cash=?, difference=?, notes=?,
+        manager_approved = CASE WHEN ? THEN 0 ELSE manager_approved END,
+        approved_by = CASE WHEN ? THEN NULL ELSE approved_by END,
+        approved_at = CASE WHEN ? THEN NULL ELSE approved_at END
+      WHERE id=?
+    `).run(opening, expected, actual, difference, notes, amountsChanged ? 1 : 0, amountsChanged ? 1 : 0, amountsChanged ? 1 : 0, id);
+  } catch (err) {
+    if (String(err.message || '').toLowerCase().includes('no such column')) {
+      db.prepare(`
+        UPDATE cashup_sessions SET opening_cash=?, expected_cash=?, actual_cash=?, difference=?, notes=?,
+          manager_approved = CASE WHEN ? THEN 0 ELSE manager_approved END
+        WHERE id=?
+      `).run(opening, expected, actual, difference, notes, amountsChanged ? 1 : 0, id);
+    } else {
+      throw err;
+    }
+  }
+  try {
+    require('./store').audit?.(actorId, actor?.role || 'manager', 'update_cashup', 'cashup', id, {
+      expected, actual, difference, amountsChanged
+    });
+  } catch (_) { /* ignore */ }
+  return getCashUp(id);
+}
+
+function deleteCashUp(id, actorId) {
+  const db = getDb();
+  const row = db.prepare('SELECT * FROM cashup_sessions WHERE id = ?').get(id);
+  if (!row) throw new Error('Cash-up not found');
+  const actor = db.prepare('SELECT role FROM users WHERE id = ?').get(actorId);
+  if (!['owner', 'manager', 'assistant_manager'].includes(actor?.role)) {
+    throw new Error('Only owner or manager can delete cash-outs');
+  }
+  db.prepare('DELETE FROM cashup_sessions WHERE id = ?').run(id);
+  try {
+    require('./store').audit?.(actorId, actor?.role || 'manager', 'delete_cashup', 'cashup', id, {
+      shift_id: row.shift_id, actual_cash: row.actual_cash
+    });
+  } catch (_) { /* ignore */ }
+  return { success: true, id };
+}
+
 function getCashUp(id) {
   return getDb().prepare(`
     SELECT c.*, u.full_name as user_name, sh.opened_at as shift_opened_at, sh.closed_at as shift_closed_at,
@@ -1239,14 +1317,15 @@ function deleteAutomationRule(id) {
 function evaluateAutomation(triggerType, context) {
   const rules = getDb().prepare('SELECT * FROM automation_rules WHERE trigger_type = ? AND is_active = 1').all(triggerType);
   const results = [];
+  const ctx = context || {};
   for (const rule of rules) {
     const cond = parseJson(rule.condition_json);
     const action = parseJson(rule.action_json);
     let match = true;
-    if (cond.min_amount && context.amount < cond.min_amount) match = false;
-    if (cond.max_discount_pct && context.discount_pct > cond.max_discount_pct) match = false;
-    if (cond.min_stock && context.stock >= cond.min_stock) match = false;
-    if (match) results.push({ rule: rule.name, action });
+    if (cond.min_amount && Number(ctx.amount || 0) < Number(cond.min_amount)) match = false;
+    if (cond.max_discount_pct && Number(ctx.discount_pct || 0) > Number(cond.max_discount_pct)) match = false;
+    if (cond.min_stock != null && cond.min_stock !== '' && Number(ctx.stock) >= Number(cond.min_stock)) match = false;
+    if (match) results.push({ rule: rule.name, action, trigger_type: triggerType });
   }
   return results;
 }
@@ -1271,6 +1350,31 @@ function saveCustomField(data) {
 function deleteCustomField(id) {
   getDb().prepare('DELETE FROM custom_field_values WHERE field_id = ?').run(id);
   getDb().prepare('DELETE FROM custom_fields WHERE id = ?').run(id);
+}
+
+function getCustomFieldValues(entityType, entityId) {
+  return getDb().prepare(`
+    SELECT cf.id as field_id, cf.field_name, cf.field_label, cf.field_type, cf.is_required, cf.sort_order, cfv.value
+    FROM custom_fields cf
+    LEFT JOIN custom_field_values cfv ON cfv.field_id = cf.id AND cfv.entity_id = ?
+    WHERE cf.entity_type = ? ORDER BY cf.sort_order, cf.id
+  `).all(entityId, entityType);
+}
+
+function saveCustomFieldValues(entityType, entityId, values) {
+  const db = getDb();
+  const fields = getCustomFields(entityType);
+  const map = values && typeof values === 'object' && !Array.isArray(values)
+    ? values
+    : Object.fromEntries((values || []).map(v => [String(v.field_id || v.field_name), v.value]));
+  for (const f of fields) {
+    const raw = map[f.id] ?? map[String(f.id)] ?? map[f.field_name];
+    if (raw == null) continue;
+    const existing = db.prepare('SELECT id FROM custom_field_values WHERE field_id = ? AND entity_id = ?').get(f.id, entityId);
+    if (existing) db.prepare('UPDATE custom_field_values SET value = ? WHERE id = ?').run(String(raw), existing.id);
+    else db.prepare('INSERT INTO custom_field_values (field_id, entity_id, value) VALUES (?,?,?)').run(f.id, entityId, String(raw));
+  }
+  return getCustomFieldValues(entityType, entityId);
 }
 
 // ─── Restaurant ─────────────────────────────────────────────────────────────
@@ -1346,8 +1450,19 @@ function getKitchenOrders(status) {
   }
   sql += ' ORDER BY ko.created_at DESC LIMIT 50';
   const orders = getDb().prepare(sql).all(...params);
+  if (!orders.length) return orders;
+  const ids = orders.map((o) => o.id);
+  const placeholders = ids.map(() => '?').join(',');
+  const items = getDb().prepare(
+    `SELECT * FROM kitchen_order_items WHERE kitchen_order_id IN (${placeholders}) ORDER BY id`
+  ).all(...ids);
+  const byOrder = {};
+  for (const it of items) {
+    if (!byOrder[it.kitchen_order_id]) byOrder[it.kitchen_order_id] = [];
+    byOrder[it.kitchen_order_id].push(it);
+  }
   for (const o of orders) {
-    o.items = getDb().prepare('SELECT * FROM kitchen_order_items WHERE kitchen_order_id = ?').all(o.id);
+    o.items = byOrder[o.id] || [];
   }
   return orders;
 }
@@ -1418,7 +1533,7 @@ function getEmployeePerformanceReport(from, to) {
     SELECT u.full_name, COUNT(s.id) as sales_count, SUM(s.total) as revenue
     FROM sales s JOIN users u ON s.user_id=u.id
     WHERE date(s.created_at) BETWEEN date(?) AND date(?) AND s.status='completed'
-    GROUP BY u.id ORDER BY revenue DESC`).all(from, to);
+    GROUP BY u.id, u.full_name ORDER BY revenue DESC`).all(from, to);
 }
 
 function getDiscountReport(from, to) {
@@ -1635,9 +1750,9 @@ module.exports = {
   getStockCounts, createStockCount, updateStockCountLine, completeStockCount, getStockCount,
   recordWaste, getWasteRecords, approveWaste, rejectWaste, returnWasteToStock,
   receivePurchaseOrderPartial,
-  createCashUp, hasCashUpForShift, getCashUp, getCashUpByShift, getCashUps, getCashUpSummary, buildCashUpPdf, approveCashUp,
+  createCashUp, hasCashUpForShift, getCashUp, getCashUpByShift, getCashUps, getCashUpSummary, buildCashUpPdf, approveCashUp, updateCashUp, deleteCashUp,
   getAutomationRules, saveAutomationRule, deleteAutomationRule, evaluateAutomation,
-  getCustomFields, saveCustomField, deleteCustomField,
+  getCustomFields, saveCustomField, deleteCustomField, getCustomFieldValues, saveCustomFieldValues,
   getTables, saveTable, getKitchenOrders, updateKitchenOrderStatus, createKitchenOrder,
   getHourlySalesReport, getCategorySalesReport, getBrandSalesReport, getPaymentMethodReport,
   getEmployeePerformanceReport, getDiscountReport, getVoidReport, getStockMovementReport, getProfitDashboard,

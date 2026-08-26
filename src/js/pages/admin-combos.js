@@ -300,8 +300,7 @@
           </tbody></table></div>`;
       Utils.bindDateFilter('combo-date', (f, t) => { this._from = f; this._to = t; this.renderReports(el); });
       document.getElementById('combo-rpt-pdf').addEventListener('click', async () => {
-        const r = await API.getComboReportPdf({ from, to });
-        if (r.success) await API.saveFile(`combo-report-${from}-${to}.pdf`, [{ name: 'PDF', extensions: ['pdf'] }], r.data);
+        await Utils.savePdfBuffer(`combo-report-${from}-${to}.pdf`, await API.getComboReportPdf({ from, to }));
       });
       document.getElementById('combo-rpt-xlsx').addEventListener('click', async () => {
         const r = await API.getComboReportExcel({ from, to });

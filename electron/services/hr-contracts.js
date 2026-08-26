@@ -1,6 +1,7 @@
 const { getDb } = require('../database/db');
 const { jsPDF } = require('jspdf');
 require('jspdf-autotable');
+const path = require('path');
 const attendancePayroll = require('./attendance-payroll');
 const CHISANYAMA_BODY = require('./chisanyama-contract-template');
 
@@ -266,6 +267,7 @@ function getContract(id) {
   if (!c) return null;
   c.contract_data = parseJson(c.contract_data_json, {});
   c.signatures = parseJson(c.signature_data_json, {});
+  c.doc_paths = parseJson(c.doc_paths_json, []);
   return c;
 }
 
@@ -279,21 +281,151 @@ function saveContract(data, actorId, actorName) {
   const sigs = data.signatures || parseJson(data.signature_data_json, {});
   const payload = JSON.stringify(contractData);
   const sigPayload = JSON.stringify(sigs);
+  const expiresAt = data.expires_at != null ? data.expires_at : (contractData.end_date || null);
+  const resignOpens = data.resign_opens_at != null ? data.resign_opens_at : null;
+  const resignCloses = data.resign_closes_at != null ? data.resign_closes_at : null;
+  const docsJson = data.doc_paths_json != null
+    ? (typeof data.doc_paths_json === 'string' ? data.doc_paths_json : JSON.stringify(data.doc_paths_json))
+    : (data.doc_paths ? JSON.stringify(data.doc_paths) : null);
+  const requireDocs = data.require_docs_on_resign === 0 || data.require_docs_on_resign === false ? 0 : 1;
   if (data.id) {
-    db.prepare(`UPDATE employee_contracts SET employee_id=?, template_id=?, contract_data_json=?, status=?,
-      employee_signed_at=?, manager_signed_at=?, admin_signed_at=?, witness_signed_at=?, signature_data_json=?, pdf_path=?
-      WHERE id=?`).run(
-      data.employee_id, data.template_id || null, payload, data.status || 'draft',
-      data.employee_signed_at || null, data.manager_signed_at || null, data.admin_signed_at || null,
-      data.witness_signed_at || null, sigPayload, data.pdf_path || null, data.id
-    );
+    try {
+      db.prepare(`UPDATE employee_contracts SET employee_id=?, template_id=?, contract_data_json=?, status=?,
+        employee_signed_at=?, manager_signed_at=?, admin_signed_at=?, witness_signed_at=?, signature_data_json=?, pdf_path=?,
+        expires_at=COALESCE(?, expires_at), resign_opens_at=COALESCE(?, resign_opens_at), resign_closes_at=COALESCE(?, resign_closes_at),
+        doc_paths_json=COALESCE(?, doc_paths_json), require_docs_on_resign=?, renewed_from_id=COALESCE(?, renewed_from_id)
+        WHERE id=?`).run(
+        data.employee_id, data.template_id || null, payload, data.status || 'draft',
+        data.employee_signed_at || null, data.manager_signed_at || null, data.admin_signed_at || null,
+        data.witness_signed_at || null, sigPayload, data.pdf_path || null,
+        expiresAt, resignOpens, resignCloses, docsJson, requireDocs, data.renewed_from_id || null, data.id
+      );
+    } catch (_) {
+      db.prepare(`UPDATE employee_contracts SET employee_id=?, template_id=?, contract_data_json=?, status=?,
+        employee_signed_at=?, manager_signed_at=?, admin_signed_at=?, witness_signed_at=?, signature_data_json=?, pdf_path=?
+        WHERE id=?`).run(
+        data.employee_id, data.template_id || null, payload, data.status || 'draft',
+        data.employee_signed_at || null, data.manager_signed_at || null, data.admin_signed_at || null,
+        data.witness_signed_at || null, sigPayload, data.pdf_path || null, data.id
+      );
+    }
     audit(actorId, actorName, 'update_contract', 'employee_contract', data.id, { status: data.status });
     return getContract(data.id);
   }
-  const r = db.prepare(`INSERT INTO employee_contracts (employee_id, template_id, contract_data_json, status, signature_data_json, created_by)
-    VALUES (?,?,?,?,?,?)`).run(data.employee_id, data.template_id || null, payload, data.status || 'draft', sigPayload, actorId);
+  let r;
+  try {
+    r = db.prepare(`INSERT INTO employee_contracts (employee_id, template_id, contract_data_json, status, signature_data_json, created_by, expires_at, resign_opens_at, resign_closes_at, doc_paths_json, require_docs_on_resign, renewed_from_id)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      data.employee_id, data.template_id || null, payload, data.status || 'draft', sigPayload, actorId,
+      expiresAt, resignOpens, resignCloses, docsJson, requireDocs, data.renewed_from_id || null
+    );
+  } catch (_) {
+    r = db.prepare(`INSERT INTO employee_contracts (employee_id, template_id, contract_data_json, status, signature_data_json, created_by)
+      VALUES (?,?,?,?,?,?)`).run(data.employee_id, data.template_id || null, payload, data.status || 'draft', sigPayload, actorId);
+  }
   audit(actorId, actorName, 'create_contract', 'employee_contract', r.lastInsertRowid, { employee_id: data.employee_id });
   return getContract(r.lastInsertRowid);
+}
+
+function ensureContractExpiry() {
+  const db = getDb();
+  try {
+    const due = db.prepare(`
+      SELECT id, employee_id FROM employee_contracts
+      WHERE status = 'active' AND expires_at IS NOT NULL AND expires_at != ''
+        AND datetime(expires_at) <= datetime('now')
+    `).all();
+    for (const row of due) {
+      db.prepare(`UPDATE employee_contracts SET status='expired' WHERE id=?`).run(row.id);
+      try {
+        const emp = db.prepare('SELECT full_name FROM employees WHERE id=?').get(row.employee_id);
+        addNotification('contract_expired', 'Employment contract expired',
+          `${emp?.full_name || 'Employee'} contract #${row.id} expired — open re-sign window in Contracts.`);
+      } catch (_) { /* ignore */ }
+    }
+    return due.length;
+  } catch (_) {
+    return 0;
+  }
+}
+
+/** Admin opens a re-sign window: clear employee signature, set opens/closes datetime, pending_signatures */
+function openContractResign(contractId, resignOpensAt, resignClosesAt, actorId, actorName) {
+  const c = getContract(contractId);
+  if (!c) throw new Error('Contract not found');
+  if (!['expired', 'active', 'terminated', 'pending_signatures'].includes(c.status)) {
+    throw new Error('Only active/expired contracts can be opened for re-sign');
+  }
+  if (!resignOpensAt) throw new Error('Set the date/time when the employee may re-sign');
+  const sigs = { ...(c.signatures || {}) };
+  delete sigs.employee;
+  const patch = {
+    id: contractId,
+    employee_id: c.employee_id,
+    template_id: c.template_id,
+    contract_data: c.contract_data,
+    signatures: sigs,
+    status: 'pending_signatures',
+    employee_signed_at: null,
+    manager_signed_at: c.manager_signed_at,
+    admin_signed_at: c.admin_signed_at,
+    witness_signed_at: c.witness_signed_at,
+    expires_at: c.expires_at,
+    resign_opens_at: resignOpensAt,
+    resign_closes_at: resignClosesAt || null,
+    doc_paths: [],
+    require_docs_on_resign: 1
+  };
+  const saved = saveContract(patch, actorId, actorName);
+  audit(actorId, actorName, 'open_contract_resign', 'employee_contract', contractId, {
+    resign_opens_at: resignOpensAt, resign_closes_at: resignClosesAt
+  });
+  try {
+    addNotification('contract_resign', 'Contract re-sign required',
+      `${c.employee_name} must re-sign their employment contract from ${resignOpensAt}`);
+  } catch (_) { /* ignore */ }
+  return saved;
+}
+
+function attachContractResignDoc(contractId, filePath, fileName, employeeId) {
+  const c = getContract(contractId);
+  if (!c) throw new Error('Contract not found');
+  if (Number(c.employee_id) !== Number(employeeId)) throw new Error('Not your contract');
+  if (c.status !== 'pending_signatures') throw new Error('Contract is not open for re-sign');
+  const docs = Array.isArray(c.doc_paths) ? [...c.doc_paths] : [];
+  docs.push({ path: filePath, name: fileName || path.basename(filePath), uploaded_at: new Date().toISOString() });
+  try {
+    getDb().prepare(`UPDATE employee_contracts SET doc_paths_json=? WHERE id=?`).run(JSON.stringify(docs), contractId);
+  } catch (_) {
+    throw new Error('Could not save document — update the app / migrate database');
+  }
+  try {
+    require('./staff').saveDocument({
+      employee_id: employeeId,
+      doc_type: 'contract_resign',
+      file_path: filePath,
+      file_name: fileName || path.basename(filePath),
+      notes: `Re-sign contract #${contractId}`
+    });
+  } catch (_) { /* ignore */ }
+  return getContract(contractId);
+}
+
+function employeeCanResignContract(c) {
+  if (!c || c.status !== 'pending_signatures') return { ok: false, reason: 'Not open for signing' };
+  const now = new Date();
+  if (c.resign_opens_at && now < new Date(c.resign_opens_at)) {
+    return { ok: false, reason: `Re-sign opens at ${c.resign_opens_at}` };
+  }
+  if (c.resign_closes_at && now > new Date(c.resign_closes_at)) {
+    return { ok: false, reason: `Re-sign window closed at ${c.resign_closes_at}` };
+  }
+  const requireDocs = c.require_docs_on_resign !== 0;
+  const docs = Array.isArray(c.doc_paths) ? c.doc_paths : [];
+  if (requireDocs && c.resign_opens_at && docs.length < 1) {
+    return { ok: false, reason: 'Upload your documents before signing' };
+  }
+  return { ok: true };
 }
 
 function signContract(contractId, role, signatureBase64, actorId, actorName) {
@@ -304,6 +436,19 @@ function signContract(contractId, role, signatureBase64, actorId, actorName) {
   const empSess = getEmployeeSession();
   if (empSess?.employee_id != null && Number(empSess.employee_id) === Number(c.employee_id)) {
     slot = 'employee';
+    const gate = employeeCanResignContract(c);
+    // Allow first-time sign when no resign window set (classic flow)
+    if (c.resign_opens_at || c.status === 'pending_signatures') {
+      if (c.resign_opens_at) {
+        const now = new Date();
+        if (now < new Date(c.resign_opens_at)) throw new Error(gate.reason || 'Re-sign not open yet');
+        if (c.resign_closes_at && now > new Date(c.resign_closes_at)) throw new Error(gate.reason || 'Re-sign window closed');
+      }
+      if (c.require_docs_on_resign !== 0 && c.resign_opens_at) {
+        const docs = Array.isArray(c.doc_paths) ? c.doc_paths : [];
+        if (docs.length < 1) throw new Error('Upload your documents before signing the contract');
+      }
+    }
   } else if (actorId) {
     const user = assertUserActor({ id: actorId }, ['owner', 'manager', 'supervisor', 'assistant_manager']);
     if (user.role === 'owner') slot = role === 'witness' ? 'witness' : 'admin';
@@ -318,7 +463,12 @@ function signContract(contractId, role, signatureBase64, actorId, actorName) {
   const sigs = c.signatures || {};
   sigs[slot] = signatureBase64;
   const now = new Date().toISOString();
-  const patch = { id: contractId, employee_id: c.employee_id, template_id: c.template_id, contract_data: c.contract_data, signatures: sigs, status: c.status };
+  const patch = {
+    id: contractId, employee_id: c.employee_id, template_id: c.template_id, contract_data: c.contract_data,
+    signatures: sigs, status: c.status,
+    expires_at: c.expires_at, resign_opens_at: c.resign_opens_at, resign_closes_at: c.resign_closes_at,
+    doc_paths: c.doc_paths, require_docs_on_resign: c.require_docs_on_resign
+  };
   if (slot === 'employee') patch.employee_signed_at = now;
   if (slot === 'manager') patch.manager_signed_at = now;
   if (slot === 'admin') patch.admin_signed_at = now;
@@ -698,6 +848,7 @@ module.exports = {
   populateContractFromEmployee,
   getContractTemplates, saveContractTemplate, deleteContractTemplate,
   getContracts, getContract, saveContract, signContract, buildContractPdf,
+  ensureContractExpiry, openContractResign, attachContractResignDoc, employeeCanResignContract,
   getProbations, getProbation, saveProbation, deleteProbation,
   getDecisionRules, saveDecisionRule,
   saveDailyEvaluation, getEvaluationHistory, getRecommendation, finalProbationDecision,

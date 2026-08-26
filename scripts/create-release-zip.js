@@ -45,12 +45,11 @@ fs.mkdirSync(releaseDir, { recursive: true });
 const readme = `# Shop POS — Windows & Tablet Install v${VERSION}
 
 ## What's new in v${VERSION}
-- **Clocking** — daily/weekly hours, shift-gated clock-in, auto clock-out at shift end
-- **Attendance penalties** — admin money/hours deductions on next payroll
-- **Admin clock entries** — add in/out/hours with who entered them
-- **Supplier debt** — partial payments until balance is cleared
-- **Recruitment** — Staff tab (not cashier/marketing); edit/delete job postings
-- **POS** — Send Cash to Admin button removed
+- **Same shop everywhere** — installer login (online) opens the same shop as the browser URL
+- **Faster app** — lighter sign-in load; pages load on demand
+- **Larger desktop login** — welcome/sign-in card sized for computer screens
+- **A4 printer setup** — Admin Printer Setup A4 (USB/Bluetooth) for Reports & Bookkeeping Print
+- **UPDATE only** — existing shop data is preserved
 
 ## Windows PC (x64)
 - **Shop POS Setup x64-v${VERSION}.exe** — installer

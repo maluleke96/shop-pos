@@ -127,15 +127,34 @@ function writeDurableMirror(bytes) {
   }
 }
 
-async function looksLikeSetupDb(bytes) {
+function probeCount(probe, sql) {
+  try {
+    const rows = probe.exec(sql);
+    return rows.length ? Number(rows[0].values[0][0]) || 0 : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/** True if bytes contain a real shop (setup_complete OR users/products/sales/name). */
+async function looksLikeBusinessDb(bytes) {
   try {
     await validateDatabaseBytes(bytes);
     await loadSqlJs();
     const probe = new SQL.Database(toUint8(bytes));
     try {
-      const rows = probe.exec('SELECT setup_complete FROM shop_settings WHERE id=1');
-      const setup = rows.length ? Number(rows[0].values[0][0]) || 0 : 0;
-      return setup === 1;
+      const setupRows = probe.exec('SELECT setup_complete, shop_name, app_display_name FROM shop_settings WHERE id=1');
+      const setup = setupRows.length ? Number(setupRows[0].values[0][0]) || 0 : 0;
+      const shopName = setupRows.length
+        ? String(setupRows[0].values[0][1] || setupRows[0].values[0][2] || '').trim()
+        : '';
+      if (setup === 1) return true;
+      const users = probeCount(probe, 'SELECT COUNT(*) FROM users');
+      const products = probeCount(probe, 'SELECT COUNT(*) FROM products');
+      const employees = probeCount(probe, 'SELECT COUNT(*) FROM employees');
+      const sales = probeCount(probe, 'SELECT COUNT(*) FROM sales');
+      const customers = probeCount(probe, 'SELECT COUNT(*) FROM customers');
+      return !!(users || products || employees || sales || customers || shopName);
     } finally {
       probe.close();
     }
@@ -144,15 +163,19 @@ async function looksLikeSetupDb(bytes) {
   }
 }
 
+async function looksLikeSetupDb(bytes) {
+  return looksLikeBusinessDb(bytes);
+}
+
 async function recoverFromDurableStorage() {
   try {
     const capFiles = require('./capacitorFiles');
     if (!capFiles.isNative()) return null;
     const found = await capFiles.loadDurableDatabase();
     if (!found?.bytes) return null;
-    const ok = await looksLikeSetupDb(found.bytes);
+    const ok = await looksLikeBusinessDb(found.bytes);
     if (!ok) {
-      // Still accept a valid DB even if setup flag missing — better than blank shop
+      // Still accept a valid DB even if detection fails — better than blank shop
       try { await validateDatabaseBytes(found.bytes); }
       catch { return null; }
     }
@@ -265,6 +288,22 @@ function runMigrations() {
   if (current >= target && target > 0) {
     return; // already up to date — skip replaying all SQL
   }
+  // UPDATE SAFETY: timestamped backup before schema changes on existing data
+  if (current > 0 && current < target) {
+    try {
+      const capFiles = require('./capacitorFiles');
+      const bytes = rawDb.export();
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19).replace('T', '_');
+      const name = `ShopPOS_Backup_${stamp}.db`;
+      // Fire-and-forget async write; durable mirror still persists after migrations
+      Promise.resolve(capFiles.saveSilent(name, new Uint8Array(bytes))).then((r) => {
+        if (r?.success) console.log('[Mobile DB] Pre-migration backup:', r.path);
+        else console.warn('[Mobile DB] Pre-migration backup failed', r?.error || r);
+      }).catch((err) => console.warn('[Mobile DB] Pre-migration backup error', err?.message || err));
+    } catch (err) {
+      console.warn('[Mobile DB] Could not start pre-migration backup', err?.message || err);
+    }
+  }
   let applied = current;
   SQL_FILES.forEach((sqlFile, index) => {
     const ver = fileVersion(names[index], index);
@@ -324,21 +363,22 @@ async function initDatabase(opts = {}) {
   let saved = await loadDbBytes();
   let recovered = false;
   const skipRecover = !!opts.skipRecover;
+  const idbEmpty = !saved || saved.length < 100;
 
-  // IndexedDB is wiped on uninstall/reinstall. Pull shop+users back from Documents.
+  // IndexedDB can be empty after update/reinstall. Prefer Documents live mirror / backups.
   if (!skipRecover) {
-    if (!saved || saved.length < 100) {
+    if (idbEmpty) {
       const durable = await recoverFromDurableStorage();
       if (durable) {
         saved = durable;
         recovered = true;
       }
     } else {
-      // Rare: empty/new IDB shell while durable has a completed shop
-      const idbReady = await looksLikeSetupDb(saved);
+      // Prefer durable shop if IndexedDB is only an empty shell (setup_complete=0, no data)
+      const idbReady = await looksLikeBusinessDb(saved);
       if (!idbReady) {
         const durable = await recoverFromDurableStorage();
-        if (durable && (await looksLikeSetupDb(durable))) {
+        if (durable && (await looksLikeBusinessDb(durable))) {
           saved = durable;
           recovered = true;
         }
@@ -346,10 +386,18 @@ async function initDatabase(opts = {}) {
     }
   }
 
+  const openingBlank = !saved || saved.length < 100;
   rawDb = saved ? new SQL.Database(saved) : new SQL.Database();
   db = wrapDatabase(rawDb);
   runMigrations();
-  persistNow({ forceDurable: true });
+
+  // NEVER overwrite a good Documents live DB with a blank in-memory shell
+  if (openingBlank && !recovered) {
+    persistNow({ forceDurable: false });
+    console.warn('[Mobile DB] Opened empty DB — durable mirror not overwritten');
+  } else {
+    persistNow({ forceDurable: true });
+  }
   if (recovered && typeof window !== 'undefined') {
     window.__SHOP_POS_RECOVERED__ = lastRecoverSource;
   }
@@ -429,5 +477,6 @@ module.exports = {
   importDatabaseBytes,
   validateDatabaseBytes,
   persistNow,
+  schedulePersist,
   getLastRecoverSource
 };

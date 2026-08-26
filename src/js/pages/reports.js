@@ -279,7 +279,7 @@ const ReportsPage = {
       }
       case 'shifts': {
         const res = await API.getStaffSchedules(from, to);
-        data = res.data || [];
+        data = (res.data || []).filter(s => s.id && !s._from_work_schedule);
         title = 'Shift Schedule'; filename = `shifts-${from}.pdf`;
         headers = ['Date', 'Employee', 'Shift', 'Start', 'End'];
         rows = data.map(s => [s.shift_date, s.full_name, s.shift_name, s.start_time || '—', s.end_time || '—']);
@@ -303,10 +303,11 @@ const ReportsPage = {
     const dateLabel = type === 'stock' ? 'Current snapshot' : `${Utils.formatDate(from)} — ${Utils.formatDate(to)}`;
     output.innerHTML = `
       <div class="card"><div class="card-header"><h3>${title} <small class="muted">(${dateLabel})</small></h3>
-        <div style="display:flex;gap:6px">
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
           <button class="btn btn-ghost btn-sm" id="export-excel">Download Excel</button>
           <button class="btn btn-ghost btn-sm" id="export-pdf">Download PDF</button>
           <button class="btn btn-primary btn-sm" id="print-report">Print</button>
+          <button class="btn btn-success btn-sm" id="share-report">Share / Save</button>
         </div></div>
         <div class="table-wrap"><table><thead><tr>${headers.map(h => `<th>${h}</th>`).join('')}</tr></thead>
         <tbody>${rows.map(r => `<tr>${r.map(c => `<td>${c}</td>`).join('')}</tr>`).join('') || `<tr><td colspan="${headers.length}" class="muted">No data for this period</td></tr>`}
@@ -321,6 +322,10 @@ const ReportsPage = {
     });
     document.getElementById('print-report').addEventListener('click', async () => {
       await Export.print(title, headers, rows.map(r => r.map(String)), company);
+    });
+    document.getElementById('share-report')?.addEventListener('click', async () => {
+      // Same as PDF download on Android (opens native share sheet so you can Save to Files / WhatsApp)
+      await Export.toPDF(filename, title, headers, rows.map(r => r.map(String)), company);
     });
   }
 };

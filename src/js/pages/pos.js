@@ -30,59 +30,90 @@ const POSPage = {
 
   async render(el, app) {
     this.app = app;
+    this._host = el;
     const pendingQuote = app.pendingQuote;
     app.pendingQuote = null;
-    this.cart = [];
-    this.discount = 0;
+    // Only reset cart on a true first mount / explicit new sale flow — not on keep-alive revisit
+    if (!this._posMounted) {
+      this.cart = [];
+      this.discount = 0;
+      this._posMounted = true;
+    }
     this.app.settings = {
       ...this.app.settings,
       device_settings: Utils.mergeDeviceSettings(this.app.settings)
     };
     const branchId = app.user?.branch_id || undefined;
     const isMobile = !!(window.__SHOP_POS_MOBILE__ || Utils.isNative?.());
-    const [catRes, prodRes, shiftRes] = await Promise.all([
-      API.getCategories({ for_pos: true }),
-      API.getProducts({ for_pos: true }),
-      API.getOpenShift(app.user)
+
+    this.shiftSettings = app.settings?.shift_settings || this.shiftSettings || {
+      required_roles: ['cashier', 'manager', 'assistant_manager', 'owner']
+    };
+
+    // Show shift gate BEFORE painting the till UI
+    el.innerHTML = `<div class="pos-shift-wait" style="padding:48px 24px;text-align:center;max-width:480px;margin:40px auto">
+      <p style="font-size:16px;margin:0 0 8px">Checking your shift…</p>
+      <p class="muted" style="margin:0">Please wait</p>
+    </div>`;
+
+    try {
+      const [shiftSettingsRes, shiftRes] = await Promise.all([
+        API.getShiftSettings().catch(() => ({ success: false })),
+        API.getOpenShift(app.user)
+      ]);
+      if (shiftSettingsRes.success) {
+        this.shiftSettings = shiftSettingsRes.data || this.shiftSettings;
+      }
+      this.openShift = shiftRes.data || null;
+    } catch (_) { /* keep defaults */ }
+
+    const enforceCashout = async () => {
+      try {
+        const hadShift = !!this.openShift;
+        const enforced = await API.enforceCashoutDeadlines();
+        if (enforced.success && enforced.data?.closed > 0) {
+          const refreshed = await API.getOpenShift(app.user);
+          this.openShift = refreshed.data || null;
+          Utils.toast(`Auto-closed ${enforced.data.closed} shift(s) past cash-out deadline`, 'info');
+          if (hadShift && !this.openShift && this.requiresShift()) {
+            Utils.toast('Your shift was closed by deadline — open a new shift to keep selling', 'warning');
+          }
+        }
+      } catch (_) { /* ignore */ }
+    };
+    setTimeout(() => enforceCashout(), 0);
+
+    if (this.requiresShift()) {
+      if (this.openShift) {
+        await this.promptResumeShift();
+      } else {
+        await this.ensureShift();
+      }
+    }
+
+    const filters = { for_pos: true };
+    const [catRes, prodRes] = await Promise.all([
+      API.getCategories(filters),
+      API.getProducts(filters)
     ]);
     this.categories = catRes.data || [];
     this.products = prodRes.data || [];
-    this.openShift = shiftRes.data || null;
-    this.combos = [];
-    this.salesTargets = { daily: { amount: 0, active: false } };
-    this.activeCampaigns = [];
-    this.shiftSettings = app.settings?.shift_settings || { required_roles: ['cashier', 'manager', 'assistant_manager', 'owner'] };
+    this.combos = this.combos || [];
+    this.salesTargets = this.salesTargets || { daily: { amount: 0, active: false } };
+    this.activeCampaigns = this.activeCampaigns || [];
     this.rebuildProductLookups();
 
-    // Paint POS immediately on Android; load combos/targets in background
     this.renderLayout(el);
     this.bindEvents(el);
 
     const secondary = Promise.all([
       API.getActiveCombos(branchId ? { branch_id: branchId } : {}).catch(() => ({ success: false, data: [] })),
       API.getSalesTargets().catch(() => ({ success: false })),
-      API.getActiveCampaigns(app.user?.branch_id).catch(() => ({ success: false })),
-      API.getShiftSettings().catch(() => ({ success: false }))
+      API.getActiveCampaigns(app.user?.branch_id).catch(() => ({ success: false }))
     ]);
 
-    if (!isMobile) {
-      try {
-        const enforced = await API.enforceCashoutDeadlines();
-        if (enforced.success && enforced.data?.closed > 0) {
-          const refreshed = await API.getOpenShift(app.user);
-          this.openShift = refreshed.data || null;
-          Utils.toast(`Auto-closed ${enforced.data.closed} shift(s) past cash-out deadline`, 'info');
-        }
-      } catch (_) { /* ignore */ }
-    } else {
-      setTimeout(() => API.enforceCashoutDeadlines().catch(() => {}), 0);
-    }
-
-    const [comboRes, targetsRes, campRes, shiftSettingsRes] = await secondary;
+    const [comboRes, targetsRes, campRes] = await secondary;
     this.combos = comboRes.data || [];
-    this.shiftSettings = shiftSettingsRes.success
-      ? (shiftSettingsRes.data || {})
-      : (app.settings?.shift_settings || this.shiftSettings);
     this.salesTargets = targetsRes.success ? (targetsRes.data || { daily: { amount: 0, active: false } }) : { daily: { amount: 0, active: false } };
     this.activeCampaigns = campRes.success ? (campRes.data || []) : [];
     const tabs = document.getElementById('pos-categories');
@@ -97,11 +128,33 @@ const POSPage = {
     }
     this.updateShiftGate();
     const ds = Utils.mergeDeviceSettings(this.app.settings);
-    if (ds.scanner_auto_mode !== false) this.toggleScanMode(true);
-    if (this.openShift && this.requiresShift()) {
-      await this.promptResumeShift();
-    } else {
-      await this.ensureShift();
+    const ss = this.app.settings?.scanner_settings || {};
+    const scanEnabled = ss.enabled !== false;
+    if (scanEnabled && ds.scanner_auto_mode !== false) this.toggleScanMode(true);
+    if (ss.type === 'camera') this._preferCameraScan = true;
+    await this.updateShiftBar();
+  },
+
+  /** Keep-alive revisit: preserve cart, refresh catalog/shift in background. */
+  async activate(el, app) {
+    this.app = app;
+    this._host = el;
+    try {
+      const [catRes, prodRes, shiftRes] = await Promise.all([
+        API.getCategories({ for_pos: true }),
+        API.getProducts({ for_pos: true }),
+        API.getOpenShift(app.user)
+      ]);
+      this.categories = catRes.data || [];
+      this.products = prodRes.data || [];
+      this.openShift = shiftRes.data || null;
+      this.rebuildProductLookups();
+      this.renderProducts(document.getElementById('pos-search')?.value || '');
+      this.updateShiftGate?.();
+      if (typeof this.renderCart === 'function') this.renderCart();
+      window.DataCache?.clearStaleBanner?.(el);
+    } catch (err) {
+      window.DataCache?.showStaleBanner?.(el, 'Unable to refresh. Showing last updated data.');
     }
   },
 
@@ -130,45 +183,56 @@ const POSPage = {
 
   async ensureShift() {
     if (!this.requiresShift() || this.openShift) return;
-    if (document.getElementById('modal-overlay')?.dataset.noDismiss === '1') return;
+    if (document.getElementById('modal-overlay')?.dataset.noDismiss === '1') {
+      // Wait until the existing blocking modal is dismissed
+      await new Promise((resolve) => {
+        const t = setInterval(() => {
+          if (document.getElementById('modal-overlay')?.dataset.noDismiss !== '1') {
+            clearInterval(t);
+            resolve();
+          }
+        }, 200);
+      });
+      if (this.openShift) return;
+    }
     const currency = this.app.settings?.currency || 'R';
     const dailyTarget = this.activeDailyTargetAmount();
     const targetLine = dailyTarget > 0
       ? `<p style="margin-top:8px;padding:8px;background:var(--bg-secondary);border-radius:8px"><strong>Today's sales target:</strong> ${Utils.formatMoney(dailyTarget, currency)}</p>`
       : '';
-    Utils.showModal('Open Shift Required', `
-      <p><strong>Your role requires an open shift before taking sales.</strong></p>
-      <p class="muted">Enter the opening cash float in your drawer, then tap Open Shift to continue.</p>
-      ${targetLine}
-      <div class="field"><label>Opening Float (${currency})</label>
-        <input type="number" id="pos-shift-float" step="0.01" min="0" value="0" autofocus></div>`,
-      '<button class="btn btn-success" id="pos-open-shift">Open Shift & Start Selling</button>',
-      { noDismiss: true });
-    document.getElementById('pos-open-shift').addEventListener('click', async () => {
-      const btn = document.getElementById('pos-open-shift');
-      btn.disabled = true;
-      btn.textContent = 'Opening…';
-      const r = await API.openShift(parseFloat(document.getElementById('pos-shift-float').value) || 0, this.app.user);
-      if (!r.success) {
-        Utils.toast(r.error, 'error');
-        btn.disabled = false;
-        btn.textContent = 'Open Shift & Start Selling';
-        return;
-      }
-      this.openShift = r.data;
-      document.getElementById('modal-overlay').dataset.noDismiss = '0';
-      const closeBtn = document.getElementById('modal-close');
-      if (closeBtn) closeBtn.style.display = '';
-      Utils.hideModal();
-      Utils.toast('Shift opened — you can now take sales', 'success');
-      this.updateShiftBar();
-      this.updateShiftGate();
+    await new Promise((resolve) => {
+      Utils.showModal('Open Shift Required', `
+        <p><strong>Your role requires an open shift before taking sales.</strong></p>
+        <p class="muted">Enter the opening cash float in your drawer, then tap Open Shift to continue.</p>
+        ${targetLine}
+        <div class="field"><label>Opening Float (${currency})</label>
+          <input type="number" id="pos-shift-float" step="0.01" min="0" value="0" autofocus></div>`,
+        '<button class="btn btn-success" id="pos-open-shift">Open Shift & Start Selling</button>',
+        { noDismiss: true });
+      document.getElementById('pos-open-shift').addEventListener('click', async () => {
+        const btn = document.getElementById('pos-open-shift');
+        btn.disabled = true;
+        btn.textContent = 'Opening…';
+        const r = await API.openShift(parseFloat(document.getElementById('pos-shift-float').value) || 0, this.app.user);
+        if (!r.success) {
+          Utils.toast(r.error, 'error');
+          btn.disabled = false;
+          btn.textContent = 'Open Shift & Start Selling';
+          return;
+        }
+        this.openShift = r.data;
+        document.getElementById('modal-overlay').dataset.noDismiss = '0';
+        const closeBtn = document.getElementById('modal-close');
+        if (closeBtn) closeBtn.style.display = '';
+        Utils.hideModal();
+        Utils.toast('Shift opened — you can now take sales', 'success');
+        resolve();
+      });
     });
   },
 
   async promptResumeShift() {
     if (!this.openShift || !this.requiresShift()) return;
-    if (document.getElementById('modal-overlay')?.dataset.noDismiss === '1') return;
     const currency = this.app.settings?.currency || 'R';
     let shiftSales = 0;
     let saleCount = 0;
@@ -182,31 +246,45 @@ const POSPage = {
     const salesLine = saleCount > 0
       ? `${Utils.formatMoney(shiftSales, currency)} (${saleCount} sale${saleCount === 1 ? '' : 's'})`
       : Utils.formatMoney(shiftSales, currency);
-    Utils.showModal('Continue Your Shift?', `
-      <p>You have an open shift from a previous session.</p>
-      <p><strong>Opened:</strong> ${Utils.formatDateTime(this.openShift.opened_at)}</p>
-      <p><strong>Opening float:</strong> ${Utils.formatMoney(this.openShift.opening_float, currency)}</p>
-      <p><strong>Sales this shift:</strong> ${salesLine}</p>
-      <p class="muted">Continue working this shift, or close it now if you are done for the day.</p>`,
-      `<button class="btn btn-secondary" id="pos-close-resume-shift">Close Shift</button>
-       <button class="btn btn-success" id="pos-continue-shift">Continue Shift</button>`,
-      { noDismiss: true });
-    document.getElementById('pos-continue-shift').addEventListener('click', () => {
-      document.getElementById('modal-overlay').dataset.noDismiss = '0';
-      const closeBtn = document.getElementById('modal-close');
-      if (closeBtn) closeBtn.style.display = '';
-      Utils.hideModal();
-      this.updateShiftBar();
-      this.updateShiftGate();
+
+    const choice = await new Promise((resolve) => {
+      Utils.showModal('Continue Your Shift?', `
+        <p>You have an open shift from a previous session.</p>
+        <p><strong>Opened:</strong> ${Utils.formatDateTime(this.openShift.opened_at)}</p>
+        <p><strong>Opening float:</strong> ${Utils.formatMoney(this.openShift.opening_float, currency)}</p>
+        <p><strong>Sales this shift:</strong> ${salesLine}</p>
+        <p class="muted">Continue working this shift, or close it now if you are done for the day.</p>`,
+        `<button class="btn btn-secondary" id="pos-close-resume-shift">Close Shift</button>
+         <button class="btn btn-success" id="pos-continue-shift">Continue Shift</button>`,
+        { noDismiss: true });
+      document.getElementById('pos-continue-shift').addEventListener('click', () => {
+        document.getElementById('modal-overlay').dataset.noDismiss = '0';
+        const closeBtn = document.getElementById('modal-close');
+        if (closeBtn) closeBtn.style.display = '';
+        Utils.hideModal();
+        resolve('continue');
+      });
+      document.getElementById('pos-close-resume-shift').addEventListener('click', () => {
+        document.getElementById('modal-overlay').dataset.noDismiss = '0';
+        const closeBtn = document.getElementById('modal-close');
+        if (closeBtn) closeBtn.style.display = '';
+        Utils.hideModal();
+        resolve('close');
+      });
     });
-    document.getElementById('pos-close-resume-shift').addEventListener('click', () => {
-      document.getElementById('modal-overlay').dataset.noDismiss = '0';
-      const closeBtn = document.getElementById('modal-close');
-      if (closeBtn) closeBtn.style.display = '';
-      Utils.hideModal();
-      this.showCashOut();
-    });
-    await this.updateShiftBar();
+
+    if (choice === 'close') {
+      await this.showCashOut();
+      try {
+        const refreshed = await API.getOpenShift(this.app.user);
+        this.openShift = refreshed.data || null;
+      } catch (_) {
+        this.openShift = null;
+      }
+      if (!this.openShift && this.requiresShift()) {
+        await this.ensureShift();
+      }
+    }
   },
 
   async updateShiftBar() {
@@ -321,6 +399,7 @@ const POSPage = {
             <button class="btn btn-danger btn-sm" id="pos-void">Void Sale</button>
             <button class="btn btn-warning btn-sm" id="pos-refund">Refund</button>
             <button class="btn btn-warning" id="pos-cashout">💰 Cash Out</button>
+            <button class="btn btn-ghost btn-sm" id="pos-cash-drop" title="Send cash to admin during shift">💵 Cash Drop</button>
             <button class="btn btn-ghost btn-sm" id="pos-cashout-history">📜 History</button>
           </div>
           <div id="pos-scan-banner" class="pos-scan-banner hidden">📷 Scanner ready — scan barcode or type code and press Enter</div>
@@ -587,6 +666,48 @@ const POSPage = {
       limiting: product.limiting_ingredient_name || product.limiting_ingredient || null,
       oosReason: product.out_of_stock_reason || null
     };
+  },
+
+  /** Patch in-memory product stock/capacity after a committed sale (no RPC). */
+  applyLocalSaleStockDeduction(cartLines) {
+    if (!Array.isArray(cartLines) || !this.products?.length) return;
+    for (const line of cartLines) {
+      const qty = Number(line.quantity) || 0;
+      if (!(qty > 0)) continue;
+
+      if (line.combo_id) {
+        const combo = (this.combos || []).find((c) => Number(c.id) === Number(line.combo_id));
+        const components = combo?.items || line.combo_items || [];
+        for (const ci of components) {
+          const pid = ci.product_id || ci.id;
+          if (!pid) continue;
+          const product = this.products.find((p) => Number(p.id) === Number(pid));
+          if (!product) continue;
+          const need = qty * (Number(ci.quantity) || 1);
+          const isMeal = !!(product.has_recipe && product.production_mode !== 'make_to_stock');
+          if (isMeal) {
+            const cap = Math.max(0, Math.floor(Number(product.available_meals ?? product.production_capacity) || 0) - need);
+            product.available_meals = cap;
+            product.production_capacity = cap;
+          } else {
+            product.stock_quantity = Math.max(0, (Number(product.stock_quantity) || 0) - need);
+          }
+        }
+        continue;
+      }
+
+      if (!line?.product_id) continue;
+      const product = this.products.find((p) => Number(p.id) === Number(line.product_id));
+      if (!product) continue;
+      const isMeal = !!(product.has_recipe && product.production_mode !== 'make_to_stock');
+      if (isMeal) {
+        const cap = Math.max(0, Math.floor(Number(product.available_meals ?? product.production_capacity) || 0) - qty);
+        product.available_meals = cap;
+        product.production_capacity = cap;
+      } else {
+        product.stock_quantity = Math.max(0, (Number(product.stock_quantity) || 0) - qty);
+      }
+    }
   },
 
   allowOversell() {
@@ -1050,12 +1171,37 @@ const POSPage = {
 
   async convertQuoteToSaleOnPos(quoteId) {
     if (!this.requireShift('converting a quote')) return;
-    const conf = confirm('Convert this quote to a completed sale (cash)? Customer can pay at checkout after Load if you prefer.');
-    if (!conf) return;
-    const r = await API.convertQuote(quoteId, this.app.user);
+    const payType = await new Promise((resolve) => {
+      Utils.showModal(
+        'Convert quote to sale',
+        `<p>How did the customer pay?</p>
+         <div class="field"><label>Payment type</label>
+           <select id="cq-paytype">
+             <option value="cash">Cash</option>
+             <option value="card">Card</option>
+             <option value="eft">EFT</option>
+             <option value="mobile">Mobile</option>
+             <option value="other">Other</option>
+           </select>
+         </div>
+         <p class="muted">Tip: use <strong>Load</strong> then Pay if you need split tenders / account.</p>`,
+        '<button class="btn btn-secondary" id="cq-cancel">Cancel</button><button class="btn btn-success" id="cq-ok">Complete sale</button>'
+      );
+      document.getElementById('cq-cancel')?.addEventListener('click', () => {
+        Utils.forceHideModal();
+        resolve(null);
+      });
+      document.getElementById('cq-ok')?.addEventListener('click', () => {
+        const v = document.getElementById('cq-paytype')?.value || 'cash';
+        Utils.forceHideModal();
+        resolve(v);
+      });
+    });
+    if (!payType) return;
+    const r = await API.convertQuote(quoteId, this.app.user, { type: payType });
     if (!r.success) return Utils.toast(r.error || 'Could not convert quote', 'error');
     const sale = r.data?.sale || r.data;
-    Utils.toast(`Sold — Order ${sale?.order_number || ''} · Receipt ${sale?.receipt_number || ''}`, 'success');
+    Utils.toast(`Sold (${payType}) — Order ${sale?.order_number || ''} · Receipt ${sale?.receipt_number || ''}`, 'success');
     if (sale) {
       try { await this.printReceiptSafe(sale); } catch (_) {}
       try { await this.printKitchenSafe(sale); } catch (_) {}
@@ -1135,8 +1281,35 @@ const POSPage = {
     document.getElementById('cart-discount').textContent = Utils.formatMoney(this.discount, currency);
     document.getElementById('cart-total').textContent = Utils.formatMoney(totals.total, currency);
     this.totals = { subtotal: totals.subtotalExcl, grossSubtotal, discount: this.discount, tax_amount: totals.tax, total: totals.total };
+    this.broadcastCartToDisplays(totals.total, currency);
     this.updateLoyaltyDisplay(totals.total);
     this.updateProductStockDisplay();
+  },
+
+  broadcastCartToDisplays(total, currency) {
+    const payload = {
+      type: 'cart:update',
+      items: (this.cart || []).map((i) => ({
+        product_name: i.product_name,
+        quantity: i.quantity,
+        total: i.total
+      })),
+      discount: this.discount || 0,
+      total: total || 0,
+      currency: currency || this.app?.settings?.currency || 'R',
+      customer: this.selectedCustomer?.name || null
+    };
+    try {
+      const bc = new BroadcastChannel('shoppos-kitchen');
+      bc.postMessage(payload);
+      bc.close();
+    } catch (_) { /* ignore */ }
+    try {
+      window.postMessage(payload, '*');
+      document.querySelectorAll('iframe').forEach((f) => {
+        try { f.contentWindow?.postMessage(payload, '*'); } catch (_) { /* ignore */ }
+      });
+    } catch (_) { /* ignore */ }
   },
 
   updateLoyaltyDisplay(total) {
@@ -1175,12 +1348,68 @@ const POSPage = {
     }
     banner?.classList.toggle('hidden', !this.scanMode);
     if (this.scanMode && search) {
-      search.placeholder = 'Scan barcode now…';
+      search.placeholder = this._preferCameraScan ? 'Camera scan or type barcode…' : 'Scan barcode now…';
       search.focus();
       search.select();
+      if (this._preferCameraScan) this.startCameraBarcodeScan();
     } else if (search) {
       search.placeholder = 'Search or scan barcode…';
+      this.stopCameraBarcodeScan();
     }
+  },
+
+  stopCameraBarcodeScan() {
+    try { this._scanStream?.getTracks()?.forEach(t => t.stop()); } catch (_) {}
+    this._scanStream = null;
+    this._scanDetecting = false;
+    document.getElementById('pos-cam-scan')?.remove();
+  },
+
+  async startCameraBarcodeScan() {
+    if (this._scanDetecting) return;
+    if (!navigator.mediaDevices?.getUserMedia) {
+      return Utils.toast('Camera scan not available on this device — type or use a USB scanner', 'error');
+    }
+    this.stopCameraBarcodeScan();
+    let wrap = document.getElementById('pos-cam-scan');
+    if (!wrap) {
+      wrap = document.createElement('div');
+      wrap.id = 'pos-cam-scan';
+      wrap.style.cssText = 'position:relative;margin:8px 12px;max-width:420px';
+      wrap.innerHTML = '<video id="pos-cam-video" autoplay playsinline muted style="width:100%;border-radius:8px;background:#000"></video>';
+      document.getElementById('pos-scan-banner')?.after(wrap);
+    }
+    try {
+      this._scanStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+      const video = document.getElementById('pos-cam-video');
+      if (video) video.srcObject = this._scanStream;
+    } catch (err) {
+      this.stopCameraBarcodeScan();
+      return Utils.toast(err.message || 'Camera permission denied', 'error');
+    }
+    const Detector = window.BarcodeDetector;
+    if (!Detector) {
+      Utils.toast('Live barcode camera not supported here — type the code or use USB scanner', 'warning');
+      return;
+    }
+    const detector = new Detector({ formats: ['ean_13', 'ean_8', 'code_128', 'qr_code', 'upc_a', 'upc_e'] });
+    this._scanDetecting = true;
+    const tick = async () => {
+      if (!this._scanDetecting || !this.scanMode) return;
+      try {
+        const video = document.getElementById('pos-cam-video');
+        if (video && video.readyState >= 2) {
+          const codes = await detector.detect(video);
+          if (codes?.[0]?.rawValue) {
+            await this.handleBarcodeScan(codes[0].rawValue);
+            this.toggleScanMode(false);
+            return;
+          }
+        }
+      } catch (_) { /* keep scanning */ }
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
   },
 
   flashScanBanner(type) {
@@ -1191,8 +1420,16 @@ const POSPage = {
     setTimeout(() => banner.classList.remove('scan-ok', 'scan-err'), 600);
   },
 
+  normalizeScanCode(rawCode) {
+    let code = String(rawCode || '').trim();
+    const ss = this.app.settings?.scanner_settings || {};
+    const prefix = String(ss.prefix || '').trim();
+    if (prefix && code.startsWith(prefix)) code = code.slice(prefix.length);
+    return code.trim();
+  },
+
   async handleBarcodeScan(rawCode) {
-    const code = String(rawCode || '').trim();
+    const code = this.normalizeScanCode(rawCode);
     if (!code) return;
     if (!this.requireShift('scanning barcodes')) return;
 
@@ -1203,6 +1440,26 @@ const POSPage = {
       product = this.products.find(p =>
         p.is_active !== 0 && (p.barcode === code || (p.sku && p.sku.toLowerCase() === code.toLowerCase()))
       );
+    }
+    // Prefer capacity/promo-enriched catalog copy when barcode RPC returns a bare row
+    if (product?.id) {
+      const enriched = this.products.find((p) => Number(p.id) === Number(product.id));
+      if (enriched) {
+        product = {
+          ...enriched,
+          ...product,
+          selling_price: enriched.selling_price ?? product.selling_price,
+          available_meals: enriched.available_meals ?? product.available_meals,
+          production_capacity: enriched.production_capacity ?? product.production_capacity,
+          has_recipe: enriched.has_recipe ?? product.has_recipe,
+          production_mode: enriched.production_mode ?? product.production_mode,
+          promo_active: enriched.promo_active ?? product.promo_active,
+          original_price: enriched.original_price ?? product.original_price,
+          promo_request_id: enriched.promo_request_id ?? product.promo_request_id,
+          limiting_ingredient_name: enriched.limiting_ingredient_name ?? product.limiting_ingredient_name,
+          out_of_stock_reason: enriched.out_of_stock_reason ?? product.out_of_stock_reason
+        };
+      }
     }
     if (!product) {
       Utils.toast(`No product found: ${code}`, 'error');
@@ -1216,6 +1473,7 @@ const POSPage = {
       Utils.toast(`Added ${product.name}`, 'success');
     }
     this.flashScanBanner('success');
+    if (this.app.settings?.scanner_settings?.beep_on_scan !== false) SoundService?.playScanBeep?.();
     const searchInput = document.getElementById('pos-search');
     if (searchInput) {
       searchInput.value = '';
@@ -1280,7 +1538,8 @@ const POSPage = {
     const extras = config.selectedExtras || [];
     const extraTotal = [...opts, ...extras].reduce((s, m) => s + (Number(m.extra_price) || 0), 0);
     const modText = [...opts, ...extras].map(m => m.name).join(', ');
-    const unitPrice = product.selling_price + extraTotal;
+    // Postgres NUMERIC arrives as strings — never use + or JS will concat ("50"+0 => "500")
+    const unitPrice = Math.round(((Number(product.selling_price) || 0) + extraTotal) * 100) / 100;
     const subKey = substitutions ? JSON.stringify(substitutions) : '';
     const cartKey = `${product.id}:${modText}:${subKey}`;
 
@@ -1298,20 +1557,23 @@ const POSPage = {
         }
       }
       existing.quantity++;
-      existing.total = existing.quantity * existing.unit_price;
+      existing.unit_price = Number(existing.unit_price) || unitPrice;
+      existing.total = Math.round(existing.quantity * existing.unit_price * 100) / 100;
     } else {
       this.cart.push({
         cart_key: cartKey,
         product_id: product.id, product_name: product.name,
         quantity: 1, unit_price: unitPrice,
-        buying_price: product.buying_price || 0, discount: 0,
+        buying_price: Number(product.buying_price) || 0, discount: 0,
         total: unitPrice,
         item_type: product.item_type || 'retail',
         modifiers_text: modText || null,
         modifiers: [...opts, ...extras],
         substitutions: substitutions || null,
         promo_request_id: product.promo_request_id || null,
-        original_unit_price: product.promo_active ? (product.original_price ?? product.selling_price) : null
+        original_unit_price: product.promo_active
+          ? (Number(product.original_price ?? product.selling_price) || 0)
+          : null
       });
     }
     this.renderCart();
@@ -1333,10 +1595,13 @@ const POSPage = {
     const modKey = components.map(i => `${i.product_id}:${i.modifiers_text || ''}`).join('|');
     const cartKey = `combo:${combo.id}:${modKey}`;
     const allMods = components.flatMap(i => i.modifiers || []);
+    const unitPrice = Number(combo.final_price) || 0;
+    const normalPrice = Number(combo.normal_price) || 0;
     const existing = this.cart.find(i => i.cart_key === cartKey);
     if (existing) {
       existing.quantity++;
-      existing.total = existing.quantity * existing.unit_price;
+      existing.unit_price = Number(existing.unit_price) || unitPrice;
+      existing.total = Math.round(existing.quantity * existing.unit_price * 100) / 100;
     } else {
       this.cart.push({
         cart_key: cartKey,
@@ -1344,10 +1609,10 @@ const POSPage = {
         product_id: null,
         product_name: combo.name,
         quantity: 1,
-        unit_price: combo.final_price,
+        unit_price: unitPrice,
         buying_price: 0,
-        discount: Math.max(0, (combo.normal_price || 0) - (combo.final_price || 0)),
-        total: combo.final_price,
+        discount: Math.max(0, normalPrice - unitPrice),
+        total: unitPrice,
         item_type: 'combo',
         modifiers_text: componentsLabel || null,
         modifiers: allMods.length ? allMods : null,
@@ -1397,6 +1662,9 @@ const POSPage = {
 
     document.getElementById('pos-scan-toggle')?.addEventListener('click', () => this.toggleScanMode());
 
+    if (this._posScanListener) {
+      document.removeEventListener('keydown', this._posScanListener);
+    }
     document.addEventListener('keydown', this._posScanListener = (e) => {
       if (!this.scanMode || e.key === 'Enter') return;
       const t = e.target;
@@ -1427,9 +1695,14 @@ const POSPage = {
           }
         }
         this.cart[idx].quantity++;
-        this.cart[idx].total = this.cart[idx].quantity * this.cart[idx].unit_price;
+        this.cart[idx].unit_price = Number(this.cart[idx].unit_price) || 0;
+        this.cart[idx].total = Math.round(this.cart[idx].quantity * this.cart[idx].unit_price * 100) / 100;
       }
-      if (btn.dataset.action === 'minus') { this.cart[idx].quantity = Math.max(1, this.cart[idx].quantity - 1); this.cart[idx].total = this.cart[idx].quantity * this.cart[idx].unit_price; }
+      if (btn.dataset.action === 'minus') {
+        this.cart[idx].quantity = Math.max(1, this.cart[idx].quantity - 1);
+        this.cart[idx].unit_price = Number(this.cart[idx].unit_price) || 0;
+        this.cart[idx].total = Math.round(this.cart[idx].quantity * this.cart[idx].unit_price * 100) / 100;
+      }
       if (btn.dataset.action === 'remove') this.cart.splice(idx, 1);
       this.renderCart();
     });
@@ -1460,6 +1733,7 @@ const POSPage = {
     document.getElementById('pos-add-customer').addEventListener('click', () => this.showAddCustomerModal());
     document.getElementById('pos-other-item')?.addEventListener('click', () => this.showOtherItemModal());
     document.getElementById('pos-cashout').addEventListener('click', () => this.showCashOut());
+    document.getElementById('pos-cash-drop')?.addEventListener('click', () => this.showCashDrop());
     document.getElementById('pos-cashout-history')?.addEventListener('click', () => this.showCashOutHistory());
     document.getElementById('pos-top-seller-bar')?.addEventListener('click', (e) => {
       const btn = e.target.closest('[data-top-period]');
@@ -1535,7 +1809,7 @@ const POSPage = {
                 message_type: 'layby',
                 body: msg
               }, this.app.user);
-              if (wa.success) window.open(wa.data.url, '_blank');
+              await Utils.deliverWhatsApp(wa, full.data.customer_phone, msg);
             }
           }
         } catch (_) {}
@@ -1584,13 +1858,14 @@ const POSPage = {
           await API.printReceipt(Receipt.buildLayby(full.data, this.app.settings), Receipt._devicePrintOpts(this.app.settings));
         } catch (_) {}
         if (full.data.customer_phone) {
+          const laybyMsg = Receipt.buildLaybyWhatsApp(full.data, this.app.settings);
           const wa = await API.sendWhatsAppMessage({
             phone: full.data.customer_phone,
             recipient_name: full.data.customer_name || 'Customer',
             message_type: 'layby',
-            body: Receipt.buildLaybyWhatsApp(full.data, this.app.settings)
+            body: laybyMsg
           }, this.app.user);
-          if (wa.success) window.open(wa.data.url, '_blank');
+          await Utils.deliverWhatsApp(wa, full.data.customer_phone, laybyMsg);
         }
       }
     });
@@ -1607,8 +1882,7 @@ const POSPage = {
       message_type: 'cashout',
       body: msg
     }, this.app.user);
-    if (!r.success) return Utils.toast(r.error || 'WhatsApp failed', 'error');
-    window.open(r.data.url, '_blank');
+    await Utils.deliverWhatsApp(r, adminPhone, msg);
   },
 
   async showCashOutHistory() {
@@ -1636,14 +1910,10 @@ const POSPage = {
     const modal = document.getElementById('modal-body') || document.querySelector('.modal-body');
     const root = modal || document;
     root.querySelectorAll('.co-pdf').forEach(b => b.addEventListener('click', async () => {
-      const r = await API.getCashUpPdf(parseInt(b.dataset.id, 10));
-      if (!r.success) return Utils.toast(r.error, 'error');
-      await API.saveFile(`cashout-${b.dataset.id}.pdf`, [{ name: 'PDF', extensions: ['pdf'] }], r.data);
+      await Utils.savePdfBuffer(`cashout-${b.dataset.id}.pdf`, await API.getCashUpPdf(parseInt(b.dataset.id, 10)));
     }));
     root.querySelectorAll('.co-print').forEach(b => b.addEventListener('click', async () => {
-      const r = await API.getCashUpPdf(parseInt(b.dataset.id, 10));
-      if (!r.success) return Utils.toast(r.error, 'error');
-      await API.openPdf(r.data, `cashout-${b.dataset.id}.pdf`);
+      await Utils.printToA4(await API.getCashUpPdf(parseInt(b.dataset.id, 10)), `cashout-${b.dataset.id}.pdf`);
     }));
     root.querySelectorAll('.co-wa').forEach(b => b.addEventListener('click', async () => {
       const c = rows.find(x => x.id === parseInt(b.dataset.id, 10));
@@ -1836,12 +2106,22 @@ const POSPage = {
   },
 
   async openKitchenDisplay() {
+    const native = !!(window.Capacitor?.isNativePlatform?.() || window.__SHOP_POS_MOBILE__);
+    if (native && window.App?.openInAppDisplay) {
+      window.App.openInAppDisplay('kitchen');
+      return;
+    }
     const r = await API.openKitchenDisplay();
     if (r.success) Utils.toast('Kitchen display opened — drag to your side screen', 'success');
     else Utils.toast(r.error || 'Could not open kitchen display', 'error');
   },
 
   async openCustomerDisplay() {
+    const native = !!(window.Capacitor?.isNativePlatform?.() || window.__SHOP_POS_MOBILE__);
+    if (native && window.App?.openInAppDisplay) {
+      window.App.openInAppDisplay('customer');
+      return;
+    }
     const r = await API.openCustomerDisplay();
     if (r.success) Utils.toast('Customer board opened — drag to the customer screen', 'success');
     else Utils.toast(r.error || 'Could not open customer display', 'error');
@@ -1861,8 +2141,11 @@ const POSPage = {
       return list.map(n => `<option value="${n}" ${(sel || fallback) === n ? 'selected' : ''}>${n || 'No printer detected'}</option>`).join('');
     };
 
+    const isAndroid = !!(window.Capacitor?.isNativePlatform?.() || window.__SHOP_POS_MOBILE__);
     Utils.showModal('Receipt Printer', `
-      <p class="muted">Uses the receipt printer from <strong>Admin → Printer Setup</strong>. Connect your thermal printer below if needed.</p>
+      <p class="muted">${isAndroid
+        ? 'Android uses the <strong>system print dialog</strong> (not silent Windows ESC/POS). After a sale, pick a printer in that dialog.'
+        : 'Uses the receipt printer from <strong>Admin → Printer Setup</strong>. Connect your thermal printer below if needed.'}</p>
       <div class="form-grid">
         <div class="field"><label>Receipt Printer (58/80mm)</label>
           <select id="pos-pr-receipt">${opts(ds.receipt_printer || ps.receipt_printer, ps.receipt_printer)}</select></div>
@@ -1892,14 +2175,11 @@ const POSPage = {
         paper_size: document.getElementById('pos-pr-paper').value
       };
       Utils.saveLocalDeviceSettings(patch);
-      await API.saveJsonSetting('printer_settings', {
-        ...ps,
-        receipt_printer: patch.receipt_printer,
-        receipt_connection: patch.receipt_connection,
-        paper_size: patch.paper_size
-      }, this.app.user);
-      this.app.settings.printer_settings = { ...ps, ...patch };
-      Utils.toast('Receipt printer saved — used for all sales', 'success');
+      if (['owner', 'manager'].includes(this.app.user?.role)) {
+        await API.saveJsonSetting('printer_settings', { ...ps, ...patch }, this.app.user);
+        this.app.settings.printer_settings = { ...ps, ...patch };
+      }
+      Utils.toast('This till’s receipt printer saved', 'success');
     });
 
     const printOpts = () => Receipt._devicePrintOpts(this.app.settings);
@@ -1919,11 +2199,10 @@ const POSPage = {
 
   async printKitchenSafe(sale) {
     const ps = this.app.settings?.printer_settings || {};
-    if (ps.kitchen_enabled === false || ps.kitchen_auto === false) return;
+    if (ps.kitchen_enabled === false) return;
     const kitchenItems = (sale.items || []).filter(i => Receipt.isKitchenItem(i));
     if (!kitchenItems.length) return;
     try {
-      await Receipt.printKitchen(sale, kitchenItems, this.app.settings);
       await API.createKitchenOrder({
         sale_id: sale.id,
         order_number: sale.order_number || null,
@@ -1931,12 +2210,17 @@ const POSPage = {
         items: kitchenItems.map(i => ({
           product_name: Receipt.itemLabel(i),
           quantity: i.quantity,
-          modifiers: i.modifiers_text || null
+          modifiers: i.modifiers_text || null,
+          notes: i.allergens ? `Allergens: ${i.allergens}` : null
         }))
       }, this.app.user);
       await API.refreshKitchenDisplay();
       try { await API.refreshCustomerDisplay(); } catch (_) {}
-    } catch (_) {}
+    } catch (_) { /* KDS optional */ }
+    if (ps.kitchen_auto === false) return;
+    try {
+      await Receipt.printKitchen(sale, kitchenItems, this.app.settings);
+    } catch (_) { /* print optional */ }
   },
 
   async printReceiptSafe(sale) {
@@ -1961,11 +2245,40 @@ const POSPage = {
     }
   },
 
+  promptSaleManagerPin(message) {
+    return new Promise((resolve) => {
+      Utils.showModal('Manager Authorization', `
+        <p class="muted">${message || 'A sale rule requires manager approval.'}</p>
+        <div class="field"><label>Manager PIN</label>
+          <input type="password" id="sale-mgr-pin" maxlength="12" inputmode="numeric" autofocus></div>`,
+        '<button class="btn btn-primary" id="sale-mgr-ok">Approve</button><button class="btn btn-ghost" id="sale-mgr-cancel">Cancel</button>');
+      const done = (val) => { Utils.hideModal(); resolve(val); };
+      document.getElementById('sale-mgr-ok')?.addEventListener('click', async () => {
+        const pin = document.getElementById('sale-mgr-pin')?.value?.trim();
+        if (!pin) return Utils.toast('Enter manager PIN', 'error');
+        const r = await API.verifyManagerPin(pin);
+        if (!r.success) return Utils.toast(r.error || 'Invalid manager PIN', 'error');
+        done(pin);
+      });
+      document.getElementById('sale-mgr-cancel')?.addEventListener('click', () => done(null));
+      document.getElementById('sale-mgr-pin')?.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') document.getElementById('sale-mgr-ok')?.click();
+      });
+    });
+  },
+
   showDiscountModal() {
+    const ds = this.app.settings?.discount_settings || {};
+    const needPin = this.app.settings?.security_settings?.require_approval_discounts !== false
+      && !['owner', 'manager'].includes(this.app.user?.role);
+    if (!ds.happy_hour && !ds.coupon_codes && !ds.loyalty_discounts && !ds.employee_discounts && ds.max_percent === 0) {
+      return Utils.toast('Discounts are disabled in Admin → Discounts', 'error');
+    }
+    if (!needPin) return this.showDiscountAmountModal(this.app.user);
     Utils.showModal('Manager Authorization', `
-      <p class="muted">A manager PIN (set by admin for owner/manager users) is required before applying any discount.</p>
+      <p class="muted">A manager PIN is required before applying any discount.</p>
       <div class="field"><label>Manager PIN</label>
-        <input type="password" id="disc-mgr-pin" maxlength="6" inputmode="numeric" autofocus></div>`,
+        <input type="password" id="disc-mgr-pin" maxlength="12" inputmode="numeric" autofocus></div>`,
       '<button class="btn btn-primary" id="disc-mgr-ok">Continue</button>');
     document.getElementById('disc-mgr-ok').addEventListener('click', async () => {
       const pin = document.getElementById('disc-mgr-pin').value.trim();
@@ -2100,8 +2413,16 @@ const POSPage = {
   async holdOrder() {
     if (!this.requireShift('holding orders')) return;
     if (!this.cart.length) return Utils.toast('Cart is empty', 'error');
-    await API.holdOrder(null, this.cart, this.app.user);
-    this.cart = []; this.discount = 0; this.renderCart();
+    await API.holdOrder(null, {
+      items: this.cart,
+      discount: this.discount,
+      customer: this.selectedCustomer,
+      table: this.selectedTable,
+      orderType: this.orderType,
+      deliveryAddress: this.deliveryAddress
+    }, this.app.user);
+    this.cart = []; this.discount = 0; this.selectedTable = null;
+    this.renderCart();
     Utils.toast('Order held', 'success');
     this.updatePosBadges();
   },
@@ -2179,7 +2500,7 @@ const POSPage = {
   showScannerSettings() {
     const ds = Utils.mergeDeviceSettings(this.app.settings);
     Utils.showModal('Barcode Scanner (USB / Bluetooth)', `
-      <p class="muted">USB and Bluetooth barcode scanners work as keyboard input. Enable scan mode and scan into the search box.</p>
+      <p class="muted">USB and Bluetooth scanners type into the search box. Shop-wide beep / camera / prefix is in <strong>Admin → Device Settings → Barcode Scanner</strong>.</p>
       <div class="form-grid">
         <div class="field"><label>Scanner Type</label>
           <select id="sc-type">
@@ -2215,11 +2536,26 @@ const POSPage = {
       const el = e.target.closest('[data-hold-id]');
       if (!el) return;
       const order = orders.find(o => o.id == el.dataset.holdId);
-      if (order) { this.cart = order.cart_data; this.renderCart(); await API.deleteHeldOrder(order.id, this.app.user); Utils.hideModal(); }
+      if (order) {
+        const data = order.cart_data;
+        if (Array.isArray(data)) this.cart = data;
+        else {
+          this.cart = data.items || [];
+          this.discount = Number(data.discount) || 0;
+          if (data.customer) this.selectCustomer(data.customer);
+          this.selectedTable = data.table || null;
+          if (data.orderType) this.orderType = data.orderType;
+          if (data.deliveryAddress) this.deliveryAddress = data.deliveryAddress;
+        }
+        this.renderCart();
+        await API.deleteHeldOrder(order.id, this.app.user);
+        Utils.hideModal();
+      }
     });
   },
 
   showPaymentModal() {
+    if (this._checkoutBusy) return;
     if (!this.requireShift('completing sales')) return;
     if (!this.cart.length) return Utils.toast('Cart is empty', 'error');
     for (const item of this.cart) {
@@ -2263,7 +2599,12 @@ const POSPage = {
       if (wrap) wrap.style.display = isDel ? '' : 'none';
     };
     document.querySelectorAll('input[name="pos-order-type"]').forEach(r => r.addEventListener('change', syncAddr));
-    document.getElementById('ot-cancel')?.addEventListener('click', Utils.hideModal);
+    document.getElementById('ot-cancel')?.addEventListener('click', () => {
+      Utils.hideModal();
+      this._checkoutBusy = false;
+      const payBtn = document.getElementById('pos-pay');
+      if (payBtn) payBtn.disabled = false;
+    });
     document.getElementById('ot-continue')?.addEventListener('click', () => {
       const picked = document.querySelector('input[name="pos-order-type"]:checked')?.value;
       if (!picked) return Utils.toast('Order type is required', 'error');
@@ -2386,6 +2727,14 @@ const POSPage = {
   },
 
   openPaymentFlow(saleTotal) {
+    if (this._checkoutBusy) return;
+    this._checkoutBusy = true;
+    const payBtn = document.getElementById('pos-pay');
+    if (payBtn) payBtn.disabled = true;
+    const releaseCheckout = () => {
+      this._checkoutBusy = false;
+      if (payBtn) payBtn.disabled = false;
+    };
     const currency = this.app.settings?.currency || 'R';
     const total = saleTotal;
     this._gcBalances = {};
@@ -2399,7 +2748,9 @@ const POSPage = {
       confirmLabel: 'Complete Sale',
       gcBalancesRef: this._gcBalances,
       onAddCustomer: () => this.showAddCustomerModal(),
+      onDismiss: releaseCheckout,
       onConfirm: async ({ payments, paid, change, loyaltyRedeem, loyaltyDiscount }) => {
+        try {
         const saleData = {
           items: this.cart.map(i => ({
             product_id: i.product_id,
@@ -2447,7 +2798,35 @@ const POSPage = {
           throw new Error('Delivery address is required');
         }
         const sitInTableName = this.selectedTable?.name;
-        const res = await API.completeSale(saleData, this.app.user);
+        let res = await API.completeSale(saleData, this.app.user);
+        if (!res.success && /Manager PIN required/i.test(res.error || '')) {
+          const pin = await this.promptSaleManagerPin(res.error);
+          if (!pin) throw new Error(res.error || 'Manager PIN required for this sale');
+          saleData.manager_pin = pin;
+          res = await API.completeSale(saleData, this.app.user);
+        }
+        if (res.offlineQueued) {
+          // Treat as accepted till-side: cart must clear so cashier cannot Pay again (duplicate).
+          Utils.forceHideModal();
+          this.applyLocalSaleStockDeduction(this.cart);
+          this.cart = [];
+          this.discount = 0;
+          this.discountApprover = null;
+          this.discountManagerPin = null;
+          this.orderType = null;
+          this.selectedTable = null;
+          this.updateTableLabel?.();
+          this.selectedCustomer = null;
+          this.clearCustomer?.();
+          this.loadedQuoteId = null;
+          this.renderCart?.();
+          this.renderProducts?.();
+          Utils.toast(
+            res.message || 'Sale saved offline — it will sync when internet returns (no duplicate).',
+            'warning'
+          );
+          return;
+        }
         if (!res.success) throw new Error(res.error || 'Sale failed');
         const sale = res.data?.sale || res.data;
         const saleId = res.data?.saleId || sale?.id;
@@ -2456,9 +2835,17 @@ const POSPage = {
         const customerReward = res.data?.customerReward || null;
         if (!sale || !sale.receipt_number) throw new Error('Sale completed but receipt data missing');
         if (this.loadedQuoteId) {
-          try {
-            await API.markQuoteConverted(this.loadedQuoteId, saleId, this.app.user);
-          } catch (_) { /* sale already completed */ }
+          const qid = this.loadedQuoteId;
+          let marked = false;
+          for (let attempt = 0; attempt < 3 && !marked; attempt++) {
+            try {
+              const m = await API.markQuoteConverted(qid, saleId, this.app.user);
+              marked = !!(m && m.success !== false);
+            } catch (_) { /* retry */ }
+          }
+          if (!marked) {
+            Utils.toast('Sale saved, but quote was not marked sold — check Quotes', 'warning');
+          }
           this.loadedQuoteId = null;
           if (this.quoteTab === 'saved' || this.quoteTab === 'history') {
             await this.renderSavedQuotesPanel(this.quoteTab === 'history');
@@ -2468,23 +2855,12 @@ const POSPage = {
         Utils.forceHideModal();
         this.lastSale = sale;
         this.lastSaleCustomer = this.selectedCustomer ? { ...this.selectedCustomer } : null;
-        if (this.lastSaleCustomer?.id) {
-          try {
-            const cr = await API.getCustomer(this.lastSaleCustomer.id);
-            if (cr.success && cr.data) this.lastSaleCustomer = cr.data;
-          } catch (_) { /* use snapshot */ }
-        }
         const giftCardPayment = (payments || []).find(p => (p.type || p.payment_type) === 'giftcard' && p.gift_card_code);
         this.lastSaleGiftCardCode = giftCardPayment?.gift_card_code || null;
-        if (this.lastSaleCustomer?.id && !this.lastSaleGiftCardCode) {
-          try {
-            const gcRes = await API.getGiftCards({});
-            const cards = (gcRes.data || []).filter(c =>
-              c.customer_id == this.lastSaleCustomer.id && c.status === 'active' && Number(c.balance) > 0
-            );
-            if (cards.length) this.lastSaleGiftCardCode = cards.map(c => `${c.code} (${Utils.formatMoney(c.balance, currency)})`).join(', ');
-          } catch (_) { /* optional */ }
-        }
+
+        // Optimistic local stock patch so cart/grid stay accurate without blocking on getProducts
+        this.applyLocalSaleStockDeduction(this.cart);
+
         this.cart = [];
         this.discount = 0;
         this.discountApprover = null;
@@ -2496,24 +2872,54 @@ const POSPage = {
         this.clearCustomer();
         // Keep deliveryAddress until success screen WhatsApp uses sale.delivery_address from DB
         this.deliveryAddress = null;
+        this.renderCart();
+        this.renderProducts();
         this.showOrderSuccess(sale, change, payments, loyaltyPointsEarned, loyaltyPointsRedeemed, loyaltyDiscount, this.lastSaleCustomer);
         if (customerReward?.grants?.length) {
           this.handleCustomerRewardNotifications(customerReward, currency);
         }
-        const prodRes = await API.getProducts();
-        this.products = prodRes.data || [];
-        this.rebuildProductLookups();
-        this.renderProducts();
-        this.renderCart();
         Utils.toast(
           sitInTableName
             ? `Sale completed — ${sale.receipt_number}. Table ${sitInTableName} stays occupied until Free Table.`
             : `Sale completed — ${sale.receipt_number}`,
           'success'
         );
-        try { await this.printReceiptSafe(sale); } catch (_) { /* receipt optional */ }
-        try { await this.printKitchenSafe(sale); } catch (_) { /* kitchen optional */ }
-        try { await this.app.loadNotifications(); } catch (_) { /* ignore */ }
+
+        // Non-critical: refresh products, print, kitchen, notifications — never block success UI
+        const postSaleWork = async () => {
+          try {
+            if (this.lastSaleCustomer?.id) {
+              const cr = await API.getCustomer(this.lastSaleCustomer.id);
+              if (cr.success && cr.data) this.lastSaleCustomer = cr.data;
+            }
+          } catch (_) { /* use snapshot */ }
+          try {
+            if (this.lastSaleCustomer?.id && !this.lastSaleGiftCardCode) {
+              const gcRes = await API.getGiftCards({});
+              const cards = (gcRes.data || []).filter(c =>
+                c.customer_id == this.lastSaleCustomer.id && c.status === 'active' && Number(c.balance) > 0
+              );
+              if (cards.length) {
+                this.lastSaleGiftCardCode = cards.map(c => `${c.code} (${Utils.formatMoney(c.balance, currency)})`).join(', ');
+              }
+            }
+          } catch (_) { /* optional */ }
+          try {
+            const prodRes = await API.getProducts({ for_pos: true });
+            if (prodRes?.success !== false) {
+              this.products = prodRes.data || [];
+              this.rebuildProductLookups();
+              this.renderProducts();
+            }
+          } catch (_) { /* keep optimistic stock */ }
+          try { await this.printReceiptSafe(sale); } catch (_) { /* receipt optional */ }
+          try { await this.printKitchenSafe(sale); } catch (_) { /* kitchen optional */ }
+          try { await this.app.loadNotifications(); } catch (_) { /* ignore */ }
+        };
+        postSaleWork();
+        } finally {
+          releaseCheckout();
+        }
       }
     });
   },
@@ -2626,11 +3032,8 @@ const POSPage = {
         message_type: 'sale_receipt',
         template_slug: 'sale_receipt'
       }, this.app.user);
-      if (!r.success) return Utils.toast(r.error, 'error');
       try { await Receipt.downloadPdf(sale, this.app.settings); } catch (_) { /* PDF optional */ }
-      window.open(r.data.url, '_blank');
-      await API.markWhatsAppOpened(r.data.id, this.app.user);
-      Utils.toast('WhatsApp opened with receipt, points & gift card info', 'success');
+      await Utils.deliverWhatsApp(r, recipient.phone, receiptLines);
     };
 
     waBtn.onclick = () => sendReceiptWhatsApp();
@@ -2650,10 +3053,7 @@ const POSPage = {
           message_type: 'review_request',
           template_slug: 'review_request'
         }, this.app.user);
-        if (!r.success) return Utils.toast(r.error, 'error');
-        window.open(r.data.url, '_blank');
-        await API.markWhatsAppOpened(r.data.id, this.app.user);
-        Utils.toast('WhatsApp opened — review request logged', 'success');
+        await Utils.deliverWhatsApp(r, waRecipient.phone);
       };
     } else {
       reviewBtn.onclick = null;
@@ -2683,7 +3083,8 @@ const POSPage = {
     if (first.customer_whatsapp_url) {
       setTimeout(() => {
         if (confirm(`Customer qualified for a gift reward (${Utils.formatMoney(amount, currency)}).\n\nOpen WhatsApp to send the gift card to ${reward.customer_name || 'customer'}?`)) {
-          window.open(first.customer_whatsapp_url, '_blank');
+          if (window.API?.openExternal) API.openExternal(first.customer_whatsapp_url);
+          else window.open(first.customer_whatsapp_url, '_blank', 'noopener,noreferrer');
         }
       }, 400);
     }
@@ -2693,7 +3094,8 @@ const POSPage = {
       if (mine?.whatsapp_url) {
         setTimeout(() => {
           if (confirm('Notify management about this auto gift reward via WhatsApp?')) {
-            window.open(mine.whatsapp_url, '_blank');
+            if (window.API?.openExternal) API.openExternal(mine.whatsapp_url);
+            else window.open(mine.whatsapp_url, '_blank', 'noopener,noreferrer');
           }
         }, 800);
       }

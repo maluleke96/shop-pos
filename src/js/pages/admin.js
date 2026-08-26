@@ -8,6 +8,7 @@ const AdminPage = {
     { id: 'payments', label: '💳 Payment Methods', icon: 'payments' },
     { id: 'receipt', label: '🧾 Receipt Designer', icon: 'receipt' },
     { id: 'security', label: '🔒 Security', icon: 'security' },
+    { id: 'quotes', label: '📄 Quotes', icon: 'quotes' },
     { id: 'permissions', label: '👥 Permissions', icon: 'permissions' },
     { id: 'sales-targets', label: '🎯 Sales Targets', icon: 'targets' },
     { id: 'top-customers', label: '⭐ Top Customers', icon: 'customers' },
@@ -30,6 +31,7 @@ const AdminPage = {
     { id: 'combos', label: '🎁 Combos & Promos', icon: 'combos' },
     { id: 'recipe', label: '🍳 Recipe & Production', icon: 'recipe' },
     { id: 'staffhr', label: '👷 Staff & HR', icon: 'staffhr' },
+    { id: 'staffportal', label: '👷 Staff Portal', icon: 'staffportal' },
     { id: 'onaccount', label: '📒 On Account', icon: 'onaccount' },
     { id: 'hrcontracts', label: '📄 Contracts & Probation', icon: 'hrcontracts' },
     { id: 'recruitment', label: '💼 Recruitment', icon: 'recruitment' },
@@ -40,8 +42,8 @@ const AdminPage = {
 
   async render(el, app) {
     this.app = app;
-    const res = await API.getSettingsParsed();
-    this.settings = res.data || app.settings;
+    // Paint shell immediately from in-memory settings — never blank-wait on RPC
+    this.settings = this.settings || app.settings || {};
 
     el.innerHTML = `<div class="admin-layout">
       <div class="admin-sidebar-col">
@@ -70,6 +72,11 @@ const AdminPage = {
     el.querySelector('#admin-nav').addEventListener('click', (e) => {
       const btn = e.target.closest('.admin-nav-btn');
       if (!btn) return;
+      if (this.section && this.section !== btn.dataset.section) {
+        this._sectionHistory = this._sectionHistory || [];
+        this._sectionHistory.push(this.section);
+        if (this._sectionHistory.length > 30) this._sectionHistory.shift();
+      }
       this.section = btn.dataset.section;
       el.querySelectorAll('.admin-nav-btn').forEach(b => b.classList.toggle('active', b.dataset.section === this.section));
       this.toggleOpsComplianceLayout(this.section === 'opscompliance');
@@ -78,6 +85,14 @@ const AdminPage = {
 
     this.toggleOpsComplianceLayout(this.section === 'opscompliance');
     this.renderSection(document.getElementById('admin-content'));
+
+    // Refresh settings in background; re-render active section if values changed
+    API.getSettingsParsed().then((res) => {
+      if (res?.data) {
+        this.settings = res.data;
+        if (app) app.settings = res.data;
+      }
+    }).catch(() => {});
   },
 
   toggleOpsComplianceLayout(opsOnly) {
@@ -98,7 +113,7 @@ const AdminPage = {
 
   async renderSection(el) {
     const lazySections = new Set([
-      'hrcontracts', 'recruitment', 'marketing-mgmt', 'employee-of-month', 'staffhr', 'payroll',
+      'hrcontracts', 'recruitment', 'marketing-mgmt', 'employee-of-month', 'staffhr', 'staffportal', 'payroll',
       'opscompliance', 'combos', 'recipe', 'quotes',
       'salesmgmt', 'saleexplorer', 'soldproducts', 'returnsmgmt', 'activity',
       'exceptions', 'alerts', 'dailyclose', 'discount-report'
@@ -161,6 +176,31 @@ const AdminPage = {
         () => window.AdminEmployeeMonthPage,
         () => window.AdminEmployeeMonthPage.render(el, this),
         'Employee of Month'
+      ),
+      quotes: async () => tryModule(
+        () => typeof this.renderQuotesAdmin === 'function',
+        () => this.renderQuotesAdmin(el),
+        'Quotes'
+      ),
+      staffportal: () => tryModule(
+        () => typeof this.renderStaffPortalHub === 'function',
+        () => this.renderStaffPortalHub(el),
+        'Staff Portal'
+      ),
+      staffhr: () => tryModule(
+        () => typeof this.renderStaffHR === 'function',
+        () => this.renderStaffHR(el),
+        'Staff & HR'
+      ),
+      onaccount: () => tryModule(
+        () => typeof this.renderOnAccount === 'function',
+        () => this.renderOnAccount(el),
+        'On Account'
+      ),
+      opscompliance: () => tryModule(
+        () => typeof this.renderOpsCompliance === 'function',
+        () => this.renderOpsCompliance(el),
+        'Operations & Compliance'
       )
     };
     el.innerHTML = '<p class="muted">Loading…</p>';
@@ -170,18 +210,24 @@ const AdminPage = {
   async renderOverview(el) {
     const s = this.settings;
     el.innerHTML = `<div class="admin-section"><h3>Admin Dashboard</h3><p class="muted">Loading business stats…</p></div>`;
-    const [dashRes, todayRes, foodRes] = await Promise.all([
-      API.getAdminDashboard(Utils.today(), Utils.today()).catch(() => ({ success: false })),
-      API.getDashboardStats(Utils.today(), Utils.today(), this.app.user).catch(() => ({ success: false })),
-      API.recipeFoodCostAlerts(this.app.user).catch(() => ({ success: false }))
-    ]);
+    // Prefer admin dashboard once; fall back to lighter dashboard:stats if needed (avoid double heavy load).
+    let dashRes = await API.getAdminDashboard(Utils.today(), Utils.today()).catch(() => ({ success: false }));
+    let todayRes = { success: false };
+    if (!dashRes.success) {
+      todayRes = await API.getDashboardStats(Utils.today(), Utils.today(), this.app.user).catch(() => ({ success: false }));
+    }
+    const foodRes = await API.recipeFoodCostAlerts(this.app.user).catch(() => ({ success: false }));
     const d = dashRes.success ? (dashRes.data || {}) : {};
     const todayStats = todayRes.success ? (todayRes.data || {}) : {};
     const foodAlerts = foodRes.success ? (foodRes.data || []) : [];
     const currency = s.currency || 'R';
+    const dashErr = !dashRes.success && !todayRes.success
+      ? `<p class="muted" style="color:var(--danger)">Stats unavailable: ${Utils.escHtml(dashRes.error || todayRes.error || 'error')}</p>`
+      : '';
     el.innerHTML = `<div class="admin-section">
       <h3>Admin Dashboard</h3>
-      <p class="muted">Manage your entire POS from here — no need to use the cashier screen.</p>
+      <p class="muted">Till rules, printers, PINs, loyalty, and staff live here. Shop name / theme / backup is under sidebar <strong>Settings</strong>.</p>
+      ${dashErr}
       <div class="stats-grid" style="margin-top:20px">
         <div class="stat-card primary"><div class="label">Today's Sales</div><div class="value">${Utils.formatMoney(d.today?.sales ?? todayStats.todaySales ?? 0, currency)}</div><small>${d.today?.orders ?? todayStats.todayCount ?? 0} orders</small></div>
         <div class="stat-card success"><div class="label">Gross Profit Today</div><div class="value">${Utils.formatMoney(d.today?.grossProfit ?? todayStats.profit ?? 0, currency)}</div></div>
@@ -202,24 +248,7 @@ const AdminPage = {
           </tr>`).join('')}</tbody></table></div>
         <button type="button" class="btn btn-primary" id="admin-open-recipe" style="margin-top:10px">Open Recipe & Production</button>
       </div></div>` : ''}
-      <div class="card" style="margin-top:16px"><div class="card-body">
-        <h4>Quick Links</h4>
-        <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:12px">
-          ${['overview','printer','payments','receipt','security','permissions','opscompliance','combos','recipe','staffhr','payroll','backup','customize'].filter(id =>
-            Utils.canAccessAdminSection(this.app.user, id)
-          ).map(id => {
-            const sec = this.sections.find(x => x.id === id);
-            return `<button class="btn btn-ghost admin-quick" data-section="${id}">${sec?.label || id}</button>`;
-          }).join('')}
-        </div>
-      </div></div>
     </div>`;
-    el.querySelectorAll('.admin-quick').forEach(b => b.addEventListener('click', () => {
-      this.section = b.dataset.section;
-      if (this.section === 'staffhr') this.staffTab = 'leave';
-      document.querySelectorAll('.admin-nav-btn').forEach(n => n.classList.toggle('active', n.dataset.section === this.section));
-      this.renderSection(document.getElementById('admin-content'));
-    }));
     document.getElementById('admin-open-recipe')?.addEventListener('click', () => {
       this.app.openRecipeProduction({ fromApp: true });
     });
@@ -282,11 +311,11 @@ const AdminPage = {
     ).join('');
 
     el.innerHTML = `<div class="admin-section"><h3>Printer Setup</h3>
-      <p class="muted">Select connection type, connect your thermal printer on this PC/tablet, then save. POS receipts print to the receipt printer configured here.</p>
+      <p class="muted">Configure thermal printers for POS receipts and kitchen tickets, plus a separate <strong>A4 office printer</strong> for Reports, Bookkeeping, and every admin <strong>Print</strong> button. Connection: USB, Bluetooth, or Network.</p>
       <div class="admin-tabs" id="printer-tabs">
         <button class="admin-tab active" data-tab="receipt">Receipt (58/80mm)</button>
         <button class="admin-tab" data-tab="kitchen">Kitchen</button>
-        <button class="admin-tab" data-tab="invoice">Reports & Invoice (A4)</button>
+        <button class="admin-tab" data-tab="invoice">A4 Printer (Reports &amp; PDFs)</button>
         <button class="admin-tab" data-tab="barcode">Barcode Labels</button>
       </div>
       <div id="printer-tab-content"></div>
@@ -332,13 +361,19 @@ const AdminPage = {
         <div class="field full"><div id="pr-conn-panel"></div></div>
         <div class="field full"><p class="muted">Kitchen tickets use 58mm or 80mm thermal paper. Food items (food, drink, combo, side) are sent to the kitchen printer automatically.</p></div>
       </div></div></div>`,
-      invoice: `<div class="card"><div class="card-body"><div class="form-grid">
-        <div class="field"><label>A4 Printer (Invoices & Reports)</label>
+      invoice: `<div class="card"><div class="card-body">
+        <div style="margin-bottom:16px;padding:16px;border-radius:10px;border:1px solid var(--border);background:var(--bg-secondary)">
+          <h4 style="margin:0 0 8px">A4 Office Printer</h4>
+          <p class="muted" style="margin:0">Connect a full-page printer by <strong>USB</strong> or <strong>Bluetooth</strong> (or Wi-Fi). After you Save, every <strong>Print</strong> action for Reports, Bookkeeping, invoices, payroll, routines, and admin PDFs is sent to this printer automatically.</p>
+          <p class="muted" style="margin:8px 0 0">Thermal receipt and kitchen printers are unchanged — they keep using the Receipt / Kitchen tabs.</p>
+        </div>
+        <div class="form-grid">
+        <div class="field"><label>Connected A4 Printer</label>
           <select id="pr-invoice">${printerOpts(ps.invoice_printer)}</select></div>
-        <div class="field"><label>Connection</label>
+        <div class="field"><label>Connection type</label>
           <select id="pr-invoice-conn">${connOpts(ps.invoice_connection || 'usb')}</select></div>
         <div class="field full"><div id="pr-conn-panel"></div></div>
-        <div class="field full"><p class="muted">A4 printing is used for Admin invoices, owner salary reports, bookkeeping reports, and sales PDFs. POS receipts stay on 58mm/80mm thermal printers.</p></div>
+        <div class="field full"><p class="muted" style="margin:0">Tip: Plug the USB cable in (or pair Bluetooth), choose the connection type, click Connect, select the printer in the list, then click <strong>Save Printer Settings</strong>.</p></div>
       </div></div></div>`,
       barcode: `<div class="card"><div class="card-body"><div class="form-grid">
         <div class="field"><label>Barcode Label Printer</label>
@@ -356,6 +391,8 @@ const AdminPage = {
         receipt_connection: data.receipt_connection,
         kitchen_printer: data.kitchen_printer,
         kitchen_connection: data.kitchen_connection,
+        invoice_printer: data.invoice_printer,
+        invoice_connection: data.invoice_connection,
         paper_size: data.paper_size
       };
       Utils.saveLocalDeviceSettings(patch);
@@ -363,24 +400,45 @@ const AdminPage = {
     };
 
     const onPrinterSelected = (name, conn) => {
-      if (activeTab === 'receipt') {
-        const el = document.getElementById('pr-receipt');
-        if (el && name) el.value = name;
-      } else if (activeTab === 'kitchen') {
-        const el = document.getElementById('pr-kitchen');
-        if (el && name) el.value = name;
+      const map = {
+        receipt: 'pr-receipt',
+        kitchen: 'pr-kitchen',
+        invoice: 'pr-invoice',
+        barcode: 'pr-barcode'
+      };
+      const sel = document.getElementById(map[activeTab]);
+      if (sel && name) {
+        const exists = [...sel.options].some(o => o.value === name);
+        if (!exists) {
+          const opt = document.createElement('option');
+          opt.value = name;
+          opt.textContent = name;
+          sel.appendChild(opt);
+        }
+        sel.value = name;
+      }
+      if (activeTab === 'invoice' && name) {
+        Utils.saveLocalDeviceSettings({
+          invoice_printer: name,
+          invoice_connection: conn || document.getElementById('pr-invoice-conn')?.value || 'usb'
+        });
       }
     };
 
     const bindConnFilters = async () => {
       const configs = {
-        receipt: ['pr-receipt-conn', 'pr-receipt', ps.receipt_printer],
-        kitchen: ['pr-kitchen-conn', 'pr-kitchen', ps.kitchen_printer],
-        invoice: ['pr-invoice-conn', 'pr-invoice', ps.invoice_printer],
-        barcode: ['pr-barcode-conn', 'pr-barcode', ps.barcode_printer]
+        receipt: ['pr-receipt-conn', 'pr-receipt', ps.receipt_printer, 'thermal'],
+        kitchen: ['pr-kitchen-conn', 'pr-kitchen', ps.kitchen_printer, 'thermal'],
+        invoice: ['pr-invoice-conn', 'pr-invoice', ps.invoice_printer, 'a4'],
+        barcode: ['pr-barcode-conn', 'pr-barcode', ps.barcode_printer, 'thermal']
       };
       const cfg = configs[activeTab];
-      if (cfg) await PrinterUI.bindConnectionFilter(cfg[0], cfg[1], cfg[2], { onSelected: onPrinterSelected });
+      if (cfg) {
+        await PrinterUI.bindConnectionFilter(cfg[0], cfg[1], cfg[2], {
+          onSelected: onPrinterSelected,
+          kind: cfg[3]
+        });
+      }
     };
     const renderTab = async () => {
       document.getElementById('printer-tab-content').innerHTML = tabHtml[activeTab];
@@ -424,7 +482,7 @@ const AdminPage = {
         <div style="display:grid;gap:8px;margin-top:8px">
           <div><strong>Receipt:</strong> ${Utils.printerStatusBadge(st.receipt)}</div>
           <div><strong>Kitchen:</strong> ${Utils.printerStatusBadge(st.kitchen)}</div>
-          <div><strong>A4 Invoice:</strong> ${Utils.printerStatusBadge(st.invoice)}</div>
+          <div><strong>A4 Printer:</strong> ${Utils.printerStatusBadge(st.invoice)}</div>
         </div></div></div>`;
     };
 
@@ -443,8 +501,10 @@ const AdminPage = {
       const data = collectData();
       await API.saveJsonSetting('printer_settings', data, this.app.user);
       this.settings.printer_settings = data;
+      if (typeof App !== 'undefined' && App.settings) App.settings.printer_settings = data;
       syncDevicePrinter(data);
-      Utils.toast('Printer settings saved — POS will use this receipt printer', 'success');
+      const a4 = data.invoice_printer ? ` · A4: ${data.invoice_printer}` : '';
+      Utils.toast(`Printer settings saved${a4}`, 'success');
       refreshStatus();
     });
 
@@ -474,8 +534,16 @@ const AdminPage = {
     });
     document.getElementById('test-invoice').addEventListener('click', async () => {
       const html = Receipt.buildInvoice(testSale, this.settings);
-      const r = await API.printA4(html);
-      Utils.toast(r.success ? 'Test A4 invoice sent' : (r.error || 'Print failed'), r.success ? 'success' : 'error');
+      const data = collectData();
+      // Prefer unsaved selection from this form so Connect → Test works before Save
+      if (data.invoice_printer) {
+        const r = await API.printA4(html, { invoicePrinter: data.invoice_printer, silent: true });
+        if (r?.success === false) Utils.toast(r.error || 'Print failed', 'error');
+        else if (r?.fallback) Utils.toast('Opened A4 preview — Save printer settings for automatic print', 'info');
+        else Utils.toast(`Test sent to A4 printer: ${r.printer || data.invoice_printer}`, 'success');
+      } else {
+        await Utils.printToA4(html);
+      }
     });
     document.getElementById('test-barcode').addEventListener('click', async () => {
       const r = await API.printBarcodeLabel({ name: 'Test Product', barcode: '8001234567890', selling_price: 29.99 });
@@ -585,10 +653,11 @@ const AdminPage = {
         <div class="field"><label>Cashier return limit (R)</label><input type="number" id="sec-ret-cashier" step="0.01" value="${sec.return_cashier_max??100}"></div>
         <div class="field"><label>Manager return limit (R)</label><input type="number" id="sec-ret-manager" step="0.01" value="${sec.return_manager_max??1000}"></div>
         <div class="field full"><label><input type="checkbox" id="sec-discount" ${sec.require_approval_discounts?'checked':''}> Require manager approval for discounts</label></div>
+        <div class="field full"><label><input type="checkbox" id="sec-oversell" ${sec.allow_oversell?'checked':''}> Allow oversell (sell when stock is zero)</label></div>
         <div class="field full"><label><input type="checkbox" id="sec-price" ${sec.require_approval_price!==false?'checked':''}> Require manager approval for price changes</label></div>
         <div class="field full"><label><input type="checkbox" id="sec-stock" ${sec.require_approval_stock!==false?'checked':''}> Require manager approval for stock adjustments</label></div>
         <div class="field full"><label><input type="checkbox" id="sec-drawer" ${sec.require_approval_drawer!==false?'checked':''}> Require manager approval to open cash drawer</label></div>
-        <div class="field full"><label><input type="checkbox" id="sec-shift-login" ${sec.shift_login_enforcement?'checked':''}> Block POS &amp; Staff Portal for employees not on today's shift (admin / manager / supervisor always allowed)</label></div>
+        <div class="field full"><label><input type="checkbox" id="sec-shift-login" ${sec.shift_login_enforcement?'checked':''}> Block POS login for employees not on today's shift (Staff Portal still opens; clock-in still requires a shift. Admin / manager / supervisor always allowed)</label></div>
       </div>
       <button class="btn btn-primary" id="save-security" style="margin-top:16px">Save Security Settings</button>
       </div></div>
@@ -602,16 +671,19 @@ const AdminPage = {
         <button class="btn btn-warning" id="save-bk-pass" style="margin-top:8px">Save Bookkeeping Password</button>
       </div></div>
       <div class="card" style="margin-top:16px"><div class="card-body">
-        <h4>Private Account Recovery</h4>
-        <p class="muted">Set a secret phrase only you know. If you forget your username or password, enter this phrase on the login screen to recover access. It is stored encrypted — nobody can read it, not even support staff.</p>
-        <p class="muted">${sec.recovery_configured ? '✓ Recovery phrase is configured' : '⚠ Recovery phrase not set — set one now'}</p>
+        <h4>Account Recovery</h4>
+        <p class="muted">Create a Private Recovery Phrase known only to the shop owner. If you forget the owner password, use Login → Account Recovery. The phrase is stored as a one-way hash — it is never shown again, never logged, and never sent back by the server.</p>
+        <p><strong>Status:</strong> ${sec.recovery_configured
+          ? '<span class="tag tag-ok">Configured</span>'
+          : '<span class="tag tag-warn">Not configured</span>'}</p>
+        <p class="muted">Last changed: ${sec.recovery_changed_at ? Utils.formatDateTime(sec.recovery_changed_at) : '—'}</p>
         <div class="form-grid" style="margin-top:12px">
-          <div class="field full"><label>New Recovery Phrase <span class="muted">(min 8 characters)</span></label>
+          <div class="field full"><label>${sec.recovery_configured ? 'Change' : 'Create'} Private Recovery Phrase <span class="muted">(min 8 characters)</span></label>
             <input type="password" id="sec-recovery" autocomplete="new-password" placeholder="A sentence only you will remember"></div>
           <div class="field full"><label>Confirm Recovery Phrase</label>
-            <input type="password" id="sec-recovery2" autocomplete="new-password"></div>
+            <input type="password" id="sec-recovery-confirm" autocomplete="new-password"></div>
         </div>
-        <button class="btn btn-warning" id="save-recovery" style="margin-top:8px">Save Recovery Phrase</button>
+        <button class="btn btn-warning" id="save-recovery" style="margin-top:8px">${sec.recovery_configured ? 'Change Recovery Phrase' : 'Create Private Recovery Phrase'}</button>
       </div></div>` : ''}
       ${canCodes ? `<div class="card" style="margin-top:16px"><div class="card-body">
         <h4>Daily Supervisor Code (Void & Returns)</h4>
@@ -678,9 +750,7 @@ const AdminPage = {
         message_type: 'supervisor_code',
         body
       }, this.app.user);
-      if (!wa.success) return Utils.toast(wa.error || 'WhatsApp failed', 'error');
-      window.open(wa.data.url, '_blank');
-      Utils.toast('WhatsApp opened with PIN', 'success');
+      await Utils.deliverWhatsApp(wa, phone, body);
     };
 
     document.getElementById('gen-supervisor-code')?.addEventListener('click', async () => {
@@ -717,12 +787,20 @@ const AdminPage = {
         return_cashier_max: parseFloat(document.getElementById('sec-ret-cashier').value) || 100,
         return_manager_max: parseFloat(document.getElementById('sec-ret-manager').value) || 1000,
         require_approval_discounts: document.getElementById('sec-discount').checked,
+        allow_oversell: !!document.getElementById('sec-oversell')?.checked,
         require_approval_price: document.getElementById('sec-price').checked,
         require_approval_stock: document.getElementById('sec-stock').checked,
         require_approval_drawer: document.getElementById('sec-drawer').checked,
         shift_login_enforcement: document.getElementById('sec-shift-login').checked,
         code_whatsapp_phone: document.getElementById('sec-code-wa-phone')?.value.trim() || ''
       }, this.app.user);
+      this.settings.security_settings = {
+        ...(this.settings.security_settings || {}),
+        require_approval_discounts: document.getElementById('sec-discount').checked,
+        allow_oversell: !!document.getElementById('sec-oversell')?.checked,
+        require_approval_drawer: document.getElementById('sec-drawer').checked
+      };
+      if (this.app) this.app.settings = { ...this.app.settings, security_settings: { ...(this.app.settings?.security_settings || {}), ...this.settings.security_settings } };
       Utils.toast('Security settings saved', 'success');
     });
 
@@ -811,14 +889,20 @@ const AdminPage = {
 
     document.getElementById('save-recovery')?.addEventListener('click', async () => {
       const phrase = document.getElementById('sec-recovery').value;
-      const phrase2 = document.getElementById('sec-recovery-confirm')?.value || document.getElementById('sec-recovery2').value;
+      const phrase2 = document.getElementById('sec-recovery-confirm')?.value || document.getElementById('sec-recovery2')?.value;
       if (!phrase || phrase.length < 8) return Utils.toast('Recovery phrase must be at least 8 characters', 'error');
       if (phrase !== phrase2) return Utils.toast('Recovery phrases do not match', 'error');
       const r = await API.setRecoverySecret(phrase, this.app.user);
-      if (!r.success) return Utils.toast(r.error, 'error');
+      if (!r.success) return Utils.toast(r.error || 'Could not save recovery phrase', 'error');
       document.getElementById('sec-recovery').value = '';
-      document.getElementById('sec-recovery2').value = '';
-      Utils.toast('Private recovery phrase saved. Keep it secret — write it down somewhere safe.', 'success');
+      const confirmEl = document.getElementById('sec-recovery-confirm') || document.getElementById('sec-recovery2');
+      if (confirmEl) confirmEl.value = '';
+      const fresh = await API.getSettingsParsed();
+      if (fresh?.success && fresh.data) {
+        this.settings = fresh.data;
+        if (this.app) this.app.settings = fresh.data;
+      }
+      Utils.toast('Private recovery phrase saved. Keep it secret — write it down somewhere safe. It will not be shown again.', 'success');
       this.renderSecurity(el);
     });
   },
@@ -1047,10 +1131,11 @@ const AdminPage = {
       <div class="card"><div class="card-body">
         <h4>Default Role Access</h4>
         <p><strong>Owner:</strong> Full access to everything</p>
-        <p><strong>Manager:</strong> Reports, refunds, discounts, stock — no system settings</p>
+        <p><strong>Manager:</strong> Reports, stock, ops — <em>Staff Portal</em> and extra pages need explicit permission</p>
         <p><strong>Assistant Manager:</strong> Access granted per permission checkbox only</p>
         <p><strong>Marketing Agent:</strong> Marketing & flyers page only</p>
-        <p><strong>Cashier:</strong> POS and returns only — enable <em>Owner salary</em> permission for Staff → Owner Salary access</p>
+        <p><strong>Cashier:</strong> POS only by default — grant <em>Process returns</em> for Returns, and <em>Staff Portal</em> for the sidebar Staff Portal</p>
+        <p class="muted" style="margin-top:8px">Staff UIF/PAYE/SDL only apply after you enable them under Payroll <strong>and</strong> mark each employee as registered on their HR profile. Owner salary needs both Payroll enable and the Owner Salary checkboxes.</p>
       </div></div></div>`;
 
     const refresh = () => this.renderPermissions(el);
@@ -1098,7 +1183,7 @@ const AdminPage = {
       </div></div></div>`;
 
     document.getElementById('save-tax').addEventListener('click', async () => {
-      await API.saveSettings({
+      const patch = {
         tax_enabled: document.getElementById('tax-enabled').checked ? 1 : 0,
         tax_rate: parseFloat(document.getElementById('tax-rate').value) || 0,
         tax_inclusive: document.getElementById('tax-inclusive').checked ? 1 : 0,
@@ -1107,7 +1192,10 @@ const AdminPage = {
         currency_name: document.getElementById('cur-name').value.trim(),
         decimal_places: parseInt(document.getElementById('cur-dec').value) || 2,
         thousands_sep: document.getElementById('cur-sep').value
-      }, this.app.user);
+      };
+      await API.saveSettings(patch, this.app.user);
+      this.settings = { ...this.settings, ...patch };
+      if (this.app) this.app.settings = { ...this.app.settings, ...patch };
       Utils.toast('Tax & currency saved', 'success');
     });
   },
@@ -1155,31 +1243,74 @@ const AdminPage = {
       el.innerHTML = '<div class="admin-section"><p class="muted">Top Customers is available to owner and manager only.</p></div>';
       return;
     }
-    const from = Utils.monthStart();
-    const to = Utils.today();
+    const from = this._tcFrom || Utils.monthStart();
+    const to = this._tcTo || Utils.today();
+    const limit = this._tcLimit || 50;
     const currency = this.settings.currency || 'R';
     el.innerHTML = `<div class="admin-section"><h3>Top Customers</h3>
+      <p class="muted">Full admin control — edit customer details, delete, reward with gift cards, or message on WhatsApp.</p>
       <div style="display:flex;gap:8px;align-items:end;margin-bottom:12px;flex-wrap:wrap">
         <div class="field"><label>From</label><input type="date" id="tc-from" value="${from}"></div>
         <div class="field"><label>To</label><input type="date" id="tc-to" value="${to}"></div>
+        <div class="field"><label>Top N</label><input type="number" id="tc-limit" min="5" max="200" value="${limit}" style="width:80px"></div>
         <button class="btn btn-primary" id="tc-load">Load</button>
+        <button class="btn btn-ghost" id="tc-excel">Excel</button>
       </div>
       <div id="tc-table"><p class="muted">Loading…</p></div></div>`;
     const load = async () => {
       const f = document.getElementById('tc-from').value;
       const t = document.getElementById('tc-to').value;
-      const res = await API.getTopCustomers(f, t, 50);
+      const lim = parseInt(document.getElementById('tc-limit').value, 10) || 50;
+      this._tcFrom = f; this._tcTo = t; this._tcLimit = lim;
+      const res = await API.getTopCustomers(f, t, lim);
       const rows = res.data || [];
       document.getElementById('tc-table').innerHTML = `<div class="card"><div class="table-wrap"><table>
-        <thead><tr><th>Customer</th><th>Phone</th><th>Total Spent</th><th>Visits</th><th></th></tr></thead>
-        <tbody>${rows.map(c => `<tr>
-          <td>${c.name}</td><td>${c.phone || '—'}</td>
+        <thead><tr><th>#</th><th>Customer</th><th>Phone</th><th>Email</th><th>Total Spent</th><th>Visits</th><th></th></tr></thead>
+        <tbody>${rows.map((c, i) => `<tr>
+          <td>${i + 1}</td>
+          <td><strong>${Utils.escHtml(c.name)}</strong></td><td>${Utils.escHtml(c.phone || '—')}</td>
+          <td>${Utils.escHtml(c.email || '—')}</td>
           <td>${Utils.formatMoney(c.total_spent, currency)}</td><td>${c.visits}</td>
           <td style="white-space:nowrap">
-            <button class="btn btn-sm btn-ghost tc-gift" data-id="${c.id}" data-name="${c.name}" data-phone="${c.phone || ''}">Gift Card</button>
-            ${c.phone ? `<button class="btn btn-sm btn-ghost tc-wa" data-id="${c.id}" data-name="${c.name}" data-phone="${c.phone}">WhatsApp</button>` : ''}
-          </td></tr>`).join('') || '<tr><td colspan="5" class="muted">No customers in this period</td></tr>'}
+            <button class="btn btn-sm btn-primary tc-edit" data-id="${c.id}">Edit</button>
+            <button class="btn btn-sm btn-ghost tc-gift" data-id="${c.id}" data-name="${Utils.escHtml(c.name)}" data-phone="${Utils.escHtml(c.phone || '')}">Gift Card</button>
+            ${c.phone ? `<button class="btn btn-sm btn-success tc-wa" data-id="${c.id}" data-name="${Utils.escHtml(c.name)}" data-phone="${Utils.escHtml(c.phone)}">WhatsApp</button>` : ''}
+            <button class="btn btn-sm btn-danger tc-del" data-id="${c.id}" data-name="${Utils.escHtml(c.name)}">Delete</button>
+          </td></tr>`).join('') || '<tr><td colspan="7" class="muted">No customers in this period</td></tr>'}
         </tbody></table></div></div>`;
+      document.querySelectorAll('.tc-edit').forEach(b => b.addEventListener('click', async () => {
+        const detail = await API.getCustomer(parseInt(b.dataset.id, 10));
+        const c = detail.data || rows.find(x => String(x.id) === b.dataset.id);
+        if (!c) return Utils.toast('Customer not found', 'error');
+        Utils.showModal('Edit Customer', `<div class="form-grid">
+          <div class="field"><label>Name *</label><input id="tc-ed-name" value="${Utils.escHtml(c.name || '')}"></div>
+          <div class="field"><label>Phone</label><input id="tc-ed-phone" value="${Utils.escHtml(c.phone || '')}"></div>
+          <div class="field"><label>Email</label><input id="tc-ed-email" value="${Utils.escHtml(c.email || '')}"></div>
+          <div class="field"><label>Address</label><input id="tc-ed-address" value="${Utils.escHtml(c.address || '')}"></div>
+          <div class="field full"><label>Notes</label><textarea id="tc-ed-notes" rows="2">${Utils.escHtml(c.notes || '')}</textarea></div>
+        </div>`, '<button class="btn btn-primary" id="tc-ed-save">Save Customer</button>');
+        document.getElementById('tc-ed-save').addEventListener('click', async () => {
+          const r = await API.saveCustomer({
+            id: c.id,
+            name: document.getElementById('tc-ed-name').value.trim(),
+            phone: document.getElementById('tc-ed-phone').value.trim(),
+            email: document.getElementById('tc-ed-email').value.trim(),
+            address: document.getElementById('tc-ed-address').value.trim(),
+            notes: document.getElementById('tc-ed-notes').value.trim()
+          }, this.app.user);
+          if (!r.success) return Utils.toast(r.error || 'Could not save', 'error');
+          Utils.hideModal();
+          Utils.toast('Customer updated', 'success');
+          load();
+        });
+      }));
+      document.querySelectorAll('.tc-del').forEach(b => b.addEventListener('click', async () => {
+        if (!confirm(`Delete customer "${b.dataset.name}"? Sales history stays; the customer profile is removed.`)) return;
+        const r = await API.deleteCustomer(parseInt(b.dataset.id, 10), this.app.user);
+        if (!r.success) return Utils.toast(r.error || 'Could not delete', 'error');
+        Utils.toast('Customer deleted', 'success');
+        load();
+      }));
       document.querySelectorAll('.tc-gift').forEach(b => b.addEventListener('click', async () => {
         const customerId = parseInt(b.dataset.id, 10);
         const customerName = b.dataset.name;
@@ -1225,26 +1356,37 @@ const AdminPage = {
           recipient_name: b.dataset.name, customer_name: b.dataset.name,
           branch: this.settings.shop_name, message_type: 'thank_you', template_slug: 'thank_you'
         }, this.app.user);
-        if (!r.success) return Utils.toast(r.error, 'error');
-        window.open(r.data.url, '_blank');
+        await Utils.deliverWhatsApp(r, b.dataset.phone);
       }));
+      document.getElementById('tc-excel')?.addEventListener('click', async () => {
+        await Export.toExcel(`top-customers-${f}-${t}.xlsx`, [{
+          name: 'Top Customers',
+          data: rows.map((c, i) => ({ Rank: i + 1, Name: c.name, Phone: c.phone || '', Email: c.email || '', Spent: c.total_spent, Visits: c.visits }))
+        }]);
+      });
     };
     document.getElementById('tc-load').addEventListener('click', load);
     await load();
   },
 
   async renderShifts(el) {
-    const [shiftsRes, currentRes, shiftSettingsRes] = await Promise.all([
-      API.getShifts(20), API.getOpenShift(this.app.user), API.getShiftSettings()
+    const isAdmin = ['owner', 'manager'].includes(this.app.user?.role);
+    const [shiftsRes, currentRes, shiftSettingsRes, openAllRes] = await Promise.all([
+      API.getShifts(50),
+      API.getOpenShift(this.app.user),
+      API.getShiftSettings(),
+      isAdmin ? API.getAllOpenShifts(this.app.user) : Promise.resolve({ data: [] })
     ]);
     const shifts = shiftsRes.data || [];
     const current = currentRes.data;
+    const openAll = openAllRes.success ? (openAllRes.data || []) : [];
     const shiftSettings = shiftSettingsRes.success ? (shiftSettingsRes.data || {}) : (this.settings.shift_settings || {});
     const requiredRoles = shiftSettings.required_roles || ['cashier', 'manager', 'assistant_manager', 'owner'];
     const roleOptions = [
       { id: 'owner', label: 'Owner (Admin)' },
       { id: 'manager', label: 'Manager' },
-      { id: 'assistant_manager', label: 'Supervisor (Assistant Manager)' },
+      { id: 'supervisor', label: 'Supervisor' },
+      { id: 'assistant_manager', label: 'Assistant Manager' },
       { id: 'cashier', label: 'Cashier' }
     ];
     const currency = this.settings.currency || 'R';
@@ -1278,12 +1420,22 @@ const AdminPage = {
         <button class="btn btn-primary btn-sm" id="save-cashout-wa" style="margin-top:12px">Save Cashout WhatsApp Number</button>
       </div></div>
       ${current ? `<div class="card" style="margin-bottom:16px;border-color:var(--success)"><div class="card-body">
-        <strong>Open Shift</strong> — Started ${Utils.formatDateTime(current.opened_at)} — Float: ${Utils.formatMoney(current.opening_float, currency)}
+        <strong>Your open shift</strong> — Started ${Utils.formatDateTime(current.opened_at)} — Float: ${Utils.formatMoney(current.opening_float, currency)}
         <button class="btn btn-warning btn-sm" id="close-shift" style="margin-left:12px">Close Shift</button>
       </div></div>` : `<div style="margin-bottom:16px">
         <button class="btn btn-success" id="open-shift">Open Shift</button></div>`}
+      ${isAdmin && openAll.length ? `<div class="card" style="margin-bottom:16px;border-color:var(--warning)"><div class="card-body">
+        <h4 style="margin-top:0">All open till shifts</h4>
+        <div class="table-wrap"><table><thead><tr><th>User</th><th>Opened</th><th>Float</th><th></th></tr></thead>
+        <tbody>${openAll.map(sh => `<tr>
+          <td>${Utils.escHtml(sh.user_name || '—')}</td>
+          <td>${Utils.formatDateTime(sh.opened_at)}</td>
+          <td>${Utils.formatMoney(sh.opening_float, currency)}</td>
+          <td><button class="btn btn-sm btn-warning sh-force-close" data-id="${sh.id}">Force close</button></td>
+        </tr>`).join('')}</tbody></table></div>
+      </div></div>` : ''}
       <div class="card"><div class="table-wrap"><table>
-        <thead><tr><th>User</th><th>Opened</th><th>Closed</th><th>Sales</th><th>Cash</th><th>Card</th><th>Mobile</th><th>Cash Diff</th><th>Target</th><th>Status</th></tr></thead>
+        <thead><tr><th>User</th><th>Opened</th><th>Closed</th><th>Sales</th><th>Cash</th><th>Card</th><th>Mobile</th><th>Cash Diff</th><th>Target</th><th>Status</th>${isAdmin ? '<th></th>' : ''}</tr></thead>
         <tbody>${shifts.map(sh => {
           let actual = {};
           try { actual = JSON.parse(sh.actual_payments_json || '{}'); } catch {}
@@ -1298,8 +1450,14 @@ const AdminPage = {
           <td>${Utils.formatMoney(sh.mobile_sales ?? sh.total_mobile, currency)}</td>
           <td>${Utils.formatMoney(sh.cash_difference, currency)}</td>
           <td>${targetLabel}</td>
-          <td><span class="tag ${sh.status==='open'?'tag-low':'tag-ok'}">${sh.status}</span></td></tr>`;
-        }).join('') || '<tr><td colspan="10" class="muted">No shifts yet</td></tr>'}
+          <td><span class="tag ${sh.status==='open'?'tag-low':'tag-ok'}">${sh.status}</span></td>
+          ${isAdmin ? `<td style="white-space:nowrap">
+            ${sh.status === 'open' ? `<button class="btn btn-sm btn-warning sh-force-close" data-id="${sh.id}">Force close</button>` : ''}
+            <button class="btn btn-sm btn-ghost sh-edit" data-id="${sh.id}">Edit</button>
+            ${sh.status !== 'open' ? `<button class="btn btn-sm btn-danger sh-del" data-id="${sh.id}">Delete</button>` : ''}
+          </td>` : ''}
+          </tr>`;
+        }).join('') || `<tr><td colspan="${isAdmin ? 11 : 10}" class="muted">No shifts yet</td></tr>`}
         </tbody></table></div></div></div>`;
 
     document.getElementById('save-shift-settings')?.addEventListener('click', async () => {
@@ -1359,6 +1517,55 @@ const AdminPage = {
         this.renderShifts(el);
       });
     });
+
+    el.querySelectorAll('.sh-force-close').forEach(b => b.addEventListener('click', () => {
+      Utils.showModal('Force close shift', `<p class="muted">Admin force-close for any open till. Leave cash blank to use expected cash (zero difference).</p>
+        <div class="form-grid">
+          <div class="field"><label>Cash counted (optional)</label><input type="number" id="fc-cash" step="0.01"></div>
+          <div class="field"><label>Closing balance (optional)</label><input type="number" id="fc-close" step="0.01"></div>
+          <div class="field full"><label>Notes</label><input id="fc-notes"></div>
+        </div>`, '<button class="btn btn-warning" id="fc-go">Force close</button>');
+      document.getElementById('fc-go').addEventListener('click', async () => {
+        const cashVal = document.getElementById('fc-cash').value;
+        const closeVal = document.getElementById('fc-close').value;
+        const r = await API.forceCloseShift(parseInt(b.dataset.id, 10), {
+          cash_counted: cashVal !== '' ? parseFloat(cashVal) : null,
+          closing_balance: closeVal !== '' ? parseFloat(closeVal) : null,
+          notes: document.getElementById('fc-notes').value.trim()
+        }, this.app.user);
+        if (!r.success) return Utils.toast(r.error || 'Could not close', 'error');
+        Utils.hideModal();
+        Utils.toast('Shift force-closed', 'success');
+        this.renderShifts(el);
+      });
+    }));
+    el.querySelectorAll('.sh-edit').forEach(b => b.addEventListener('click', () => {
+      const sh = shifts.find(x => String(x.id) === b.dataset.id);
+      if (!sh) return;
+      Utils.showModal('Edit shift', `<div class="form-grid">
+        <div class="field"><label>Cash counted</label><input type="number" id="se-cash" step="0.01" value="${sh.cash_counted ?? ''}"></div>
+        <div class="field"><label>Closing balance</label><input type="number" id="se-close" step="0.01" value="${sh.closing_balance ?? ''}"></div>
+        <div class="field full"><label>Notes</label><textarea id="se-notes" rows="3">${Utils.escHtml(sh.notes || '')}</textarea></div>
+      </div>`, '<button class="btn btn-primary" id="se-save">Save</button>');
+      document.getElementById('se-save').addEventListener('click', async () => {
+        const r = await API.updateShift(parseInt(b.dataset.id, 10), {
+          cash_counted: document.getElementById('se-cash').value !== '' ? parseFloat(document.getElementById('se-cash').value) : null,
+          closing_balance: document.getElementById('se-close').value !== '' ? parseFloat(document.getElementById('se-close').value) : null,
+          notes: document.getElementById('se-notes').value
+        }, this.app.user);
+        if (!r.success) return Utils.toast(r.error || 'Could not update', 'error');
+        Utils.hideModal();
+        Utils.toast('Shift updated', 'success');
+        this.renderShifts(el);
+      });
+    }));
+    el.querySelectorAll('.sh-del').forEach(b => b.addEventListener('click', async () => {
+      if (!confirm('Delete this closed shift record? This cannot be undone.')) return;
+      const r = await API.deleteShift(parseInt(b.dataset.id, 10), this.app.user);
+      if (!r.success) return Utils.toast(r.error || 'Could not delete', 'error');
+      Utils.toast('Shift deleted', 'success');
+      this.renderShifts(el);
+    }));
   },
 
   renderOperatingHours(el) {
@@ -1521,13 +1728,16 @@ const AdminPage = {
       <button class="btn btn-primary" id="save-discounts" style="margin-top:16px">Save Discount Settings</button>
       </div></div></div>`;
     document.getElementById('save-discounts').addEventListener('click', async () => {
-      await API.saveJsonSetting('discount_settings', {
+      const dsSave = {
         max_percent: parseInt(document.getElementById('disc-max').value) || 100,
         happy_hour: document.getElementById('disc-happy').checked,
         coupon_codes: document.getElementById('disc-coupon').checked,
         loyalty_discounts: document.getElementById('disc-loyalty').checked,
         employee_discounts: document.getElementById('disc-employee').checked
-      }, this.app.user);
+      };
+      await API.saveJsonSetting('discount_settings', dsSave, this.app.user);
+      this.settings.discount_settings = dsSave;
+      if (this.app) this.app.settings = { ...this.app.settings, discount_settings: dsSave };
       Utils.toast('Discount settings saved', 'success');
     });
   },
@@ -1771,10 +1981,17 @@ const AdminPage = {
   renderCustomize(el) {
     const cu = this.settings.customization || {};
     const s = this.settings;
+    const homeOpts = [
+      ['pos', 'POS'], ['dashboard', 'Dashboard'], ['admin', 'Admin'], ['reports', 'Reports'],
+      ['operations', 'Cash-Up & Ops'], ['staff', 'Staff Portal']
+    ];
     el.innerHTML = `<div class="admin-section"><h3>Software Customization</h3>
-      <div class="card"><div class="card-body"><div class="form-grid">
+      <p class="muted">Full control of branding, look, login, and day-to-day defaults. Changes apply after Save.</p>
+      <div class="card"><div class="card-body">
+      <h4 style="margin-top:0">Brand &amp; identity</h4>
+      <div class="form-grid">
         <div class="field"><label>Shop / Business Name</label><input id="cu-name" value="${s.shop_name||''}"></div>
-        <div class="field"><label>App Display Name <span class="muted">(login &amp; title — renameable)</span></label>
+        <div class="field"><label>App Display Name <span class="muted">(login &amp; title)</span></label>
           <input id="cu-app-name" value="${s.app_display_name || s.shop_name || ''}" placeholder="Shown on login screen"></div>
         <div class="field"><label>Business Type</label>
           <select id="cu-type">${Utils.businessTypes.map(t =>
@@ -1783,12 +2000,40 @@ const AdminPage = {
           <select id="cu-theme"><option value="light" ${s.theme==='light'?'selected':''}>Light</option>
           <option value="dark" ${s.theme==='dark'?'selected':''}>Dark</option></select></div>
         <div class="field"><label>Primary Button Color</label><input type="color" id="cu-color" value="${cu.button_color||'#2563eb'}"></div>
+        <div class="field"><label>Accent Color</label><input type="color" id="cu-accent" value="${cu.accent_color||'#0ea5e9'}"></div>
         <div class="field"><label>Email</label><input id="cu-email" value="${s.email||''}"></div>
         <div class="field"><label>Website</label><input id="cu-website" value="${s.website||''}"></div>
         <div class="field"><label>Social Media</label><input id="cu-social" value="${s.social_media||''}"></div>
         <div class="field full"><label>Company Logo</label>
           <button class="btn btn-ghost" id="cu-logo-btn">Upload Logo</button>
           ${s.logo_path ? `<img id="cu-logo-preview" src="file://${s.logo_path.replace(/\\/g, '/')}" style="max-height:60px;margin-top:8px;border-radius:8px;display:block">` : ''}</div>
+      </div>
+      <h4 style="margin-top:24px">Login &amp; home</h4>
+      <div class="form-grid">
+        <div class="field full"><label>Login welcome message</label>
+          <input id="cu-login-msg" value="${Utils.escHtml(cu.login_message || '')}" placeholder="e.g. Welcome to Happy’s Shop"></div>
+        <div class="field"><label>Default page after login</label>
+          <select id="cu-home">${homeOpts.map(([id, label]) =>
+            `<option value="${id}" ${(cu.default_home_page || 'pos') === id ? 'selected' : ''}>${label}</option>`).join('')}</select></div>
+        <div class="field"><label>UI size scale</label>
+          <select id="cu-scale">
+            ${[['0.9','Small'],['1','Normal'],['1.1','Large'],['1.2','Extra large']].map(([v,l]) =>
+              `<option value="${v}" ${String(cu.ui_scale || '1') === v ? 'selected' : ''}>${l}</option>`).join('')}
+          </select></div>
+      </div>
+      <h4 style="margin-top:24px">Layout &amp; behaviour</h4>
+      <div class="form-grid">
+        <div class="field full"><label><input type="checkbox" id="cu-compact" ${cu.compact_nav ? 'checked' : ''}> Compact sidebar</label></div>
+        <div class="field full"><label><input type="checkbox" id="cu-hide-emoji" ${cu.hide_nav_emojis ? 'checked' : ''}> Hide emojis in menu labels</label></div>
+        <div class="field full"><label><input type="checkbox" id="cu-sound" ${cu.sounds_enabled !== false ? 'checked' : ''}> Enable UI / checkout sounds</label></div>
+        <div class="field full"><label><input type="checkbox" id="cu-auto-print" ${cu.auto_print_receipt ? 'checked' : ''}> Auto-print receipt after sale</label></div>
+        <div class="field full"><label><input type="checkbox" id="cu-confirm-void" ${cu.confirm_void !== false ? 'checked' : ''}> Confirm before void / large discount</label></div>
+        <div class="field"><label>POS product grid columns</label>
+          <input type="number" id="cu-pos-cols" min="2" max="8" value="${cu.pos_grid_columns || 4}"></div>
+        <div class="field"><label>Low stock alert threshold</label>
+          <input type="number" id="cu-low-stock" min="0" step="1" value="${cu.low_stock_threshold ?? 5}"></div>
+        <div class="field"><label>Idle lock (minutes, 0 = off)</label>
+          <input type="number" id="cu-idle" min="0" max="240" value="${cu.idle_lock_minutes ?? 0}"></div>
       </div>
       <button class="btn btn-primary" id="save-customize" style="margin-top:16px">Save Customization</button>
       </div></div></div>`;
@@ -1812,23 +2057,45 @@ const AdminPage = {
     });
 
     document.getElementById('save-customize').addEventListener('click', async () => {
+      const bizType = document.getElementById('cu-type').value;
       await API.saveSettings({
         shop_name: document.getElementById('cu-name').value.trim(),
         app_display_name: document.getElementById('cu-app-name').value.trim() || document.getElementById('cu-name').value.trim(),
-        business_type: document.getElementById('cu-type').value,
+        business_type: bizType,
         theme: document.getElementById('cu-theme').value,
         email: document.getElementById('cu-email').value.trim(),
         website: document.getElementById('cu-website').value.trim(),
         social_media: document.getElementById('cu-social').value.trim(),
         logo_path: logoPath
       }, this.app.user);
-      await API.saveJsonSetting('customization', { button_color: document.getElementById('cu-color').value }, this.app.user);
+      await API.saveJsonSetting('customization', {
+        button_color: document.getElementById('cu-color').value,
+        accent_color: document.getElementById('cu-accent').value,
+        login_message: document.getElementById('cu-login-msg').value.trim(),
+        default_home_page: document.getElementById('cu-home').value,
+        ui_scale: parseFloat(document.getElementById('cu-scale').value) || 1,
+        compact_nav: document.getElementById('cu-compact').checked,
+        hide_nav_emojis: document.getElementById('cu-hide-emoji').checked,
+        sounds_enabled: document.getElementById('cu-sound').checked,
+        auto_print_receipt: document.getElementById('cu-auto-print').checked,
+        confirm_void: document.getElementById('cu-confirm-void').checked,
+        pos_grid_columns: parseInt(document.getElementById('cu-pos-cols').value, 10) || 4,
+        low_stock_threshold: parseInt(document.getElementById('cu-low-stock').value, 10) || 0,
+        idle_lock_minutes: parseInt(document.getElementById('cu-idle').value, 10) || 0
+      }, this.app.user);
+      if (bizType === 'restaurant') {
+        const ps = this.settings.printer_settings || {};
+        if (ps.kitchen_enabled !== true) {
+          await API.saveJsonSetting('printer_settings', { ...ps, kitchen_enabled: true, kitchen_auto: ps.kitchen_auto !== false }, this.app.user);
+        }
+      }
       const settingsRes = await API.getSettingsParsed();
       if (settingsRes.success) {
         this.settings = settingsRes.data;
         this.app.settings = settingsRes.data;
         this.app.updateBranding();
         this.app.applyTheme();
+        this.app.renderNav?.();
       }
       document.documentElement.setAttribute('data-theme', document.getElementById('cu-theme').value);
       Utils.toast('Customization saved', 'success');
@@ -1841,11 +2108,16 @@ const AdminPage = {
     const activeRes = await API.getActiveBranch?.() || {};
     const active = activeRes.data || branches.find((b) => b.is_active) || branches[0] || { id: 1, name: 'Main Branch', code: 'MAIN' };
 
+    const cloudOn = !!(window.__SHOP_POS_CLOUD__ || window.__SHOP_POS_ENV__?.RPC_URL || window.__SHOP_POS_ENV__?.SHOP_POS_RPC_URL);
     el.innerHTML = `<div class="admin-section"><h3>Branches</h3>
-      <p class="muted">All tills (Web, Windows, Android) share the same Supabase database. No Tailscale, VPS, or local hub is required.</p>
+      <p class="muted">${cloudOn
+        ? 'This till is connected to cloud RPC — other cloud tills share the same database.'
+        : 'This Windows/Android installer stores data <strong>on this device only</strong>. Phone and PC do not sync automatically. Use Backup &amp; Restore (or a configured cloud RPC) to move data between devices.'}</p>
       <div class="card" style="margin-bottom:12px"><div class="card-body">
-        <h4 style="margin-top:0">Cloud backend</h4>
-        <p class="muted" style="margin:0">Configure <code>SHOP_POS_SUPABASE_URL</code> and <code>SHOP_POS_SUPABASE_ANON_KEY</code> (see <code>.env.example</code>). Customer online ordering has been removed.</p>
+        <h4 style="margin-top:0">${cloudOn ? 'Cloud backend' : 'Local database'}</h4>
+        <p class="muted" style="margin:0">${cloudOn
+          ? 'RPC URL is configured. Customer online ordering has been removed.'
+          : 'No cloud RPC URL is set. Shop name, sales, and staff stay on this till. Optional: set <code>SHOP_POS_RPC_URL</code> for multi-till cloud. Customer online ordering has been removed.'}</p>
       </div></div>
       <div class="card"><div class="card-body">
         <h4>Branches</h4>
@@ -1965,10 +2237,22 @@ const AdminPage = {
         <button class="btn btn-primary" id="save-backup-settings" style="margin-top:12px">Save Backup Settings</button>
       </div></div>
       <div class="card" style="margin-top:16px;border-color:var(--warning)"><div class="card-body">
-        <h4 style="color:var(--warning)">Clear Business Data</h4>
-        <p class="muted">Remove all operational transactions (sales, attendance, payroll runs, expenses, audit logs) while keeping master data: products, categories, customers, suppliers, employees, users, and shop settings.</p>
+        <h4 style="color:var(--warning)">Clear Selected Data</h4>
+        <p class="muted">Choose what to wipe. <strong>Kept:</strong> products, categories, customers, suppliers, employees, users, and shop settings.</p>
         <p class="muted"><strong>Before clearing:</strong> A safety backup is created automatically. Owner password required.</p>
-        <button class="btn btn-warning" id="adm-clear-ops" style="margin-top:12px">Clear Operational Data</button>
+        <div id="clear-cats" class="form-grid" style="margin-top:12px">
+          <div class="field full"><label><input type="checkbox" id="clear-cat-all"> Select all operational data</label></div>
+          <div class="field"><label><input type="checkbox" class="clear-cat" value="sales_orders"> POS sales &amp; orders</label></div>
+          <div class="field"><label><input type="checkbox" class="clear-cat" value="returns"> Returns / refunds</label></div>
+          <div class="field"><label><input type="checkbox" class="clear-cat" value="quotes_layby"> Quotes, lay-bye &amp; gift activity</label></div>
+          <div class="field"><label><input type="checkbox" class="clear-cat" value="customer_activity"> Loyalty &amp; credit ledger</label></div>
+          <div class="field"><label><input type="checkbox" class="clear-cat" value="cash_shifts"> Shifts, cash-up &amp; cash drops</label></div>
+          <div class="field"><label><input type="checkbox" class="clear-cat" value="stock_purchasing"> Stock moves, counts, waste &amp; POs</label></div>
+          <div class="field"><label><input type="checkbox" class="clear-cat" value="expenses_books"> Expenses &amp; bookkeeping txns</label></div>
+          <div class="field"><label><input type="checkbox" class="clear-cat" value="attendance_payroll"> Attendance &amp; payroll runs</label></div>
+          <div class="field"><label><input type="checkbox" class="clear-cat" value="notifications_audit"> Notifications &amp; audit logs</label></div>
+        </div>
+        <button class="btn btn-warning" id="adm-clear-ops" style="margin-top:12px">Clear Selected Data</button>
       </div></div>
       <div class="card" style="margin-top:16px;border-color:var(--danger)"><div class="card-body">
         <h4 style="color:var(--danger)">Danger Zone — Delete Business</h4>
@@ -2008,27 +2292,37 @@ const AdminPage = {
         }
       }).catch(() => {});
     }
+    document.getElementById('clear-cat-all')?.addEventListener('change', (e) => {
+      el.querySelectorAll('.clear-cat').forEach((c) => { c.checked = e.target.checked; });
+    });
     document.getElementById('adm-clear-ops').addEventListener('click', () => {
       if (this.app.user?.role !== 'owner') {
         Utils.toast('Only the owner can clear operational data', 'error');
         return;
       }
-      Utils.showModal('Clear Operational Data', `
-        <p class="muted" style="margin-bottom:12px"><strong>Warning:</strong> This permanently deletes sales, returns, expenses, attendance records, payroll runs, shifts, audit logs, and similar operational data.</p>
-        <p class="muted" style="margin-bottom:12px">Products, customers, suppliers, employees, users, and settings are preserved. An automatic backup is created first.</p>
+      const selected = [...el.querySelectorAll('.clear-cat:checked')].map((c) => c.value);
+      if (!selected.length) {
+        Utils.toast('Select at least one data type to clear', 'error');
+        return;
+      }
+      const labels = selected.map((v) => el.querySelector(`.clear-cat[value="${v}"]`)?.parentElement?.textContent?.trim() || v);
+      Utils.showModal('Clear Selected Data', `
+        <p class="muted" style="margin-bottom:12px"><strong>Warning:</strong> This permanently deletes:</p>
+        <ul style="margin:0 0 12px;padding-left:18px">${labels.map((l) => `<li>${Utils.escHtml(l)}</li>`).join('')}</ul>
+        <p class="muted" style="margin-bottom:12px">Products, customers, suppliers, employees, users, and settings stay. An automatic backup is created first.</p>
         <div class="field"><label>Owner Password</label><input type="password" id="clear-ops-pw" autocomplete="current-password"></div>
         <div class="field full"><label><input type="checkbox" id="clear-ops-confirm"> I understand this cannot be undone without restoring the auto-backup</label></div>
-      `, '<button class="btn btn-warning" id="clear-ops-go">Clear Operational Data</button>');
+      `, '<button class="btn btn-warning" id="clear-ops-go">Clear Selected Data</button>');
       document.getElementById('clear-ops-go').addEventListener('click', async () => {
         if (!document.getElementById('clear-ops-confirm').checked) {
           return Utils.toast('Please confirm you understand the consequences', 'error');
         }
         const pw = document.getElementById('clear-ops-pw').value;
         if (!pw) return Utils.toast('Password required', 'error');
-        const r = await API.clearOperationalData(pw, this.app.user);
+        const r = await API.clearOperationalData(pw, this.app.user, selected);
         if (!r.success) return Utils.toast(r.error || 'Clear failed', 'error');
         Utils.hideModal();
-        Utils.toast(`Operational data cleared. Backup: ${r.data?.backup_path || 'saved'}`, 'success');
+        Utils.toast(`Selected data cleared. Backup: ${r.data?.backup_path || 'saved'}`, 'success');
         setTimeout(() => location.reload(), 2000);
       });
     });
@@ -2130,6 +2424,7 @@ const AdminPage = {
       el.addEventListener('mousedown', (e) => {
         e.preventDefault();
         dropdown.classList.add('hidden');
+        if (el.dataset.page === 'recipe') return this.app.openRecipeProduction({ fromApp: true });
         if (Utils.canAccess(this.app.user, el.dataset.page)) this.app.navigate(el.dataset.page);
       });
     });

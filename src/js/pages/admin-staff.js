@@ -2,6 +2,21 @@
 (function () {
   if (!window.AdminPage) return;
 
+  async function saveStaffPdf(filename, buf) {
+    return Utils.savePdfBuffer(filename, buf);
+  }
+
+  async function printStaffA4(html, title) {
+    const pr = await Utils.printToA4(html);
+    if (pr?.success) return true;
+    const preview = await API.printPreview?.(html, title || 'Print');
+    if (preview?.success) {
+      Utils.toast('Print preview opened — use Print there', 'success');
+      return true;
+    }
+    return false;
+  }
+
   if (!AdminPage.sections.some(s => s.id === 'onaccount')) {
     AdminPage.sections.splice(3, 0,
       { id: 'onaccount', label: '📒 On Account', icon: 'onaccount' },
@@ -13,7 +28,31 @@
   AdminPage.renderSection = async function (el) {
     if (this.section === 'onaccount') return this.renderOnAccount(el);
     if (this.section === 'staffhr') return this.renderStaffHR(el);
+    if (this.section === 'staffportal') return this.renderStaffPortalHub(el);
     return origRenderSection(el);
+  };
+
+  AdminPage.renderStaffPortalHub = async function (el) {
+    if (window.App?.ensurePageScripts) {
+      try { await App.ensurePageScripts('staff'); } catch (_) { /* ignore */ }
+      try { await App.ensureFeatureScript?.('js/staff-selfie-ui.js'); } catch (_) { /* ignore */ }
+    }
+    if (!window.StaffPage?.renderAdminHub) {
+      el.innerHTML = `<div class="admin-section"><h3>Staff Portal</h3>
+        <p class="muted">Staff Portal module not loaded. Open <strong>Staff Portal</strong> from the main sidebar once, then try again.</p></div>`;
+      return;
+    }
+    StaffPage._embeddedInAdmin = true;
+    StaffPage.app = this.app;
+    StaffPage.el = el;
+    StaffPage.unlocked = true;
+    const openId = this._openPortalEmployeeId;
+    this._openPortalEmployeeId = null;
+    if (openId) return StaffPage.openEmployeeAsAdmin(openId, el);
+    StaffPage.employee = null;
+    StaffPage._adminOverride = false;
+    StaffPage._forceWorkerLogin = false;
+    return StaffPage.renderAdminHub(el);
   };
 
   AdminPage.renderOnAccount = async function (el) {
@@ -100,15 +139,12 @@
 
     el.querySelectorAll('.oa-wa').forEach(b => b.addEventListener('click', async () => {
       const body = `${this.settings.shop_name || 'Shop'} — On Account Statement\nCustomer: ${b.dataset.name}\nBalance: ${Utils.formatMoney(parseFloat(b.dataset.bal) || 0, currency)}\nDate: ${Utils.today()}`;
-      const wa = await API.sendWhatsAppMessage({
+      await Utils.deliverWhatsApp(await API.sendWhatsAppMessage({
         phone: b.dataset.phone,
         recipient_name: b.dataset.name,
         message_type: 'account_receipt',
         body
-      }, this.app.user);
-      if (!wa.success) return Utils.toast(wa.error || 'WhatsApp failed', 'error');
-      window.open(wa.data.url, '_blank');
-      Utils.toast('WhatsApp statement opened', 'success');
+      }, this.app.user), b.dataset.phone, body);
     }));
   };
 
@@ -120,10 +156,36 @@
       ['selfies', 'Login Selfies'], ['logins', 'Login Events'], ['disciplinary', 'Disciplinary'],
       ['recruitment', 'Recruitment'], ['reports', 'Reports'], ['notifications', 'Alerts']
     ];
-    el.innerHTML = `<div class="admin-section"><h3>Staff & HR Management</h3>
+    const ps = this.settings?.staff_portal_settings || {};
+    const visHtml = window.StaffPage?.portalToggleHtml ? StaffPage.portalToggleHtml(ps) : '';
+    el.innerHTML = `<div class="admin-section">
+      <div class="page-toolbar" style="margin-bottom:8px">
+        <h3 style="margin:0">Staff & HR Management</h3>
+        <button type="button" class="btn btn-primary btn-sm" id="staffhr-open-portal">Open Staff Portal</button>
+      </div>
+      ${visHtml}
+      ${visHtml ? '<button type="button" class="btn btn-primary" id="staffhr-save-portal-vis" style="margin:0 0 16px">Save portal visibility</button>' : ''}
       <div class="form-tabs" id="staff-admin-tabs">${tabs.map(([id, label]) =>
         `<button type="button" class="form-tab ${this.staffTab === id ? 'active' : ''}" data-tab="${id}">${label}</button>`).join('')}</div>
       <div id="staff-admin-content"><p class="muted">Loading…</p></div></div>`;
+    window.StaffPage?.bindPortalToggleStates?.(el);
+    document.getElementById('staffhr-save-portal-vis')?.addEventListener('click', async () => {
+      const data = {
+        ...(this.settings.staff_portal_settings || {}),
+        ...(window.StaffPage?.collectPortalToggles ? StaffPage.collectPortalToggles() : {})
+      };
+      const r = await API.saveJsonSetting('staff_portal_settings', data, this.app.user);
+      if (!r.success) return Utils.toast(r.error || 'Could not save', 'error');
+      this.settings.staff_portal_settings = data;
+      this.app.settings = { ...this.app.settings, staff_portal_settings: data };
+      window.StaffPage?.bindPortalToggleStates?.(el);
+      Utils.toast('Portal visibility saved — staff see these immediately', 'success');
+    });
+    document.getElementById('staffhr-open-portal')?.addEventListener('click', () => {
+      this.section = 'staffportal';
+      document.querySelectorAll('.admin-nav-btn').forEach(n => n.classList.toggle('active', n.dataset.section === 'staffportal'));
+      this.renderSection(document.getElementById('admin-content'));
+    });
     el.querySelector('#staff-admin-tabs').addEventListener('click', (e) => {
       const btn = e.target.closest('[data-tab]');
       if (!btn) return;
@@ -162,7 +224,9 @@
         <td><div class="emp-photo-cell" data-photo="${Utils.escHtml(e.photo_path || '')}" style="width:40px;height:40px;border-radius:50%;background:var(--border);overflow:hidden;display:flex;align-items:center;justify-content:center;font-size:12px;color:var(--text-muted)">${e.photo_path ? '' : '👤'}</div></td>
         <td>${e.employee_code}</td><td><strong>${e.full_name}</strong></td><td>${e.position || '—'}</td>
         <td>${e.department || '—'}</td><td>${e.status}</td><td>${Utils.formatMoney(calcNet(e), this.settings.currency || 'R')}</td>
-        <td class="actions"><button class="btn btn-sm btn-ghost staff-edit" data-id="${e.id}">Edit</button>
+        <td class="actions"><button class="btn btn-sm btn-primary staff-open-portal" data-id="${e.id}">Portal</button>
+        <button class="btn btn-sm btn-ghost staff-edit" data-id="${e.id}">Edit</button>
+        <button class="btn btn-sm btn-ghost staff-files" data-id="${e.id}">Files</button>
         <button class="btn btn-sm btn-danger staff-del" data-id="${e.id}">Delete</button></td></tr>`).join('') || '<tr><td colspan="8" class="muted">No employees</td></tr>'}
       </tbody></table></div>`;
     el.querySelectorAll('.emp-photo-cell[data-photo]').forEach(async (cell) => {
@@ -179,10 +243,17 @@
       this.renderStaffEmployees(el);
     });
     document.getElementById('staff-add').addEventListener('click', () => this.showEmployeeForm());
+    el.querySelectorAll('.staff-open-portal').forEach(b => b.addEventListener('click', () => {
+      this._openPortalEmployeeId = parseInt(b.dataset.id, 10);
+      this.section = 'staffportal';
+      document.querySelectorAll('.admin-nav-btn').forEach(n => n.classList.toggle('active', n.dataset.section === 'staffportal'));
+      this.renderSection(document.getElementById('admin-content'));
+    }));
     el.querySelectorAll('.staff-edit').forEach(b => b.addEventListener('click', async () => {
       const r = await API.getEmployee(parseInt(b.dataset.id));
       if (r.success) this.showEmployeeForm(r.data);
     }));
+    el.querySelectorAll('.staff-files').forEach(b => b.addEventListener('click', () => this.showEmployeeFiles(parseInt(b.dataset.id, 10), emps)));
     el.querySelectorAll('.staff-del').forEach(b => b.addEventListener('click', async () => {
       if (!confirm('Delete employee?')) return;
       await API.deleteEmployee(parseInt(b.dataset.id), this.app.user);
@@ -194,6 +265,36 @@
     return Math.max(0, (Number(e.basic_salary) || 0) + (Number(e.overtime_rate) || 0) + (Number(e.bonus) || 0) +
       (Number(e.commission) || 0) + (Number(e.allowances) || 0) - (Number(e.deductions) || 0));
   }
+
+  AdminPage.showEmployeeFiles = async function (employeeId, emps) {
+    const emp = (emps || []).find(x => x.id === employeeId);
+    const res = await API.getStaffDocuments(employeeId);
+    const docs = res.data || [];
+    Utils.showModal(`Files — ${emp?.full_name || 'Employee'}`, `
+      <p class="muted">Uploaded staff files (IDs, contracts, certificates). HR-generated letters are under HR Documents.</p>
+      <div class="table-wrap"><table><thead><tr><th>Type</th><th>File</th><th>Notes</th><th>Date</th></tr></thead>
+        <tbody>${docs.map(d => `<tr><td>${d.doc_type || '—'}</td><td>${d.file_name || '—'}</td><td>${d.notes || '—'}</td><td>${Utils.formatDateTime?.(d.created_at) || d.created_at || ''}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">No files yet</td></tr>'}</tbody></table></div>
+      <div class="form-grid" style="margin-top:12px">
+        <div class="field"><label>Type</label><input id="ef-type" placeholder="ID / Contract / Certificate"></div>
+        <div class="field"><label>Notes</label><input id="ef-notes"></div>
+      </div>`,
+      '<button class="btn btn-primary" id="ef-upload">Choose file &amp; save</button>');
+    document.getElementById('ef-upload')?.addEventListener('click', async () => {
+      const pick = await API.selectDocument('staff-doc');
+      if (pick?.cancelled) return;
+      if (!pick?.success || !(pick.path || pick.data)) return Utils.toast(pick?.error || 'No file selected', 'error');
+      const r = await API.saveStaffDocument({
+        employee_id: employeeId,
+        doc_type: document.getElementById('ef-type').value.trim() || 'file',
+        file_path: pick.path || pick.data,
+        file_name: pick.name || pick.file_name || 'document',
+        notes: document.getElementById('ef-notes').value.trim()
+      }, this.app.user);
+      if (!r.success) return Utils.toast(r.error || 'Upload failed', 'error');
+      Utils.hideModal();
+      Utils.toast('File saved', 'success');
+    });
+  };
 
   AdminPage.showEmployeeForm = function (emp = null) {
     const e = emp || {};
@@ -223,7 +324,7 @@
         <div class="field full"><label>Address</label><input id="em-address" value="${e.address || ''}"></div>
         <div class="field"><label>Emergency Contact</label><input id="em-ec" value="${e.emergency_contact || ''}"></div>
         <div class="field"><label>Emergency Phone</label><input id="em-ep" value="${e.emergency_phone || ''}"></div>
-        <div class="field"><label>PIN (for clocking)</label><input id="em-pin" type="password" maxlength="6" placeholder="${emp ? 'Leave blank to keep' : '1234'}"></div>
+        <div class="field"><label>PIN (for clocking)</label><input id="em-pin" type="password" maxlength="12" placeholder="${emp ? 'Leave blank to keep' : '1234'}"></div>
         <div class="field full"><label>Profile Photo</label>
           <div id="em-photo-preview" style="margin-bottom:8px"></div>
           <input id="em-photo-path" type="hidden" value="${Utils.escHtml(e.photo_path || '')}">
@@ -269,6 +370,15 @@
         <div class="field ws-daily hidden"><label>Daily Wage</label><input type="number" id="ws-daily" step="0.01" value="${ws.daily_wage || 0}"></div>
         <div class="field"><label>Expected Hours/Day</label><input type="number" id="ws-hours-day" step="0.5" value="${ws.expected_hours_per_day ?? 8}"></div>
         <div class="field"><label>Expected Days/Week</label><input type="number" id="ws-days-week" min="1" max="7" value="${ws.expected_days_per_week ?? 5}"></div>
+        <div class="field full"><label>Work days (for shift generate)</label>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:6px">${['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map((n, i) => {
+            const days = Array.isArray(ws.work_days) && ws.work_days.length
+              ? ws.work_days.map(Number)
+              : Array.from({ length: Number(ws.expected_days_per_week) || 5 }, (_, d) => d);
+            return `<label><input type="checkbox" class="ws-wday" value="${i}" ${days.includes(i) ? 'checked' : ''}> ${n}</label>`;
+          }).join('')}</div>
+          <small class="muted">Unchecked days become Rest Day when you generate weekly / 4-week shifts.</small>
+        </div>
         <div class="field"><label>Hours Limit / Day</label><input type="number" id="ws-hpd" step="0.5" value="${ws.hours_per_day ?? ws.expected_hours_per_day ?? 8}"></div>
         <div class="field"><label>Hours Limit / Week</label><input type="number" id="ws-hpw" step="0.5" value="${ws.hours_per_week ?? 40}"></div>
         <div class="field"><label>Hours Limit / Month</label><input type="number" id="ws-hpm" step="0.5" value="${ws.hours_per_month ?? 173}"></div>
@@ -282,6 +392,9 @@
         <div class="field"><label>OT Multiplier</label><input type="number" id="ws-ot-mult" step="0.1" value="${ws.overtime_rate_multiplier ?? 1.5}"></div>
         <div class="field"><label>Weekend Multiplier</label><input type="number" id="ws-wknd" step="0.1" value="${ws.weekend_rate_multiplier ?? 2}"></div>
         <div class="field"><label>Holiday Multiplier</label><input type="number" id="ws-hol" step="0.1" value="${ws.holiday_rate_multiplier ?? 2}"></div>
+        <div class="field"><label>Max payment / period (0 = no cap)</label><input type="number" id="ws-max-pay" step="0.01" min="0" value="${ws.max_payment ?? 0}"></div>
+        <div class="field full"><label><input type="checkbox" id="ws-allow-beyond" ${ws.allow_hours_beyond_limit !== false ? 'checked' : ''}> Allow hours beyond daily/weekly/monthly limit to count for pay</label></div>
+        <div class="field full"><label><input type="checkbox" id="ws-allow-ot" ${ws.allow_overtime_pay !== false ? 'checked' : ''}> Pay overtime / bonus for hours beyond the limit</label></div>
         <div class="field full"><label><input type="checkbox" id="ws-ded-late" ${ws.deduct_late !== false ? 'checked' : ''}> Deduct for lateness</label></div>
         <div class="field full"><label><input type="checkbox" id="ws-ded-early" ${ws.deduct_early_departure !== false ? 'checked' : ''}> Deduct for early departure</label></div>
         <div class="field full"><label><input type="checkbox" id="ws-ded-abs" ${ws.deduct_unpaid_absence !== false ? 'checked' : ''}> Deduct unpaid absences</label></div>
@@ -392,6 +505,15 @@
         user_id: parseInt(document.getElementById('em-user').value) || null
       };
       if (!data.full_name) return Utils.toast('Name required', 'error');
+      // Pre-validate links so admin sees exact missing pieces before save
+      if (typeof API.validateEmployeeLinks === 'function') {
+        const check = await API.validateEmployeeLinks(data);
+        if (check?.success === false) return Utils.toast(check.error || 'Could not validate employee links', 'error');
+        const payload = check?.data || check;
+        if (payload && payload.ok === false && (payload.errors || []).length) {
+          return Utils.toast(payload.errors.join(' · '), 'error');
+        }
+      }
       const r = await API.saveEmployee(data, this.app.user);
       if (!r.success) return Utils.toast(r.error || 'Could not save employee', 'error');
       const empId = r.data?.id || emp?.id;
@@ -403,6 +525,7 @@
           daily_wage: parseFloat(document.getElementById('ws-daily').value) || 0,
           expected_hours_per_day: parseFloat(document.getElementById('ws-hours-day').value) || 8,
           expected_days_per_week: parseInt(document.getElementById('ws-days-week').value, 10) || 5,
+          work_days: [...document.querySelectorAll('.ws-wday:checked')].map(cb => parseInt(cb.value, 10)),
           hours_per_day: parseFloat(document.getElementById('ws-hpd').value) || 8,
           hours_per_week: parseFloat(document.getElementById('ws-hpw').value) || 40,
           hours_per_month: parseFloat(document.getElementById('ws-hpm').value) || 173,
@@ -414,14 +537,27 @@
           overtime_rate_multiplier: parseFloat(document.getElementById('ws-ot-mult').value) || 1.5,
           weekend_rate_multiplier: parseFloat(document.getElementById('ws-wknd').value) || 2,
           holiday_rate_multiplier: parseFloat(document.getElementById('ws-hol').value) || 2,
+          max_payment: parseFloat(document.getElementById('ws-max-pay')?.value) || 0,
+          allow_hours_beyond_limit: document.getElementById('ws-allow-beyond')?.checked !== false,
+          allow_overtime_pay: document.getElementById('ws-allow-ot')?.checked !== false,
           deduct_late: document.getElementById('ws-ded-late').checked,
           deduct_early_departure: document.getElementById('ws-ded-early').checked,
           deduct_unpaid_absence: document.getElementById('ws-ded-abs').checked
         };
-        await API.saveEmployeeWorkSchedule(empId, schedule, this.app.user);
+        const schedRes = await API.saveEmployeeWorkSchedule(empId, schedule, this.app.user);
+        if (!schedRes.success) {
+          Utils.toast(schedRes.error || 'Employee saved, but work schedule failed — set schedule before clock-in', 'error');
+        }
       }
       Utils.hideModal();
-      Utils.toast('Employee saved', 'success');
+      const warnings = r.data?._link_warnings || [];
+      const genPin = r.data?._generated_pin;
+      let msg = 'Employee saved';
+      if (genPin) msg += ` · Temporary PIN: ${genPin} (share securely)`;
+      Utils.toast(msg, 'success');
+      if (warnings.length) {
+        setTimeout(() => Utils.toast(warnings.join(' · '), 'info'), 400);
+      }
       const content = document.getElementById('staff-admin-content');
       if (content) this.renderStaffEmployees(content);
     });
@@ -436,13 +572,51 @@
     const emps = empsRes.data || [];
     const branches = [...new Set(emps.map(e => e.branch).filter(Boolean))];
     const canEdit = ['owner', 'manager'].includes(this.app.user?.role);
+    const canResolve = ['owner', 'manager', 'supervisor', 'assistant_manager'].includes(this.app.user?.role);
     const res = await API.getStaffAttendance({
       from, to, branch: branch || undefined, employee_id: employeeId || undefined
     });
     const rows = res.data || [];
     const penRes = canEdit ? await API.getAttendancePenalties({ status: 'pending' }, this.app.user) : { data: [] };
     const penalties = penRes.data || [];
-    el.innerHTML = `<div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center">
+    const inboxRes = canResolve ? await API.getMissedClockOutInbox({ days: 21 }, this.app.user) : { data: [] };
+    const inbox = inboxRes.success ? (inboxRes.data || []) : [];
+    const openInbox = inbox.filter(r => r.inbox_kind === 'open');
+    const autoInbox = inbox.filter(r => r.inbox_kind === 'auto_closed');
+    const inboxCard = canResolve ? `<div class="card" style="margin-bottom:12px;border-color:${openInbox.length ? 'var(--warning)' : 'var(--border)'}">
+      <div class="card-body">
+        <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center">
+          <div>
+            <h4 style="margin:0">Missed clock-out inbox</h4>
+            <p class="muted" style="margin:4px 0 0;font-size:13px">Open shifts still clocked in, plus recent auto-closes for review.</p>
+          </div>
+          <button class="btn btn-ghost btn-sm" id="att-inbox-refresh">Refresh</button>
+        </div>
+        ${!inboxRes.success ? `<p style="color:var(--danger)">${Utils.escHtml(inboxRes.error || 'Could not load inbox')}</p>` : ''}
+        ${!inbox.length ? '<p class="muted" style="margin:12px 0 0">No open or auto-closed clock-outs to review.</p>' : `
+        <div class="table-wrap" style="margin-top:12px"><table><thead><tr>
+          <th>Date</th><th>Employee</th><th>In</th><th>Issue</th><th>Scheduled end</th><th></th>
+        </tr></thead><tbody>
+          ${inbox.map(r => `<tr>
+            <td>${r.work_date}</td>
+            <td>${Utils.escHtml(r.full_name)}<br><small class="muted">${Utils.escHtml(r.employee_code || '')}</small></td>
+            <td>${r.clock_in ? Utils.formatDateTime(r.clock_in) : '—'}</td>
+            <td>${r.inbox_kind === 'open'
+              ? `<span style="color:var(--warning)">Still open${r.shift_ended ? ' (shift ended)' : ''} · ${r.hours_open}h</span>`
+              : '<span class="muted">Auto-closed</span>'}</td>
+            <td>${r.scheduled_end || '—'}</td>
+            <td style="white-space:nowrap">
+              ${r.inbox_kind === 'open' ? `
+                <button class="btn btn-sm btn-primary inbox-now" data-id="${r.id}">Clock out now</button>
+                <button class="btn btn-sm btn-ghost inbox-end" data-id="${r.id}">Close at shift end</button>` : `
+                <button class="btn btn-sm btn-ghost inbox-ok" data-id="${r.id}">Mark reviewed</button>`}
+              ${canEdit ? `<button class="btn btn-sm btn-warning inbox-pen" data-id="${r.id}" data-emp="${r.employee_id}" data-date="${r.work_date}">Penalty</button>` : ''}
+            </td>
+          </tr>`).join('')}
+        </tbody></table></div>
+        <p class="muted" style="margin:8px 0 0;font-size:12px">${openInbox.length} open · ${autoInbox.length} auto-closed (21 days)</p>`}
+      </div></div>` : '';
+    el.innerHTML = `${inboxCard}<div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center">
       ${Utils.extendedDateFilterHTML('att-date-filter', from, to)}
       <select id="att-branch" style="padding:8px;border-radius:8px;border:1px solid var(--border)">
         <option value="">All branches</option>
@@ -481,9 +655,42 @@
         <td>${a.overtime_minutes > 0 ? `${(a.overtime_minutes / 60).toFixed(1)}h` : '—'}</td>
         <td>${a.status || '—'}</td>
         ${canEdit ? `<td style="white-space:nowrap">${a.id ? `<button class="btn btn-sm btn-ghost att-edit" data-id="${a.id}">Edit</button>
+          <button class="btn btn-sm btn-danger att-del" data-id="${a.id}">Delete</button>
           ${a.clock_in ? `<button class="btn btn-sm btn-warning att-penalty" data-id="${a.id}" data-emp="${a.employee_id}" data-date="${a.work_date}">Penalty</button>` : ''}` : '<span class="muted">—</span>'}</td>` : ''}
       </tr>`).join('') || `<tr><td colspan="${canEdit ? 12 : 11}" class="muted">No records</td></tr>`}
       </tbody></table></div>`;
+    document.getElementById('att-inbox-refresh')?.addEventListener('click', () => this.renderStaffAttendance(el));
+    const resolveInbox = async (id, action) => {
+      const r = await API.resolveMissedClockOut(parseInt(id, 10), action, this.app.user);
+      if (!r.success) return Utils.toast(r.error || 'Could not resolve', 'error');
+      Utils.toast(action === 'dismiss_auto_close' ? 'Marked reviewed' : 'Clock-out resolved', 'success');
+      this.renderStaffAttendance(el);
+    };
+    el.querySelectorAll('.inbox-now').forEach(b => b.addEventListener('click', () => resolveInbox(b.dataset.id, 'clock_out_now')));
+    el.querySelectorAll('.inbox-end').forEach(b => b.addEventListener('click', () => resolveInbox(b.dataset.id, 'clock_out_shift_end')));
+    el.querySelectorAll('.inbox-ok').forEach(b => b.addEventListener('click', () => resolveInbox(b.dataset.id, 'dismiss_auto_close')));
+    el.querySelectorAll('.inbox-pen').forEach(b => b.addEventListener('click', () => {
+      Utils.showModal('Attendance Penalty', `
+        <p class="muted">Applies on the next payroll for this employee (money or hours deducted).</p>
+        <div class="field"><label>Type</label><select id="pen-type"><option value="money">Money amount</option><option value="hours">Hours deducted</option></select></div>
+        <div class="field"><label>Amount</label><input type="number" id="pen-amt" min="0.01" step="0.01"></div>
+        <div class="field"><label>Reason</label><textarea id="pen-reason" rows="2">Missed clock-out / attendance penalty</textarea></div>`,
+        '<button class="btn btn-warning" id="pen-save">Issue Penalty</button>');
+      document.getElementById('pen-save')?.addEventListener('click', async () => {
+        const r = await API.addAttendancePenalty({
+          employee_id: parseInt(b.dataset.emp, 10),
+          attendance_id: parseInt(b.dataset.id, 10),
+          work_date: b.dataset.date,
+          penalty_type: document.getElementById('pen-type').value,
+          amount: parseFloat(document.getElementById('pen-amt').value),
+          reason: document.getElementById('pen-reason').value.trim()
+        }, this.app.user);
+        if (!r.success) return Utils.toast(r.error, 'error');
+        Utils.hideModal();
+        Utils.toast('Penalty queued for next payroll', 'success');
+        this.renderStaffAttendance(el);
+      });
+    }));
     Utils.bindDateFilter(document.getElementById('att-date-filter'), (f, t) => {
       this._attFrom = f;
       this._attTo = t;
@@ -503,7 +710,7 @@
     });
     document.getElementById('att-pdf').addEventListener('click', async () => {
       const buf = await API.getStaffReportPdf('attendance', rows);
-      if (buf.success) await API.saveFile(`attendance-${from}-${to}.pdf`, [{ name: 'PDF', extensions: ['pdf'] }], buf.data);
+      await saveStaffPdf(`attendance-${from}-${to}.pdf`, buf);
     });
     document.getElementById('att-excel').addEventListener('click', async () => {
       await Export.toExcel(`attendance-${from}-${to}.xlsx`, [{
@@ -605,6 +812,15 @@
           this.renderStaffAttendance(el);
         });
       }));
+      el.querySelectorAll('.att-del').forEach(b => b.addEventListener('click', async () => {
+        const row = rows.find(x => String(x.id) === String(b.dataset.id));
+        if (!row) return;
+        if (!confirm(`Delete attendance for ${row.full_name} on ${row.work_date}? This cannot be undone.`)) return;
+        const r = await API.deleteStaffAttendance(parseInt(b.dataset.id, 10), this.app.user);
+        if (!r.success) return Utils.toast(r.error || 'Could not delete', 'error');
+        Utils.toast('Attendance deleted', 'success');
+        this.renderStaffAttendance(el);
+      }));
     }
   };
 
@@ -639,6 +855,10 @@
         <div class="field full"><label>Allowed leave types (comma-separated)</label>
           <input id="lv-types" value="${(ps.leave_types || []).join(', ')}"></div>
         <div class="field full"><label><input type="checkbox" id="lv-approval" ${ps.leave_requires_approval !== false ? 'checked' : ''}> Require admin approval</label></div>
+        <div class="field full"><label><input type="checkbox" id="lv-require-selfie" ${ps.require_login_selfie ? 'checked' : ''}> Require verification selfie before Staff Portal (off = camera/upload optional, worker can skip)</label></div>
+        <div class="field full"><label><input type="checkbox" id="lv-show-disc" ${ps.show_disciplinary !== false ? 'checked' : ''}> Show disciplinary / warnings on Staff Portal</label></div>
+        <div class="field full"><label><input type="checkbox" id="lv-show-pay" ${ps.show_payslips !== false ? 'checked' : ''}> Show payslips on Staff Portal</label></div>
+        <div class="field full"><label><input type="checkbox" id="lv-dresp" ${ps.require_disciplinary_response !== false ? 'checked' : ''}> Require worker response on disciplinary records</label></div>
       </div>
       <button class="btn btn-primary btn-sm" id="save-leave-settings" style="margin-top:8px">Save Leave Settings</button>
       </div></div>
@@ -681,6 +901,7 @@
       </tbody></table></div>`;
 
     this._leaveBlackouts = blackouts.slice();
+    window.StaffPage?.bindPortalToggleStates?.(el);
 
     const syncBlackoutFields = () => {
       const type = document.getElementById('lv-bo-type').value;
@@ -704,7 +925,18 @@
       })(),
       leave_types: document.getElementById('lv-types').value.split(',').map(s => s.trim()).filter(Boolean),
       leave_requires_approval: document.getElementById('lv-approval').checked,
+      require_login_selfie: !!document.getElementById('lv-require-selfie')?.checked,
+      show_disciplinary: document.getElementById('lv-show-disc')
+        ? !!document.getElementById('lv-show-disc').checked
+        : (this.settings.staff_portal_settings || {}).show_disciplinary !== false,
+      show_payslips: document.getElementById('lv-show-pay')
+        ? !!document.getElementById('lv-show-pay').checked
+        : (this.settings.staff_portal_settings || {}).show_payslips !== false,
+      require_disciplinary_response: document.getElementById('lv-dresp')
+        ? !!document.getElementById('lv-dresp').checked
+        : (this.settings.staff_portal_settings || {}).require_disciplinary_response !== false,
       leave_blackouts: this._leaveBlackouts || [],
+      ...(window.StaffPage?.collectPortalToggles ? StaffPage.collectPortalToggles() : {}),
       ...overrides
     });
 
@@ -786,7 +1018,7 @@
     }));
     el.querySelectorAll('.lv-pdf-admin').forEach(b => b.addEventListener('click', async () => {
       const buf = await API.getStaffLeavePdf(parseInt(b.dataset.id, 10));
-      if (buf.success) await API.saveFile(`leave-${b.dataset.id}.pdf`, [{ name: 'PDF', extensions: ['pdf'] }], buf.data);
+      await saveStaffPdf(`leave-${b.dataset.id}.pdf`, buf);
     }));
     el.querySelectorAll('.lv-wa-admin').forEach(b => b.addEventListener('click', async () => {
       const leave = rows.find(x => String(x.id) === b.dataset.id);
@@ -849,8 +1081,10 @@
       <div class="card"><div class="card-header"><h4>Generate Payroll</h4></div><div class="card-body">
       <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">
       <input type="date" id="pr-start" value="${from}"><input type="date" id="pr-end" value="${to}">
+      <button class="btn btn-ghost" id="pr-preview">Preview payroll</button>
       <button class="btn btn-primary" id="pr-gen">Generate Payroll</button></div>
-      <div id="pr-list"><p class="muted">Generate payroll records for active employees (uses attendance data)</p></div></div></div>`;
+      <div id="pr-preview-box"></div>
+      <div id="pr-list"><p class="muted">Preview first to see OT caps and max-pay flags, then generate payroll records for active employees</p></div></div></div>`;
     Utils.bindDateFilter(document.getElementById('pr-dash-filter'), (f, t) => {
       this._prDashFrom = f;
       this._prDashTo = t;
@@ -870,7 +1104,7 @@
     });
     document.getElementById('pr-dash-pdf').addEventListener('click', async () => {
       const buf = await API.getStaffReportPdf('payroll_dashboard', dashRows);
-      if (buf.success) await API.saveFile(`payroll-dashboard-${from}-${to}.pdf`, [{ name: 'PDF', extensions: ['pdf'] }], buf.data);
+      await saveStaffPdf(`payroll-dashboard-${from}-${to}.pdf`, buf);
     });
     document.getElementById('pr-dash-excel').addEventListener('click', async () => {
       await Export.toExcel(`payroll-dashboard-${from}-${to}.xlsx`, [{
@@ -882,6 +1116,34 @@
         ])
       }]);
     });
+    document.getElementById('pr-preview').addEventListener('click', async () => {
+      const start = document.getElementById('pr-start').value;
+      const end = document.getElementById('pr-end').value;
+      const r = await API.previewStaffPayroll(start, end, {
+        branch: document.getElementById('pr-branch')?.value || undefined,
+        employee_id: document.getElementById('pr-emp')?.value || undefined
+      }, this.app.user);
+      if (!r.success) return Utils.toast(r.error || 'Preview failed', 'error');
+      const list = r.data || [];
+      const box = document.getElementById('pr-preview-box');
+      box.innerHTML = `<div class="card" style="margin-bottom:12px;border-color:var(--primary)"><div class="card-body">
+        <h4 style="margin-top:0">Payroll preview · ${start} → ${end}</h4>
+        <p class="muted" style="font-size:13px">Shows estimated net before generate. Flags show max-pay / OT settings from each employee schedule.</p>
+        <div class="table-wrap"><table><thead><tr>
+          <th>Employee</th><th>Worked</th><th>OT</th><th>Gross</th><th>Deductions</th><th>Net</th><th>Flags</th>
+        </tr></thead><tbody>
+          ${list.map(p => `<tr>
+            <td>${Utils.escHtml(p.full_name)}</td>
+            <td>${Number(p.hours_worked || 0).toFixed(1)}h</td>
+            <td>${Number(p.overtime_hours || 0).toFixed(1)}h</td>
+            <td>${Utils.formatMoney(p.gross_pay, currency)}</td>
+            <td>${Utils.formatMoney(p.total_deductions, currency)}</td>
+            <td><strong>${Utils.formatMoney(p.net_salary, currency)}</strong></td>
+            <td><small>${(p.flags || []).length ? Utils.escHtml((p.flags || []).join(' · ')) : '—'}</small></td>
+          </tr>`).join('') || '<tr><td colspan="7" class="muted">No employees</td></tr>'}
+        </tbody></table></div></div></div>`;
+      Utils.toast(`Preview ready for ${list.length} employee(s)`, 'success');
+    });
     document.getElementById('pr-gen').addEventListener('click', async () => {
       const r = await API.generateStaffPayroll(
         document.getElementById('pr-start').value,
@@ -891,19 +1153,26 @@
       );
       if (!r.success) return Utils.toast(r.error, 'error');
       const list = r.data || [];
+      const empName = (id) => emps.find(e => String(e.id) === String(id))?.full_name || `Employee #${id}`;
       document.getElementById('pr-list').innerHTML = `<table><thead><tr><th>Employee</th><th>Period</th><th>Net</th><th>Status</th><th></th></tr></thead>
-        <tbody>${list.map(p => `<tr><td>${p.employee_id}</td><td>${p.period_start}–${p.period_end}</td>
-          <td>${Utils.formatMoney(p.net_salary, currency)}</td><td>${p.status}</td><td>
+        <tbody>${list.map(p => `<tr data-pay-row="${p.id}"><td>${Utils.escHtml(empName(p.employee_id))}</td><td>${p.period_start}–${p.period_end}</td>
+          <td>${Utils.formatMoney(p.net_salary, currency)}</td><td class="pr-status">${p.status}</td><td>
           ${p.status === 'pending' ? `<button class="btn btn-sm btn-success pr-pay" data-id="${p.id}">Mark Paid</button>` : ''}
           <button class="btn btn-sm btn-ghost pr-pdf" data-id="${p.id}">PDF</button>
           <button class="btn btn-sm btn-success pr-wa" data-id="${p.id}" data-emp="${p.employee_id}">WhatsApp</button></td></tr>`).join('')}</tbody></table>`;
       document.querySelectorAll('.pr-pay').forEach(b => b.addEventListener('click', async () => {
-        await API.payStaffSalary(parseInt(b.dataset.id), 'cash', this.app.user);
+        const payRes = await API.payStaffSalary(parseInt(b.dataset.id), 'cash', this.app.user);
+        if (payRes && payRes.success === false) return Utils.toast(payRes.error || 'Could not mark paid', 'error');
         Utils.toast('Marked as paid', 'success');
+        const row = document.querySelector(`[data-pay-row="${b.dataset.id}"]`);
+        if (row) {
+          row.querySelector('.pr-status').textContent = 'paid';
+          b.remove();
+        }
       }));
       document.querySelectorAll('.pr-pdf').forEach(b => b.addEventListener('click', async () => {
         const buf = await API.getStaffPayslipPdf(parseInt(b.dataset.id));
-        if (buf.success) await API.saveFile(`payslip-${b.dataset.id}.pdf`, [{ name: 'PDF', extensions: ['pdf'] }], buf.data);
+        await saveStaffPdf(`payslip-${b.dataset.id}.pdf`, buf);
       }));
       document.querySelectorAll('.pr-wa').forEach(b => b.addEventListener('click', async () => {
         const p = list.find(x => String(x.id) === b.dataset.id);
@@ -977,12 +1246,29 @@
       };
     };
 
-    el.innerHTML = `<div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center">
-      <label>Week starting</label><input type="date" id="sh-week" value="${from}">
+    this._shiftPreset = this._shiftPreset || '4w';
+    this._shiftCustomWeeks = this._shiftCustomWeeks || 6;
+    el.innerHTML = `<div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:end">
+      <div class="field" style="margin:0"><label>Start date</label><input type="date" id="sh-week" value="${from}"></div>
+      <div class="field" style="margin:0"><label>Generate / view for</label>
+        <select id="sh-preset">
+          <option value="1w" ${this._shiftPreset === '1w' ? 'selected' : ''}>1 week</option>
+          <option value="2w" ${this._shiftPreset === '2w' ? 'selected' : ''}>2 weeks</option>
+          <option value="3w" ${this._shiftPreset === '3w' ? 'selected' : ''}>3 weeks</option>
+          <option value="4w" ${this._shiftPreset === '4w' ? 'selected' : ''}>4 weeks</option>
+          <option value="1m" ${this._shiftPreset === '1m' ? 'selected' : ''}>1 month</option>
+          <option value="2m" ${this._shiftPreset === '2m' ? 'selected' : ''}>2 months</option>
+          <option value="cw" ${this._shiftPreset === 'cw' ? 'selected' : ''}>Custom weeks</option>
+          <option value="ce" ${this._shiftPreset === 'ce' ? 'selected' : ''}>Custom end date</option>
+        </select></div>
+      <div class="field" style="margin:0${this._shiftPreset === 'cw' ? '' : ';display:none'}" id="sh-custom-weeks-wrap">
+        <label>Weeks</label><input type="number" id="sh-custom-weeks" min="1" max="12" value="${this._shiftCustomWeeks}" style="width:72px"></div>
+      <div class="field" style="margin:0${this._shiftPreset === 'ce' ? '' : ';display:none'}" id="sh-custom-end-wrap">
+        <label>End date</label><input type="date" id="sh-custom-end" value="${this._shiftCustomEnd || ''}"></div>
+      <button class="btn btn-ghost" id="sh-snap-mon">Snap start to Monday</button>
       <button class="btn btn-primary" id="sh-add">+ Add Shift</button>
-      <button class="btn btn-primary" id="sh-auto">Generate Weekly Shifts</button>
-      <button class="btn btn-ghost" id="sh-regen">Regenerate Week</button>
-      <button class="btn btn-ghost" id="sh-month">Generate Monthly (4 weeks)</button>
+      <button class="btn btn-primary" id="sh-auto">Generate shifts</button>
+      <button class="btn btn-ghost" id="sh-regen">Regenerate range</button>
       <button class="btn btn-ghost" id="sh-print-a4">Print A4</button>
       <button class="btn btn-ghost" id="sh-pdf">Download Schedule PDF</button></div>
       <div class="card" style="margin-bottom:12px;padding:12px"><strong>Select workers for shift generation</strong>
@@ -1031,23 +1317,83 @@
         }).join('')}</tbody></table></div>`;
     };
 
+    const addDaysIso = (iso, n) => {
+      const d = new Date(iso + 'T12:00:00');
+      d.setDate(d.getDate() + n);
+      return d.toLocaleDateString('en-CA');
+    };
+    const mondayOf = (iso) => {
+      const d = new Date((iso || Utils.weekStart()) + 'T12:00:00');
+      const day = d.getDay();
+      const diff = day === 0 ? -6 : 1 - day;
+      d.setDate(d.getDate() + diff);
+      return d.toLocaleDateString('en-CA');
+    };
+    const addMonthsEnd = (iso, months) => {
+      const d = new Date((iso || Utils.today()) + 'T12:00:00');
+      d.setMonth(d.getMonth() + months);
+      d.setDate(d.getDate() - 1);
+      return d.toLocaleDateString('en-CA');
+    };
+    const currentRange = () => {
+      const startEl = document.getElementById('sh-week');
+      const start = startEl?.value || Utils.weekStart();
+      const preset = document.getElementById('sh-preset')?.value || this._shiftPreset || '4w';
+      this._shiftPreset = preset;
+      const weeksMap = { '1w': 1, '2w': 2, '3w': 3, '4w': 4 };
+      let end;
+      if (weeksMap[preset]) end = addDaysIso(start, weeksMap[preset] * 7 - 1);
+      else if (preset === '1m') end = addMonthsEnd(start, 1);
+      else if (preset === '2m') end = addMonthsEnd(start, 2);
+      else if (preset === 'cw') {
+        const n = Math.max(1, Math.min(12, parseInt(document.getElementById('sh-custom-weeks')?.value, 10) || this._shiftCustomWeeks || 6));
+        this._shiftCustomWeeks = n;
+        end = addDaysIso(start, n * 7 - 1);
+      } else if (preset === 'ce') {
+        const customEnd = document.getElementById('sh-custom-end')?.value || this._shiftCustomEnd;
+        end = customEnd && customEnd >= start ? customEnd : addDaysIso(start, 27);
+        this._shiftCustomEnd = end;
+      } else end = addDaysIso(start, 27);
+      const days = Math.max(1, Math.round((new Date(end + 'T12:00:00') - new Date(start + 'T12:00:00')) / 86400000) + 1);
+      const weeks = Math.max(1, Math.ceil(days / 7));
+      return { week: start, start, end, days, weeks, preset };
+    };
+    const syncPresetUi = () => {
+      const preset = document.getElementById('sh-preset')?.value || '4w';
+      const cw = document.getElementById('sh-custom-weeks-wrap');
+      const ce = document.getElementById('sh-custom-end-wrap');
+      if (cw) cw.style.display = preset === 'cw' ? '' : 'none';
+      if (ce) ce.style.display = preset === 'ce' ? '' : 'none';
+    };
+    const shiftRowHtml = (s) => `<tr><td>${s.shift_date}</td><td>${s.full_name}</td><td>${s.shift_name}</td>
+      <td>${s.is_rest_day ? '—' : (s.start_time || '—')}</td>
+      <td>${s.is_rest_day ? '—' : (s.end_time || '—')}</td>
+      <td style="white-space:nowrap">
+        ${s.id ? `<button class="btn btn-sm btn-ghost sh-edit" data-id="${s.id}">Edit</button>
+          <button class="btn btn-sm btn-ghost sh-redo" data-id="${s.id}">Redo</button>
+          <button class="btn btn-sm btn-danger sh-del" data-id="${s.id}">Delete</button>` : '<span class="muted">Default hours</span>'}
+      </td></tr>`;
+
     const loadShifts = async () => {
-      const week = document.getElementById('sh-week').value;
-      const end = new Date(week + 'T12:00:00');
-      end.setDate(end.getDate() + 6);
-      const sres = await API.getStaffSchedules(week, end.toLocaleDateString('en-CA'));
-      const rows = sres.data || [];
-      document.getElementById('sh-list').innerHTML = rows.length
-        ? `<div class="table-wrap"><table><thead><tr><th>Date</th><th>Employee</th><th>Shift</th><th>Opening</th><th>Closing</th><th></th></tr></thead>
-          <tbody>${rows.map(s => `<tr><td>${s.shift_date}</td><td>${s.full_name}</td><td>${s.shift_name}</td>
-            <td>${s.is_rest_day ? '—' : (s.start_time || '—')}</td>
-            <td>${s.is_rest_day ? '—' : (s.end_time || '—')}</td>
-            <td style="white-space:nowrap">
-              <button class="btn btn-sm btn-ghost sh-edit" data-id="${s.id}">Edit</button>
-              <button class="btn btn-sm btn-ghost sh-redo" data-id="${s.id}">Redo</button>
-              <button class="btn btn-sm btn-danger sh-del" data-id="${s.id}">Delete</button>
-            </td></tr>`).join('')}</tbody></table></div>`
-        : '<p class="muted">No shifts — generate above</p>';
+      const { week, weeks, end, days } = currentRange();
+      const sres = await API.getStaffSchedules(week, end);
+      const rows = (sres.data || []).filter((s) => s.id && !s._from_work_schedule);
+      const groups = [];
+      for (let w = 0; w < weeks; w++) {
+        const ws = addDaysIso(week, w * 7);
+        const we = addDaysIso(week, Math.min(w * 7 + 6, days - 1));
+        groups.push({
+          label: `Week ${w + 1}: ${ws} → ${we}`,
+          rows: rows.filter(s => s.shift_date >= ws && s.shift_date <= we)
+        });
+      }
+      document.getElementById('sh-list').innerHTML = `
+        <p class="muted">Showing <strong>${days} day${days > 1 ? 's' : ''}</strong> (${week} → ${end}) · <strong>${rows.length} generated shift(s)</strong>. PDF / Print use this exact range.</p>
+        ${groups.map(g => `<h4 style="margin:16px 0 8px">${g.label} · ${g.rows.length} generated row(s)</h4>
+          ${g.rows.length
+            ? `<div class="table-wrap"><table><thead><tr><th>Date</th><th>Employee</th><th>Shift</th><th>Opening</th><th>Closing</th><th></th></tr></thead>
+              <tbody>${g.rows.map(shiftRowHtml).join('')}</tbody></table></div>`
+            : '<p class="muted">No generated shifts this week — generate above</p>'}`).join('')}`;
 
       el.querySelectorAll('.sh-edit').forEach(b => b.addEventListener('click', async () => {
         const sched = rows.find(x => x.id == b.dataset.id);
@@ -1097,14 +1443,15 @@
     };
 
     const runGenerate = async (confirmRegen = false) => {
-      const week = document.getElementById('sh-week').value;
+      const { start, end, days } = currentRange();
+      document.getElementById('sh-week').value = start;
       const ids = selectedIds();
       if (!ids.length) return Utils.toast('Select at least one worker', 'error');
-      if (confirmRegen && !confirm('Regenerate shifts for this week? Existing shifts for selected workers will be replaced.')) return;
+      if (confirmRegen && !confirm(`Regenerate shifts for ${start} → ${end} (${days} days)? Existing shifts for selected workers in that range will be replaced.`)) return;
       const overrides = getOverrides();
-      const r = await API.autoGenerateStaffShifts(week, null, ids, overrides, this.app.user);
+      const r = await API.autoGenerateStaffShifts(start, null, ids, overrides, this.app.user, { days, endDate: end });
       if (!r.success) return Utils.toast(r.error, 'error');
-      Utils.toast(`Created ${(r.data || []).length} shift entries (leave excluded)`, 'success');
+      Utils.toast(`Created ${(r.data || []).length} generated shift(s) for ${start} → ${end}`, 'success');
       loadShifts();
     };
 
@@ -1152,44 +1499,40 @@
       });
     });
 
-    document.getElementById('sh-print-a4').addEventListener('click', async () => {
-      const week = document.getElementById('sh-week').value;
-      const end = new Date(week + 'T12:00:00');
-      end.setDate(end.getDate() + 6);
-      const endStr = end.toLocaleDateString('en-CA');
-      const htmlRes = await API.getStaffSchedulePrintHtml(week, endStr);
-      if (!htmlRes.success) return Utils.toast(htmlRes.error || 'Could not build schedule', 'error');
-      const pr = await API.printA4(htmlRes.data);
-      Utils.toast(pr.success ? 'Schedule sent to printer' : (pr.error || 'Print failed'), pr.success ? 'success' : 'error');
+    document.getElementById('sh-week').addEventListener('change', () => loadShifts());
+    document.getElementById('sh-preset')?.addEventListener('change', () => {
+      syncPresetUi();
+      loadShifts();
     });
-
-    document.getElementById('sh-auto').addEventListener('click', () => runGenerate(false));
-    document.getElementById('sh-regen').addEventListener('click', () => runGenerate(true));
-
-    document.getElementById('sh-month').addEventListener('click', async () => {
-      let week = document.getElementById('sh-week').value;
-      const ids = selectedIds();
-      if (!ids.length) return Utils.toast('Select at least one worker', 'error');
-      let total = 0;
-      for (let w = 0; w < 4; w++) {
-        const overrides = getOverrides();
-        const r = await API.autoGenerateStaffShifts(week, null, ids, overrides, this.app.user);
-        if (r.success) total += (r.data || []).length;
-        const d = new Date(week + 'T12:00:00');
-        d.setDate(d.getDate() + 7);
-        week = d.toLocaleDateString('en-CA');
-      }
-      Utils.toast(`Created ${total} shift entries for 4 weeks`, 'success');
+    document.getElementById('sh-custom-weeks')?.addEventListener('change', () => loadShifts());
+    document.getElementById('sh-custom-end')?.addEventListener('change', () => loadShifts());
+    document.getElementById('sh-snap-mon')?.addEventListener('click', () => {
+      const elDate = document.getElementById('sh-week');
+      if (elDate) elDate.value = mondayOf(elDate.value);
       loadShifts();
     });
 
-    document.getElementById('sh-pdf').addEventListener('click', async () => {
-      const week = document.getElementById('sh-week').value;
-      const end = new Date(week + 'T12:00:00');
-      end.setDate(end.getDate() + 6);
-      const buf = await API.getStaffSchedulePdf(week, end.toLocaleDateString('en-CA'));
-      if (buf.success) await API.saveFile(`shift-schedule.pdf`, [{ name: 'PDF', extensions: ['pdf'] }], buf.data);
+    document.getElementById('sh-print-a4').addEventListener('click', async () => {
+      const { start, end } = currentRange();
+      const htmlRes = await API.getStaffSchedulePrintHtml(start, end);
+      if (!htmlRes.success) return Utils.toast(htmlRes.error || 'Could not build schedule', 'error');
+      await printStaffA4(htmlRes.data, `Shifts ${start} – ${end}`);
     });
+
+    document.getElementById('sh-auto').addEventListener('click', () => {
+      runGenerate(false);
+    });
+    document.getElementById('sh-regen').addEventListener('click', () => {
+      runGenerate(true);
+    });
+
+    document.getElementById('sh-pdf').addEventListener('click', async () => {
+      const { start, end, days } = currentRange();
+      const buf = await API.getStaffSchedulePdf(start, end);
+      if (!buf?.success) return Utils.toast(buf?.error || 'Could not build PDF', 'error');
+      await saveStaffPdf(`shift-schedule-${start}-to-${end}-${days}d.pdf`, buf);
+    });
+    syncPresetUi();
 
     renderTimesTable();
     loadShifts();
@@ -1198,7 +1541,7 @@
   AdminPage.renderStaffDisciplinaryAdmin = async function (el) {
     const empsRes = await API.getEmployees();
     const emps = empsRes.data || [];
-    const res = await API.getAllStaffDisciplinary({});
+    const res = await API.getAllStaffDisciplinary({}, this.app.user);
     const rows = res.data || [];
     el.innerHTML = `<div style="display:flex;gap:8px;margin-bottom:12px">
       <button class="btn btn-primary" id="disc-add">+ Add Record</button></div>
@@ -1207,22 +1550,25 @@
         <td><small>${(d.description || '').slice(0, 80)}</small></td><td>${d.status || 'open'}</td>
         <td><small>${d.worker_response || '—'}</small></td>
         <td style="white-space:nowrap">
-          <button class="btn btn-sm btn-ghost disc-view" data-id="${d.id}">View PDF</button>
-          <button class="btn btn-sm btn-ghost disc-print-admin" data-id="${d.id}">Print</button>
-          <button class="btn btn-sm btn-ghost disc-save-admin" data-id="${d.id}">Save PDF</button>
+          <button class="btn btn-sm btn-ghost disc-view" data-id="${d.id}">View</button>
+          <button class="btn btn-sm btn-primary disc-print-admin" data-id="${d.id}">Print</button>
+          <button class="btn btn-sm btn-ghost disc-save-admin" data-id="${d.id}">Download PDF</button>
           <button class="btn btn-sm btn-success disc-wa-admin" data-id="${d.id}" data-emp="${d.employee_id}">WhatsApp</button>
         </td></tr>`).join('') || '<tr><td colspan="7" class="muted">No records</td></tr>'}
       </tbody></table></div>`;
 
-    const openDiscPdf = async (id, save = false) => {
+    const openDiscPdf = async (id, mode = 'view') => {
       const buf = await API.getStaffDisciplinaryPdf(parseInt(id, 10), 'admin');
       if (!buf.success) return Utils.toast(buf.error, 'error');
-      if (save) {
-        await API.saveFile(`disciplinary-admin-${id}.pdf`, [{ name: 'PDF', extensions: ['pdf'] }], buf.data);
-        Utils.toast('PDF saved', 'success');
-      } else {
-        await API.saveFile(`disciplinary-admin-${id}.pdf`, [{ name: 'PDF', extensions: ['pdf'] }], buf.data);
+      if (mode === 'save') {
+        await saveStaffPdf(`disciplinary-admin-${id}.pdf`, buf);
+        return;
       }
+      if (mode === 'print') {
+        await Utils.printToA4(buf, `disciplinary-admin-${id}.pdf`);
+        return;
+      }
+      await API.openPdf(buf.data, `disciplinary-admin-${id}.pdf`);
     };
 
     document.getElementById('disc-add').addEventListener('click', () => {
@@ -1232,7 +1578,7 @@
         <div class="field"><label>Incident Date</label><input type="date" id="disc-date" value="${Utils.today()}"></div>
         <div class="field full"><label>Description</label><textarea id="disc-desc" rows="2"></textarea></div>
         <div class="field full"><label>Action Taken</label><input id="disc-action"></div>
-        <div class="field full"><label><input type="checkbox" id="disc-req" checked> Require worker response in staff portal</label></div>
+        <div class="field full"><label><input type="checkbox" id="disc-req" ${(this.settings?.staff_portal_settings?.require_disciplinary_response !== false) ? 'checked' : ''}> Require worker response in staff portal</label></div>
         <div class="field full"><label><input type="checkbox" id="disc-wa-send" checked> Send WhatsApp notification after save</label></div>
       </div>`, '<button class="btn btn-primary" id="disc-save">Save Record</button>');
       document.getElementById('disc-save').addEventListener('click', async () => {
@@ -1260,13 +1606,9 @@
       });
     });
 
-    el.querySelectorAll('.disc-view').forEach(b => b.addEventListener('click', () => openDiscPdf(b.dataset.id)));
-    el.querySelectorAll('.disc-save-admin').forEach(b => b.addEventListener('click', () => openDiscPdf(b.dataset.id, true)));
-    el.querySelectorAll('.disc-print-admin').forEach(b => b.addEventListener('click', async () => {
-      const buf = await API.getStaffDisciplinaryPdf(parseInt(b.dataset.id, 10), 'admin');
-      if (!buf.success) return Utils.toast(buf.error, 'error');
-      await API.saveFile(`disciplinary-${b.dataset.id}.pdf`, [{ name: 'PDF', extensions: ['pdf'] }], buf.data);
-    }));
+    el.querySelectorAll('.disc-view').forEach(b => b.addEventListener('click', () => openDiscPdf(b.dataset.id, 'view')));
+    el.querySelectorAll('.disc-save-admin').forEach(b => b.addEventListener('click', () => openDiscPdf(b.dataset.id, 'save')));
+    el.querySelectorAll('.disc-print-admin').forEach(b => b.addEventListener('click', () => openDiscPdf(b.dataset.id, 'print')));
     el.querySelectorAll('.disc-wa-admin').forEach(b => b.addEventListener('click', async () => {
       const record = rows.find(x => String(x.id) === b.dataset.id);
       const emp = emps.find(e => String(e.id) === b.dataset.emp);
@@ -1286,12 +1628,12 @@
     document.getElementById('sr-staff').addEventListener('click', async () => {
       const r = await API.getEmployees({});
       const buf = await API.getStaffReportPdf('staff_list', r.data || []);
-      if (buf.success) await API.saveFile('staff-list.pdf', [{ name: 'PDF', extensions: ['pdf'] }], buf.data);
+      await saveStaffPdf('staff-list.pdf', buf);
     });
     document.getElementById('sr-att').addEventListener('click', async () => {
       const r = await API.getStaffAttendance({ from: Utils.daysAgo(30), to: Utils.today() });
       const buf = await API.getStaffReportPdf('attendance', r.data || []);
-      if (buf.success) await API.saveFile('attendance-report.pdf', [{ name: 'PDF', extensions: ['pdf'] }], buf.data);
+      await saveStaffPdf('attendance-report.pdf', buf);
     });
     document.getElementById('sr-att-excel').addEventListener('click', async () => {
       const r = await API.getStaffAttendance({ from: Utils.daysAgo(30), to: Utils.today() });
@@ -1307,7 +1649,7 @@
       const to = Utils.today();
       const r = await API.getPayrollDashboard({ from, to }, this.app.user);
       const buf = await API.getStaffReportPdf('payroll_dashboard', r.data || []);
-      if (buf.success) await API.saveFile('payroll-dashboard.pdf', [{ name: 'PDF', extensions: ['pdf'] }], buf.data);
+      await saveStaffPdf('payroll-dashboard.pdf', buf);
     });
     document.getElementById('sr-payroll-excel').addEventListener('click', async () => {
       const from = Utils.daysAgo(30);
@@ -1402,8 +1744,7 @@
       if (!r.success || !r.data) return Utils.toast(r.error || 'Document not found', 'error');
       const html = r.data.html_content || '';
       if (print) {
-        const pr = await API.printA4(html);
-        Utils.toast(pr.success ? 'Sent to printer' : (pr.error || 'Print failed'), pr.success ? 'success' : 'error');
+        await printStaffA4(html, r.data.title || 'HR Document');
       } else {
         const w = window.open('', '_blank');
         w.document.write(html);

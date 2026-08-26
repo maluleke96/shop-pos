@@ -13,6 +13,7 @@ const SettingsPage = {
 
     el.innerHTML = `
       <div class="page-toolbar"><h3>Settings</h3></div>
+      <p class="muted" style="margin:0 0 12px">Shop name, theme, and backup live here. Printers, PINs, loyalty, staff, and till rules are in <strong>Admin Panel</strong>.</p>
       ${pendingNote}
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
         <div class="card"><div class="card-header"><h3>Shop Details</h3></div><div class="card-body">

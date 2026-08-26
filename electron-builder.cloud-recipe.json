@@ -1,0 +1,46 @@
+{
+  "appId": "com.shoppos.recipe",
+  "productName": "Recipe & Production",
+  "directories": {
+    "output": "dist\\cloud-apps\\recipe",
+    "buildResources": "build"
+  },
+  "files": [
+    "electron/**/*",
+    "src/**/*",
+    "mobile/**/*",
+    "lib/**/*",
+    "package.json"
+  ],
+  "extraMetadata": {
+    "main": "electron/cloud-shell-config-recipe.js",
+    "name": "com.shoppos.recipe"
+  },
+  "win": {
+    "target": [
+      {
+        "target": "nsis",
+        "arch": [
+          "x64"
+        ]
+      },
+      {
+        "target": "portable",
+        "arch": [
+          "x64"
+        ]
+      }
+    ]
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "artifactName": "ShopPOS-Recipe-Setup.${ext}",
+    "shortcutName": "Recipe & Production"
+  },
+  "portable": {
+    "artifactName": "ShopPOS-Recipe-Portable.${ext}"
+  }
+}

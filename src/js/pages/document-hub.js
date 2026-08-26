@@ -329,11 +329,10 @@ const DocumentHubPage = {
 
     // Open WhatsApp first, then put the picture on the clipboard last (so paste keeps the image)
     if (mode === 'group' && r.data?.group_link) {
-      window.open(r.data.group_link, '_blank');
+      if (window.API?.openExternal) await API.openExternal(r.data.group_link);
+      else window.open(r.data.group_link, '_blank', 'noopener,noreferrer');
     } else {
-      for (const u of (r.data?.urls || [])) {
-        if (u.url) window.open(u.url, '_blank');
-      }
+      await Utils.deliverWhatsApp({ success: true, data: { urls: r.data?.urls || [] } });
     }
 
     if (r.data?.file_path) {

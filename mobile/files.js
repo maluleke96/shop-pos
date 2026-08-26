@@ -3,11 +3,8 @@ const capFiles = require('./capacitorFiles');
 const MOBILE_ASSET_PREFIX = 'mobile://';
 
 function bufferToUint8Array(buffer) {
-  if (buffer instanceof Uint8Array) return buffer;
-  if (buffer instanceof ArrayBuffer) return new Uint8Array(buffer);
-  if (Array.isArray(buffer)) return new Uint8Array(buffer);
-  if (buffer?.data) return new Uint8Array(buffer.data);
-  return new Uint8Array(buffer);
+  const { toUint8 } = require('../electron/services/pdf-bytes');
+  return toUint8(buffer);
 }
 
 function mimeForName(name) {

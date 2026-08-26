@@ -3,14 +3,24 @@
  * Writes result JSON to resultPath then notifies waitSab so the main thread can read it.
  */
 const { parentPort, workerData } = require('worker_threads');
-const { Pool } = require('pg');
+const { Pool, types } = require('pg');
 const fs = require('fs');
+
+// node-pg returns int8/bigint as strings by default. That breaks `n + 1` into string
+// concat (e.g. "35"+1 → "351") and corrupts receipt/order counters past bigint range.
+types.setTypeParser(types.builtins.INT8, (val) => {
+  if (val == null) return null;
+  const n = Number(val);
+  if (!Number.isFinite(n)) return val;
+  if (Math.abs(n) > Number.MAX_SAFE_INTEGER) return val;
+  return n;
+});
 
 const pool = new Pool({
   connectionString: workerData.connectionString,
   ssl: workerData.sslDisable ? false : { rejectUnauthorized: false },
-  max: 2,
-  idleTimeoutMillis: 10000
+  max: 4,
+  idleTimeoutMillis: 30000
 });
 
 let txClient = null;
@@ -132,6 +142,16 @@ async function handle(method, payload) {
         }
         throw err;
       }
+    }
+    case 'batch': {
+      // One worker wake / one result file for N statements (huge win for dashboards).
+      const queries = Array.isArray(payload.queries) ? payload.queries : [];
+      const out = [];
+      for (const q of queries) {
+        const m = q.method || 'all';
+        out.push(await handle(m, { sql: q.sql, params: q.params || [] }));
+      }
+      return out;
     }
     default:
       throw new Error(`Unknown worker method: ${method}`);

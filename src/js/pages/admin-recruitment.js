@@ -6,6 +6,14 @@
     AdminPage.sections.splice(5, 0, { id: 'recruitment', label: '💼 Recruitment', icon: 'recruitment' });
   }
 
+  function hireToast(r) {
+    const emp = r?.data?._employee || r?.data?.data?._employee;
+    const pin = r?.data?._generated_pin || emp?._generated_pin;
+    return emp?.employee_code
+      ? `Hired — employee ${emp.employee_code}${pin ? ` · PIN ${pin}` : ''}`
+      : 'Candidate approved for employment';
+  }
+
   const AdminRecruitmentPage = {
     async render(el, admin) {
       this.admin = admin;
@@ -164,7 +172,7 @@
       content.querySelectorAll('.rec-pending-hire').forEach(b => b.addEventListener('click', async () => {
         const r = await API.decideJobCandidate(parseInt(b.dataset.id, 10), 'approved', '', this.app.user);
         if (!r.success) return Utils.toast(r.error, 'error');
-        Utils.toast('Candidate approved for employment', 'success');
+        Utils.toast(hireToast(r), 'success');
         this.render(el, admin);
       }));
       content.querySelectorAll('.rec-pending-reject').forEach(b => b.addEventListener('click', async () => {
@@ -269,11 +277,12 @@
           Utils.hideModal();
           const results = r.data || [];
           let opened = 0;
+          await Utils.deliverWhatsApp({ success: true, data: { urls: results.filter(row => row.url).map(row => row.url) } });
           for (const row of results) {
-            if (row.url) { window.open(row.url, '_blank'); opened += 1; }
+            if (row.url) opened += 1;
             else if (row.error) Utils.toast(`#${row.id}: ${row.error}`, 'error');
           }
-          Utils.toast(opened ? `Opened ${opened} WhatsApp chat(s)` : 'No chats opened — check phones', opened ? 'success' : 'error');
+          if (!opened) Utils.toast('No chats opened — check phones', 'error');
         });
       });
 
@@ -291,7 +300,7 @@
       panel.querySelectorAll('.rec-hire').forEach(b => b.addEventListener('click', async () => {
         const r = await API.decideJobCandidate(parseInt(b.dataset.id, 10), 'approved', '', this.app.user);
         if (!r.success) return Utils.toast(r.error, 'error');
-        Utils.toast('Candidate approved for employment', 'success');
+        Utils.toast(hireToast(r), 'success');
         this.showPostingCandidates(postingId, el, canRequestEmploy, isAdmin);
       }));
       panel.querySelectorAll('.rec-reject').forEach(b => b.addEventListener('click', async () => {
@@ -375,14 +384,16 @@
           const pr = await API.attachJobCandidatePicture(id, pic, this.app.user);
           if (!pr.success) Utils.toast(pr.error || 'Picture upload failed', 'error');
         }
+        let hiredMsg = null;
         if (autoHire && id) {
           await API.requestEmployCandidate(id, this.app.user);
-          await API.decideJobCandidate(id, 'approved', 'Admin direct hire', this.app.user);
+          const hr = await API.decideJobCandidate(id, 'approved', 'Admin direct hire', this.app.user);
+          hiredMsg = hr?.success === false ? (hr.error || 'Hire failed') : hireToast(hr);
         } else if (!isAdmin && id) {
           await API.requestEmployCandidate(id, this.app.user);
         }
         Utils.hideModal();
-        Utils.toast(autoHire ? 'Candidate saved and approved' : 'Candidate saved — admin approval required for hire', 'success');
+        Utils.toast(autoHire ? (hiredMsg || 'Candidate saved and approved') : 'Candidate saved — admin approval required for hire', autoHire && hiredMsg && !String(hiredMsg).startsWith('Hired') ? 'error' : 'success');
         this.showPostingCandidates(postingId, el, canRequestEmploy, isAdmin);
       };
       document.getElementById('jc-save').addEventListener('click', () => saveCandidate(false));
@@ -472,8 +483,7 @@
       document.getElementById('cd-iv-pdf')?.addEventListener('click', async () => {
         const doc = await API.createJobInterviewDoc(candidateId, this.app.user);
         if (!doc.success) return Utils.toast(doc.error, 'error');
-        await API.saveFile(`interview-${candidateId}.pdf`, [{ name: 'PDF', extensions: ['pdf'] }], doc.data.buffer);
-        Utils.toast('Interview PDF saved — share with interviewer, then upload the completed form', 'success');
+        await Utils.savePdfBuffer(`interview-${candidateId}.pdf`, { success: true, data: doc.data.buffer });
         if (doc.data.path) API.openPath(doc.data.path);
       });
 
@@ -497,9 +507,7 @@
           const wr = await API.sendJobCandidateWhatsApp(candidateId, type, this.app.user, body);
           if (!wr.success) return Utils.toast(wr.error, 'error');
           Utils.hideModal();
-          if (wr.data?.url) window.open(wr.data.url, '_blank');
-          else if (c.phone) Utils.openWhatsApp(c.phone, body);
-          Utils.toast('WhatsApp opened', 'success');
+          await Utils.deliverWhatsApp(wr, c.phone, body);
         });
       };
 

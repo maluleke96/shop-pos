@@ -85,6 +85,21 @@ const SoundService = {
     }
   },
 
+  async playScanBeep() {
+    try {
+      const ctx = await this.ensureAudioContext();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'square';
+      osc.frequency.value = 1400;
+      gain.gain.value = 0.12;
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      setTimeout(() => { try { osc.stop(); } catch { /* ignore */ } }, 90);
+    } catch { /* no audio */ }
+  },
+
   async playOnce(settings) {
     if (!this.isEnabled(settings)) return;
     const url = await this.resolveUrl(settings);

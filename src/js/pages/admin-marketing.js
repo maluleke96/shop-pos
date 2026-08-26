@@ -365,18 +365,19 @@ const AdminMarketingPage = {
       ${this.filterBarHtml()}
       <p class="muted">All marketing customers (agent attribution)</p>
       <div class="table-wrap"><table>
-        <thead><tr><th>Name</th><th>Phone</th><th>Agent</th><th>Group</th><th>Source</th><th>Status</th><th>Consent</th><th>Created</th></tr></thead>
+        <thead><tr><th>Name</th><th>Phone</th><th>POS customer</th><th>Agent</th><th>Group</th><th>Source</th><th>Status</th><th>Consent</th><th>Created</th></tr></thead>
         <tbody>
           ${customers.map(c => `<tr>
             <td>${this.esc(c.full_name)}</td>
             <td>${this.esc(c.phone || '—')}</td>
+            <td>${c.customer_id ? '#' + c.customer_id : '—'}</td>
             <td>${this.esc(c.agent_id ?? '—')}</td>
             <td>${this.esc(c.group_tag || '—')}</td>
             <td>${this.esc(c.source || '—')}</td>
             <td><span class="tag">${this.esc(c.conversion_status || '—')}</span></td>
             <td>${c.marketing_consent ? 'Yes' : 'No'}</td>
             <td>${this.esc(c.created_at || '')}</td>
-          </tr>`).join('') || '<tr><td colspan="8" class="muted">No customers</td></tr>'}
+          </tr>`).join('') || '<tr><td colspan="9" class="muted">No customers</td></tr>'}
         </tbody>
       </table></div>`;
     this.bindFilters(el);
@@ -429,10 +430,28 @@ const AdminMarketingPage = {
 
   async renderDesigns(el) {
     const menus = (await this.apiOk(API.mktMenus({ approval_status: 'pending' }, this.actor()), 'Menus failed')) || [];
+    const flyersRes = await API.getFlyers({ approval_status: 'pending' });
+    const flyers = (flyersRes?.success === false ? [] : (flyersRes?.data || flyersRes || [])).filter(f => (f.approval_status || '') === 'pending');
     el.innerHTML = `
       <div class="card" style="margin-bottom:16px"><div class="card-body">
-        <p class="muted" style="margin:0">Approve or reject <strong>menus</strong> here. Flyer / poster approvals also live on the Marketing page.</p>
+        <p class="muted" style="margin:0">Approve flyers and menus here. Flyer Studio remains the full editor.</p>
       </div></div>
+      <h4>Pending flyers</h4>
+      <div class="table-wrap" style="margin-bottom:16px"><table>
+        <thead><tr><th>Title</th><th>Number</th><th>Status</th><th></th></tr></thead>
+        <tbody>
+          ${flyers.map(f => `<tr>
+            <td>${this.esc(f.title || f.name || 'Flyer')}</td>
+            <td>${this.esc(f.flyer_number || f.id)}</td>
+            <td><span class="tag">${this.esc(f.approval_status || f.status || 'pending')}</span></td>
+            <td style="white-space:nowrap">
+              <button type="button" class="btn btn-sm btn-success amkt-fly-ok" data-id="${f.id}">Approve</button>
+              <button type="button" class="btn btn-sm btn-danger amkt-fly-no" data-id="${f.id}">Reject</button>
+            </td>
+          </tr>`).join('') || '<tr><td colspan="4" class="muted">No pending flyers</td></tr>'}
+        </tbody>
+      </table></div>
+      <h4>Pending menus</h4>
       <div class="table-wrap"><table>
         <thead><tr><th>Title</th><th>Type</th><th>Agent</th><th>Submitted</th><th></th></tr></thead>
         <tbody>
@@ -448,6 +467,23 @@ const AdminMarketingPage = {
           </tr>`).join('') || '<tr><td colspan="5" class="muted">No pending menus</td></tr>'}
         </tbody>
       </table></div>`;
+    el.querySelectorAll('.amkt-fly-ok').forEach((b) => {
+      b.addEventListener('click', async () => {
+        const r = await this.apiOk(API.approveFlyer(parseInt(b.dataset.id, 10), this.actor()), 'Approve failed');
+        if (!r) return;
+        this.toast('Flyer approved', 'success');
+        this.render(this.el, this.app);
+      });
+    });
+    el.querySelectorAll('.amkt-fly-no').forEach((b) => {
+      b.addEventListener('click', async () => {
+        const notes = prompt('Rejection notes:') || 'Please revise';
+        const r = await this.apiOk(API.rejectFlyer(parseInt(b.dataset.id, 10), this.actor(), notes), 'Reject failed');
+        if (!r) return;
+        this.toast('Flyer rejected', 'success');
+        this.render(this.el, this.app);
+      });
+    });
     el.querySelectorAll('.amkt-menu-ok').forEach((b) => {
       b.addEventListener('click', async () => {
         const notes = prompt('Approval notes (optional):') || '';

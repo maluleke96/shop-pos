@@ -17,6 +17,10 @@ function requireAdminRole(actor) {
   assertUserActor(actor, ['owner', 'manager']);
 }
 
+function today() {
+  return new Date().toLocaleDateString('en-CA');
+}
+
 function parseJson(v, fb) {
   if (!v) return fb;
   try { return typeof v === 'string' ? JSON.parse(v) : v; } catch { return fb; }
@@ -255,10 +259,36 @@ function requestEmployCandidate(id, actor) {
 function decideJobCandidate(id, decision, notes, actor) {
   requireAdminRole(actor);
   if (!['approved', 'rejected'].includes(decision)) throw new Error('Decision must be approved or rejected');
+  const c = getJobCandidate(id, actor);
+  if (!c) throw new Error('Candidate not found');
+  let hiredEmployee = null;
+  let hireNote = notes || null;
+  if (decision === 'approved') {
+    try {
+      const staff = require('./staff');
+      hiredEmployee = staff.saveEmployee({
+        full_name: c.name,
+        phone: c.phone || null,
+        address: c.address || c.location || null,
+        position: c.posting_title || 'Staff',
+        date_hired: today(),
+        status: 'Active',
+        notes: `Hired from recruitment candidate #${id}${notes ? ` — ${notes}` : ''}`
+      }, actor?.id);
+      hireNote = [notes, hiredEmployee?.employee_code ? `Employee ${hiredEmployee.employee_code} created` : null]
+        .filter(Boolean).join('\n') || null;
+    } catch (err) {
+      hireNote = [notes, `Employee create failed: ${err.message || err}`].filter(Boolean).join('\n');
+    }
+  }
   getDb().prepare(`UPDATE job_candidates SET admin_decision=?, admin_decision_by=?, admin_decision_at=datetime('now'), admin_notes=?, status=?, updated_at=datetime('now') WHERE id=?`)
-    .run(decision, actor?.id || null, notes || null, decision === 'approved' ? 'hired' : 'rejected', id);
-  audit(actor?.id, actor?.username, `candidate_${decision}`, 'job_candidate', id, { notes });
-  return getJobCandidate(id, actor);
+    .run(decision, actor?.id || null, hireNote, decision === 'approved' ? 'hired' : 'rejected', id);
+  audit(actor?.id, actor?.username, `candidate_${decision}`, 'job_candidate', id, { notes: hireNote, employee_id: hiredEmployee?.id });
+  try {
+    buildCandidateWhatsApp(id, decision === 'approved' ? 'hire' : 'reject', actor);
+  } catch (_) { /* WhatsApp optional */ }
+  const out = getJobCandidate(id, actor);
+  return { ...out, _employee: hiredEmployee, _generated_pin: hiredEmployee?._generated_pin };
 }
 
 function scheduleInterview(data, actor) {
@@ -359,7 +389,7 @@ function createInterviewDocument(candidateId, actor) {
   ];
   let y = 32;
   lines.forEach(line => { doc.text(line, 14, y); y += 8; });
-  const buf = Buffer.from(doc.output('arraybuffer'));
+  const buf = require('./pdf-bytes').pdfBytes(doc);
   const filePath = path.join(getDocAssetsDir(), `interview-${candidateId}-${Date.now()}.pdf`);
   fs.writeFileSync(filePath, buf);
   getDb().prepare(`UPDATE job_candidates SET interview_doc_path=?, interview_status='pending_result', updated_at=datetime('now') WHERE id=?`)

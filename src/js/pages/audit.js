@@ -7,6 +7,7 @@ const AuditPage = {
     this.el = el;
     this.from = this.from || Utils.monthStart();
     this.to = this.to || Utils.today();
+    el.innerHTML = `<div class="page-toolbar"><h3>Audit Log</h3></div><p class="muted">Loading…</p>`;
     await this.loadLogs(el);
   },
 

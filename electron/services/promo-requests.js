@@ -49,7 +49,10 @@ function resolveStatusForDates(startDate, endDate, baseStatus) {
   return baseStatus;
 }
 
+let _lastPromoSyncAt = 0;
 function syncPromoStatuses() {
+  // Throttle status sync — called on every products:get otherwise.
+  if (Date.now() - _lastPromoSyncAt < 60 * 1000) return;
   const db = getDb();
   const todayStr = today();
   db.prepare(`
@@ -60,6 +63,7 @@ function syncPromoStatuses() {
     UPDATE product_promo_requests SET status = 'expired', updated_at = datetime('now')
     WHERE status IN ('active', 'approved', 'pending') AND date(end_date) < date(?)
   `).run(todayStr);
+  _lastPromoSyncAt = Date.now();
 }
 
 function mapRequestRow(row) {
@@ -114,9 +118,11 @@ function getActivePromosMap() {
   return map;
 }
 
-function applyPromoPricesToProducts(products) {
-  syncPromoStatuses();
-  const promos = getActivePromosMap();
+function applyPromoPricesToProducts(products, preloadedMap) {
+  const promos = preloadedMap || (() => {
+    syncPromoStatuses();
+    return getActivePromosMap();
+  })();
   return products.map(p => {
     const promo = promos[p.id];
     if (!promo) return p;
@@ -357,6 +363,7 @@ function enrichNonSellingProducts(products) {
 }
 
 module.exports = {
+  today,
   syncPromoStatuses,
   applyPromoPricesToProducts,
   attachPromoStatus,

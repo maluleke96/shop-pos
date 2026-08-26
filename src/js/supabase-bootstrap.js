@@ -39,10 +39,22 @@
     }
   }
 
-  function useCloud() {
-    if (window.__SHOP_POS_USE_SUPABASE__) return true;
+  function hasExplicitRpc() {
     const e = env();
-    if (e.SHOP_POS_SUPABASE_URL || e.SUPABASE_URL || e.RPC_URL || e.SHOP_POS_RPC_URL) return true;
+    return !!(String(e.RPC_URL || e.SHOP_POS_RPC_URL || '').trim());
+  }
+
+  function useCloud() {
+    // Installers (Windows Electron + Android) always use the local database.
+    // Browser URL on Railway stays cloud-only.
+    try {
+      if (window.__SHOP_POS_MOBILE__ || window.Capacitor?.isNativePlatform?.()) return false;
+    } catch (_) { /* ignore */ }
+    try {
+      if (window.__SHOP_POS_LOCAL_INSTALLER__) return false;
+      if (location.protocol === 'file:' || (window.posAPI && !isHostedBrowser())) return false;
+    } catch (_) { /* ignore */ }
+    if (hasExplicitRpc()) return true;
     return isHostedBrowser();
   }
 
@@ -66,7 +78,7 @@
     const clientRequestId = opts && opts.clientRequestId ? String(opts.clientRequestId) : '';
     if (clientRequestId) headers['X-Idempotency-Key'] = clientRequestId;
     const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
-    const timer = ctrl ? setTimeout(() => ctrl.abort(), 25000) : null;
+    const timer = ctrl ? setTimeout(() => ctrl.abort(), 60000) : null;
     let r;
     try {
       const body = { method, args: args || [] };
@@ -109,15 +121,43 @@
     flushing = true;
     try {
       const pending = await q.pendingCount();
-      if (!pending) return;
-      setMsg(`Syncing ${pending} offline change(s)…`);
+      if (!pending) {
+        try { window.ShopPosConnection?.set?.('online', 'Online'); } catch (_) { /* ignore */ }
+        return;
+      }
+      try { window.ShopPosConnection?.set?.('syncing', `Syncing ${pending}…`); } catch (_) { /* ignore */ }
       await q.flush(sendRpc);
+      try { window.ShopPosConnection?.set?.('online', 'Synced'); } catch (_) { /* ignore */ }
+      setTimeout(() => {
+        try { window.ShopPosConnection?.set?.('online', 'Online'); } catch (_) { /* ignore */ }
+      }, 2500);
     } catch (e) {
       console.warn('[offline flush]', e);
+      try { window.ShopPosConnection?.set?.('online', 'Sync paused'); } catch (_) { /* ignore */ }
     } finally {
       flushing = false;
       if (loading) loading.style.display = 'none';
     }
+  }
+
+  function ensureSaleClientRequestId(key, args) {
+    if (!/^sales_complete$/i.test(key)) return { args, clientRequestId: '' };
+    const sale = args && args[0] && typeof args[0] === 'object' ? { ...args[0] } : null;
+    if (!sale) return { args, clientRequestId: '' };
+    let id = String(sale.client_request_id || sale.clientRequestId || '').trim();
+    if (!id) {
+      id =
+        (window.ShopPosOfflineQueue && typeof window.ShopPosOfflineQueue.newRequestId === 'function'
+          ? window.ShopPosOfflineQueue.newRequestId()
+          : null) ||
+        (typeof crypto !== 'undefined' && crypto.randomUUID
+          ? crypto.randomUUID()
+          : 'sale-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10));
+    }
+    sale.client_request_id = id;
+    delete sale.clientRequestId;
+    const nextArgs = [sale, ...(args || []).slice(1)];
+    return { args: nextArgs, clientRequestId: id };
   }
 
   function canQueueMethod(key) {
@@ -149,35 +189,38 @@
     const q = window.ShopPosOfflineQueue;
     const offline = typeof navigator !== 'undefined' && navigator.onLine === false;
     const canQueue = canQueueMethod(key);
+    const prepared = ensureSaleClientRequestId(key, args || []);
+    const callArgs = prepared.args;
+    const saleRequestId = prepared.clientRequestId;
 
     try {
       if (offline && canQueue) {
-        await q.enqueue(key, args || []);
+        const enq = await q.enqueue(key, callArgs, { clientRequestId: saleRequestId });
         return {
           success: true,
           offlineQueued: true,
-          data: { queued: true },
+          data: { queued: true, clientRequestId: enq.clientRequestId },
           message: 'Saved offline — will sync when connection returns'
         };
       }
-      const res = await sendRpc(key, args);
+      const res = await sendRpc(key, callArgs, { clientRequestId: saleRequestId || undefined });
       if (canQueue && looksLikeNetworkFailure(res)) {
-        await q.enqueue(key, args || []);
+        const enq = await q.enqueue(key, callArgs, { clientRequestId: saleRequestId });
         return {
           success: true,
           offlineQueued: true,
-          data: { queued: true },
-          message: 'Network error — queued offline'
+          data: { queued: true, clientRequestId: enq.clientRequestId },
+          message: 'Network error — queued offline (same sale id; will not duplicate)'
         };
       }
       return res;
     } catch (e) {
       if (canQueue) {
-        await q.enqueue(key, args || []);
+        const enq = await q.enqueue(key, callArgs, { clientRequestId: saleRequestId });
         return {
           success: true,
           offlineQueued: true,
-          data: { queued: true },
+          data: { queued: true, clientRequestId: enq.clientRequestId },
           message: 'Network error — queued offline'
         };
       }
@@ -218,7 +261,13 @@
       }
     );
 
-    window.addEventListener('online', () => flushOfflineQueue());
+    window.addEventListener('online', () => {
+      try { window.ShopPosConnection?.set?.('online', 'Back online'); } catch (_) { /* ignore */ }
+      flushOfflineQueue();
+    });
+    window.addEventListener('offline', () => {
+      try { window.ShopPosConnection?.set?.('offline', 'Offline'); } catch (_) { /* ignore */ }
+    });
     setTimeout(() => { flushOfflineQueue().catch(() => {}); }, 0);
 
     if (loading) loading.style.display = 'none';

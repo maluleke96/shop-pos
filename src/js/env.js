@@ -7,4 +7,5 @@ window.__SHOP_POS_ENV__ = {
   RPC_URL: "",
   SHOP_POS_RPC_URL: ""
 };
-window.__SHOP_POS_USE_SUPABASE__ = true;
+/* Electron/Android stay local unless RPC_URL is set. Hosted web still uses /rpc via supabase-bootstrap. */
+window.__SHOP_POS_USE_SUPABASE__ = false;

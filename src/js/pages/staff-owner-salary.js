@@ -12,6 +12,9 @@ const StaffOwnerSalaryPage = {
     this.app = app;
     const currency = app.settings?.currency || 'R';
     const canManage = this.canManage(app.user);
+    if (typeof this.renderShell === 'function') {
+      this.renderShell(el, app, this.data?.rows || [], currency, canManage);
+    }
 
     if (this.tab === 'profile' && canManage) {
       const pr = await API.getOwnerSalaryProfile();
@@ -110,8 +113,8 @@ const StaffOwnerSalaryPage = {
         </select><small class="muted">Links owner to employee record for UIF/tax registration</small></div>
       <div class="field"><label>UIF Registration No.</label><input id="os-uif-reg" value="${p.uif_registration || ''}"></div>
       <div class="field"><label>Tax Number</label><input id="os-tax-no" value="${p.tax_number || ''}"></div>
-      <div class="field"><label><input type="checkbox" id="os-uif-enabled" ${p.uif_enabled !== 0 ? 'checked' : ''}> Auto-calculate UIF on payslip</label></div>
-      <div class="field"><label><input type="checkbox" id="os-paye-enabled" ${p.paye_enabled !== 0 ? 'checked' : ''}> Auto-calculate PAYE on payslip</label></div>
+      <div class="field"><label><input type="checkbox" id="os-uif-enabled" ${Number(p.uif_enabled) === 1 ? 'checked' : ''}> Auto-calculate UIF on payslip <span class="muted">(also needs Payroll → Enable UIF)</span></label></div>
+      <div class="field"><label><input type="checkbox" id="os-paye-enabled" ${Number(p.paye_enabled) === 1 ? 'checked' : ''}> Auto-calculate PAYE on payslip <span class="muted">(also needs Payroll → Enable PAYE)</span></label></div>
       <div class="field full"><label><input type="checkbox" id="os-active" ${p.is_active !== 0 ? 'checked' : ''}> Active</label></div>
     </div>
     <div style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap">
@@ -149,8 +152,8 @@ const StaffOwnerSalaryPage = {
         employee_id: parseInt(document.getElementById('os-employee')?.value, 10) || null,
         uif_registration: document.getElementById('os-uif-reg')?.value.trim() || null,
         tax_number: document.getElementById('os-tax-no')?.value.trim() || null,
-        uif_enabled: document.getElementById('os-uif-enabled')?.checked !== false,
-        paye_enabled: document.getElementById('os-paye-enabled')?.checked !== false,
+        uif_enabled: !!document.getElementById('os-uif-enabled')?.checked,
+        paye_enabled: !!document.getElementById('os-paye-enabled')?.checked,
         is_active: document.getElementById('os-active').checked
       }, this.app.user);
       btn.disabled = false;
@@ -309,11 +312,7 @@ const StaffOwnerSalaryPage = {
     let from = Utils.daysAgo(30), to = Utils.today();
     Utils.bindDateFilter('os-report-filter', (f, t) => { from = f; to = t; });
     el.querySelectorAll('.os-rpt').forEach(b => b.addEventListener('click', async () => {
-      const buf = await API.getOwnerSalaryReportPdf(b.dataset.type, from, to);
-      if (buf.success) {
-        await API.saveFile(`owner-salary-${b.dataset.type}.pdf`, [{ name: 'PDF', extensions: ['pdf'] }], buf.data);
-        Utils.toast('Report downloaded', 'success');
-      } else Utils.toast(buf.error || 'Export failed', 'error');
+      await Utils.savePdfBuffer(`owner-salary-${b.dataset.type}.pdf`, await API.getOwnerSalaryReportPdf(b.dataset.type, from, to));
     }));
     el.querySelectorAll('.os-rpt-print').forEach(b => b.addEventListener('click', () =>
       this.printOwnerReport(b.dataset.type, from, to, profile, currency)));
@@ -349,9 +348,7 @@ const StaffOwnerSalaryPage = {
       <thead>${head}</thead><tbody>${body || '<tr><td colspan="6">No records</td></tr>'}</tbody></table>
       <p style="margin-top:16px;font-weight:bold">Total: ${Utils.formatMoney(totalOutstanding, currency)}</p>
       <p style="color:#888;font-size:11px">Generated ${new Date().toLocaleString()}</p></body></html>`;
-    const pr = await API.printA4(html);
-    if (pr.success) Utils.toast('Report sent to A4 printer', 'success');
-    else Utils.toast(pr.error || 'Print failed — configure A4 printer in Admin', 'error');
+    await Utils.printToA4(html);
   },
 
   async viewPayslip(periodId, currency) {
@@ -376,37 +373,25 @@ const StaffOwnerSalaryPage = {
     document.getElementById('os-modal-close')?.addEventListener('click', Utils.hideModal);
     document.getElementById('os-modal-dl')?.addEventListener('click', () => { Utils.hideModal(); this.downloadPayslip(periodId); });
     document.getElementById('os-modal-print')?.addEventListener('click', async () => {
-      const buf = await API.getOwnerSalaryPayslipPdf(periodId);
-      if (!buf.success) return Utils.toast(buf.error || 'Print failed', 'error');
-      await API.openPdf(buf.data, `owner-payslip-${periodId}.pdf`);
-      Utils.toast('Payslip opened — use Print in PDF viewer', 'success');
+      await Utils.printToA4(await API.getOwnerSalaryPayslipPdf(periodId), `owner-payslip-${periodId}.pdf`);
     });
     document.getElementById('os-modal-wa')?.addEventListener('click', async () => {
       const phone = this.app.settings?.phone || Utils.getCashoutWhatsAppPhone(this.app.settings);
       if (!phone) return Utils.toast('No WhatsApp phone configured in settings', 'error');
       const shop = this.app.settings?.shop_name || 'Shop POS';
       const msg = `${shop} — Owner Payslip ${p.payslip_number}\nPeriod: ${p.period_start} – ${p.period_end}\nGross: ${Utils.formatMoney(p.gross_amount, currency)}\nPAYE: ${Utils.formatMoney(p.paye, currency)} · UIF: ${Utils.formatMoney(p.uif_employee, currency)}\nDraws: ${Utils.formatMoney(p.draw_deductions, currency)}\nNet: ${Utils.formatMoney(net, currency)}\nOutstanding: ${Utils.formatMoney(p.outstanding_balance, currency)}`;
-      if (['owner', 'manager'].includes(this.app.user?.role)) {
-        const waRes = await API.sendWhatsAppMessage({
-          phone, recipient_name: profile?.owner_name, message_type: 'payslip', template_slug: 'payslip',
-          pay_period: `${p.period_start} – ${p.period_end}`, gross_pay: p.gross_amount,
-          paye_amount: p.paye, uif_amount: p.uif_employee, net_pay: net
-        }, this.app.user).catch(() => ({ success: false }));
-        if (waRes.success && waRes.data?.url) {
-          window.open(waRes.data.url, '_blank');
-          return;
-        }
-      }
-      Utils.openWhatsApp(phone, msg);
+      const waRes = await API.sendWhatsAppMessage({
+        phone, recipient_name: profile?.owner_name, message_type: 'payslip', template_slug: 'payslip',
+        pay_period: `${p.period_start} – ${p.period_end}`, gross_pay: p.gross_amount,
+        paye_amount: p.paye, uif_amount: p.uif_employee, net_pay: net, body: msg
+      }, this.app.user).catch(() => ({ success: false }));
+      await Utils.deliverWhatsApp(waRes, phone, msg);
     });
   },
 
   async downloadPayslip(periodId) {
     const buf = await API.getOwnerSalaryPayslipPdf(periodId);
-    if (buf.success) {
-      await API.saveFile(`owner-payslip-${periodId}.pdf`, [{ name: 'PDF', extensions: ['pdf'] }], buf.data);
-      Utils.toast('Payslip saved', 'success');
-    } else Utils.toast(buf.error || 'Failed', 'error');
+    await Utils.savePdfBuffer(`owner-payslip-${periodId}.pdf`, buf);
   }
 };
 window.StaffOwnerSalaryPage = StaffOwnerSalaryPage;

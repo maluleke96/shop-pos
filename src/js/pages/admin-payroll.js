@@ -17,7 +17,8 @@
     const tabs = [
       ['settings', 'Settings'], ['uif', 'UIF'], ['paye', 'PAYE / SARS'], ['sdl', 'SDL'], ['coida', 'COIDA'],
       ['setup', 'Payroll Setup'], ['advances', 'Salary Advances'], ['loans', 'Loans'],
-      ['damage', 'Damage Costs'], ['payroll', 'Run Payroll'], ['compliance', 'Compliance'], ['reports', 'Reports']
+      ['damage', 'Damage Costs'], ['payroll', 'Run Payroll'], ['claims', 'Salary Claims'],
+      ['compliance', 'Compliance'], ['reports', 'Reports']
     ];
     el.innerHTML = `<div class="admin-section"><h3>Payroll & Compliance</h3>
       <p class="muted">UIF, PAYE, SDL, COIDA, salary advances, loans, damage costs, and statutory reports.</p>
@@ -44,6 +45,7 @@
       loans: () => this.renderPayrollLoans(content),
       damage: () => this.renderPayrollDamage(content),
       payroll: () => this.renderPayrollRun(content),
+      claims: () => this.renderSalaryClaims(content),
       compliance: () => this.renderPayrollComplianceTab(content),
       reports: () => this.renderPayrollReports(content)
     };
@@ -82,7 +84,7 @@
   AdminPage.renderPayrollUif = function (el) {
     const s = this.payrollSettings;
     el.innerHTML = `<div class="card"><div class="card-body"><div class="form-grid">
-      <div class="field full"><label><input type="checkbox" id="uif-en" ${s.uif_enabled !== false ? 'checked' : ''}> Enable UIF</label></div>
+      <div class="field full"><label><input type="checkbox" id="uif-en" ${s.uif_enabled ? 'checked' : ''}> Enable UIF <span class="muted">(off until you allow it)</span></label></div>
       <div class="field"><label>UIF Registration Number</label><input id="uif-reg" value="${s.uif_registration_number || ''}"></div>
       <div class="field"><label>Employee UIF Contribution (%)</label><input type="number" id="uif-emp" step="0.01" value="${s.uif_employee_rate ?? 1}"></div>
       <div class="field"><label>Employer UIF Contribution (%)</label><input type="number" id="uif-er" step="0.01" value="${s.uif_employer_rate ?? 1}"></div>
@@ -106,7 +108,7 @@
   AdminPage.renderPayrollPaye = function (el) {
     const s = this.payrollSettings;
     el.innerHTML = `<div class="card"><div class="card-body"><div class="form-grid">
-      <div class="field full"><label><input type="checkbox" id="paye-en" ${s.paye_enabled !== false ? 'checked' : ''}> Enable PAYE</label></div>
+      <div class="field full"><label><input type="checkbox" id="paye-en" ${s.paye_enabled ? 'checked' : ''}> Enable PAYE <span class="muted">(off until you allow it)</span></label></div>
       <div class="field"><label>PAYE Registration Number</label><input id="paye-reg" value="${s.paye_registration_number || ''}"></div>
       <div class="field"><label>Tax Number</label><input id="paye-tax" value="${s.tax_number || ''}"></div>
       <div class="field full"><label><input type="checkbox" id="paye-auto" ${s.paye_auto_calculate !== false ? 'checked' : ''}> Auto Calculate PAYE (SARS 2024/25 brackets)</label></div>
@@ -121,13 +123,19 @@
       paye_auto_calculate: document.getElementById('paye-auto').checked
     }));
     document.getElementById('paye-export').addEventListener('click', () => this.exportPayrollReport('paye'));
-    document.getElementById('paye-annual').addEventListener('click', () => this.exportPayrollReport('paye'));
+    document.getElementById('paye-annual').addEventListener('click', () => {
+      const now = new Date();
+      const startYear = now.getMonth() >= 2 ? now.getFullYear() : now.getFullYear() - 1;
+      const endYear = startYear + 1;
+      const lastFeb = new Date(endYear, 2, 0).getDate();
+      this.exportPayrollReport('paye', `${startYear}-03-01`, `${endYear}-02-${String(lastFeb).padStart(2, '0')}`);
+    });
   };
 
   AdminPage.renderPayrollSdl = function (el) {
     const s = this.payrollSettings;
     el.innerHTML = `<div class="card"><div class="card-body"><div class="form-grid">
-      <div class="field full"><label><input type="checkbox" id="sdl-en" ${s.sdl_enabled !== false ? 'checked' : ''}> Enable SDL</label></div>
+      <div class="field full"><label><input type="checkbox" id="sdl-en" ${s.sdl_enabled ? 'checked' : ''}> Enable SDL <span class="muted">(off until you allow it)</span></label></div>
       <div class="field"><label>SDL Registration Number</label><input id="sdl-reg" value="${s.sdl_registration_number || ''}"></div>
       <div class="field"><label>SDL Rate (%)</label><input type="number" id="sdl-rate" step="0.01" value="${s.sdl_rate ?? 1}"></div>
       <div class="field full"><label><input type="checkbox" id="sdl-auto" ${s.sdl_auto_calculate !== false ? 'checked' : ''}> Auto Calculate SDL</label></div>
@@ -398,10 +406,7 @@
         document.getElementById('pr-gen')?.click();
       }));
       document.querySelectorAll('.pr-pdf').forEach(b => b.addEventListener('click', async () => {
-        const buf = await API.getStaffPayslipPdf(parseInt(b.dataset.id, 10));
-        if (!buf.success) return Utils.toast(buf.error || 'PDF failed', 'error');
-        await API.saveFile(`salary-advice-${b.dataset.id}.pdf`, [{ name: 'PDF', extensions: ['pdf'] }], buf.data);
-        Utils.toast('Payslip / salary advice PDF saved', 'success');
+        await Utils.savePdfBuffer(`salary-advice-${b.dataset.id}.pdf`, await API.getStaffPayslipPdf(parseInt(b.dataset.id, 10)));
       }));
       document.querySelectorAll('.pr-print').forEach(b => b.addEventListener('click', async () => {
         const p = list.find(x => x.id == b.dataset.id);
@@ -427,11 +432,9 @@
         const phone = emp?.phone || emp?.whatsapp || '';
         if (!phone) return Utils.toast('No phone on employee profile', 'error');
         const msg = adviceText(p, emp);
-        const wa = await API.sendWhatsAppMessage({
+        await Utils.deliverWhatsApp(await API.sendWhatsAppMessage({
           phone, recipient_name: emp?.full_name || 'Staff', message_type: 'salary_advice', body: msg
-        }, self.app.user);
-        if (wa.success && wa.data?.url) window.open(wa.data.url, '_blank');
-        else Utils.openWhatsApp(phone, msg);
+        }, self.app.user), phone, msg);
       }));
       document.querySelectorAll('.pr-email').forEach(b => b.addEventListener('click', async () => {
         const p = list.find(x => x.id == b.dataset.id);
@@ -468,6 +471,196 @@
         btn.textContent = 'Generate Payroll';
       }
     });
+  };
+
+  AdminPage.renderSalaryClaims = async function (el) {
+    const currency = this.settings.currency || 'R';
+    const shop = this.settings.shop_name || 'Shop POS';
+    const self = this;
+    const [claimsRes, empsRes] = await Promise.all([
+      API.listSalaryClaims({ limit: 300 }, this.app.user),
+      API.getEmployees({ status: 'Active' })
+    ]);
+    const claims = claimsRes.data || [];
+    const emps = empsRes.data || [];
+    el.innerHTML = `<div class="card" style="margin-bottom:16px"><div class="card-body">
+      <h4>Open salary claim window</h4>
+      <p class="muted">Generate payroll first, then open claims. Employees must claim in Staff Portal <strong>before</strong> the deadline. Approve uses your uploaded admin signature.</p>
+      <div class="form-grid">
+        <div class="field"><label>Period from</label><input type="date" id="sc-from" value="${Utils.daysAgo(30)}"></div>
+        <div class="field"><label>Period to</label><input type="date" id="sc-to" value="${Utils.today()}"></div>
+        <div class="field"><label>Payment date</label><input type="date" id="sc-paydate"></div>
+        <div class="field"><label>Claim opens (optional)</label><input type="datetime-local" id="sc-opens"></div>
+        <div class="field"><label>Claim deadline *</label><input type="datetime-local" id="sc-deadline" required></div>
+      </div>
+      <button class="btn btn-primary" id="sc-open-window" style="margin-top:12px">Create claims from payroll</button>
+      <button class="btn btn-ghost" id="sc-add-one" style="margin-top:12px;margin-left:8px">+ Single claim</button>
+    </div></div>
+    <div class="table-wrap"><table><thead><tr>
+      <th>Employee</th><th>Period</th><th>Net</th><th>Deadline</th><th>Status</th><th>Record</th><th></th>
+    </tr></thead><tbody>
+      ${claims.map(c => `<tr>
+        <td><strong>${Utils.escHtml(c.employee_name || '')}</strong><br><small>${c.employee_code || ''}</small></td>
+        <td>${c.period_start} – ${c.period_end}${c.payment_date ? `<br><small class="muted">Pay: ${c.payment_date}</small>` : ''}</td>
+        <td>${Utils.formatMoney(c.amount || c.net_amount, currency)}</td>
+        <td>${Utils.formatDateTime(c.claim_deadline)}</td>
+        <td><span class="tag">${c.status}</span>
+          ${c.claimed_at ? `<br><small>Claimed ${Utils.formatDateTime(c.claimed_at)}</small>` : ''}
+          ${c.approved_at ? `<br><small>Approved ${Utils.formatDateTime(c.approved_at)}</small>` : ''}
+        </td>
+        <td><small>#${c.id}</small></td>
+        <td style="white-space:nowrap">
+          ${['claimed','open'].includes(c.status) ? `<button class="btn btn-sm btn-success sc-approve" data-id="${c.id}">Approve</button>
+            <button class="btn btn-sm btn-warning sc-reject" data-id="${c.id}">Reject</button>` : ''}
+          ${c.status === 'approved' ? `<button class="btn btn-sm btn-success sc-paid" data-id="${c.id}">Mark Paid</button>` : ''}
+          <button class="btn btn-sm btn-ghost sc-edit" data-id="${c.id}">Edit</button>
+          ${c.status !== 'paid' ? `<button class="btn btn-sm btn-danger sc-del" data-id="${c.id}">Delete</button>` : ''}
+          <button class="btn btn-sm btn-ghost sc-pdf" data-id="${c.id}">PDF</button>
+          <button class="btn btn-sm btn-ghost sc-print" data-id="${c.id}">Print</button>
+          <button class="btn btn-sm btn-ghost sc-wa" data-id="${c.id}">WhatsApp</button>
+        </td>
+      </tr>`).join('') || '<tr><td colspan="7" class="muted">No salary claims yet</td></tr>'}
+    </tbody></table></div>`;
+
+    const toIsoLocal = (v) => {
+      if (!v) return null;
+      try { return new Date(v).toISOString(); } catch { return v; }
+    };
+
+    document.getElementById('sc-open-window')?.addEventListener('click', async () => {
+      const from = document.getElementById('sc-from').value;
+      const to = document.getElementById('sc-to').value;
+      const deadline = document.getElementById('sc-deadline').value;
+      if (!from || !to || !deadline) return Utils.toast('Period and claim deadline required', 'error');
+      const r = await API.createSalaryClaimsFromPayroll(
+        from, to, toIsoLocal(deadline),
+        document.getElementById('sc-paydate').value || null,
+        toIsoLocal(document.getElementById('sc-opens').value),
+        self.app.user
+      );
+      if (!r.success) return Utils.toast(r.error || 'Failed', 'error');
+      const n = Array.isArray(r.data) ? r.data.length : 0;
+      Utils.toast(n ? `Opened ${n} salary claim(s)` : 'No new claims (already open or no payroll)', 'success');
+      self.renderSalaryClaims(el);
+    });
+
+    document.getElementById('sc-add-one')?.addEventListener('click', () => {
+      Utils.showModal('New salary claim', `
+        <div class="form-grid">
+          <div class="field"><label>Employee</label><select id="sc1-emp">${emps.map(e => `<option value="${e.id}">${e.full_name}</option>`).join('')}</select></div>
+          <div class="field"><label>Period from</label><input type="date" id="sc1-from" value="${Utils.daysAgo(30)}"></div>
+          <div class="field"><label>Period to</label><input type="date" id="sc1-to" value="${Utils.today()}"></div>
+          <div class="field"><label>Net amount</label><input type="number" step="0.01" id="sc1-amt" value="0"></div>
+          <div class="field"><label>Payment date</label><input type="date" id="sc1-pay"></div>
+          <div class="field"><label>Claim deadline *</label><input type="datetime-local" id="sc1-dead"></div>
+          <div class="field full"><label>Admin notes</label><input id="sc1-notes"></div>
+        </div>`,
+        '<button class="btn btn-primary" id="sc1-save">Save claim</button>');
+      document.getElementById('sc1-save')?.addEventListener('click', async () => {
+        const dead = document.getElementById('sc1-dead').value;
+        if (!dead) return Utils.toast('Deadline required', 'error');
+        const amt = parseFloat(document.getElementById('sc1-amt').value) || 0;
+        const r = await API.saveSalaryClaim({
+          employee_id: parseInt(document.getElementById('sc1-emp').value, 10),
+          period_start: document.getElementById('sc1-from').value,
+          period_end: document.getElementById('sc1-to').value,
+          payment_date: document.getElementById('sc1-pay').value || null,
+          claim_deadline: toIsoLocal(dead),
+          net_amount: amt, amount: amt, gross_amount: amt,
+          admin_notes: document.getElementById('sc1-notes').value.trim() || null,
+          status: 'open'
+        }, self.app.user);
+        if (!r.success) return Utils.toast(r.error || 'Save failed', 'error');
+        Utils.hideModal();
+        Utils.toast('Claim created', 'success');
+        self.renderSalaryClaims(el);
+      });
+    });
+
+    el.querySelectorAll('.sc-approve').forEach(b => b.addEventListener('click', async () => {
+      const notes = prompt('Approval notes (optional)') || '';
+      const r = await API.approveSalaryClaim(parseInt(b.dataset.id, 10), notes, self.app.user);
+      if (!r.success) return Utils.toast(r.error || 'Approve failed — upload admin signature in Operations', 'error');
+      Utils.toast('Claim approved (signature stamped)', 'success');
+      self.renderSalaryClaims(el);
+    }));
+    el.querySelectorAll('.sc-reject').forEach(b => b.addEventListener('click', async () => {
+      const notes = prompt('Rejection reason') || '';
+      const r = await API.rejectSalaryClaim(parseInt(b.dataset.id, 10), notes, self.app.user);
+      if (!r.success) return Utils.toast(r.error || 'Reject failed', 'error');
+      Utils.toast('Claim rejected', 'success');
+      self.renderSalaryClaims(el);
+    }));
+    el.querySelectorAll('.sc-paid').forEach(b => b.addEventListener('click', async () => {
+      const r = await API.markSalaryClaimPaid(parseInt(b.dataset.id, 10), self.app.user);
+      if (!r.success) return Utils.toast(r.error || 'Failed', 'error');
+      Utils.toast('Marked paid', 'success');
+      self.renderSalaryClaims(el);
+    }));
+    el.querySelectorAll('.sc-del').forEach(b => b.addEventListener('click', async () => {
+      if (!confirm('Delete this claim record? Paid claims cannot be deleted.')) return;
+      const r = await API.deleteSalaryClaim(parseInt(b.dataset.id, 10), self.app.user);
+      if (!r.success) return Utils.toast(r.error || 'Delete failed', 'error');
+      Utils.toast('Claim deleted', 'success');
+      self.renderSalaryClaims(el);
+    }));
+    el.querySelectorAll('.sc-edit').forEach(b => b.addEventListener('click', () => {
+      const c = claims.find(x => x.id == b.dataset.id);
+      if (!c) return;
+      Utils.showModal('Edit salary claim', `
+        <div class="form-grid">
+          <div class="field"><label>Net amount</label><input type="number" step="0.01" id="sce-amt" value="${Number(c.amount || c.net_amount) || 0}"></div>
+          <div class="field"><label>Claim deadline</label><input type="datetime-local" id="sce-dead"></div>
+          <div class="field"><label>Payment date</label><input type="date" id="sce-pay" value="${c.payment_date || ''}"></div>
+          <div class="field full"><label>Admin notes</label><input id="sce-notes" value="${Utils.escHtml(c.admin_notes || '')}"></div>
+        </div>`,
+        '<button class="btn btn-primary" id="sce-save">Save</button>');
+      if (c.claim_deadline) {
+        try {
+          const x = new Date(c.claim_deadline);
+          x.setMinutes(x.getMinutes() - x.getTimezoneOffset());
+          document.getElementById('sce-dead').value = x.toISOString().slice(0, 16);
+        } catch (_) { /* ignore */ }
+      }
+      document.getElementById('sce-save')?.addEventListener('click', async () => {
+        const amt = parseFloat(document.getElementById('sce-amt').value) || 0;
+        const dead = document.getElementById('sce-dead').value;
+        const r = await API.saveSalaryClaim({
+          id: c.id,
+          employee_id: c.employee_id,
+          period_start: c.period_start,
+          period_end: c.period_end,
+          payroll_id: c.payroll_id,
+          payment_date: document.getElementById('sce-pay').value || null,
+          claim_deadline: dead ? toIsoLocal(dead) : c.claim_deadline,
+          claim_opens_at: c.claim_opens_at,
+          net_amount: amt, amount: amt, gross_amount: c.gross_amount || amt,
+          admin_notes: document.getElementById('sce-notes').value.trim() || null,
+          status: c.status
+        }, self.app.user);
+        if (!r.success) return Utils.toast(r.error || 'Save failed', 'error');
+        Utils.hideModal();
+        Utils.toast('Claim updated', 'success');
+        self.renderSalaryClaims(el);
+      });
+    }));
+    el.querySelectorAll('.sc-pdf').forEach(b => b.addEventListener('click', async () => {
+      await Utils.savePdfBuffer(`salary-claim-${b.dataset.id}.pdf`, await API.getSalaryClaimPdf(parseInt(b.dataset.id, 10), self.app.user));
+    }));
+    el.querySelectorAll('.sc-print').forEach(b => b.addEventListener('click', async () => {
+      await Utils.printToA4(
+        await API.getSalaryClaimPdf(parseInt(b.dataset.id, 10), self.app.user),
+        `salary-claim-${b.dataset.id}.pdf`
+      );
+    }));
+    el.querySelectorAll('.sc-wa').forEach(b => b.addEventListener('click', async () => {
+      const c = claims.find(x => x.id == b.dataset.id);
+      if (!c?.phone) return Utils.toast('No phone on employee profile', 'error');
+      const msg = `${shop} — Salary Claim\nEmployee: ${c.employee_name}\nPeriod: ${c.period_start} to ${c.period_end}\nAmount: ${Utils.formatMoney(c.amount || c.net_amount, currency)}\nStatus: ${c.status}\nDeadline: ${c.claim_deadline}\n(Full signed PDF available in Staff Portal / Admin)`;
+      await Utils.deliverWhatsApp(await API.sendWhatsAppMessage({
+        phone: c.phone, recipient_name: c.employee_name, message_type: 'salary_advice', body: msg
+      }, self.app.user), c.phone, msg);
+    }));
   };
 
   AdminPage.renderPayrollComplianceTab = async function (el) {
@@ -564,10 +757,6 @@
   AdminPage.exportPayrollReport = async function (type, from, to) {
     from = from || Utils.daysAgo(30);
     to = to || Utils.today();
-    const buf = await API.getPayrollCompliancePdf(type, from, to);
-    if (buf.success) {
-      await API.saveFile(`${type}-report-${from}.pdf`, [{ name: 'PDF', extensions: ['pdf'] }], buf.data);
-      Utils.toast('Report downloaded', 'success');
-    } else Utils.toast(buf.error || 'Export failed', 'error');
+    await Utils.savePdfBuffer(`${type}-report-${from}.pdf`, await API.getPayrollCompliancePdf(type, from, to));
   };
 })();

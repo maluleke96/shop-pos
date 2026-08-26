@@ -61,8 +61,17 @@ const Export = {
       const r = window.API?.exportPrint
         ? await API.exportPrint(title, safeHeaders, safeRows, company || {})
         : await window.posAPI.export_print(title, safeHeaders, safeRows, company || {});
+      const a4 =
+        (typeof App !== 'undefined' && App?.settings?.printer_settings?.invoice_printer) ||
+        (typeof Utils !== 'undefined' && Utils.getLocalDeviceSettings?.()?.invoice_printer) ||
+        '';
       if (r?.success === false) Utils.toast(r.error || 'Print failed', 'error');
-      else if (r?.preview || r?.success) Utils.toast('Print preview opened', 'success');
+      else if (r?.preview || r?.fallback) {
+        Utils.toast(a4
+          ? `Could not reach ${a4} — opened print dialog`
+          : 'No A4 printer connected — opened dialog. Set one in Admin → Printer Setup → A4 Printer',
+          a4 ? 'info' : 'warning');
+      } else if (r?.success) Utils.toast((r?.printer || a4) ? `Sent to A4 printer: ${r.printer || a4}` : 'Print sent', 'success');
       return r;
     } catch (err) {
       Utils.toast(err.message || 'Print failed', 'error');

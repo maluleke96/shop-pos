@@ -12,6 +12,25 @@ let _schemaReady = false;
 function ensureSchema() {
   if (_schemaReady) return;
   const db = getDb();
+  // Postgres: columns already exist after import — skip ALTER storm (7 failed round-trips).
+  try {
+    const pg = require('../database/pg-db');
+    if (pg.isPgMode?.()) {
+      const cols = db.prepare(`
+        SELECT column_name AS name FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'products'
+      `).all();
+      const have = new Set((cols || []).map((c) => String(c.name || c.NAME || '').toLowerCase()));
+      if (
+        have.has('production_capacity') &&
+        have.has('limiting_ingredient_name') &&
+        have.has('production_capacity_updated_at')
+      ) {
+        _schemaReady = true;
+        return;
+      }
+    }
+  } catch (_) { /* fall through */ }
   for (const sql of [
     'ALTER TABLE products ADD COLUMN production_capacity REAL DEFAULT 0',
     'ALTER TABLE products ADD COLUMN limiting_ingredient_id INTEGER',
@@ -33,11 +52,33 @@ function pauseRefresh() {
 function resumeRefresh(opts = {}) {
   _refreshPaused = Math.max(0, _refreshPaused - 1);
   if (_refreshPaused === 0 && opts.refresh !== false) {
+    const seenProducts = new Set();
     if (opts.ingredientIds?.length) {
-      for (const id of opts.ingredientIds) refreshAffectedByIngredient(id);
-    } else if (opts.productIds?.length) {
-      for (const id of opts.productIds) refreshProductCapacity(id);
-    } else {
+      for (const id of opts.ingredientIds) {
+        const results = refreshAffectedByIngredient(id) || [];
+        for (const r of results) {
+          if (r?.product_id != null) seenProducts.add(Number(r.product_id));
+        }
+      }
+    }
+    if (opts.productIds?.length) {
+      for (const id of opts.productIds) {
+        const pid = Number(id);
+        if (seenProducts.has(pid)) continue;
+        const row = getDb().prepare(
+          'SELECT has_recipe, production_mode FROM products WHERE id = ?'
+        ).get(pid);
+        // Finished-goods / non-recipe SKUs need no meal capacity recalc
+        // Note: PG may return has_recipe as string "0"/"1" — never use bare truthiness
+        if (!Number(row?.has_recipe) && row?.production_mode !== 'make_to_stock') {
+          seenProducts.add(pid);
+          continue;
+        }
+        refreshProductCapacity(pid);
+        seenProducts.add(pid);
+      }
+    }
+    if (!opts.ingredientIds?.length && !opts.productIds?.length) {
       refreshAllMealCapacities();
     }
   }
@@ -120,7 +161,17 @@ function calculateProductCapacity(productId, opts = {}) {
     const rule = inventory.normalizeIncludeRule(item.include_rule);
     const optional = rule !== 'always' && !!String(item.option_name || '').trim();
     const isPrimary = Number(item.is_primary) === 1;
-    const ing = db.prepare('SELECT * FROM products WHERE id = ?').get(item.ingredient_product_id);
+    // Recipe JOIN already carries ingredient stock — avoid per-ingredient SELECT round-trips.
+    const hasIng = item.ingredient_product_id != null && item.ingredient_name != null;
+    const ing = hasIng
+      ? {
+          id: item.ingredient_product_id,
+          name: item.ingredient_name,
+          stock_quantity: Number(item.ingredient_stock_quantity ?? item.stock_quantity) || 0,
+          stock_unit: item.stock_unit || item.ingredient_unit || item.ingredient_stock_unit || 'each',
+          unit: item.product_unit || item.ingredient_stock_unit || 'each'
+        }
+      : null;
     if (!ing) {
       breakdown.push({
         ingredient_product_id: item.ingredient_product_id,
@@ -378,7 +429,7 @@ function refreshAffectedByIngredient(ingredientProductId) {
   // Also refresh if this product itself is a meal with a recipe
   const self = db.prepare('SELECT id, has_recipe FROM products WHERE id = ?').get(id);
   const ids = new Set(rows.map(r => r.product_id));
-  if (self?.has_recipe) ids.add(self.id);
+  if (self && Number(self.has_recipe)) ids.add(self.id);
   const results = [];
   for (const pid of ids) {
     results.push(refreshProductCapacity(pid));
@@ -402,7 +453,34 @@ function refreshAllMealCapacities() {
 /** Enrich POS product rows with production capacity fields. */
 function applyCapacityToProducts(products) {
   ensureSchema();
-  return (products || []).map(p => {
+  const list = products || [];
+  // Refresh uncached recipe meals once up front (persists to products.*) so list map stays O(1).
+  const need = list.filter(
+    (p) =>
+      p?.has_recipe &&
+      p.production_mode !== 'make_to_stock' &&
+      (p.production_capacity_updated_at == null || p.production_capacity_updated_at === '')
+  );
+  for (const p of need) {
+    try {
+      refreshProductCapacity(p.id);
+      // Pull refreshed fields onto the in-memory row so map below does not re-hit DB.
+      const row = getDb()
+        .prepare(
+          `SELECT production_capacity, limiting_ingredient_name, production_oos_reason, production_capacity_updated_at
+           FROM products WHERE id = ?`
+        )
+        .get(p.id);
+      if (row) {
+        p.production_capacity = row.production_capacity;
+        p.limiting_ingredient_name = row.limiting_ingredient_name;
+        p.production_oos_reason = row.production_oos_reason;
+        p.production_capacity_updated_at = row.production_capacity_updated_at;
+      }
+    } catch (_) { /* keep row as-is */ }
+  }
+
+  return list.map((p) => {
     if (!p?.has_recipe) return p;
     if (p.production_mode === 'make_to_stock') {
       return {
@@ -412,22 +490,12 @@ function applyCapacityToProducts(products) {
         production_display_unit: 'meals'
       };
     }
-    let capacity = Number(p.production_capacity);
-    let limiting = p.limiting_ingredient_name;
-    let reason = p.production_oos_reason;
-    // Lazy refresh if never computed
-    if (p.production_capacity_updated_at == null && p.has_recipe) {
-      const cap = refreshProductCapacity(p.id);
-      if (cap) {
-        capacity = cap.max_meals;
-        limiting = cap.limiting_ingredient_name;
-        reason = cap.out_of_stock_reason;
-      }
-    }
+    const capacity = Number(p.production_capacity);
+    const limiting = p.limiting_ingredient_name;
+    const reason = p.production_oos_reason;
     const meals = Math.max(0, Math.floor(capacity || 0));
     return {
       ...p,
-      // Keep raw stock_quantity for Inventory/sync — POS uses available_meals
       finished_stock_quantity: p.stock_quantity,
       available_meals: meals,
       production_capacity: meals,
@@ -461,10 +529,41 @@ function validateSaleCapacity(items, opts = {}) {
   // Aggregate by product + modifier set (same meal with/without pap are different)
   const needByKey = new Map();
   for (const item of items || []) {
-    if (!item?.product_id || item.combo_id) continue;
-    const pid = Number(item.product_id);
     const qty = Number(item.quantity) || 0;
     if (!(qty > 0)) continue;
+
+    // Expand combos into component product lines for capacity / stock checks
+    if (item.combo_id) {
+      let comboItems = item.combo_items;
+      if (!comboItems || !comboItems.length) {
+        try {
+          const combo = require('./combos').getCombo(item.combo_id);
+          comboItems = combo?.items || [];
+        } catch (_) {
+          comboItems = [];
+        }
+      }
+      for (const ci of comboItems) {
+        const pid = Number(ci.product_id);
+        if (!pid) continue;
+        const need = qty * (Number(ci.quantity) || 1);
+        const key = `${pid}::combo::${item.combo_id}`;
+        const prev = needByKey.get(key);
+        if (prev) prev.need += need;
+        else {
+          needByKey.set(key, {
+            productId: pid,
+            need,
+            modifiers: [],
+            hasSubstitution: false
+          });
+        }
+      }
+      continue;
+    }
+
+    if (!item?.product_id) continue;
+    const pid = Number(item.product_id);
     const mods = modifiersFromSaleItem(item);
     const modKey = [...inventory.selectedModifierNames(mods)].sort().join('|');
     const subKey = item.substitutions ? JSON.stringify(item.substitutions) : '';
@@ -483,16 +582,21 @@ function validateSaleCapacity(items, opts = {}) {
 
   for (const group of needByKey.values()) {
     const { productId, need, modifiers } = group;
-    const product = db.prepare('SELECT * FROM products WHERE id = ?').get(productId);
+    const product = db.prepare(`
+      SELECT id, name, stock_quantity, has_recipe, production_mode,
+        production_capacity, production_capacity_updated_at,
+        limiting_ingredient_name, production_oos_reason
+      FROM products WHERE id = ?
+    `).get(productId);
     if (!product) continue;
-    if (!product.has_recipe) {
-      if ((product.stock_quantity || 0) < need) {
+    if (!Number(product.has_recipe)) {
+      if ((Number(product.stock_quantity) || 0) < need) {
         throw new Error(`Sale Blocked — ${product.name} has insufficient stock. Available: ${product.stock_quantity}`);
       }
       continue;
     }
     if (product.production_mode === 'make_to_stock') {
-      if ((product.stock_quantity || 0) < need) {
+      if ((Number(product.stock_quantity) || 0) < need) {
         throw new Error(`Sale Blocked — ${product.name} finished stock is insufficient. Available: ${product.stock_quantity}`);
       }
       continue;
@@ -504,7 +608,24 @@ function validateSaleCapacity(items, opts = {}) {
       continue;
     }
 
-    const cap = calculateProductCapacity(productId, { selectedModifiers: modifiers });
+    // Prefer fresh persisted capacity when cart has no modifiers (avoids full BOM recalc)
+    const hasMods = (modifiers || []).length > 0;
+    let cap;
+    if (!hasMods) {
+      const updatedAt = product.production_capacity_updated_at
+        ? new Date(product.production_capacity_updated_at).getTime()
+        : 0;
+      const ageOk = updatedAt > 0 && (Date.now() - updatedAt) < 5 * 60 * 1000;
+      if (ageOk && product.production_capacity != null) {
+        cap = {
+          max_meals: Math.max(0, Math.floor(Number(product.production_capacity) || 0)),
+          limiting_ingredient_name: product.limiting_ingredient_name || null
+        };
+      }
+    }
+    if (!cap) {
+      cap = calculateProductCapacity(productId, { selectedModifiers: modifiers });
+    }
     lines.push({ product_id: productId, need, ...cap });
     if (cap.max_meals < need) {
       const reason = cap.limiting_ingredient_name
@@ -522,18 +643,79 @@ function getAvailabilitySnapshot(productId) {
   return calculateProductCapacity(productId);
 }
 
-function getLiveProductionDashboard() {
+function getLiveProductionDashboard(opts = {}) {
   ensureSchema();
   const db = getDb();
-  // Refresh stale cache lightly: recompute all meals
-  const caps = refreshAllMealCapacities().filter(Boolean);
-  const meals = caps.filter(c => c.mode === 'make_to_order' || c.mode === 'make_to_stock');
+  // Prefer persisted capacity on products. Only refresh meals with missing/stale cache.
+  // Full refreshAllMealCapacities() on every dashboard open caused ~18s / 50+ queries.
+  const maxAgeMs = opts.maxAgeMs != null ? Number(opts.maxAgeMs) : 5 * 60 * 1000;
+  const mealRows = Array.isArray(opts.mealRows)
+    ? opts.mealRows
+    : db.prepare(`
+    SELECT id, name, production_mode, stock_quantity, has_recipe,
+      production_capacity, limiting_ingredient_id, limiting_ingredient_name,
+      production_oos, production_oos_reason, production_breakdown_json,
+      production_capacity_updated_at
+    FROM products
+    WHERE is_active = 1
+      AND (has_recipe = 1 OR id IN (SELECT DISTINCT product_id FROM product_recipe_items))
+      AND (item_type IS NULL OR item_type != 'ingredient')
+  `).all();
+
+  const caps = [];
+  for (const p of mealRows) {
+    const updatedMs = p.production_capacity_updated_at
+      ? Date.parse(String(p.production_capacity_updated_at).replace(' ', 'T') + 'Z') ||
+        Date.parse(String(p.production_capacity_updated_at)) ||
+        0
+      : 0;
+    const stale = !updatedMs || (Date.now() - updatedMs) > maxAgeMs;
+    if (stale && !opts.skipRefresh) {
+      const fresh = refreshProductCapacity(p.id);
+      if (fresh) caps.push(fresh);
+      continue;
+    }
+    let breakdown = [];
+    let remaining = [];
+    let restock = null;
+    let mode = p.production_mode === 'make_to_stock' ? 'make_to_stock' : 'make_to_order';
+    try {
+      const parsed = JSON.parse(p.production_breakdown_json || '{}');
+      breakdown = parsed.breakdown || [];
+      remaining = parsed.remaining_by_ingredient || [];
+      restock = parsed.restock_recommendation || null;
+      if (parsed.mode) mode = parsed.mode;
+    } catch (_) { /* ignore */ }
+    const maxMeals = Math.max(0, Math.floor(Number(p.production_capacity) || 0));
+    caps.push({
+      product_id: p.id,
+      product_name: p.name,
+      max_meals: maxMeals,
+      available_meals: maxMeals,
+      limiting_ingredient_id: p.limiting_ingredient_id,
+      limiting_ingredient: p.limiting_ingredient_name,
+      limiting_ingredient_name: p.limiting_ingredient_name,
+      out_of_stock: !!p.production_oos || maxMeals <= 0,
+      out_of_stock_reason: p.production_oos_reason,
+      breakdown,
+      remaining_by_ingredient: remaining,
+      restock_recommendation: restock,
+      mode
+    });
+  }
+
+  const meals = caps.filter(c => c.mode === 'make_to_order' || c.mode === 'make_to_stock' || c.mode === 'retail');
 
   const totalMealsAvailable = meals.reduce((s, c) => s + (c.max_meals || 0), 0);
   const outOfStock = meals.filter(c => c.out_of_stock);
   const almostOut = meals.filter(c => !c.out_of_stock && c.max_meals > 0 && c.max_meals <= 5);
-  const lowIngredients = db.prepare(`
-    SELECT id, name, stock_quantity, stock_unit, unit, min_stock
+
+  // One query for low + out ingredient lists (or reuse preloaded rows from recipe dashboard batch)
+  const ingredientRows = Array.isArray(opts.ingredientRows)
+    ? opts.ingredientRows
+    : db.prepare(`
+    SELECT id, name, stock_quantity, stock_unit, unit, min_stock,
+      CASE WHEN stock_quantity <= 0 THEN 1 ELSE 0 END AS is_out
     FROM products
     WHERE is_active = 1
       AND (
@@ -541,21 +723,11 @@ function getLiveProductionDashboard() {
         OR id IN (SELECT ingredient_product_id FROM product_recipe_items)
       )
       AND stock_quantity <= COALESCE(NULLIF(min_stock, 0), 5)
-    ORDER BY stock_quantity ASC
-    LIMIT 40
+    ORDER BY stock_quantity ASC, name
+    LIMIT 80
   `).all();
-  const outIngredients = db.prepare(`
-    SELECT id, name, stock_quantity, stock_unit, unit
-    FROM products
-    WHERE is_active = 1
-      AND (
-        item_type = 'ingredient'
-        OR id IN (SELECT ingredient_product_id FROM product_recipe_items)
-      )
-      AND stock_quantity <= 0
-    ORDER BY name COLLATE NOCASE
-    LIMIT 40
-  `).all();
+  const outIngredients = ingredientRows.filter((r) => Number(r.is_out) === 1).slice(0, 40);
+  const lowIngredients = ingredientRows.slice(0, 40);
 
   const restock = meals
     .filter(c => c.restock_recommendation?.purchase?.length)
@@ -602,20 +774,33 @@ function getLiveProductionDashboard() {
         limiting_ingredient: c.limiting_ingredient_name
       })),
     ingredients_running_low: lowIngredients,
-    ingredients_out_of_stock: outIngredients,
-    meals_almost_out: almostOut.map(c => ({
+    ingredients_out: outIngredients,
+    almost_out_meals: almostOut.map(c => ({
+      product_id: c.product_id,
       name: c.product_name,
       available_meals: c.max_meals,
       limiting_ingredient: c.limiting_ingredient_name
     })),
+    out_of_stock_meals: outOfStock.map(c => ({
+      product_id: c.product_id,
+      name: c.product_name,
+      reason: c.out_of_stock_reason
+    })),
+    restock_recommendations: restock,
+    ingredients_supporting_meals: Object.values(byIngredient),
+    remaining_capacity_by_ingredient: Object.values(byIngredient),
     products_disabled: outOfStock.map(c => ({
       name: c.product_name,
       reason: c.out_of_stock_reason,
       limiting_ingredient: c.limiting_ingredient_name,
       remaining_by_ingredient: c.remaining_by_ingredient
     })),
-    restock_recommendations: restock,
-    remaining_capacity_by_ingredient: Object.values(byIngredient),
+    meals_almost_out: almostOut.map(c => ({
+      name: c.product_name,
+      available_meals: c.max_meals,
+      limiting_ingredient: c.limiting_ingredient_name
+    })),
+    ingredients_out_of_stock: outIngredients,
     updated_at: new Date().toISOString()
   };
 }
