@@ -345,7 +345,6 @@ function getDashboard(token, filters = {}) {
   const recent = dbAll(`SELECT s.id, s.order_number, s.receipt_number, s.total, s.created_at, s.branch_id, s.order_source
     FROM sales s WHERE s.status = 'completed' AND s.created_at >= ? AND s.created_at < ?${bc.sql}
     ORDER BY s.id DESC LIMIT 8`, [range.from, range.to, ...bc.params]);
-  const obc = onlineBranchClause(user, 'o');
   const recentOnline = dbAll(`SELECT o.id, o.order_number, o.total, o.created_at, o.branch_id, o.status, o.order_source
     FROM online_orders_local o
     WHERE o.created_at >= ? AND o.created_at < ? AND o.status IN ('pending','accepted')${obc.sql}
