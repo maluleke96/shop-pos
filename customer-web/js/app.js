@@ -163,6 +163,7 @@ const OrderApp = {
         localStorage.setItem('order_branch', id);
         this.view = this.token ? 'home' : 'welcome';
         await this.loadMenu();
+        this.render();
         return;
       }
       if (act === 'open-product') {
