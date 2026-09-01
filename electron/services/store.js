@@ -2104,6 +2104,7 @@ function completeSale(saleData, actorId, actorName, actorRole) {
   const items = Array.isArray(saleData.items) ? saleData.items : [];
   if (!items.length) throw new Error('Sale must include at least one item');
 
+  const discountAuthorized = !!(saleData.discount_authorized || saleData.discount_approver_id);
   const pricedItems = [];
   let undercharge = 0;
 
@@ -2167,7 +2168,6 @@ function completeSale(saleData, actorId, actorName, actorRole) {
     });
   }
 
-  const discountAuthorized = !!(saleData.discount_authorized || saleData.discount_approver_id);
   if (undercharge > 0.02 && !discountAuthorized) {
     throw new Error('Line prices do not match catalog — manager authorization required for discount');
   }
