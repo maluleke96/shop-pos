@@ -988,6 +988,9 @@ getSettingsParsed._onlineCache = null;
 
 function saveJsonSetting(key, value, actorId, actorName) {
   saveSettings({ [key]: JSON.stringify(value) }, actorId, actorName);
+  if (key === 'payment_settings') {
+    try { require('./online-ordering').syncPaymentMethodsFromPos(value); } catch (_) { /* optional */ }
+  }
 }
 
 function getSettings() {
@@ -3337,13 +3340,15 @@ function normalizeTargetPeriod(raw, defaultActive) {
   if (raw != null && typeof raw === 'object' && !Array.isArray(raw)) {
     return {
       amount: Number(raw.amount) || 0,
-      active: raw.active !== false
+      active: raw.active !== false,
+      expires_at: raw.expires_at || null
     };
   }
   const amount = Number(raw) || 0;
   return {
     amount,
-    active: defaultActive != null ? !!defaultActive : amount > 0
+    active: defaultActive != null ? !!defaultActive : amount > 0,
+    expires_at: null
   };
 }
 
@@ -3357,9 +3362,31 @@ function normalizeSalesTargets(raw) {
   };
 }
 
+function isTargetPeriodActive(period) {
+  if (!period || !period.active) return false;
+  if (!(Number(period.amount) > 0)) return false;
+  if (period.expires_at) {
+    const today = new Date().toLocaleDateString('en-CA');
+    if (String(period.expires_at).slice(0, 10) < today) return false;
+  }
+  return true;
+}
+
 function getActiveDailyTargetAmount(targets) {
   const norm = normalizeSalesTargets(targets);
-  return norm.daily.active ? norm.daily.amount : 0;
+  return isTargetPeriodActive(norm.daily) ? norm.daily.amount : 0;
+}
+
+function getActiveSalesTargets(targets) {
+  const norm = normalizeSalesTargets(targets);
+  const out = [];
+  for (const key of ['daily', 'weekly', 'monthly', 'yearly']) {
+    const p = norm[key];
+    if (isTargetPeriodActive(p)) {
+      out.push({ period: key, amount: p.amount, expires_at: p.expires_at || null });
+    }
+  }
+  return out;
 }
 
 function getSalesTargets() {

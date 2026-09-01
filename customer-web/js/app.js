@@ -14,6 +14,102 @@ const OrderApp = {
   lastOrder: null,
   quote: null,
   loyaltyAccount: null,
+  editingCartKey: null,
+  _closedTimer: null,
+
+  parseTimeToday(timeStr) {
+    const [h, m] = String(timeStr || '18:00').split(':').map(Number);
+    const d = new Date();
+    d.setHours(h, m || 0, 0, 0);
+    return d;
+  },
+
+  formatCountdown(ms) {
+    if (ms <= 0) return '00:00:00';
+    const total = Math.floor(ms / 1000);
+    const hh = Math.floor(total / 3600);
+    const mm = Math.floor((total % 3600) / 60);
+    const ss = total % 60;
+    return [hh, mm, ss].map((n) => String(n).padStart(2, '0')).join(':');
+  },
+
+  getOperatingSettings() {
+    return this.settings?.operating_hours || { enabled: false, weekly: [] };
+  },
+
+  isShopOpenNow() {
+    const oh = this.getOperatingSettings();
+    const weekly = oh.weekly || [];
+    if (!weekly.length && !oh.enabled) return true;
+    const now = new Date();
+    const day = weekly.find((w) => Number(w.day) === now.getDay());
+    if (!day || day.closed) return false;
+    const openAt = this.parseTimeToday(day.open || oh.open_time || '08:00');
+    const closeAt = this.parseTimeToday(day.close || oh.close_time || '18:00');
+    return now >= openAt && now < closeAt;
+  },
+
+  getNextOpenInfo() {
+    const oh = this.getOperatingSettings();
+    const weekly = oh.weekly || [];
+    const now = new Date();
+    for (let i = 0; i < 8; i++) {
+      const d = new Date(now);
+      d.setDate(d.getDate() + i);
+      const day = weekly.find((w) => Number(w.day) === d.getDay());
+      if (!day || day.closed) continue;
+      const openAt = this.parseTimeToday(day.open || oh.open_time || '08:00');
+      openAt.setFullYear(d.getFullYear(), d.getMonth(), d.getDate());
+      if (openAt > now) {
+        return { at: openAt, label: day.name || openAt.toLocaleDateString(undefined, { weekday: 'long' }) };
+      }
+    }
+    return null;
+  },
+
+  startClosedCountdown() {
+    if (this._closedTimer) clearInterval(this._closedTimer);
+    this._closedTimer = setInterval(() => {
+      if (this.isShopOpenNow()) {
+        clearInterval(this._closedTimer);
+        this._closedTimer = null;
+        const overlay = document.getElementById('order-closed-overlay');
+        if (overlay) overlay.remove();
+        this.render();
+        return;
+      }
+      const el = document.getElementById('closed-countdown');
+      const next = this.getNextOpenInfo();
+      if (el && next) el.textContent = this.formatCountdown(next.at - Date.now());
+    }, 1000);
+  },
+
+  renderClosedOverlay() {
+    if (this.isShopOpenNow()) return '';
+    const shop = this.settings?.shop_name || 'Our shop';
+    const next = this.getNextOpenInfo();
+    const wa = (this.settings?.whatsapp_number || this.settings?.phone || '').replace(/\D/g, '');
+    const waLink = wa ? `https://wa.me/${wa.startsWith('27') ? wa : '27' + wa.replace(/^0/, '')}?text=${encodeURIComponent('Hi, I tried to order online while you were closed.')}` : '';
+    setTimeout(() => this.startClosedCountdown(), 0);
+    return `<div id="order-closed-overlay" class="closed-overlay" role="dialog" aria-modal="true">
+      <div class="closed-card">
+        ${this.settings?.logo_path ? `<img class="closed-logo" src="/api/logo" alt="" onerror="this.style.display='none'">` : '<div class="closed-logo-placeholder">🛍️</div>'}
+        <h2>${this.esc(shop)}</h2>
+        <p class="closed-lead">We're currently closed for online orders.</p>
+        <p class="muted">Opens ${next ? `${next.label} at ${next.at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'soon'}</p>
+        <div class="closed-countdown-wrap">Opens in <strong id="closed-countdown">${next ? this.formatCountdown(next.at - Date.now()) : '—'}</strong></div>
+        <p class="closed-note">You can't place an order until we open. We'll reply as soon as we're back.</p>
+        ${waLink ? `<a class="btn-primary btn-block closed-wa" href="${waLink}" target="_blank" rel="noopener">Message us on WhatsApp</a>` : ''}
+      </div></div>`;
+  },
+
+  goBack() {
+    if (this.view === 'product') { this.view = 'menu'; this.editingCartKey = null; }
+    else if (this.view === 'cart') { this.view = 'menu'; }
+    else if (this.view === 'checkout') { this.view = 'cart'; }
+    else if (this.view === 'menu') { this.view = 'home'; }
+    this.render();
+  },
 
   money(n) {
     const c = this.settings?.currency || 'R';
@@ -178,6 +274,17 @@ const OrderApp = {
         else this.render();
         return;
       }
+      if (act === 'back') { this.goBack(); return; }
+      if (act === 'cart-edit') {
+        const key = btn.dataset.key;
+        const line = this.cart.find((c) => c._key === key);
+        if (!line) return;
+        this.editingCartKey = key;
+        this.product = await OrderAPI.getProduct(this.branch.id, line.product_id);
+        this.view = 'product';
+        this.render();
+        return;
+      }
       if (act === 'pick-branch') {
         const id = btn.dataset.id;
         if (this.cart.length) {
@@ -216,8 +323,12 @@ const OrderApp = {
           }
         });
         try {
+          if (this.editingCartKey) {
+            this.cart = this.cart.filter((c) => c._key !== this.editingCartKey);
+            this.editingCartKey = null;
+          }
           this.addToCart({ product_id: pid, name: this.product.name, quantity: qty, modifiers: mods, unit_price: this.product.sale_price ?? this.product.price });
-          this.view = 'menu';
+          this.view = 'cart';
           this.render();
         } catch (err) { this.toast(err.message, 'error'); }
         return;
@@ -226,6 +337,7 @@ const OrderApp = {
       if (act === 'cart-dec') { this.updateCartQty(btn.dataset.key, -1); return; }
       if (act === 'cart-remove') { this.cart = this.cart.filter((c) => c._key !== btn.dataset.key); this.render(); return; }
       if (act === 'checkout') {
+        if (!this.isShopOpenNow()) { this.toast('We are closed for online orders right now', 'error'); this.render(); return; }
         if (!this.token) { this.view = 'register'; this.authReturn = 'checkout'; this.render(); return; }
         this.quote = await this.validateCurrentCart();
         if (this.quote && !this.quote.valid) { this.toast(this.quote.errors.join('; '), 'error'); return; }
@@ -255,6 +367,7 @@ const OrderApp = {
         return;
       }
       if (act === 'place-order') {
+        if (!this.isShopOpenNow()) { this.toast('We are closed for online orders right now', 'error'); return; }
         const btn2 = btn;
         btn2.disabled = true;
         try {
@@ -368,13 +481,15 @@ const OrderApp = {
   },
 
   shell(body, title = '') {
+    const showBack = ['product', 'cart', 'checkout'].includes(this.view);
     const branchChip = this.branch ? `<div class="branch-banner">
       <span>📍 Ordering from <strong>${this.esc(this.branch.name)}</strong></span>
       <button type="button" data-act="nav" data-view="branches" class="link-btn">Change branch</button>
     </div>` : '';
     const cartBtn = `<button type="button" class="cart-fab" data-act="nav" data-view="cart">${this.cartCount() ? `<span class="cart-badge">${this.cartCount()}</span>` : ''}🛒</button>`;
     return `<div class="order-app">
-      <header class="topbar"><div class="brand">${this.esc(this.settings?.shop_name || 'Order Online')}</div>
+      <header class="topbar">${showBack ? `<button type="button" class="back-btn" data-act="back" aria-label="Back">←</button>` : ''}
+        <div class="brand">${this.esc(this.settings?.shop_name || 'Order Online')}</div>
         <div class="top-actions">
           ${this.customer
             ? `<button type="button" class="ghost-btn" data-act="nav" data-view="account">${this.esc(this.customer.first_name)}</button>`
@@ -383,7 +498,8 @@ const OrderApp = {
         </div></header>
       ${branchChip}
       <main class="main">${body}</main>
-      ${this.view !== 'cart' && this.view !== 'checkout' ? cartBtn : ''}
+      ${this.renderClosedOverlay()}
+      ${this.view !== 'cart' && this.view !== 'checkout' && this.isShopOpenNow() ? cartBtn : ''}
       <nav class="bottom-nav">
         <button type="button" data-act="nav" data-view="home" class="${this.view === 'home' ? 'active' : ''}">Home</button>
         <button type="button" data-act="nav" data-view="menu" class="${this.view === 'menu' ? 'active' : ''}">Menu</button>
@@ -466,8 +582,11 @@ const OrderApp = {
     if (this.view === 'product' && this.product) {
       const p = this.product;
       const groups = p.modifier_groups || [];
+      const editLine = this.editingCartKey ? this.cart.find((c) => c._key === this.editingCartKey) : null;
+      const selectedModIds = new Set((editLine?.modifiers || []).map((m) => String(m.id)));
+      const isChecked = (id) => selectedModIds.has(String(id)) ? 'checked' : '';
+      const qtyVal = editLine?.quantity || 1;
       app.innerHTML = this.shell(`<section class="page product-detail">
-        <button type="button" class="back-btn" data-act="nav" data-view="menu">← Back</button>
         ${p.image ? `<img class="prod-img" src="${this.esc(p.image)}" alt="">` : '<div class="prod-img placeholder">🍽️</div>'}
         <h1>${this.esc(p.name)}</h1>
         <p class="muted">${this.esc(p.description)}</p>
@@ -478,18 +597,18 @@ const OrderApp = {
           if (gType === 'checkbox') {
             return `<fieldset class="mod-group" data-mod-group="${this.esc(g.name)}" data-required="0" data-type="checkbox">
           <legend>${this.esc(g.name)}</legend>
-          ${g.options.map((o) => `<label class="mod-opt ${o.out_of_stock ? 'disabled' : ''}"><input type="checkbox" name="mod-${this.esc(g.name)}" value="${o.id}" data-name="${this.esc(o.name)}" ${o.out_of_stock ? 'disabled' : ''}>
+          ${g.options.map((o) => `<label class="mod-opt ${o.out_of_stock ? 'disabled' : ''}"><input type="checkbox" name="mod-${this.esc(g.name)}" value="${o.id}" data-name="${this.esc(o.name)}" ${isChecked(o.id)} ${o.out_of_stock ? 'disabled' : ''}>
             ${this.esc(o.name)}${o.extra_price ? ` ${o.extra_price < 0 ? '' : '+'}${this.money(o.extra_price)}` : ''}${o.out_of_stock ? ' (Out of stock)' : ''}</label>`).join('')}
         </fieldset>`;
           }
           return `<fieldset class="mod-group" data-mod-group="${this.esc(g.name)}" data-required="${g.required ? '1' : '0'}" data-type="${gType}">
           <legend>${this.esc(g.name)}${g.required ? ' *' : ' <small class="muted">(optional — tap again to clear)</small>'}</legend>
-          ${g.options.map((o) => `<label class="mod-opt ${o.out_of_stock ? 'disabled' : ''}"><input type="radio" name="mod-${this.esc(g.name)}" value="${o.id}" data-name="${this.esc(o.name)}" ${o.out_of_stock ? 'disabled' : ''}>
+          ${g.options.map((o) => `<label class="mod-opt ${o.out_of_stock ? 'disabled' : ''}"><input type="radio" name="mod-${this.esc(g.name)}" value="${o.id}" data-name="${this.esc(o.name)}" ${isChecked(o.id)} ${o.out_of_stock ? 'disabled' : ''}>
             ${this.esc(o.name)}${o.extra_price ? ` ${o.extra_price < 0 ? '' : '+'}${this.money(o.extra_price)}` : ''}${o.out_of_stock ? ' (Out of stock)' : ''}</label>`).join('')}
         </fieldset>`;
         }).join('')}
-        <div class="qty-row"><label>Qty</label><input type="number" id="prod-qty" min="1" value="1" class="qty-input"></div>
-        <button type="button" class="btn-primary btn-block" data-act="add-cart" data-id="${p.id}" ${p.available ? '' : 'disabled'}>Add to cart</button>
+        <div class="qty-row"><label>Qty</label><input type="number" id="prod-qty" min="1" value="${qtyVal}" class="qty-input"></div>
+        <button type="button" class="btn-primary btn-block" data-act="add-cart" data-id="${p.id}" ${p.available && this.isShopOpenNow() ? '' : 'disabled'}>${editLine ? 'Update item' : 'Add to cart'}</button>
       </section>`);
       this.bind();
       this.bindModifierInputs();
@@ -498,11 +617,12 @@ const OrderApp = {
     if (this.view === 'cart') {
       app.innerHTML = this.shell(`<section class="page"><h1>Your order</h1>
         ${this.cart.length ? this.cart.map((c) => `<div class="cart-line">
-          <div><strong>${this.esc(c.name)}</strong><div class="muted">× ${c.quantity}</div></div>
+          <div><strong>${this.esc(c.name)}</strong><div class="muted">× ${c.quantity}${c.modifiers?.length ? ` · ${c.modifiers.map((m) => m.name).join(', ')}` : ''}</div></div>
           <div class="cart-actions">
             <button type="button" data-act="cart-dec" data-key="${c._key}">−</button>
             <span>${c.quantity}</span>
             <button type="button" data-act="cart-inc" data-key="${c._key}">+</button>
+            <button type="button" class="link-btn" data-act="cart-edit" data-key="${c._key}">Edit</button>
             <button type="button" class="link-btn" data-act="cart-remove" data-key="${c._key}">Remove</button>
           </div></div>`).join('') : '<p class="muted">Your cart is empty.</p>'}
         <button type="button" class="btn-primary btn-block" data-act="checkout" ${this.cart.length ? '' : 'disabled'}>Checkout</button>

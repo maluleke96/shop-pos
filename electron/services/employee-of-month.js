@@ -34,12 +34,16 @@ function computeEmployeeScores(monthYear) {
 
   const scores = employees.map(emp => {
     let salesScore = 0;
+    let salesTotal = 0;
+    let salesCount = 0;
     if (emp.user_id) {
       const rev = db.prepare(`
         SELECT COALESCE(SUM(total), 0) as v, COUNT(*) as c FROM sales
         WHERE user_id = ? AND status = 'completed' AND date(created_at) BETWEEN date(?) AND date(?)
       `).get(emp.user_id, from, to);
-      salesScore = Math.min(100, ((rev?.v || 0) / maxSales) * 100);
+      salesTotal = Number(rev?.v) || 0;
+      salesCount = Number(rev?.c) || 0;
+      salesScore = Math.min(100, (salesTotal / maxSales) * 100);
     }
 
     const shiftCount = emp.user_id ? db.prepare(`
@@ -99,18 +103,43 @@ function computeEmployeeScores(monthYear) {
 
     try {
       db.prepare(`
-        INSERT INTO employee_of_month_scores (employee_id, month_year, sales_score, shift_score, checklist_score, attendance_score, total_score)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO employee_of_month_scores (employee_id, month_year, sales_score, shift_score, checklist_score, attendance_score, total_score,
+          sales_total, sales_count, shifts_attended, checklist_done, checklist_total, checklist_failed, attendance_days, scheduled_days)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(employee_id, month_year) DO UPDATE SET
           sales_score=excluded.sales_score, shift_score=excluded.shift_score,
           checklist_score=excluded.checklist_score, attendance_score=excluded.attendance_score,
-          total_score=excluded.total_score
-      `).run(emp.id, monthYear, salesScore, shiftScore, checklistScore, attendanceScore, total);
-    } catch (_) { /* scores table may not exist until migration */ }
+          total_score=excluded.total_score,
+          sales_total=excluded.sales_total, sales_count=excluded.sales_count,
+          shifts_attended=excluded.shifts_attended, checklist_done=excluded.checklist_done,
+          checklist_total=excluded.checklist_total, checklist_failed=excluded.checklist_failed,
+          attendance_days=excluded.attendance_days, scheduled_days=excluded.scheduled_days
+      `).run(emp.id, monthYear, salesScore, shiftScore, checklistScore, attendanceScore, total,
+        salesTotal, salesCount, shiftCount, checklistDone, checklistTotal, checklistFailed, attendanceDays, scheduledDays);
+    } catch (_) {
+      try {
+        db.prepare(`
+          INSERT INTO employee_of_month_scores (employee_id, month_year, sales_score, shift_score, checklist_score, attendance_score, total_score)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(employee_id, month_year) DO UPDATE SET
+            sales_score=excluded.sales_score, shift_score=excluded.shift_score,
+            checklist_score=excluded.checklist_score, attendance_score=excluded.attendance_score,
+            total_score=excluded.total_score
+        `).run(emp.id, monthYear, salesScore, shiftScore, checklistScore, attendanceScore, total);
+      } catch (__) { /* scores table may not exist until migration */ }
+    }
 
     return {
       employee_id: emp.id,
       full_name: emp.full_name,
+      sales_total: Math.round(salesTotal * 100) / 100,
+      sales_count: salesCount,
+      shifts_attended: shiftCount,
+      checklist_done: checklistDone,
+      checklist_total: checklistTotal,
+      checklist_failed: checklistFailed,
+      attendance_days: attendanceDays,
+      scheduled_days: scheduledDays,
       sales_score: Math.round(salesScore),
       shift_score: Math.round(shiftScore),
       checklist_score: Math.round(checklistScore),
@@ -414,6 +443,25 @@ function buildCertificatePdf(record, shopName) {
   doc.setFont('helvetica', 'normal');
   doc.text(`Awarded for ${record.month_year}`, w / 2, nameY + 13, { align: 'center' });
   if (record.score) doc.text(`Performance score: ${record.score}`, w / 2, nameY + 25, { align: 'center' });
+  try {
+    const scoreRow = getDb().prepare(`
+      SELECT * FROM employee_of_month_scores WHERE employee_id = ? AND month_year = ?
+    `).get(record.employee_id, record.month_year);
+    if (scoreRow) {
+      doc.setFontSize(10);
+      const lines = [
+        `Sales: ${scoreRow.sales_total != null ? scoreRow.sales_total : '—'} (${scoreRow.sales_count || 0} transactions)`,
+        `Shifts attended: ${scoreRow.shifts_attended ?? '—'}`,
+        `Checklists: ${scoreRow.checklist_done ?? 0}/${scoreRow.checklist_total ?? 0}`,
+        `Attendance: ${scoreRow.attendance_days ?? 0}/${scoreRow.scheduled_days ?? 0} days`
+      ];
+      let y = nameY + 38;
+      for (const line of lines) {
+        doc.text(line, w / 2, y, { align: 'center' });
+        y += 6;
+      }
+    }
+  } catch (_) { /* scores optional */ }
   doc.setFontSize(11);
   doc.text('Congratulations on your outstanding contribution!', w / 2, nameY + 40, { align: 'center' });
   const filePath = path.join(getAssetsDir(), `eom-${record.month_year}-${record.employee_id}.pdf`);

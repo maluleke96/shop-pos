@@ -193,11 +193,21 @@
     const from = Utils.today(); const to = Utils.today();
     el.innerHTML = `<div class="admin-section"><h3>Sales Management</h3>
       ${Utils.dateFilterHTML('sales-mgmt-filter', from, to)}
+      <div style="margin:12px 0;display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-primary" id="sales-mgmt-pdf">📄 Save PDF Report</button>
+        <button class="btn btn-ghost" id="sales-mgmt-print">🖨️ Print</button>
+      </div>
       <div id="sales-mgmt-table" style="margin-top:16px"><p class="muted">Loading…</p></div></div>`;
 
+    let lastSales = [];
+    let lastFrom = from;
+    let lastTo = to;
+
     const load = async (f, t) => {
+      lastFrom = f; lastTo = t;
       const res = await API.getSalesList({ from: f, to: t, limit: 500 });
       const sales = res.data || [];
+      lastSales = sales;
       const currency = this.settings.currency || 'R';
       document.getElementById('sales-mgmt-table').innerHTML = `<div class="card"><div class="table-wrap"><table>
         <thead><tr><th>Order #</th><th>Receipt</th><th>Date</th><th>Time</th><th>Cashier</th><th>Customer</th><th>Type</th><th>Payment</th><th>Gift Card</th><th>Loyalty Pts</th><th>Total</th><th>Discount</th><th>Tax</th><th>Status</th><th></th></tr></thead>
@@ -271,6 +281,51 @@
       }));
     };
     Utils.bindDateFilter('sales-mgmt-filter', load);
+    document.getElementById('sales-mgmt-pdf')?.addEventListener('click', async () => {
+      const currency = this.settings.currency || 'R';
+      const headers = ['Order #', 'Receipt', 'Date', 'Time', 'Cashier', 'Customer', 'Type', 'Payment', 'Total', 'Discount', 'Tax', 'Status'];
+      const rows = lastSales.map((s) => {
+        const dt = s.created_at ? new Date(s.created_at) : null;
+        const otype = s.order_type ? ({ delivery: 'Delivery', takeaway: 'Takeaway', sit_in: 'Sit-in', online: 'Online' }[s.order_type] || s.order_type) : 'Walk-in';
+        return [
+          s.order_number || '',
+          s.receipt_number || '',
+          dt ? Utils.formatDate(s.created_at) : '',
+          dt ? dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '',
+          s.cashier_name || '',
+          s.customer_name || 'Walk-in',
+          otype,
+          s.primary_payment || s.payment_methods || '',
+          Utils.formatMoney(s.total, currency),
+          Utils.formatMoney(s.discount || 0, currency),
+          Utils.formatMoney(s.tax_amount || 0, currency),
+          s.status || ''
+        ];
+      });
+      const totalSales = lastSales.reduce((n, s) => n + Number(s.total || 0), 0);
+      rows.push(['', '', '', '', '', '', 'TOTALS', `${lastSales.length} sales`, Utils.formatMoney(totalSales, currency), '', '', '']);
+      const title = `Sales Report ${lastFrom} to ${lastTo} — saved ${new Date().toLocaleString()}`;
+      if (typeof Export?.toPDF === 'function') {
+        await Export.toPDF(`sales-report-${lastFrom}-${lastTo}.pdf`, title, headers, rows, {
+          shop_name: this.settings?.shop_name,
+          logo_path: this.settings?.logo_path
+        });
+      } else {
+        Utils.toast('PDF export not available', 'error');
+      }
+    });
+    document.getElementById('sales-mgmt-print')?.addEventListener('click', () => {
+      const currency = this.settings.currency || 'R';
+      const totalSales = lastSales.reduce((n, s) => n + Number(s.total || 0), 0);
+      const html = `<h2>${Utils.escHtml(this.settings?.shop_name || 'Shop')} — Sales Report</h2>
+        <p>Period: ${lastFrom} to ${lastTo} · Generated: ${new Date().toLocaleString()} · ${lastSales.length} sales · Total ${Utils.formatMoney(totalSales, currency)}</p>
+        <table border="1" cellpadding="5" style="border-collapse:collapse;width:100%;font-size:11px">
+        <tr><th>Receipt</th><th>Date</th><th>Cashier</th><th>Customer</th><th>Total</th><th>Tax</th><th>Status</th></tr>
+        ${lastSales.map((s) => `<tr><td>${Utils.escHtml(s.receipt_number)}</td><td>${Utils.formatDateTime(s.created_at)}</td><td>${Utils.escHtml(s.cashier_name || '')}</td><td>${Utils.escHtml(s.customer_name || 'Walk-in')}</td><td>${Utils.formatMoney(s.total, currency)}</td><td>${Utils.formatMoney(s.tax_amount || 0, currency)}</td><td>${Utils.escHtml(s.status)}</td></tr>`).join('')}
+        </table>`;
+      if (typeof Export?.print === 'function') Export.print(html, 'Sales Report');
+      else window.print();
+    });
     load(from, to);
   };
 

@@ -15,7 +15,8 @@ function loadUserById(id) {
 function assertUserActor(actor, allowedRoles = []) {
   const sess = session.getUserSession();
   if (!sess?.id) throw new Error('Authentication required');
-  if (!actor?.id || Number(actor.id) !== Number(sess.id)) {
+  // Cloud browser RPC may omit actor — trust the active session user id
+  if (actor?.id != null && Number(actor.id) !== Number(sess.id)) {
     throw new Error('Authentication required');
   }
 

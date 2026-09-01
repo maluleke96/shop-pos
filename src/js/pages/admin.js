@@ -1307,19 +1307,9 @@ const AdminPage = {
         'Could not save tax & currency'
       );
       if (!r) return;
-      // Keep bookkeeping VAT in sync
-      try {
-        const bk = await API.getBookkeepingSettings();
-        const cur = bk.data || {};
-        await API.saveBookkeepingSettings({
-          ...cur,
-          vat_rate: patch.tax_rate,
-          vat_registered: patch.tax_enabled ? 1 : 0
-        }, this.app.user);
-      } catch (_) { /* ignore */ }
       this.settings = { ...this.settings, ...patch };
       if (this.app) this.app.settings = { ...this.app.settings, ...patch };
-      Utils.toast('Tax & currency saved (linked to bookkeeping)', 'success');
+      Utils.toast('Tax & currency saved', 'success');
     });
   },
 
@@ -1400,11 +1390,12 @@ const AdminPage = {
           <div class="card"><div class="card-body"><div class="muted">VAT rate</div><strong>${t.vatRate || 0}%</strong></div></div>
         </div>
         <div class="card"><div class="table-wrap"><table>
-          <thead><tr><th>Receipt</th><th>Date</th><th>Branch</th><th>Cashier</th><th>Excl. tax</th><th>Tax</th><th>Total</th></tr></thead>
+          <thead><tr><th>Receipt</th><th>Date</th><th>Source</th><th>Branch</th><th>Cashier</th><th>Excl. tax</th><th>Tax</th><th>Total</th></tr></thead>
           <tbody>
             ${sales.map((s) => `<tr>
               <td>${Utils.escHtml(s.receipt_number || '—')}</td>
               <td>${Utils.formatDateTime(s.created_at)}</td>
+              <td>${Utils.escHtml(s.channel || (s.order_type === 'online' ? 'Online' : 'POS'))}</td>
               <td>${Utils.escHtml(s.branch_name || '—')}</td>
               <td>${Utils.escHtml(s.cashier_name || '—')}</td>
               <td>${Utils.formatMoney(s.subtotal || 0, currency)}</td>
@@ -1511,14 +1502,15 @@ const AdminPage = {
     const raw = res.data || {};
     const periodVal = (p) => {
       const v = raw[p];
-      if (v != null && typeof v === 'object') return { amount: v.amount || 0, active: v.active !== false };
-      return { amount: Number(v) || 0, active: p === 'daily' && Number(v) > 0 };
+      if (v != null && typeof v === 'object') return { amount: v.amount || 0, active: v.active !== false, expires_at: v.expires_at || '' };
+      return { amount: Number(v) || 0, active: p === 'daily' && Number(v) > 0, expires_at: '' };
     };
     const periods = ['daily', 'weekly', 'monthly', 'yearly'];
     const t = Object.fromEntries(periods.map(p => [p, periodVal(p)]));
     const currency = this.settings.currency || 'R';
+    const today = Utils.today();
     el.innerHTML = `<div class="admin-section"><h3>Sales Targets</h3>
-      <p class="muted">Set shop-wide sales targets. Toggle each period active/inactive. Cashiers only see an active daily target on POS.</p>
+      <p class="muted">Set shop-wide sales targets with optional expiry dates. Active targets show on POS (daily, weekly, monthly progress).</p>
       <div class="card"><div class="card-body"><div class="form-grid">
         ${periods.map(p => `<div class="field">
           <label>${p.charAt(0).toUpperCase() + p.slice(1)} Target (${currency})</label>
@@ -1526,16 +1518,29 @@ const AdminPage = {
           <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-weight:normal">
             <input type="checkbox" id="st-${p}-active" ${t[p].active ? 'checked' : ''}> Active
           </label>
+          <label style="margin-top:6px;font-size:12px">Expires (optional)</label>
+          <input type="date" id="st-${p}-exp" value="${t[p].expires_at || ''}" min="${today}">
         </div>`).join('')}
       </div>
       <button class="btn btn-primary" id="save-targets" style="margin-top:16px">Save Targets</button>
-      </div></div></div>`;
+      </div></div>
+      <div class="card" style="margin-top:16px"><div class="card-header"><h4>Saved Targets</h4></div>
+      <div class="table-wrap"><table class="table-compact"><thead><tr><th>Period</th><th>Amount</th><th>Active</th><th>Expires</th><th>Status</th></tr></thead>
+      <tbody>${periods.map(p => {
+        const row = t[p];
+        const expired = row.expires_at && row.expires_at < today;
+        const status = !row.active ? 'Inactive' : (expired ? 'Expired' : 'Live on POS');
+        return `<tr><td>${p.charAt(0).toUpperCase() + p.slice(1)}</td><td>${Utils.formatMoney(row.amount, currency)}</td>
+          <td>${row.active ? 'Yes' : 'No'}</td><td>${row.expires_at || '—'}</td><td>${status}</td></tr>`;
+      }).join('')}</tbody></table></div></div></div>`;
     document.getElementById('save-targets').addEventListener('click', async () => {
       const payload = {};
       periods.forEach(p => {
+        const exp = document.getElementById(`st-${p}-exp`)?.value || null;
         payload[p] = {
           amount: parseFloat(document.getElementById(`st-${p}`).value) || 0,
-          active: document.getElementById(`st-${p}-active`).checked
+          active: document.getElementById(`st-${p}-active`).checked,
+          expires_at: exp || null
         };
       });
       const r = await API.saveSalesTargets(payload, this.app.user);
@@ -2283,6 +2288,7 @@ const AdminPage = {
       if (!r) return;
       this.settings.payment_settings = data;
       if (this.app) this.app.settings = { ...this.app.settings, payment_settings: data };
+      Utils.toast('Payment settings saved — online checkout updated', 'success');
     });
   },
 
@@ -2861,9 +2867,11 @@ const AdminPage = {
 
   async renderOnlineOrders(el) {
     const currency = this.settings?.currency || 'R';
+    const from = this._ooFrom || Utils.daysAgo(30);
+    const to = this._ooTo || Utils.today();
     const [ordersRes, analyticsRes, settingsRes] = await Promise.all([
-      API.webAdminOrders?.({}, this.app?.user) || API.getOnlineOrdersLocal?.(''),
-      API.webAdminAnalytics?.({}, this.app?.user).catch(() => ({ data: {} })),
+      API.webAdminOrders?.({ from, to }, this.app?.user) || API.getOnlineOrdersLocal?.(''),
+      API.webAdminAnalytics?.({ from, to }, this.app?.user).catch(() => ({ data: {} })),
       API.webGetSettings?.().catch(() => ({ data: {} }))
     ]);
     const orders = ordersRes?.data || ordersRes || [];
@@ -2877,6 +2885,13 @@ const AdminPage = {
     el.innerHTML = `<div class="admin-section"><h3>Online Orders</h3>
       <p class="muted">Customer website orders flow to POS with source <strong>ONLINE</strong>. 
         <a href="${orderUrl}" target="_blank" rel="noopener">Open customer site</a></p>
+      <div class="page-toolbar" style="gap:8px;flex-wrap:wrap;align-items:center;margin:12px 0">
+        <input type="date" id="oo-from" value="${from}">
+        <input type="date" id="oo-to" value="${to}">
+        <button type="button" class="btn btn-ghost btn-sm" id="oo-filter">Filter</button>
+        <button type="button" class="btn btn-primary btn-sm" id="oo-pdf">Save PDF</button>
+        <button type="button" class="btn btn-ghost btn-sm" id="oo-print">Print</button>
+      </div>
       <div class="stats-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin:12px 0">
         <div class="card"><div class="card-body"><div class="muted">Orders</div><strong>${stats.orders || 0}</strong></div></div>
         <div class="card"><div class="card-body"><div class="muted">Revenue</div><strong>${Utils.formatMoney(stats.revenue || 0, currency)}</strong></div></div>
@@ -2908,6 +2923,43 @@ const AdminPage = {
         </tr>`).join('') || '<tr><td colspan="8" class="muted">No online orders yet</td></tr>'}
         </tbody></table></div></div>`;
 
+    document.getElementById('oo-filter')?.addEventListener('click', () => {
+      this._ooFrom = document.getElementById('oo-from')?.value;
+      this._ooTo = document.getElementById('oo-to')?.value;
+      this.renderOnlineOrders(el);
+    });
+    document.getElementById('oo-pdf')?.addEventListener('click', async () => {
+      const headers = ['Order', 'Branch', 'Customer', 'Phone', 'Total', 'Discount', 'Tax', 'Status', 'Payment', 'Date'];
+      const rows = list.map((o) => [
+        o.order_number || '',
+        String(o.branch_id || ''),
+        o.customer_name || '',
+        o.customer_phone || '',
+        Utils.formatMoney(o.total, currency),
+        o.discount ? `-${Utils.formatMoney(o.discount, currency)}` : '',
+        o.tax_amount ? Utils.formatMoney(o.tax_amount, currency) : '',
+        o.status || '',
+        o.payment_method || '',
+        Utils.formatDateTime(o.created_at)
+      ]);
+      rows.push(['TOTALS', '', '', '', Utils.formatMoney(list.reduce((n, o) => n + Number(o.total || 0), 0), currency), '', '', `${list.length} orders`, '', '']);
+      const title = `Online Orders ${from} to ${to}`;
+      if (typeof Export?.toPDF === 'function') {
+        await Export.toPDF(`online-orders-${from}.pdf`, title, headers, rows, { shop_name: this.settings?.shop_name, logo_path: this.settings?.logo_path });
+      } else {
+        Utils.toast('PDF export not available', 'error');
+      }
+    });
+    document.getElementById('oo-print')?.addEventListener('click', () => {
+      const html = `<h2>${this.settings?.shop_name || 'Shop'} — Online Orders</h2>
+        <p>${from} to ${to} · ${list.length} orders · Revenue ${Utils.formatMoney(list.reduce((n, o) => n + Number(o.total || 0), 0), currency)}</p>
+        <table border="1" cellpadding="6" style="border-collapse:collapse;width:100%;font-size:12px">
+        <tr><th>Order</th><th>Customer</th><th>Total</th><th>Status</th><th>Date</th></tr>
+        ${list.map((o) => `<tr><td>${Utils.escHtml(o.order_number)}</td><td>${Utils.escHtml(o.customer_name || '')}</td><td>${Utils.formatMoney(o.total, currency)}</td><td>${Utils.escHtml(o.status)}</td><td>${Utils.formatDateTime(o.created_at)}</td></tr>`).join('')}
+        </table>`;
+      if (typeof Export?.print === 'function') Export.print(html, 'Online Orders');
+      else window.print();
+    });
     document.getElementById('oo-save-settings')?.addEventListener('click', async () => {
       const r = await API.webSaveGlobalSettings?.({
         enabled: document.getElementById('oo-enabled').checked,

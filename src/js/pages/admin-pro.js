@@ -105,6 +105,7 @@
     el.innerHTML = `<div class="admin-section"><h3>Automation Rules</h3>
       <p class="muted">Before Sale prompts for a manager PIN. Low Stock and Shift Close create notifications (and a backup reminder on close).</p>
       <button class="btn btn-primary" id="add-rule" style="margin:12px 0">+ Add Rule</button>
+      <button class="btn btn-ghost" id="rules-pdf" style="margin:12px 0;margin-left:8px">📄 Save PDF</button>
       <div class="card"><div class="table-wrap"><table>
         <thead><tr><th>Name</th><th>Trigger</th><th>Active</th><th></th></tr></thead>
         <tbody>${rules.map(r => `<tr><td>${r.name}</td><td>${r.trigger_type}</td><td>${r.is_active?'Yes':'No'}</td>
@@ -145,6 +146,24 @@
       await API.deleteAutomationRule(parseInt(b.dataset.id));
       this.renderAutomation(el);
     }));
+    document.getElementById('rules-pdf')?.addEventListener('click', async () => {
+      const headers = ['Name', 'Trigger', 'Active', 'Conditions'];
+      const rows = rules.map((r) => [
+        r.name || '',
+        r.trigger_type || '',
+        r.is_active ? 'Yes' : 'No',
+        JSON.stringify(r.condition || r.conditions || {})
+      ]);
+      const title = `Automation Rules — ${this.settings?.shop_name || 'Shop'}`;
+      if (typeof Export?.toPDF === 'function') {
+        await Export.toPDF(`automation-rules-${Utils.today()}.pdf`, title, headers, rows, {
+          shop_name: this.settings?.shop_name,
+          logo_path: this.settings?.logo_path
+        });
+      } else {
+        Utils.toast('PDF export not available', 'error');
+      }
+    });
   };
 
   AdminPage.renderCustomFields = async function (el) {

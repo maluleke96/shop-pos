@@ -55,6 +55,80 @@ function getLoyaltyPublicSettings() {
   }
 }
 
+/** Build online checkout payment options from POS payment_settings (no DB write) */
+function buildMethodsFromPaymentSettings(paymentSettings = {}) {
+  const enabled = Array.isArray(paymentSettings.enabled_methods) ? paymentSettings.enabled_methods : [];
+  const custom = Array.isArray(paymentSettings.custom_methods) ? paymentSettings.custom_methods : [];
+  if (!enabled.length) return [];
+
+  const methods = [];
+  const add = (m) => {
+    if (!m || !m.id) return;
+    if (methods.some((x) => String(x.id).toLowerCase() === String(m.id).toLowerCase())) return;
+    methods.push({ ...m, enabled: m.enabled !== false });
+  };
+
+  const posToOnline = {
+    card: { id: 'card', label: 'Card (pay now)', status: 'paid', fulfillment: 'any' },
+    eft: { id: 'eft', label: 'EFT / Bank transfer', status: 'pending', fulfillment: 'any' },
+    mobile: { id: 'mobile', label: 'Mobile payment', status: 'pending', fulfillment: 'any' },
+    snapscan: { id: 'snapscan', label: 'SnapScan / QR', status: 'pending', fulfillment: 'any' },
+    other: { id: 'other', label: 'Other payment', status: 'pending', fulfillment: 'any' }
+  };
+
+  for (const id of enabled) {
+    const key = String(id).toLowerCase();
+    if (key === 'cash') {
+      add({ id: 'cash_on_collection', label: 'Cash on collection', status: 'pending', fulfillment: 'collection' });
+      add({ id: 'cash_on_delivery', label: 'Cash on delivery', status: 'pending', fulfillment: 'delivery' });
+    } else if (posToOnline[key]) {
+      add(posToOnline[key]);
+    } else {
+      const customDef = custom.find((c) => String(c.id).toLowerCase() === key);
+      add({
+        id: key,
+        label: customDef?.label || key.replace(/_/g, ' '),
+        status: 'pending',
+        fulfillment: 'any',
+        enabled: customDef ? customDef.enabled !== false : true
+      });
+    }
+  }
+
+  for (const c of custom) {
+    if (!c.id || !c.label) continue;
+    if (!enabled.includes(c.id) && c.enabled === false) continue;
+    add({ id: String(c.id).toLowerCase(), label: c.label, status: 'pending', fulfillment: 'any', enabled: c.enabled !== false });
+  }
+
+  return methods;
+}
+
+/** Map admin Payment Methods (POS) → online checkout options and persist */
+function syncPaymentMethodsFromPos(paymentSettings = {}) {
+  ensureSchema();
+  const methods = buildMethodsFromPaymentSettings(paymentSettings);
+  if (!methods.length) return null;
+  const global = getGlobalSettings();
+  const online = { ...(global.online || {}), payment_methods: methods };
+  saveGlobalOnlineSettings(online, null);
+  return methods;
+}
+
+function buildOnlineMethodsFromPosSettings() {
+  try {
+    const row = dbGet('SELECT payment_settings, online_settings_json FROM shop_settings WHERE id = 1') || {};
+    const online = parseJson(row.online_settings_json, {});
+    if (Array.isArray(online?.payment_methods) && online.payment_methods.length) {
+      return online.payment_methods;
+    }
+    const pm = parseJson(row.payment_settings, {});
+    const built = buildMethodsFromPaymentSettings(pm);
+    return built.length ? built : null;
+  } catch (_) { /* ignore */ }
+  return null;
+}
+
 function calcOnlineTaxTotals(grossTotal, discount, taxRatePct, taxEnabled, taxInclusive) {
   const afterDiscount = round2(Math.max(0, (Number(grossTotal) || 0) - Math.max(0, Number(discount) || 0)));
   const rate = Number(taxRatePct) || 0;
@@ -74,7 +148,7 @@ function getGlobalSettings() {
   ensureSchema();
   let shop;
   try {
-    shop = dbGet('SELECT shop_name, logo_path, address, phone, currency, tax_rate, tax_enabled, tax_inclusive, online_settings_json FROM shop_settings WHERE id = 1') || {};
+    shop = dbGet('SELECT shop_name, logo_path, address, phone, currency, tax_rate, tax_enabled, tax_inclusive, online_settings_json, operating_hours_settings, payment_settings, whatsapp_settings_json FROM shop_settings WHERE id = 1') || {};
   } catch (_) {
     try { dbRun('ALTER TABLE shop_settings ADD COLUMN online_settings_json TEXT'); } catch (__) { /* */ }
     shop = dbGet('SELECT shop_name, logo_path, address, phone, currency, tax_rate, tax_enabled, tax_inclusive FROM shop_settings WHERE id = 1') || {};
@@ -88,18 +162,25 @@ function getGlobalSettings() {
     { id: 'cash_on_delivery', label: 'Cash on delivery', status: 'pending', fulfillment: 'delivery', enabled: true },
     { id: 'snapscan', label: 'SnapScan / QR', status: 'pending', fulfillment: 'any', enabled: true }
   ];
-  const paymentMethods = Array.isArray(online?.payment_methods) && online.payment_methods.length
-    ? online.payment_methods
-    : defaultPaymentMethods;
+  const fromPos = buildOnlineMethodsFromPosSettings();
+  const paymentMethods = fromPos?.length
+    ? fromPos
+    : (Array.isArray(online?.payment_methods) && online.payment_methods.length
+      ? online.payment_methods
+      : defaultPaymentMethods);
+  const operatingHours = parseJson(shop.operating_hours_settings, { enabled: false, weekly: [] });
+  const whatsapp = parseJson(shop.whatsapp_settings_json, {});
   return {
     shop_name: shop.shop_name || 'Shop',
     logo_path: shop.logo_path,
     address: shop.address,
     phone: shop.phone,
+    whatsapp_number: whatsapp.business_number || whatsapp.phone || shop.phone || null,
     currency: shop.currency || 'R',
     tax_rate: Number(shop.tax_rate) || 0,
     tax_enabled: !!shop.tax_enabled,
     tax_inclusive: shop.tax_inclusive !== 0 && shop.tax_inclusive !== '0' && shop.tax_inclusive !== false,
+    operating_hours: operatingHours,
     online: {
       enabled: online?.enabled !== false,
       loyalty_enabled: online?.loyalty_enabled !== false,
@@ -880,6 +961,7 @@ function getOnlineAnalytics(filters = {}) {
 module.exports = {
   getGlobalSettings,
   getOnlinePaymentMethods,
+  syncPaymentMethodsFromPos,
   saveGlobalOnlineSettings,
   getBranchOnlineSettings,
   saveBranchOnlineSettings,

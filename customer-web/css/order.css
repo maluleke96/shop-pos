@@ -445,7 +445,22 @@ input:focus, textarea:focus, select:focus {
 
 .hidden { display: none !important; }
 .empty-state { padding: 48px 24px; text-align: center; }
-.back-btn { background: none; border: 0; color: var(--primary); font-weight: 600; cursor: pointer; margin-bottom: 12px; padding: 0; }
+.back-btn { background: none; border: 0; color: #fff; font-weight: 700; cursor: pointer; margin-right: 8px; padding: 4px 8px; font-size: 20px; line-height: 1; }
+.topbar { gap: 8px; }
+.closed-overlay {
+  position: fixed; inset: 0; z-index: 2000; background: rgba(15, 23, 42, 0.72);
+  display: flex; align-items: center; justify-content: center; padding: 24px;
+}
+.closed-card {
+  background: var(--surface); border-radius: var(--radius); padding: 28px 24px; max-width: 400px;
+  width: 100%; text-align: center; box-shadow: var(--shadow-lg);
+}
+.closed-logo { max-height: 72px; margin-bottom: 12px; border-radius: 12px; }
+.closed-logo-placeholder { font-size: 48px; margin-bottom: 8px; }
+.closed-lead { font-size: 18px; font-weight: 600; margin: 8px 0; }
+.closed-countdown-wrap { font-size: 28px; margin: 16px 0; color: var(--primary); }
+.closed-note { font-size: 14px; color: var(--muted); margin: 12px 0 20px; }
+.closed-wa { text-decoration: none; display: inline-block; }
 
 @media (min-width: 768px) {
   .product-grid { grid-template-columns: repeat(3, 1fr); }

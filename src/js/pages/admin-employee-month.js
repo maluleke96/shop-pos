@@ -125,14 +125,19 @@
             <div style="flex:1;min-width:200px">
               <div style="font-size:12px;text-transform:uppercase;letter-spacing:0.05em;color:var(--primary);font-weight:600">System Selected Winner</div>
               <div style="font-size:22px;font-weight:700;margin-top:4px">${suggested.full_name}</div>
-              <div class="muted" style="margin-top:4px">Score ${suggested.total_score ?? '—'} · sales ${suggested.sales_score ?? '—'} · shifts ${suggested.shift_score ?? '—'} · checklist ${suggested.checklist_score ?? '—'} · attendance ${suggested.attendance_score ?? '—'}</div>
+              <div class="muted" style="margin-top:4px">Score ${suggested.total_score ?? '—'} · Sales ${suggested.sales_total != null ? Utils.formatMoney(suggested.sales_total, currency) : (suggested.sales_score ?? '—')} (${suggested.sales_count ?? 0}) · Shifts ${suggested.shifts_attended ?? suggested.shift_score ?? '—'} · Checklist ${suggested.checklist_done ?? '—'}/${suggested.checklist_total ?? '—'} · Attendance ${suggested.attendance_days ?? '—'}/${suggested.scheduled_days ?? '—'}</div>
             </div>
           </div></div>` : ''}
         <div class="card" style="margin-bottom:16px"><div class="card-header"><h4>Scores</h4></div>
-        <div class="table-wrap"><table class="table-compact"><thead><tr><th>Employee</th><th>Sales</th><th>Shifts</th><th>Checklist</th><th>Att.</th><th>Total</th></tr></thead>
+        <div class="table-wrap"><table class="table-compact"><thead><tr><th>Employee</th><th>Sales</th><th>Shifts</th><th>Checklist</th><th>Attendance</th><th>Scores</th><th>Total</th></tr></thead>
         <tbody>${scores.map(s => `<tr${s.employee_id == selectedId ? ' style="background:var(--surface-alt, rgba(99,102,241,0.06))"' : ''}>
-          <td>${s.full_name}</td><td>${s.sales_score ?? '—'}</td><td>${s.shift_score ?? '—'}</td>
-          <td>${s.checklist_score ?? '—'}</td><td>${s.attendance_score ?? '—'}</td><td><strong>${s.total_score ?? '—'}</strong></td></tr>`).join('')
+          <td>${s.full_name}</td>
+          <td>${s.sales_total != null ? `${Utils.formatMoney(s.sales_total, currency)}<br><small class="muted">${s.sales_count || 0} sales</small>` : (s.sales_score ?? '—')}</td>
+          <td>${s.shifts_attended != null ? s.shifts_attended : (s.shift_score ?? '—')}</td>
+          <td>${s.checklist_total != null ? `${s.checklist_done || 0}/${s.checklist_total}${s.checklist_failed ? `<br><small class="muted">${s.checklist_failed} failed</small>` : ''}` : (s.checklist_score ?? '—')}</td>
+          <td>${s.scheduled_days != null ? `${s.attendance_days || 0}/${s.scheduled_days}` : (s.attendance_score ?? '—')}</td>
+          <td class="muted" style="font-size:11px">${s.sales_score ?? '—'} / ${s.shift_score ?? '—'} / ${s.checklist_score ?? '—'} / ${s.attendance_score ?? '—'}</td>
+          <td><strong>${s.total_score ?? '—'}</strong></td></tr>`).join('')
           || '<tr><td colspan="6" class="muted">No active employees</td></tr>'}
         </tbody></table></div></div>
         <div class="card"><div class="card-body"><h4>Confirm Winner</h4>

@@ -585,17 +585,28 @@ function getTopCustomers(from, to, limit = 50) {
   const db = getDb();
   const rangeFrom = from || new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
   const rangeTo = to || new Date().toLocaleDateString('en-CA');
+  const lim = Math.min(Number(limit) || 50, 200);
   return db.prepare(`
-    SELECT c.id, c.name, c.phone, c.email,
-      COALESCE(SUM(s.total), 0) as total_spent,
-      COUNT(s.id) as visits
-    FROM customers c
-    INNER JOIN sales s ON s.customer_id = c.id AND s.status = 'completed'
-      AND date(s.created_at, 'localtime') BETWEEN date(?) AND date(?)
-    GROUP BY c.id
+    SELECT id, name, phone, email, SUM(total_spent) AS total_spent, SUM(visits) AS visits FROM (
+      SELECT c.id, c.name, c.phone, c.email,
+        COALESCE(SUM(s.total), 0) as total_spent,
+        COUNT(s.id) as visits
+      FROM customers c
+      INNER JOIN sales s ON s.customer_id = c.id AND s.status = 'completed'
+        AND date(s.created_at, 'localtime') BETWEEN date(?) AND date(?)
+      GROUP BY c.id
+      UNION ALL
+      SELECT NULL AS id, COALESCE(s.customer_name, 'Walk-in') AS name, s.customer_phone AS phone, NULL AS email,
+        COALESCE(SUM(s.total), 0) AS total_spent, COUNT(s.id) AS visits
+      FROM sales s
+      WHERE s.status = 'completed' AND s.customer_id IS NULL AND s.customer_phone IS NOT NULL AND TRIM(s.customer_phone) != ''
+        AND date(s.created_at, 'localtime') BETWEEN date(?) AND date(?)
+      GROUP BY s.customer_phone, s.customer_name
+    ) combined
+    GROUP BY COALESCE(id, phone), name, phone, email
     ORDER BY total_spent DESC
     LIMIT ?
-  `).all(rangeFrom, rangeTo, limit);
+  `).all(rangeFrom, rangeTo, rangeFrom, rangeTo, lim);
 }
 
 module.exports = {
