@@ -58,9 +58,11 @@ const POSPage = {
     this.activeCampaigns = this.activeCampaigns || [];
     this.renderLayout(el);
     this.bindEvents(el);
+    this._stockRefreshHandler = () => this.reloadCatalog?.();
+    window.addEventListener('shop-pos-stock-updated', this._stockRefreshHandler);
     if (isKiosk) this.ensureKioskLogout(el);
 
-    const filters = { for_pos: true };
+    const filters = { for_pos: true, actor: app.user };
     const shiftP = Promise.all([
       API.getShiftSettings().catch(() => ({ success: false })),
       API.getOpenShift(app.user).catch(() => ({ success: false, data: null }))
@@ -99,10 +101,12 @@ const POSPage = {
           const refreshed = await API.getOpenShift(app.user);
           this.openShift = refreshed.data || null;
           Utils.toast(`Auto-closed ${enforced.data.closed} shift(s) past cash-out deadline`, 'info');
+          this.updateShiftGate();
         }
       }).catch(() => {});
     }, 0);
 
+    this._shiftFlowComplete = false;
     if (this.requiresShift()) {
       if (this.openShift) {
         await this.promptResumeShift();
@@ -110,6 +114,9 @@ const POSPage = {
         await this.ensureShift();
       }
     }
+    this._shiftFlowComplete = true;
+    this.updateShiftGate();
+    this._startOnlineOrdersWidget();
 
     // Secondary data — don't block selling
     Promise.all([
@@ -131,13 +138,54 @@ const POSPage = {
       this.loadQuoteIntoCart(pendingQuote);
       Utils.toast(`Quote ${pendingQuote.quote_number} loaded into cart`, 'success');
     }
-    this.updateShiftGate();
     const ds = Utils.mergeDeviceSettings(this.app.settings);
     const ss = this.app.settings?.scanner_settings || {};
     const scanEnabled = ss.enabled !== false;
     if (scanEnabled && ds.scanner_auto_mode !== false) this.toggleScanMode(true);
     if (ss.type === 'camera') this._preferCameraScan = true;
     await this.updateShiftBar();
+  },
+
+  _shiftFlowComplete: false,
+
+  canShowOnlineOrders() {
+    if (!this._shiftFlowComplete) return false;
+    if (this.requiresShift() && !this.hasOpenShift()) return false;
+    const overlay = document.getElementById('modal-overlay');
+    if (overlay && !overlay.classList.contains('hidden') && overlay.dataset.noDismiss === '1') return false;
+    return true;
+  },
+
+  _startOnlineOrdersWidget() {
+    if (!this.canShowOnlineOrders()) return;
+    this.app?.ensureFeatureScript?.('js/online-orders-widget.js').then(() => {
+      if (!this.canShowOnlineOrders()) return;
+      window.OnlineOrdersWidget?.bind?.(this.app);
+      window.OnlineOrdersWidget?.startPolling?.();
+    }).catch(() => {});
+  },
+
+  _syncOnlineOrdersWidget() {
+    if (this.canShowOnlineOrders()) {
+      window.OnlineOrdersWidget?.startPolling?.();
+    } else {
+      window.OnlineOrdersWidget?.stopPolling?.();
+    }
+  },
+
+  async openOnlineOrdersPanel(tab = 'pending') {
+    if (!this.canShowOnlineOrders()) {
+      Utils.toast('Open your shift first — online orders come after that', 'error');
+      await this.ensureShift();
+      if (!this.canShowOnlineOrders()) return;
+    }
+    try {
+      await this.app?.ensureFeatureScript?.('js/online-orders-widget.js');
+      window.OnlineOrdersWidget?.bind?.(this.app);
+      await window.OnlineOrdersWidget?.openPanel?.(tab);
+    } catch (err) {
+      Utils.toast(err?.message || 'Could not open online orders', 'error');
+    }
   },
 
   ensureKioskLogout(el) {
@@ -198,6 +246,7 @@ const POSPage = {
   updateShiftGate() {
     const layout = document.querySelector('.pos-layout');
     if (layout) layout.classList.toggle('pos-shift-blocked', this.requiresShift() && !this.hasOpenShift());
+    this._syncOnlineOrdersWidget();
   },
 
   async ensureShift() {
@@ -245,6 +294,8 @@ const POSPage = {
         if (closeBtn) closeBtn.style.display = '';
         Utils.hideModal();
         Utils.toast('Shift opened — you can now take sales', 'success');
+        this.updateShiftGate();
+        this._startOnlineOrdersWidget();
         resolve();
       });
     });
@@ -281,6 +332,8 @@ const POSPage = {
         const closeBtn = document.getElementById('modal-close');
         if (closeBtn) closeBtn.style.display = '';
         Utils.hideModal();
+        this.updateShiftGate();
+        this._startOnlineOrdersWidget();
         resolve('continue');
       });
       document.getElementById('pos-close-resume-shift').addEventListener('click', () => {
@@ -302,6 +355,9 @@ const POSPage = {
       }
       if (!this.openShift && this.requiresShift()) {
         await this.ensureShift();
+      } else {
+        this.updateShiftGate();
+        this._startOnlineOrdersWidget();
       }
     }
   },
@@ -403,12 +459,17 @@ const POSPage = {
                 style="padding:8px;border-radius:8px;border:1.5px solid var(--border);width:100%">
               <div id="pos-customer-dropdown" class="search-dropdown hidden" style="position:absolute;top:100%;left:0;right:0;z-index:50;max-height:220px;overflow:auto;background:var(--bg);border:1px solid var(--border);border-radius:8px"></div>
             </div>
+            <input type="text" id="pos-referral-code" placeholder="Referral code" autocomplete="off" title="Agent referral code"
+              style="padding:8px;border-radius:8px;border:1.5px solid var(--border);width:120px;max-width:28vw">
+            <input type="text" id="pos-coupon-code" placeholder="Coupon" autocomplete="off" title="Marketing coupon"
+              style="padding:8px;border-radius:8px;border:1.5px solid var(--border);width:110px;max-width:24vw">
             <button class="btn btn-ghost btn-sm" id="pos-clear-customer" title="Clear customer" style="display:none">✕</button>
             <button class="btn btn-ghost btn-sm" id="pos-add-customer" title="Add customer">+ Customer</button>
             <button class="btn btn-primary btn-sm" id="pos-other-item" title="Sell other item">+ Other Item</button>
             <button class="btn btn-ghost btn-sm" id="pos-free-tables" title="Mark sit-in tables available">🪑 Free Table</button>
             <span id="pos-table-label" class="muted" style="font-size:12px;display:none"></span>
             <button class="btn btn-ghost" id="pos-held">📋 Held <span id="pos-held-count" class="tag tag-warn hidden" style="margin-left:4px;font-size:11px">0</span></button>
+            <button class="btn btn-ghost" id="pos-online-orders" title="Online orders">🛒 Online <span id="pos-online-orders-count" class="tag tag-warn hidden" style="margin-left:4px;font-size:11px">0</span></button>
             <button class="btn btn-ghost" id="pos-quote" title="Save cart as quote">📄 Quote</button>
             <button class="btn btn-ghost" id="pos-scanner" title="USB/Bluetooth barcode scanner">📡 Scanner</button>
             <button class="btn btn-ghost" id="pos-printers" title="This computer's printers">🖨️ Printers</button>
@@ -424,6 +485,7 @@ const POSPage = {
           <div id="pos-scan-banner" class="pos-scan-banner hidden">📷 Scanner ready — scan barcode or type code and press Enter</div>
           <div id="pos-target-banner" class="pos-target-banner hidden" style="display:none;padding:10px 14px;margin:0;background:linear-gradient(90deg,rgba(16,185,129,0.18),rgba(59,130,246,0.12));border-bottom:2px solid var(--primary);font-size:15px;font-weight:600"></div>
           <div id="pos-shift-bar" class="muted" style="padding:4px 12px;font-size:12px;background:var(--bg-secondary);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+            <span id="pos-conn-badge" class="pos-conn-badge" role="status" aria-live="polite"></span>
             <span id="pos-shift-bar-main"></span>
             <div id="pos-top-seller-bar" style="display:flex;align-items:center;gap:6px;font-size:11px">
               <span>🏆</span>
@@ -499,6 +561,7 @@ const POSPage = {
     this.bindQuoteTabs();
     Utils.hydrateImages(el);
     this.updatePosBadges();
+    try { window.ShopPosConnection?.refreshPosBadge?.(); } catch (_) { /* ignore */ }
   },
 
   async updatePosBadges() {
@@ -783,6 +846,19 @@ const POSPage = {
     for (const p of this.products || []) {
       if (this.productNeedsDialog(p)) this._productsNeedingOptions.add(String(p.id));
     }
+  },
+
+  async reloadCatalog() {
+    if (!this.app?.user) return;
+    try {
+      const filters = { for_pos: true, actor: this.app.user };
+      const prodRes = await API.getProducts._uncached
+        ? API.getProducts._uncached(filters)
+        : API.getProducts(filters);
+      this.products = prodRes?.data || prodRes || [];
+      this.rebuildProductLookups();
+      this.renderProducts(document.getElementById('pos-search')?.value || '');
+    } catch (_) { /* ignore */ }
   },
 
   comboNeedsOptions(combo) {
@@ -1496,7 +1572,9 @@ const POSPage = {
       Utils.toast(`Added ${product.name}`, 'success');
     }
     this.flashScanBanner('success');
-    if (this.app.settings?.scanner_settings?.beep_on_scan !== false) SoundService?.playScanBeep?.();
+    if (this.app.settings?.scanner_settings?.beep_on_scan !== false && !this.app.isPosKiosk?.()) {
+      SoundService?.playScanBeep?.();
+    }
     const searchInput = document.getElementById('pos-search');
     if (searchInput) {
       searchInput.value = '';
@@ -1736,6 +1814,7 @@ const POSPage = {
     document.getElementById('pos-discount').addEventListener('click', () => this.showDiscountModal());
     document.getElementById('pos-hold').addEventListener('click', () => this.holdOrder());
     document.getElementById('pos-held').addEventListener('click', () => this.showHeldOrders());
+    document.getElementById('pos-online-orders')?.addEventListener('click', () => this.openOnlineOrdersPanel('pending'));
     document.getElementById('pos-quote')?.addEventListener('click', () => this.saveCartAsQuote());
     document.getElementById('pos-save-quote')?.addEventListener('click', () => this.saveCartAsQuote());
     document.getElementById('pos-scanner')?.addEventListener('click', () => this.showScannerSettings());
@@ -2552,7 +2631,7 @@ const POSPage = {
     const orders = res.data || [];
     const html = orders.length ? orders.map(o =>
       `<div style="padding:10px;border-bottom:1px solid var(--border);cursor:pointer" data-hold-id="${o.id}">
-        ${o.name} — ${o.cart_data.length} items — ${Utils.formatDateTime(o.created_at)}
+        ${o.name} — ${(Array.isArray(o.cart_data) ? o.cart_data : o.cart_data?.items || []).length} items — ${Utils.formatDateTime(o.created_at)}
       </div>`).join('') : '<p class="muted">No held orders</p>';
     Utils.showModal('Held Orders', html);
     document.getElementById('modal-body').addEventListener('click', async (e) => {
@@ -2806,6 +2885,8 @@ const POSPage = {
           table_id: this.selectedTable?.id || null,
           table_name: this.selectedTable?.name || null,
           delivery_address: this.orderType === 'delivery' ? (this.deliveryAddress || null) : null,
+          referral_code: (document.getElementById('pos-referral-code')?.value || '').trim() || null,
+          mkt_coupon_code: (document.getElementById('pos-coupon-code')?.value || '').trim() || null,
           notes: [
             this.orderType ? `Order: ${({ delivery: 'Delivery', takeaway: 'Takeaway', sit_in: 'Sit-in' })[this.orderType] || this.orderType}` : null,
             this.orderType === 'delivery' && this.deliveryAddress ? `Deliver to: ${this.deliveryAddress}` : null,
@@ -2832,16 +2913,20 @@ const POSPage = {
           // Treat as accepted till-side: cart must clear so cashier cannot Pay again (duplicate).
           Utils.forceHideModal();
           this.applyLocalSaleStockDeduction(this.cart);
-          this.cart = [];
-          this.discount = 0;
-          this.discountApprover = null;
-          this.discountManagerPin = null;
-          this.orderType = null;
-          this.selectedTable = null;
-          this.updateTableLabel?.();
-          this.selectedCustomer = null;
-          this.clearCustomer?.();
-          this.loadedQuoteId = null;
+        this.cart = [];
+        this.discount = 0;
+        this.discountApprover = null;
+        this.discountManagerPin = null;
+        this.orderType = null;
+        this.selectedTable = null;
+        this.updateTableLabel?.();
+        this.selectedCustomer = null;
+        this.clearCustomer?.();
+        const refEl = document.getElementById('pos-referral-code');
+        const couponEl = document.getElementById('pos-coupon-code');
+        if (refEl) refEl.value = '';
+        if (couponEl) couponEl.value = '';
+        this.loadedQuoteId = null;
           this.renderCart?.();
           this.renderProducts?.();
           Utils.toast(
@@ -2895,18 +2980,24 @@ const POSPage = {
         this.clearCustomer();
         // Keep deliveryAddress until success screen WhatsApp uses sale.delivery_address from DB
         this.deliveryAddress = null;
+        const refOk = document.getElementById('pos-referral-code');
+        const couponOk = document.getElementById('pos-coupon-code');
+        if (refOk) refOk.value = '';
+        if (couponOk) couponOk.value = '';
         this.renderCart();
         this.renderProducts();
         this.showOrderSuccess(sale, change, payments, loyaltyPointsEarned, loyaltyPointsRedeemed, loyaltyDiscount, this.lastSaleCustomer);
-        if (customerReward?.grants?.length) {
+        if (customerReward?.grants?.length && !this.app.isPosKiosk?.()) {
           this.handleCustomerRewardNotifications(customerReward, currency);
         }
-        Utils.toast(
-          sitInTableName
-            ? `Sale completed — ${sale.receipt_number}. Table ${sitInTableName} stays occupied until Free Table.`
-            : `Sale completed — ${sale.receipt_number}`,
-          'success'
-        );
+        if (!this.app.isPosKiosk?.()) {
+          Utils.toast(
+            sitInTableName
+              ? `Sale completed — ${sale.receipt_number}. Table ${sitInTableName} stays occupied until Free Table.`
+              : `Sale completed — ${sale.receipt_number}`,
+            'success'
+          );
+        }
 
         // Non-critical: refresh products, print, kitchen, notifications — never block success UI
         const postSaleWork = async () => {
@@ -2937,7 +3028,9 @@ const POSPage = {
           } catch (_) { /* keep optimistic stock */ }
           try { await this.printReceiptSafe(sale); } catch (_) { /* receipt optional */ }
           try { await this.printKitchenSafe(sale); } catch (_) { /* kitchen optional */ }
-          try { await this.app.loadNotifications(); } catch (_) { /* ignore */ }
+          if (!this.app.isPosKiosk?.()) {
+            try { await this.app.loadNotifications(); } catch (_) { /* ignore */ }
+          }
         };
         postSaleWork();
         } finally {
@@ -3046,7 +3139,7 @@ const POSPage = {
         gift_card_line: giftLine,
         delivery_address: deliveryAddr,
         delivery_address_line: deliveryAddr ? `📍 Deliver to: ${deliveryAddr}` : '',
-        branch: this.app.settings?.shop_name,
+        branch: this.activeBranch?.name || this.app.settings?.shop_name,
         phone_shop: this.app.settings?.phone,
         order_number: sale.order_number || sale.receipt_number,
         receipt_number: sale.receipt_number,
@@ -3068,7 +3161,7 @@ const POSPage = {
           recipient_type: 'customer',
           recipient_name: waRecipient.name,
           customer_name: waRecipient.name,
-          branch: this.app.settings?.shop_name,
+          branch: this.activeBranch?.name || this.app.settings?.shop_name,
           order_number: sale.order_number || sale.receipt_number,
           receipt_number: sale.receipt_number,
           total_purchase: sale.total,

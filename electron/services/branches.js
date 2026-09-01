@@ -1,6 +1,168 @@
 const { getDb } = require('../database/db');
 
+function softAlter(sql) {
+  const db = getDb();
+  try {
+    db.exec(sql);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function tableExists(name) {
+  try {
+    return !!getDb().prepare(
+      "SELECT 1 AS v FROM sqlite_master WHERE type='table' AND name = ? LIMIT 1"
+    ).get(name);
+  } catch (_) {
+    try {
+      getDb().prepare(`SELECT 1 AS v FROM ${name} LIMIT 1`).get();
+      return true;
+    } catch (__) {
+      return false;
+    }
+  }
+}
+
+function hasColumn(table, column) {
+  try {
+    const rows = getDb().prepare(`PRAGMA table_info(${table})`).all();
+    return rows.some((r) => String(r.name || '').toLowerCase() === String(column).toLowerCase());
+  } catch (_) {
+    return false;
+  }
+}
+
+let branchSchemaReady = false;
+let branchSchemaFlags = null;
+
+/** Soft-add multi-branch columns/tables so dashboards never die with "no such column: branch_id". */
+function ensureBranchSchema() {
+  if (branchSchemaReady && branchSchemaFlags) return branchSchemaFlags;
+  softAlter('ALTER TABLE sales ADD COLUMN branch_id INTEGER DEFAULT 1');
+  softAlter('ALTER TABLE products ADD COLUMN branch_id INTEGER DEFAULT 1');
+  softAlter('ALTER TABLE users ADD COLUMN branch_id INTEGER');
+  softAlter('ALTER TABLE expenses ADD COLUMN branch_id INTEGER');
+  softAlter('ALTER TABLE employees ADD COLUMN branch_id INTEGER');
+  softAlter('ALTER TABLE shop_settings ADD COLUMN branch_id INTEGER DEFAULT 1');
+  softAlter('ALTER TABLE shop_settings ADD COLUMN view_branch_id INTEGER');
+  softAlter('ALTER TABLE stock_movements ADD COLUMN branch_id INTEGER');
+  softAlter('ALTER TABLE shifts ADD COLUMN branch_id INTEGER DEFAULT 1');
+  softAlter('ALTER TABLE branches ADD COLUMN business_id INTEGER');
+  if (!tableExists('branch_stock')) {
+    softAlter(`CREATE TABLE IF NOT EXISTS branch_stock (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      product_id INTEGER NOT NULL,
+      branch_id INTEGER NOT NULL,
+      quantity REAL NOT NULL DEFAULT 0,
+      min_stock REAL DEFAULT 0,
+      updated_at TEXT DEFAULT (datetime('now')),
+      UNIQUE(product_id, branch_id)
+    )`);
+  }
+  if (!tableExists('branch_settings')) {
+    softAlter(`CREATE TABLE IF NOT EXISTS branch_settings (
+      branch_id INTEGER PRIMARY KEY,
+      tax_enabled INTEGER DEFAULT 0,
+      tax_rate REAL DEFAULT 0,
+      tax_inclusive INTEGER DEFAULT 1,
+      tax_show_on_pos INTEGER DEFAULT 1,
+      vat_number TEXT,
+      updated_at TEXT DEFAULT (datetime('now'))
+    )`);
+  }
+  try {
+    getDb().prepare(`
+      INSERT OR IGNORE INTO branch_stock (product_id, branch_id, quantity, min_stock)
+      SELECT p.id, COALESCE((SELECT branch_id FROM shop_settings WHERE id = 1), 1),
+        COALESCE(p.stock_quantity, 0), COALESCE(p.min_stock, 0)
+      FROM products p
+    `).run();
+  } catch (_) { /* optional seed */ }
+  try {
+    getDb().prepare(`
+      UPDATE expenses SET branch_id = COALESCE((SELECT branch_id FROM shop_settings WHERE id = 1), 1)
+      WHERE branch_id IS NULL
+    `).run();
+  } catch (_) { /* ignore */ }
+  branchSchemaFlags = {
+    sales: hasColumn('sales', 'branch_id'),
+    expenses: hasColumn('expenses', 'branch_id'),
+    users: hasColumn('users', 'branch_id'),
+    branch_stock: tableExists('branch_stock')
+  };
+  branchSchemaReady = true;
+  try { ensureDefaultBranch(); } catch (_) { /* optional on first boot */ }
+  return branchSchemaFlags;
+}
+
+function syncBranchesIdSequence() {
+  try {
+    const { isPgMode } = require('../database/pg-db');
+    if (!isPgMode()) return;
+    getDb().prepare(
+      "SELECT setval(pg_get_serial_sequence('branches', 'id'), GREATEST(1, (SELECT COALESCE(MAX(id), 1) FROM branches)))"
+    ).get();
+  } catch (_) { /* optional on SQLite */ }
+}
+
+/** Move branch_stock rows off deleted/missing branch ids onto the active branch. */
+function repairOrphanBranchStock(validBranchId, orphanBranchId = null) {
+  if (!validBranchId) return;
+  const db = getDb();
+  let orphanIds = [];
+  if (orphanBranchId && !getBranch(orphanBranchId)) orphanIds.push(Number(orphanBranchId));
+  try {
+    const rows = db.prepare(`
+      SELECT DISTINCT bs.branch_id AS id
+      FROM branch_stock bs
+      LEFT JOIN branches b ON b.id = bs.branch_id
+      WHERE b.id IS NULL
+    `).all();
+    orphanIds = [...new Set([...orphanIds, ...rows.map((r) => Number(r.id)).filter(Boolean)])];
+  } catch (_) { /* branch_stock may not exist */ }
+  for (const badId of orphanIds) {
+    if (!badId || badId === validBranchId) continue;
+    try {
+      db.prepare(`
+        INSERT INTO branch_stock (product_id, branch_id, quantity, min_stock)
+        SELECT product_id, ?, quantity, min_stock FROM branch_stock WHERE branch_id = ?
+        ON CONFLICT (product_id, branch_id) DO UPDATE SET
+          quantity = COALESCE(branch_stock.quantity, 0) + COALESCE(excluded.quantity, 0),
+          min_stock = COALESCE(excluded.min_stock, branch_stock.min_stock)
+      `).run(validBranchId, badId);
+      db.prepare('DELETE FROM branch_stock WHERE branch_id = ?').run(badId);
+    } catch (_) {
+      try {
+        db.prepare('UPDATE branch_stock SET branch_id = ? WHERE branch_id = ?').run(validBranchId, badId);
+      } catch (__) { /* ignore */ }
+    }
+  }
+}
+
+/** Point shop_settings.branch_id at a real branch when it references a missing row. */
+function repairShopSettingsBranchId() {
+  const db = getDb();
+  let configured = 0;
+  try {
+    configured = Number(db.prepare('SELECT branch_id FROM shop_settings WHERE id = 1').get()?.branch_id) || 0;
+  } catch (_) {
+    return null;
+  }
+  if (configured && getBranch(configured)) return configured;
+  const first = db.prepare('SELECT id FROM branches ORDER BY id LIMIT 1').get();
+  if (!first?.id) return null;
+  const id = Number(first.id);
+  try {
+    db.prepare('UPDATE shop_settings SET branch_id = ? WHERE id = 1').run(id);
+  } catch (_) { /* optional */ }
+  repairOrphanBranchStock(id, configured || 1);
+  return id;
+}
+
 function getBranches() {
+  ensureDefaultBranch();
   return getDb().prepare('SELECT * FROM branches ORDER BY name').all();
 }
 
@@ -10,6 +172,54 @@ function getBranch(id) {
 
 function getBranchByCode(code) {
   return getDb().prepare('SELECT * FROM branches WHERE code = ?').get(String(code).toUpperCase());
+}
+
+/** Ensure a real branch exists and shop_settings.branch_id points at it (fixes Railway stock overlay). */
+function ensureDefaultBranch() {
+  ensureBranchSchema();
+  const db = getDb();
+
+  const repaired = repairShopSettingsBranchId();
+  if (repaired) return repaired;
+
+  let row = null;
+  try {
+    row = db.prepare('SELECT id FROM branches WHERE id = 1').get();
+  } catch (_) { /* table missing */ }
+  if (row?.id) {
+    try {
+      db.prepare('UPDATE shop_settings SET branch_id = 1 WHERE id = 1').run();
+    } catch (_) { /* optional */ }
+    repairOrphanBranchStock(1);
+    return 1;
+  }
+
+  try {
+    db.prepare(
+      "INSERT INTO branches (id, name, code, address, phone, is_active) VALUES (1, 'Main Branch', 'MAIN', NULL, NULL, 1)"
+    ).run();
+    syncBranchesIdSequence();
+    try {
+      db.prepare('UPDATE shop_settings SET branch_id = 1 WHERE id = 1').run();
+    } catch (_) { /* optional */ }
+    repairOrphanBranchStock(1);
+    return 1;
+  } catch (_) {
+    try {
+      const r2 = db.prepare(
+        "INSERT INTO branches (name, code, address, phone, is_active) VALUES ('Main Branch', 'MAIN', NULL, NULL, 1)"
+      ).run();
+      const id = Number(r2.lastInsertRowid) || 1;
+      syncBranchesIdSequence();
+      try {
+        db.prepare('UPDATE shop_settings SET branch_id = ? WHERE id = 1').run(id);
+      } catch (__) { /* optional */ }
+      repairOrphanBranchStock(id, 1);
+      return id;
+    } catch (err) {
+      return 1;
+    }
+  }
 }
 
 function saveBranch(data) {
@@ -40,9 +250,8 @@ function setActiveBranch(branchId) {
 }
 
 function getActiveBranch() {
-  const settings = getDb().prepare('SELECT branch_id FROM shop_settings WHERE id = 1').get();
-  const id = settings?.branch_id || 1;
-  return getBranchDetail(id) || { id: 1, name: 'Main Branch', code: 'MAIN' };
+  const id = ensureDefaultBranch();
+  return getBranchDetail(id) || { id, name: 'Main Branch', code: 'MAIN' };
 }
 
 function setViewBranch(branchId) {
@@ -75,12 +284,15 @@ function getViewBranch() {
 }
 
 function resolveBranchScope(actor = null, opts = {}) {
+  ensureBranchSchema();
   const db = getDb();
   const tillId = (() => {
+    const fallback = ensureDefaultBranch();
     try {
-      return db.prepare('SELECT branch_id FROM shop_settings WHERE id = 1').get()?.branch_id || 1;
+      const fromSettings = Number(db.prepare('SELECT branch_id FROM shop_settings WHERE id = 1').get()?.branch_id) || fallback;
+      return getBranch(fromSettings) ? fromSettings : fallback;
     } catch (_) {
-      return 1;
+      return fallback;
     }
   })();
 
@@ -92,9 +304,18 @@ function resolveBranchScope(actor = null, opts = {}) {
     viewId = null;
   }
 
-  const user = actor?.id
-    ? db.prepare('SELECT id, role, branch_id FROM users WHERE id = ?').get(actor.id)
-    : null;
+  let user = null;
+  if (actor?.id) {
+    try {
+      user = db.prepare('SELECT id, role, branch_id FROM users WHERE id = ?').get(actor.id);
+    } catch (_) {
+      try {
+        user = db.prepare('SELECT id, role FROM users WHERE id = ?').get(actor.id);
+      } catch (__) {
+        user = null;
+      }
+    }
+  }
   const role = user?.role || actor?.role || null;
 
   if (role === 'marketing_agent') {
@@ -115,7 +336,24 @@ function resolveBranchScope(actor = null, opts = {}) {
   }
 
   const bound = user?.branch_id != null ? Number(user.branch_id) : tillId;
+  if (opts.forceTill && user?.branch_id != null && Number(user.branch_id) === Number(tillId)) {
+    return { branchId: tillId, allBranches: false, tillId, role, stampId: tillId };
+  }
   return { branchId: bound, allBranches: false, tillId, role, stampId: bound };
+}
+
+function assertUserTillBranch(user) {
+  if (!user || user.role === 'owner') return { ok: true };
+  const till = getActiveBranch();
+  const tillId = Number(till?.id || 1);
+  if (user.branch_id == null || user.branch_id === '') return { ok: true };
+  if (Number(user.branch_id) === tillId) return { ok: true };
+  const userBranch = getBranch(user.branch_id);
+  const tillBranch = till || getBranch(tillId);
+  return {
+    ok: false,
+    error: `This till is connected to "${tillBranch?.name || 'another branch'}". Your account belongs to "${userBranch?.name || 'a different branch'}". Ask Admin to connect this computer to your branch, or sign in with an account for this branch.`
+  };
 }
 
 function getBranchStaffSummary(branchId) {
@@ -196,9 +434,11 @@ function saveBranchSettings(branchId, data) {
 }
 
 function ensureBranchStockRow(productId, branchId) {
+  ensureBranchSchema();
   const db = getDb();
   const pid = Number(productId);
-  const bid = Number(branchId) || 1;
+  let bid = Number(branchId) || ensureDefaultBranch();
+  if (!getBranch(bid)) bid = ensureDefaultBranch();
   let row = null;
   try {
     row = db.prepare('SELECT * FROM branch_stock WHERE product_id = ? AND branch_id = ?').get(pid, bid);
@@ -213,9 +453,17 @@ function ensureBranchStockRow(productId, branchId) {
     db.prepare(`
       INSERT INTO branch_stock (product_id, branch_id, quantity, min_stock) VALUES (?, ?, ?, ?)
     `).run(pid, bid, qty, min);
-  } catch (_) { /* race */ }
-  return db.prepare('SELECT * FROM branch_stock WHERE product_id = ? AND branch_id = ?').get(pid, bid)
-    || { product_id: pid, branch_id: bid, quantity: qty, min_stock: min };
+  } catch (_) {
+    try {
+      db.prepare(`
+        UPDATE branch_stock SET quantity = ?, min_stock = ?, updated_at = datetime('now')
+        WHERE product_id = ? AND branch_id = ?
+      `).run(qty, min, pid, bid);
+    } catch (__) { /* fall through */ }
+  }
+  row = db.prepare('SELECT * FROM branch_stock WHERE product_id = ? AND branch_id = ?').get(pid, bid);
+  if (row) return row;
+  throw new Error(`Could not create branch stock row for product #${pid} (branch ${bid})`);
 }
 
 function getBranchStockQuantity(productId, branchId) {
@@ -225,7 +473,7 @@ function getBranchStockQuantity(productId, branchId) {
 
 function adjustBranchStock(productId, quantity, type, notes, userId, refType, refId, branchId) {
   const db = getDb();
-  const bid = Number(branchId) || resolveBranchScope(null, { forceTill: true }).stampId;
+  const bid = ensureDefaultBranch(Number(branchId) || resolveBranchScope(null, { forceTill: true }).stampId);
   const product = db.prepare('SELECT * FROM products WHERE id = ?').get(productId);
   if (!product) throw new Error('Product not found');
   const row = ensureBranchStockRow(productId, bid);
@@ -240,15 +488,25 @@ function adjustBranchStock(productId, quantity, type, notes, userId, refType, re
   } else {
     newStock = prev + (Number(quantity) || 0);
   }
-  db.prepare(`
-    UPDATE branch_stock SET quantity = ?, updated_at = datetime('now') WHERE product_id = ? AND branch_id = ?
-  `).run(newStock, productId, bid);
   try {
-    const sum = db.prepare('SELECT COALESCE(SUM(quantity),0) as v FROM branch_stock WHERE product_id = ?').get(productId)?.v || 0;
-    db.prepare(`UPDATE products SET stock_quantity = ?, updated_at = datetime('now') WHERE id = ?`).run(sum, productId);
+    db.prepare(`
+      INSERT INTO branch_stock (product_id, branch_id, quantity, min_stock, updated_at)
+      VALUES (?, ?, ?, ?, datetime('now'))
+      ON CONFLICT(product_id, branch_id) DO UPDATE SET
+        quantity = excluded.quantity,
+        updated_at = datetime('now')
+    `).run(productId, bid, newStock, row.min_stock ?? product.min_stock ?? 0);
   } catch (_) {
-    db.prepare(`UPDATE products SET stock_quantity = ?, updated_at = datetime('now') WHERE id = ?`).run(newStock, productId);
+    db.prepare(`
+      UPDATE branch_stock SET quantity = ?, updated_at = datetime('now') WHERE product_id = ? AND branch_id = ?
+    `).run(newStock, productId, bid);
   }
+  let total = newStock;
+  try {
+    const sum = Number(db.prepare('SELECT COALESCE(SUM(quantity),0) AS v FROM branch_stock WHERE product_id = ?').get(productId)?.v);
+    if (Number.isFinite(sum) && sum > 0) total = sum;
+  } catch (_) { /* keep newStock */ }
+  db.prepare(`UPDATE products SET stock_quantity = ?, updated_at = datetime('now') WHERE id = ?`).run(total, productId);
   try {
     db.prepare(`
       INSERT INTO stock_movements (product_id, movement_type, quantity, previous_stock, new_stock, reference_type, reference_id, notes, user_id, branch_id)
@@ -260,7 +518,15 @@ function adjustBranchStock(productId, quantity, type, notes, userId, refType, re
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(productId, type === 'set' ? 'adjust' : type, moveQty, prev, newStock, refType, refId, notes, userId);
   }
-  return newStock;
+  const verified = db.prepare('SELECT quantity FROM branch_stock WHERE product_id = ? AND branch_id = ?').get(productId, bid);
+  const finalQty = Number(verified?.quantity);
+  if (!Number.isFinite(finalQty)) {
+    throw new Error(`Branch stock row missing after update for product #${productId} (branch ${bid})`);
+  }
+  if (Math.abs(finalQty - newStock) > 0.0001) {
+    throw new Error(`Branch stock save failed for product #${productId} (expected ${newStock}, got ${finalQty})`);
+  }
+  return finalQty;
 }
 
 function assertBranchRoleSlot(role, branchId, excludeUserId = null) {
@@ -289,6 +555,7 @@ module.exports = {
   setViewBranch,
   getViewBranch,
   resolveBranchScope,
+  assertUserTillBranch,
   getBranchStaffSummary,
   getBranchDetail,
   getBranchesDetailed,
@@ -296,5 +563,10 @@ module.exports = {
   ensureBranchStockRow,
   getBranchStockQuantity,
   adjustBranchStock,
-  assertBranchRoleSlot
+  ensureDefaultBranch,
+  upsertBranchStockQuantity,
+  assertBranchRoleSlot,
+  ensureBranchSchema,
+  hasColumn,
+  tableExists
 };

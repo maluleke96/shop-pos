@@ -204,6 +204,7 @@ const Utils = {
   },
 
   toast(msg, type = 'info') {
+    if (window.__SHOP_POS_APP_MODE__ === 'pos') return;
     const el = document.createElement('div');
     el.className = `toast ${type}`;
     el.textContent = msg;
@@ -212,14 +213,19 @@ const Utils = {
   },
 
   showModal(title, bodyHtml, footerHtml = '', options = {}) {
+    const overlay = document.getElementById('modal-overlay');
+    // Never replace a blocking modal (e.g. open-shift) unless explicitly forced.
+    if (!options.force && overlay?.dataset.noDismiss === '1' && !options.noDismiss) {
+      return false;
+    }
     document.getElementById('modal-title').textContent = title;
     document.getElementById('modal-body').innerHTML = bodyHtml;
     document.getElementById('modal-footer').innerHTML = footerHtml;
-    const overlay = document.getElementById('modal-overlay');
     overlay.classList.remove('hidden');
     overlay.dataset.noDismiss = options.noDismiss ? '1' : '0';
     const closeBtn = document.getElementById('modal-close');
     if (closeBtn) closeBtn.style.display = options.noDismiss ? 'none' : '';
+    return true;
   },
 
   hideModal() {
@@ -294,7 +300,8 @@ const Utils = {
   /** Sections managers/supervisors should always see when they have admin access */
   adminManagerSections: new Set([
     'overview', 'staffhr', 'staffportal', 'hrcontracts', 'recruitment', 'marketing-mgmt', 'employee-of-month', 'opscompliance', 'combos',
-    'quotes', 'approvals', 'recipe', 'tax', 'tax-hub', 'cashiers', 'permissions', 'branches'
+    'quotes', 'approvals', 'recipe', 'tax', 'tax-hub', 'cashiers', 'branches',
+    'mobile-app', 'business-manager', 'online-orders', 'hr-workspace', 'accounting-workspace'
   ]),
 
   canAccessAdmin(user) {
@@ -319,14 +326,14 @@ const Utils = {
 
   roleDefaults: {
     owner: { sell: true, void_sales: true, refunds: true, discounts: true, change_prices: true, view_reports: true, manage_stock: true, system_settings: true, customers: true, suppliers: true, gift_cards: true, cash_up: true, products: true, reports: true, operations: true, kitchen: true, quotes: true, layby: true, delete_sales: true, bookkeeping: true, staff_portal: true },
-    manager: { sell: true, void_sales: true, refunds: true, discounts: true, change_prices: true, view_reports: true, manage_stock: true, customers: true, suppliers: true, gift_cards: true, cash_up: true, products: true, reports: true, operations: true, kitchen: true, quotes: true, layby: true, owner_salary: true, owner_salary_only: false, bookkeeping: true, staff_portal: false },
-    supervisor: { sell: true, void_sales: true, refunds: true, discounts: true, cash_up: true, operations: true, kitchen: true, gift_cards: true, layby: true, quotes: true, staff_portal: false },
+    manager: { sell: true, void_sales: true, refunds: true, discounts: true, change_prices: true, view_reports: true, manage_stock: true, customers: true, suppliers: true, gift_cards: true, cash_up: true, products: true, reports: true, operations: true, kitchen: true, quotes: true, layby: true, owner_salary: true, owner_salary_only: false, bookkeeping: true, staff_portal: false, delivery: true },
+    supervisor: { sell: true, void_sales: true, refunds: true, discounts: true, cash_up: true, operations: true, kitchen: true, gift_cards: true, layby: true, quotes: true, staff_portal: false, delivery: true },
     assistant_manager: {
       sell: true, void_sales: true, refunds: true, discounts: true, cash_up: true, operations: true,
-      kitchen: true, gift_cards: true, layby: true, quotes: true, view_reports: true, customers: true, products: true, staff_portal: false
+      kitchen: true, gift_cards: true, layby: true, quotes: true, view_reports: true, customers: true, products: true, staff_portal: false, delivery: true
     },
     marketing_agent: {},
-    cashier: { sell: true, refunds: false, owner_salary: false, owner_salary_only: false, staff_portal: false }
+    cashier: { sell: true, refunds: false, owner_salary: false, owner_salary_only: false, staff_portal: false, delivery: true }
   },
 
   normalizePhone(phone) {
@@ -972,7 +979,50 @@ const Utils = {
     });
   },
 
+  /** Remove cached script and load fresh (for feature modules like HR workspace). */
+  reloadScript(src) {
+    const base = String(src).split('?')[0];
+    document.querySelectorAll('script[src]').forEach((el) => {
+      const href = el.getAttribute('src') || '';
+      if (href === base || href.startsWith(`${base}?`) || href.endsWith(`/${base}`) || href.includes(`/${base}?`)) {
+        el.remove();
+      }
+    });
+    for (const key of [...this._loadedScripts]) {
+      if (key === base || key.startsWith(`${base}?`)) this._loadedScripts.delete(key);
+    }
+    if (base.includes('hr-app.js')) delete window.HrApp;
+    const busted = `${base}?v=${Date.now()}`;
+    return new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = busted;
+      s.onload = () => { this._loadedScripts.add(busted); resolve(); };
+      s.onerror = () => reject(new Error(`Failed to load ${busted}`));
+      document.body.appendChild(s);
+    });
+  },
+
   _loadedStyles: new Set(),
+
+  reloadStylesheet(href) {
+    const base = String(href).split('?')[0];
+    document.querySelectorAll('link[rel="stylesheet"]').forEach((el) => {
+      const h = el.getAttribute('href') || '';
+      if (h === base || h.startsWith(`${base}?`) || h.endsWith(`/${base}`)) el.remove();
+    });
+    for (const key of [...this._loadedStyles]) {
+      if (key === base || key.startsWith(`${base}?`)) this._loadedStyles.delete(key);
+    }
+    const busted = `${base}?v=${Date.now()}`;
+    return new Promise((resolve, reject) => {
+      const l = document.createElement('link');
+      l.rel = 'stylesheet';
+      l.href = busted;
+      l.onload = () => { this._loadedStyles.add(busted); resolve(); };
+      l.onerror = () => reject(new Error(`Failed to load ${busted}`));
+      document.head.appendChild(l);
+    });
+  },
 
   loadStylesheet(href) {
     if (this._loadedStyles.has(href)) return Promise.resolve();
