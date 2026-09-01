@@ -88,11 +88,15 @@ const OrderApp = {
         const branches = await OrderAPI.getBranches();
         this.branch = branches.find((b) => String(b.id) === savedBranch) || null;
       }
-      this.view = this.branch ? (this.token ? 'home' : 'welcome') : 'branches';
-      const savedView = localStorage.getItem('order_view');
-      const safeViews = ['home', 'menu', 'welcome', 'account', 'orders'];
-      if (this.branch && savedView && safeViews.includes(savedView)) {
-        this.view = savedView;
+      // Flow: login first → pick branch → menu
+      if (!this.token) {
+        this.view = 'login';
+      } else if (!this.branch) {
+        this.view = 'branches';
+      } else {
+        const savedView = localStorage.getItem('order_view');
+        const safeViews = ['home', 'menu', 'account', 'orders'];
+        this.view = savedView && safeViews.includes(savedView) ? savedView : 'home';
       }
       this.render();
       if (this.branch) this.loadMenu();
@@ -139,6 +143,23 @@ const OrderApp = {
     });
   },
 
+  bindModifierInputs() {
+    document.querySelectorAll('[data-type="radio-optional"] input[type="radio"]').forEach((input) => {
+      input.addEventListener('mousedown', function () {
+        this._prevChecked = this.checked;
+      });
+      input.addEventListener('click', function (e) {
+        if (this._prevChecked) {
+          this.checked = false;
+          this._prevChecked = false;
+          e.preventDefault();
+        } else {
+          this._prevChecked = true;
+        }
+      });
+    });
+  },
+
   bind() {
     const app = document.getElementById('app');
     app.onclick = async (e) => {
@@ -147,7 +168,7 @@ const OrderApp = {
       const act = btn.dataset.act;
       if (act === 'nav') {
         const next = btn.dataset.view;
-        if ((next === 'account' || next === 'orders') && !this.token) {
+        if (!this.token && !['login', 'register'].includes(next)) {
           this.view = 'login';
           this.authReturn = next;
         } else {
@@ -166,7 +187,7 @@ const OrderApp = {
         const branches = await OrderAPI.getBranches();
         this.branch = branches.find((b) => String(b.id) === id);
         localStorage.setItem('order_branch', id);
-        this.view = this.token ? 'home' : 'welcome';
+        this.view = 'home';
         await this.loadMenu();
         this.render();
         return;
@@ -274,7 +295,7 @@ const OrderApp = {
           localStorage.setItem('order_token', this.token);
           this.customer = r.customer;
           await this.refreshLoyaltyAccount();
-          const dest = this.authReturn || (this.branch ? 'home' : 'branches');
+          const dest = this.authReturn || 'branches';
           this.authReturn = null;
           this.view = dest;
           this.toast('Welcome back!', 'success');
@@ -302,7 +323,7 @@ const OrderApp = {
           this.customer = r.customer;
           await this.refreshLoyaltyAccount();
           this.authReturn = null;
-          this.view = this.branch ? 'home' : 'branches';
+          this.view = 'branches';
           this.toast('Account created', 'success');
           this.render();
         } catch (err) { this.toast(err.message, 'error'); }
@@ -313,7 +334,7 @@ const OrderApp = {
         this.token = '';
         this.customer = null;
         localStorage.removeItem('order_token');
-        this.view = 'home';
+        this.view = 'login';
         this.render();
         return;
       }
@@ -375,16 +396,12 @@ const OrderApp = {
     try { localStorage.setItem('order_view', this.view); } catch (_) { /* ignore */ }
     const app = document.getElementById('app');
     if (this.view === 'branches') {
+      if (!this.token) { this.view = 'login'; return this.render(); }
       const branches = await OrderAPI.getBranches();
       app.innerHTML = this.shell(`<section class="page branch-step">
         <div class="branch-step-icon">📍</div>
         <h1>Select your closest branch</h1>
         <p class="lead">Choose the branch nearest to you — your menu, stock, and delivery options depend on this.</p>
-        ${!this.token ? `<div class="checkout-card" style="text-align:center;margin-bottom:20px">
-          <p style="margin:0 0 12px"><strong>Create an account</strong> to earn loyalty points and checkout faster.</p>
-          <button type="button" class="btn-primary" data-act="nav" data-view="register" style="margin-right:8px">Register free</button>
-          <button type="button" class="btn-outline" data-act="nav" data-view="login">Sign in</button>
-        </div>` : ''}
         <div class="branch-list">${branches.map((b) => {
           const st = b.is_open ? 'open' : (b.status === 'busy' ? 'busy' : 'closed');
           return `<button type="button" class="branch-card" data-act="pick-branch" data-id="${b.id}">
@@ -456,15 +473,26 @@ const OrderApp = {
         <p class="muted">${this.esc(p.description)}</p>
         <div class="price-row">${p.on_sale ? `<s>${this.money(p.price)}</s> <strong class="sale">${this.money(p.sale_price)}</strong>` : `<strong>${this.money(p.price)}</strong>`}
         <span class="stock ${p.available ? 'ok' : 'out'}">${p.available ? '● Available' : 'Out of stock'}</span></div>
-        ${groups.map((g) => `<fieldset class="mod-group" data-mod-group="${this.esc(g.name)}" data-required="${g.required ? '1' : '0'}" data-type="radio">
-          <legend>${this.esc(g.name)}${g.required ? ' *' : ''}</legend>
+        ${groups.map((g) => {
+          const gType = g.type || (g.required ? 'radio' : 'radio-optional');
+          if (gType === 'checkbox') {
+            return `<fieldset class="mod-group" data-mod-group="${this.esc(g.name)}" data-required="0" data-type="checkbox">
+          <legend>${this.esc(g.name)}</legend>
+          ${g.options.map((o) => `<label class="mod-opt ${o.out_of_stock ? 'disabled' : ''}"><input type="checkbox" name="mod-${this.esc(g.name)}" value="${o.id}" data-name="${this.esc(o.name)}" ${o.out_of_stock ? 'disabled' : ''}>
+            ${this.esc(o.name)}${o.extra_price ? ` ${o.extra_price < 0 ? '' : '+'}${this.money(o.extra_price)}` : ''}${o.out_of_stock ? ' (Out of stock)' : ''}</label>`).join('')}
+        </fieldset>`;
+          }
+          return `<fieldset class="mod-group" data-mod-group="${this.esc(g.name)}" data-required="${g.required ? '1' : '0'}" data-type="${gType}">
+          <legend>${this.esc(g.name)}${g.required ? ' *' : ' <small class="muted">(optional — tap again to clear)</small>'}</legend>
           ${g.options.map((o) => `<label class="mod-opt ${o.out_of_stock ? 'disabled' : ''}"><input type="radio" name="mod-${this.esc(g.name)}" value="${o.id}" data-name="${this.esc(o.name)}" ${o.out_of_stock ? 'disabled' : ''}>
-            ${this.esc(o.name)}${o.extra_price ? ` +${this.money(o.extra_price)}` : ''}${o.out_of_stock ? ' (Out of stock)' : ''}</label>`).join('')}
-        </fieldset>`).join('')}
+            ${this.esc(o.name)}${o.extra_price ? ` ${o.extra_price < 0 ? '' : '+'}${this.money(o.extra_price)}` : ''}${o.out_of_stock ? ' (Out of stock)' : ''}</label>`).join('')}
+        </fieldset>`;
+        }).join('')}
         <div class="qty-row"><label>Qty</label><input type="number" id="prod-qty" min="1" value="1" class="qty-input"></div>
         <button type="button" class="btn-primary btn-block" data-act="add-cart" data-id="${p.id}" ${p.available ? '' : 'disabled'}>Add to cart</button>
       </section>`);
       this.bind();
+      this.bindModifierInputs();
       return;
     }
     if (this.view === 'cart') {
@@ -536,11 +564,9 @@ const OrderApp = {
         </div>
         <div class="totals">
           <div>Subtotal <span>${this.money(q.subtotal)}</span></div>
-          ${q.loyalty_discount ? `<div>Loyalty <span>-${this.money(q.loyalty_discount)}</span></div>` : ''}
-          ${q.discount && !q.loyalty_discount ? `<div>Discount <span>-${this.money(q.discount)}</span></div>` : ''}
-          ${q.discount && q.loyalty_discount ? `<div>Other discount <span>-${this.money(Math.max(0, (q.discount || 0) - (q.loyalty_discount || 0)))}</span></div>` : ''}
+          ${q.discount ? `<div>Discount${q.coupon?.code ? ` (${this.esc(q.coupon.code)}${q.coupon.discount_type ? ` · ${this.esc(q.coupon.discount_type)}` : ''})` : ''}${q.loyalty_discount ? ` · Loyalty ${ptsUsed} pts` : ''} <span>-${this.money(q.discount)}</span></div>` : ''}
           ${q.delivery_fee ? `<div>Delivery <span>${this.money(q.delivery_fee)}</span></div>` : ''}
-          ${q.tax_amount ? `<div>Tax <span>${this.money(q.tax_amount)}</span></div>` : ''}
+          ${q.tax_amount ? `<div>Tax${this.settings?.tax_enabled && this.settings?.tax_rate ? ` (${this.settings.tax_rate}%)` : ''} <span>${this.money(q.tax_amount)}</span></div>` : (this.settings?.tax_enabled ? `<div class="muted" style="font-size:13px">Prices ${this.settings?.tax_inclusive ? 'include' : 'exclude'} tax where applicable</div>` : '')}
           <div class="total-line">Total <strong>${this.money(q.total)}</strong></div>
         </div>
         <button type="button" class="btn-primary btn-block" data-act="place-order">Place order · ${this.money(q.total)}</button>
@@ -587,7 +613,6 @@ const OrderApp = {
         <label>Password<input type="password" id="login-pass" autocomplete="current-password" required placeholder="Your password"></label>
         <button type="submit" class="btn-primary btn-block" data-act="login-submit">Sign in</button>
         <button type="button" class="link-btn" data-act="nav" data-view="register">Create account</button>
-        <button type="button" class="link-btn" data-act="nav" data-view="home">← Back to menu</button>
       </form></div>`;
       this.bind();
       document.getElementById('login-id')?.focus();

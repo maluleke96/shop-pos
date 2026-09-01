@@ -55,14 +55,29 @@ function getLoyaltyPublicSettings() {
   }
 }
 
+function calcOnlineTaxTotals(grossTotal, discount, taxRatePct, taxEnabled, taxInclusive) {
+  const afterDiscount = round2(Math.max(0, (Number(grossTotal) || 0) - Math.max(0, Number(discount) || 0)));
+  const rate = Number(taxRatePct) || 0;
+  if (!taxEnabled || !rate) return { subtotal: afterDiscount, tax_amount: 0, total: afterDiscount };
+  const inclusive = taxInclusive !== false && taxInclusive !== 0 && taxInclusive !== '0';
+  if (!inclusive) {
+    const tax_amount = round2(afterDiscount * rate / 100);
+    return { subtotal: afterDiscount, tax_amount, total: round2(afterDiscount + tax_amount) };
+  }
+  const tax_amount = round2(afterDiscount - afterDiscount / (1 + rate / 100));
+  const total = afterDiscount;
+  const subtotal = round2(total - tax_amount);
+  return { subtotal, tax_amount, total };
+}
+
 function getGlobalSettings() {
   ensureSchema();
   let shop;
   try {
-    shop = dbGet('SELECT shop_name, logo_path, address, phone, currency, tax_rate, tax_enabled, online_settings_json FROM shop_settings WHERE id = 1') || {};
+    shop = dbGet('SELECT shop_name, logo_path, address, phone, currency, tax_rate, tax_enabled, tax_inclusive, online_settings_json FROM shop_settings WHERE id = 1') || {};
   } catch (_) {
     try { dbRun('ALTER TABLE shop_settings ADD COLUMN online_settings_json TEXT'); } catch (__) { /* */ }
-    shop = dbGet('SELECT shop_name, logo_path, address, phone, currency, tax_rate, tax_enabled FROM shop_settings WHERE id = 1') || {};
+    shop = dbGet('SELECT shop_name, logo_path, address, phone, currency, tax_rate, tax_enabled, tax_inclusive FROM shop_settings WHERE id = 1') || {};
   }
   const online = parseJson(shop.online_settings_json, null);
   const loyalty = getLoyaltyPublicSettings();
@@ -84,6 +99,7 @@ function getGlobalSettings() {
     currency: shop.currency || 'R',
     tax_rate: Number(shop.tax_rate) || 0,
     tax_enabled: !!shop.tax_enabled,
+    tax_inclusive: shop.tax_inclusive !== 0 && shop.tax_inclusive !== '0' && shop.tax_inclusive !== false,
     online: {
       enabled: online?.enabled !== false,
       loyalty_enabled: online?.loyalty_enabled !== false,
@@ -295,10 +311,13 @@ function getModifiersForProduct(productId, branchId) {
   const mods = dbAll('SELECT * FROM product_modifiers WHERE product_id = ? ORDER BY option_group, id', [productId]);
   const groups = {};
   for (const m of mods) {
-    const g = m.option_group || m.modifier_type || 'Options';
-    if (!groups[g]) groups[g] = { name: g, required: false, options: [] };
-    if (m.is_required) groups[g].required = true;
-    const outOfStock = false; // extend with recipe ingredient stock later
+    const isRemoval = String(m.modifier_type || '').toLowerCase() === 'removal';
+    const g = isRemoval ? 'Without / Remove' : (m.option_group || m.modifier_type || 'Options');
+    if (!groups[g]) {
+      groups[g] = { name: g, required: false, options: [], type: isRemoval ? 'checkbox' : 'radio' };
+    }
+    if (m.is_required && !isRemoval) groups[g].required = true;
+    const outOfStock = false;
     groups[g].options.push({
       id: m.id,
       name: m.name,
@@ -559,21 +578,27 @@ function validateCart(branchId, cart = {}) {
   }
 
   const shop = getGlobalSettings();
-  const taxable = Math.max(0, subtotal - discount - loyaltyDiscount);
-  const tax = shop.tax_enabled ? round2(taxable * (shop.tax_rate / 100)) : 0;
-  const total = round2(Math.max(0, taxable + tax + deliveryFee));
+  const cartDiscount = round2(discount + loyaltyDiscount);
+  const taxTotals = calcOnlineTaxTotals(
+    subtotal,
+    cartDiscount,
+    shop.tax_rate,
+    shop.tax_enabled,
+    shop.tax_inclusive
+  );
+  const total = round2(Math.max(0, taxTotals.total + deliveryFee));
 
   return {
     valid: errors.length === 0,
     errors,
     lines,
     subtotal,
-    discount: round2(discount + loyaltyDiscount),
+    discount: cartDiscount,
     coupon: couponApplied,
     loyalty_points_used: pointsUsed,
     loyalty_discount: loyaltyDiscount,
     delivery_fee: deliveryFee,
-    tax_amount: tax,
+    tax_amount: taxTotals.tax_amount,
     total,
     branch_id: branchId,
     fulfillment_type: fulfillment
@@ -600,7 +625,7 @@ function validateCoupon(code, branchId, cartCtx = {}, webCustomerId = null) {
     } else {
       discount = round2(Number(coupon.discount_value) || 0);
     }
-    return { discount: Math.min(discount, subtotal), coupon: { code: coupon.code, id: coupon.id } };
+    return { discount: Math.min(discount, subtotal), coupon: { code: coupon.code, id: coupon.id, discount_type: coupon.discount_type, discount_value: coupon.discount_value } };
   } catch (_) {
     return { error: 'Coupon validation unavailable', discount: 0 };
   }

@@ -476,6 +476,7 @@ const POSPage = {
             <button class="btn btn-ghost" id="pos-kitchen-display" title="Open kitchen screen on second monitor">🍳 Kitchen</button>
             <button class="btn btn-ghost" id="pos-customer-display" title="Open customer order board on second monitor">📺 Customer Board</button>
             <button class="btn btn-ghost" id="pos-reprint">🖨️ Reprint</button>
+            <button class="btn btn-ghost" id="pos-sales-history" title="Today's POS sales — reprint receipts">📜 Sales</button>
             <button class="btn btn-danger btn-sm" id="pos-void">Void Sale</button>
             <button class="btn btn-warning btn-sm" id="pos-refund">Refund</button>
             <button class="btn btn-warning" id="pos-cashout">💰 Cash Out</button>
@@ -1819,6 +1820,7 @@ const POSPage = {
     document.getElementById('pos-save-quote')?.addEventListener('click', () => this.saveCartAsQuote());
     document.getElementById('pos-scanner')?.addEventListener('click', () => this.showScannerSettings());
     document.getElementById('pos-reprint').addEventListener('click', () => this.showReprint());
+    document.getElementById('pos-sales-history')?.addEventListener('click', () => this.showPosSalesHistory());
     document.getElementById('pos-printers').addEventListener('click', () => this.showPrinterSetup());
     document.getElementById('pos-kitchen-display').addEventListener('click', () => this.openKitchenDisplay());
     document.getElementById('pos-customer-display')?.addEventListener('click', () => this.openCustomerDisplay());
@@ -2185,6 +2187,46 @@ const POSPage = {
       if (!r.success) return Utils.toast(r.error || 'Could not record', 'error');
       Utils.hideModal();
       Utils.toast(`Sent ${Utils.formatMoney(amount, currency)} to admin`, 'success');
+    });
+  },
+
+  async showPosSalesHistory() {
+    const today = Utils.today();
+    const res = await API.getSalesList({ from: today, to: today, limit: 40, pos_only: true });
+    const rows = Array.isArray(res?.data) ? res.data : (Array.isArray(res) ? res : []);
+    const currency = this.app.settings?.currency || 'R';
+    Utils.showModal('POS Sales Today', `
+      <p class="muted" style="margin:0 0 12px">Counter sales only (excludes web online orders). Tap Reprint to send to your receipt printer.</p>
+      <div style="max-height:420px;overflow:auto">
+        ${rows.length ? rows.map((s) => `<div class="list-row" style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--border)">
+          <div style="min-width:0">
+            <strong>${Utils.escHtml(s.receipt_number || s.order_number || `#${s.id}`)}</strong>
+            <div class="muted" style="font-size:12px">${Utils.escHtml(String(s.created_at || '').slice(11, 16))} · ${Utils.escHtml(s.cashier_name || '—')}</div>
+            <div class="muted" style="font-size:12px">${Utils.escHtml(s.item_summary || '')}</div>
+          </div>
+          <div style="text-align:right;white-space:nowrap">
+            <div style="font-weight:700">${Utils.formatMoney(s.total, currency)}</div>
+            <button type="button" class="btn btn-primary btn-sm pos-reprint-sale" data-id="${s.id}" style="margin-top:6px">Reprint</button>
+          </div>
+        </div>`).join('') : '<p class="muted">No POS sales recorded today yet.</p>'}
+      </div>`,
+      '<button class="btn btn-ghost" id="pos-sales-history-close">Close</button>');
+    document.getElementById('pos-sales-history-close')?.addEventListener('click', () => Utils.hideModal());
+    document.querySelectorAll('.pos-reprint-sale').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        try {
+          const saleRes = await API.getSale(parseInt(btn.dataset.id, 10));
+          const sale = saleRes?.data || saleRes?.sale || saleRes;
+          if (!sale?.id) throw new Error('Sale not found');
+          await Receipt.print(sale, this.app.settings);
+          Utils.toast('Sent to printer', 'success');
+        } catch (err) {
+          Utils.toast(err.message || 'Reprint failed', 'error');
+        } finally {
+          btn.disabled = false;
+        }
+      });
     });
   },
 

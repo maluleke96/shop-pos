@@ -2895,16 +2895,17 @@ const AdminPage = {
         <button type="button" class="btn btn-primary btn-sm" id="oo-save-settings" style="margin-top:8px">Save settings</button>
       </div></div>
       <div class="table-wrap" style="margin-top:16px"><table class="table">
-        <thead><tr><th>Order</th><th>Branch</th><th>Customer</th><th>Total</th><th>Status</th><th>Source</th><th></th></tr></thead>
+        <thead><tr><th>Order</th><th>Branch</th><th>Customer</th><th>Total</th><th>Discount</th><th>Status</th><th>Source</th><th></th></tr></thead>
         <tbody>${list.slice(0, 100).map((o) => `<tr>
           <td>${Utils.escHtml(o.order_number)}</td>
           <td>${Utils.escHtml(String(o.branch_id))}</td>
           <td>${Utils.escHtml(o.customer_name || '—')}</td>
           <td>${Utils.formatMoney(o.total, currency)}</td>
+          <td>${Number(o.discount) > 0 ? `-${Utils.formatMoney(o.discount, currency)}${o.coupon_code ? `<br><small>${Utils.escHtml(o.coupon_code)}</small>` : ''}${o.loyalty_points_used ? `<br><small>Loyalty ${o.loyalty_points_used}pts</small>` : ''}` : '—'}</td>
           <td><span class="tag">${Utils.escHtml(o.status)}</span></td>
           <td>${Utils.escHtml(o.order_source || 'ONLINE')}</td>
           <td>${o.status === 'pending' ? `<button type="button" class="btn btn-sm btn-primary oo-accept" data-id="${o.id}">Accept</button>` : ''}</td>
-        </tr>`).join('') || '<tr><td colspan="7" class="muted">No online orders yet</td></tr>'}
+        </tr>`).join('') || '<tr><td colspan="8" class="muted">No online orders yet</td></tr>'}
         </tbody></table></div></div>`;
 
     document.getElementById('oo-save-settings')?.addEventListener('click', async () => {

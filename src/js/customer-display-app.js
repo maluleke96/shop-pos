@@ -3,6 +3,9 @@ const CDS = {
 
   async init() {
     document.getElementById('mobile-loading')?.remove();
+    if (window.DisplayAuth) {
+      try { await DisplayAuth.requireSession('Customer Order Display'); } catch (_) { /* ignore */ }
+    }
     this.tickClock();
     setInterval(() => this.tickClock(), 1000);
     try {
@@ -51,11 +54,19 @@ const CDS = {
   async load() {
     try {
       const res = await API.getKitchenOrders('preparing,ready,collection');
-      this.orders = (res.data || res || []).filter(o =>
+      const list = res?.data || res || [];
+      this.orders = (Array.isArray(list) ? list : []).filter(o =>
         ['preparing', 'ready', 'collection'].includes(o.status)
       );
       this.render();
-    } catch (_) {}
+    } catch (err) {
+      for (const st of ['preparing', 'ready', 'collection']) {
+        const host = document.getElementById(`col-${st}`);
+        if (host && !this.orders.length) {
+          host.innerHTML = `<div class="empty">Could not load orders</div>`;
+        }
+      }
+    }
   },
 
   ticketHtml(o) {

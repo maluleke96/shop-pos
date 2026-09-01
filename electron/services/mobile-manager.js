@@ -105,20 +105,26 @@ function dateRange(filter = {}) {
   if (period === 'yesterday') {
     const yd = new Date(y, m, d - 1);
     const s = fmt(yd);
-    return { from: `${s}T00:00:00`, to: `${s}T23:59:59`, label: 'Yesterday' };
+    const end = fmt(today);
+    return { from: `${s}T00:00:00.000`, to: `${end}T00:00:00.000`, label: 'Yesterday' };
   }
   if (period === 'week') {
     const start = new Date(y, m, d - 6);
-    return { from: `${fmt(start)}T00:00:00`, to: `${fmt(today)}T23:59:59`, label: 'This week' };
+    const end = new Date(y, m, d + 1);
+    return { from: `${fmt(start)}T00:00:00.000`, to: `${fmt(end)}T00:00:00.000`, label: 'This week' };
   }
   if (period === 'month') {
-    return { from: `${y}-${pad(m + 1)}-01T00:00:00`, to: `${fmt(today)}T23:59:59`, label: 'This month' };
+    const end = new Date(y, m, d + 1);
+    return { from: `${y}-${pad(m + 1)}-01T00:00:00.000`, to: `${fmt(end)}T00:00:00.000`, label: 'This month' };
   }
   if (period === 'custom' && filter.from && filter.to) {
-    return { from: `${filter.from}T00:00:00`, to: `${filter.to}T23:59:59`, label: 'Custom' };
+    const endD = new Date(filter.to);
+    endD.setDate(endD.getDate() + 1);
+    return { from: `${filter.from}T00:00:00.000`, to: `${fmt(endD)}T00:00:00.000`, label: 'Custom' };
   }
   const s = fmt(today);
-  return { from: `${s}T00:00:00`, to: `${s}T23:59:59`, label: 'Today' };
+  const end = new Date(y, m, d + 1);
+  return { from: `${s}T00:00:00.000`, to: `${fmt(end)}T00:00:00.000`, label: 'Today' };
 }
 
 function branchClause(user, alias = 's') {
@@ -128,7 +134,7 @@ function branchClause(user, alias = 's') {
 }
 
 function formatSaleOrder(sale, branchName, cashierName) {
-  const items = dbAll('SELECT product_name, quantity, unit_price, total FROM sale_items WHERE sale_id = ?', [sale.id]);
+  const items = dbAll('SELECT product_name, quantity, unit_price, total, modifiers_text FROM sale_items WHERE sale_id = ?', [sale.id]);
   const pays = dbAll('SELECT payment_type, amount FROM sale_payments WHERE sale_id = ?', [sale.id]);
   const payment = pays.map((p) => p.payment_type).join(', ') || 'cash';
   return {
@@ -142,14 +148,67 @@ function formatSaleOrder(sale, branchName, cashierName) {
     status: sale.status || 'completed',
     order_type: sale.order_type,
     order_source: sale.order_source,
+    delivery_address: sale.delivery_address || null,
+    notes: sale.notes || null,
     subtotal: Number(sale.subtotal) || 0,
     discount: Number(sale.discount) || 0,
     tax_amount: Number(sale.tax_amount) || 0,
     total: Number(sale.total) || 0,
     payment,
     payments: pays,
-    items: items.map((i) => ({ name: i.product_name, quantity: i.quantity, unit_price: i.unit_price, total: i.total }))
+    items: items.map((i) => ({
+      name: i.product_name, quantity: i.quantity, unit_price: i.unit_price, total: i.total,
+      modifiers_text: i.modifiers_text || null
+    }))
   };
+}
+
+function formatOnlineOrder(order, branchName) {
+  let items = [];
+  try { items = JSON.parse(order.items_json || '[]'); } catch (_) { items = []; }
+  return {
+    id: `online:${order.id}`,
+    online_order_id: order.id,
+    sale_id: order.sale_id || null,
+    order_number: order.order_number,
+    receipt_number: null,
+    branch_id: order.branch_id,
+    branch_name: branchName,
+    cashier: null,
+    customer_name: order.customer_name,
+    customer_phone: order.customer_phone,
+    customer_email: order.customer_email || null,
+    time: order.created_at,
+    status: order.status,
+    order_type: 'online',
+    order_source: order.order_source || 'ONLINE',
+    fulfillment_type: order.fulfillment_type || order.fulfillment,
+    delivery_address: order.delivery_address || null,
+    notes: order.notes || null,
+    coupon_code: order.coupon_code || null,
+    loyalty_points_used: Number(order.loyalty_points_used) || 0,
+    delivery_fee: Number(order.delivery_fee) || 0,
+    subtotal: Number(order.subtotal) || 0,
+    discount: Number(order.discount) || 0,
+    tax_amount: Number(order.tax_amount) || 0,
+    total: Number(order.total) || 0,
+    payment: order.payment_method || 'online',
+    payments: [{ payment_type: order.payment_method || 'online', amount: Number(order.total) || 0 }],
+    is_online_pending: !order.sale_id,
+    items: items.map((i) => ({
+      name: i.name,
+      quantity: i.quantity,
+      unit_price: i.unit_price,
+      total: (Number(i.unit_price) || 0) * (Number(i.quantity) || 1),
+      modifiers_text: i.modifiers_text || (Array.isArray(i.modifiers) ? i.modifiers.map((m) => m.name).join(', ') : null)
+    }))
+  };
+}
+
+function onlineBranchClause(user, alias = 'o') {
+  const ids = allowedBranchIds(user);
+  if (!ids.length) return { sql: ' AND 1=0', params: [] };
+  return { sql: ` AND ${alias}.branch_id IN (${ids.map(() => '?').join(',')})`, params: ids };
 }
 
 function issueSessionForUser(user, deviceInfo = {}) {
@@ -273,18 +332,38 @@ function getDashboard(token, filters = {}) {
   if (!perms.view_sales && !perms.view_orders) throw new Error('Permission denied');
   const range = dateRange(filters);
   const bc = branchClause(user, 's');
+  const obc = onlineBranchClause(user, 'o');
   const stats = dbGet(`SELECT COUNT(*) AS orders, COALESCE(SUM(total),0) AS sales
-    FROM sales s WHERE s.status = 'completed' AND s.created_at >= ? AND s.created_at <= ?${bc.sql}`,
+    FROM sales s WHERE s.status = 'completed' AND s.created_at >= ? AND s.created_at < ?${bc.sql}`,
     [range.from, range.to, ...bc.params]) || { orders: 0, sales: 0 };
-  const orders = Number(stats.orders) || 0;
-  const sales = Number(stats.sales) || 0;
-  const recent = dbAll(`SELECT s.id, s.order_number, s.receipt_number, s.total, s.created_at, s.branch_id
-    FROM sales s WHERE s.status = 'completed' AND s.created_at >= ? AND s.created_at <= ?${bc.sql}
-    ORDER BY s.id DESC LIMIT 10`, [range.from, range.to, ...bc.params]);
+  const onlineStats = dbGet(`SELECT COUNT(*) AS orders, COALESCE(SUM(total),0) AS sales
+    FROM online_orders_local o WHERE o.created_at >= ? AND o.created_at < ?
+    AND o.status NOT IN ('cancelled','rejected')${obc.sql}`,
+    [range.from, range.to, ...obc.params]) || { orders: 0, sales: 0 };
+  const orders = (Number(stats.orders) || 0) + (Number(onlineStats.orders) || 0);
+  const sales = (Number(stats.sales) || 0) + (Number(onlineStats.sales) || 0);
+  const recent = dbAll(`SELECT s.id, s.order_number, s.receipt_number, s.total, s.created_at, s.branch_id, s.order_source
+    FROM sales s WHERE s.status = 'completed' AND s.created_at >= ? AND s.created_at < ?${bc.sql}
+    ORDER BY s.id DESC LIMIT 8`, [range.from, range.to, ...bc.params]);
+  const obc = onlineBranchClause(user, 'o');
+  const recentOnline = dbAll(`SELECT o.id, o.order_number, o.total, o.created_at, o.branch_id, o.status, o.order_source
+    FROM online_orders_local o
+    WHERE o.created_at >= ? AND o.created_at < ? AND o.status IN ('pending','accepted')${obc.sql}
+    ORDER BY o.id DESC LIMIT 5`, [range.from, range.to, ...obc.params]);
+  const mergedRecent = [
+    ...recent.map((r) => ({
+      id: r.id, number: r.order_number || r.receipt_number, total: Number(r.total), time: r.created_at,
+      branch_id: r.branch_id, order_source: r.order_source || 'POS'
+    })),
+    ...recentOnline.map((o) => ({
+      id: `online:${o.id}`, number: o.order_number, total: Number(o.total), time: o.created_at,
+      branch_id: o.branch_id, order_source: o.order_source || 'ONLINE', status: o.status
+    }))
+  ].sort((a, b) => new Date(b.time) - new Date(a.time)).slice(0, 10);
   const branchRows = allowedBranchIds(user).map((bid) => {
     const b = dbGet('SELECT name FROM branches WHERE id = ?', [bid]);
     const st = dbGet(`SELECT COUNT(*) AS orders, COALESCE(SUM(total),0) AS sales FROM sales
-      WHERE branch_id = ? AND status = 'completed' AND created_at >= ? AND created_at <= ?`,
+      WHERE branch_id = ? AND status = 'completed' AND created_at >= ? AND created_at < ?`,
       [bid, range.from, range.to]);
     return { id: bid, name: b?.name || `Branch ${bid}`, orders: st?.orders || 0, sales: Number(st?.sales) || 0 };
   });
@@ -311,9 +390,7 @@ function getDashboard(token, filters = {}) {
     orders,
     sales,
     average_order: orders ? Math.round((sales / orders) * 100) / 100 : 0,
-    recent_orders: recent.map((r) => ({
-      id: r.id, number: r.order_number || r.receipt_number, total: Number(r.total), time: r.created_at, branch_id: r.branch_id
-    })),
+    recent_orders: mergedRecent,
     branches: branchRows,
     multi_branch: branchCount > 1,
     alerts_count: unread,
@@ -328,27 +405,57 @@ function listOrders(token, filters = {}) {
   if (!effectivePermissions(user).view_orders) throw new Error('Permission denied');
   const range = dateRange(filters);
   const bc = branchClause(user, 's');
+  const obc = onlineBranchClause(user, 'o');
   const limit = Math.min(Number(filters.limit) || 50, 100);
   const offset = Math.max(Number(filters.offset) || 0, 0);
   const rows = dbAll(`SELECT s.*, b.name AS branch_name, u.full_name AS cashier_name
     FROM sales s
     LEFT JOIN branches b ON b.id = s.branch_id
     LEFT JOIN users u ON u.id = s.user_id
-    WHERE s.created_at >= ? AND s.created_at <= ?${bc.sql}
+    WHERE s.created_at >= ? AND s.created_at < ?${bc.sql}
     ORDER BY s.id DESC LIMIT ? OFFSET ?`,
     [range.from, range.to, ...bc.params, limit, offset]);
-  return rows.map((r) => formatSaleOrder(r, r.branch_name, r.cashier_name));
+  const onlineRows = dbAll(`SELECT o.*, b.name AS branch_name FROM online_orders_local o
+    LEFT JOIN branches b ON b.id = o.branch_id
+    WHERE o.created_at >= ? AND o.created_at < ?${obc.sql}
+    ORDER BY o.id DESC LIMIT ?`,
+    [range.from, range.to, ...obc.params, limit]);
+  const sales = rows.map((r) => formatSaleOrder(r, r.branch_name, r.cashier_name));
+  const online = onlineRows.map((o) => formatOnlineOrder(o, o.branch_name));
+  return [...sales, ...online]
+    .sort((a, b) => new Date(b.time) - new Date(a.time))
+    .slice(0, limit);
 }
 
 function getOrder(token, orderId) {
   const { user } = resolveSession(token);
   if (!effectivePermissions(user).view_orders) throw new Error('Permission denied');
+  const oid = String(orderId || '');
+  if (oid.startsWith('online:')) {
+    const id = Number(oid.slice(7));
+    const order = dbGet('SELECT * FROM online_orders_local WHERE id = ?', [id]);
+    if (!order) throw new Error('Order not found');
+    assertBranchAccess(user, order.branch_id);
+    const branch = dbGet('SELECT name FROM branches WHERE id = ?', [order.branch_id]);
+    return formatOnlineOrder(order, branch?.name);
+  }
   const sale = dbGet(`SELECT s.*, b.name AS branch_name, u.full_name AS cashier_name
     FROM sales s LEFT JOIN branches b ON b.id = s.branch_id LEFT JOIN users u ON u.id = s.user_id
     WHERE s.id = ? OR s.order_number = ? OR s.receipt_number = ?`, [orderId, orderId, orderId]);
-  if (!sale) throw new Error('Order not found');
-  assertBranchAccess(user, sale.branch_id);
-  return formatSaleOrder(sale, sale.branch_name, sale.cashier_name);
+  if (sale) {
+    assertBranchAccess(user, sale.branch_id);
+    return formatSaleOrder(sale, sale.branch_name, sale.cashier_name);
+  }
+  const onlineId = Number(orderId);
+  if (Number.isFinite(onlineId) && onlineId > 0) {
+    const order = dbGet('SELECT * FROM online_orders_local WHERE id = ?', [onlineId]);
+    if (order) {
+      assertBranchAccess(user, order.branch_id);
+      const branch = dbGet('SELECT name FROM branches WHERE id = ?', [order.branch_id]);
+      return formatOnlineOrder(order, branch?.name);
+    }
+  }
+  throw new Error('Order not found');
 }
 
 function searchOrders(token, query = {}) {

@@ -611,8 +611,12 @@ const App = {
       document.getElementById('sp-open-back')?.addEventListener('click', () => this.closeStaffPortal());
     };
     try {
-      // Android lazy-loads page scripts — StaffPage must be available for the portal
-      await this.ensurePageScripts('staff');
+      if (!this.settings) {
+        await this.ensureSettingsLoaded().catch(() => { this.settings = this.settings || {}; });
+      }
+      await Utils.loadScript('js/pages/staff.js');
+      try { await Utils.loadScript('js/pages/staff-owner-salary.js'); } catch (_) { /* optional */ }
+      this.bindPageModule('staff');
       await this.ensureFeatureScript('js/staff-selfie-ui.js');
       await this.ensureFeatureScript('js/staff-portal-standalone.js');
     } catch (err) {

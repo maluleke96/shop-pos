@@ -5,6 +5,9 @@ const KDS = {
 
   async init() {
     document.getElementById('mobile-loading')?.remove();
+    if (window.DisplayAuth) {
+      try { await DisplayAuth.requireSession('Kitchen Display'); } catch (_) { /* ignore */ }
+    }
     this.tickClock();
     setInterval(() => this.tickClock(), 1000);
     try {
@@ -57,14 +60,19 @@ const KDS = {
   async load() {
     try {
       const res = await API.getKitchenOrders('pending,preparing,ready,collection');
-      const incoming = res.data || res || [];
-      const active = incoming.filter(o => !['done', 'completed', 'cancelled'].includes(o.status));
+      const incoming = res?.data || res || [];
+      const active = (Array.isArray(incoming) ? incoming : []).filter(o => !['done', 'completed', 'cancelled'].includes(o.status));
       const newOnes = active.filter(o => !this.knownIds.has(o.id));
       if (newOnes.length && this.knownIds.size) await this.playNewOrderSound();
       this.orders = active;
       this.knownIds = new Set(active.map(o => o.id));
       this.render();
-    } catch (_) {}
+    } catch (err) {
+      const el = document.getElementById('orders');
+      if (el && !this.orders.length) {
+        el.innerHTML = `<div class="empty">Could not load kitchen orders.<br><small>${(err && err.message) || 'Check login and connection.'}</small></div>`;
+      }
+    }
   },
 
   elapsed(createdAt) {

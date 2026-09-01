@@ -2134,8 +2134,12 @@ function completeSale(saleData, actorId, actorName, actorRole) {
     } else if (item.product_id) {
       const product = getProduct(item.product_id);
       if (!product) throw new Error(`Product not found: ${item.product_name || item.product_id}`);
-      unitPrice = Number(product.selling_price) || 0;
-      unitPrice += resolveModifierExtras(item.product_id, item.modifiers);
+      if (saleData.order_type === 'online' && item.unit_price != null && discountAuthorized) {
+        unitPrice = Number(item.unit_price);
+      } else {
+        unitPrice = Number(product.selling_price) || 0;
+        unitPrice += resolveModifierExtras(item.product_id, item.modifiers);
+      }
       buyingPrice = lineCostForProduct(product);
       productName = product.name || productName;
       promoRequestId = product.promo_request_id || promoRequestId;
@@ -4187,35 +4191,43 @@ async function acceptOnlineOrderAsSale(localId, actor, opts = {}) {
       throw new Error(`Cannot match product on this POS: ${line.name || line.barcode || line.remote_id || 'unknown'}. Publish products from this till, then sync.`);
     }
     const unitPrice = line.unit_price != null ? Number(line.unit_price) : (Number(product.selling_price) || 0);
+    const lineModifiers = Array.isArray(line.modifiers) ? line.modifiers : [];
     saleItems.push({
       product_id: product.id,
       product_name: line.name || product.name,
       quantity: Number(line.quantity) || 1,
       unit_price: unitPrice,
       buying_price: Number(product.buying_price) || 0,
-      modifiers_text: line.modifiers_text || (Array.isArray(line.modifiers) ? line.modifiers.map((m) => m.name).join(', ') : null)
+      modifiers: lineModifiers.map((m) => ({ id: m.id, name: m.name })),
+      modifiers_text: line.modifiers_text || (lineModifiers.length ? lineModifiers.map((m) => m.name).join(', ') : null)
     });
   }
 
   const fulfillment = opts.fulfillment || order.fulfillment || order.fulfillment_type || 'pickup';
   const orderDiscount = Number(order.discount) || 0;
   const deliveryFee = Number(order.delivery_fee) || 0;
+  const orderTax = Number(order.tax_amount) || 0;
+  const orderTotal = Number(order.total) || 0;
+  const loyaltyPts = Number(order.loyalty_points_used) || 0;
+  const discountParts = [];
+  if (order.coupon_code) discountParts.push(`Coupon ${order.coupon_code}`);
+  if (loyaltyPts > 0) discountParts.push(`Loyalty ${loyaltyPts} pts`);
+  if (orderDiscount > 0 && !discountParts.length) discountParts.push('Order discount');
   const notes = [
     `Online order ${order.order_number}`,
     order.order_source ? `Source: ${order.order_source}` : 'Source: ONLINE',
     order.customer_name ? `Customer: ${order.customer_name}` : null,
     order.customer_phone ? `Phone: ${order.customer_phone}` : null,
     fulfillment ? `Fulfillment: ${fulfillment}` : null,
-    order.coupon_code ? `Coupon: ${order.coupon_code}` : null,
+    discountParts.length ? `Discounts: ${discountParts.join(' · ')} (-${orderDiscount.toFixed(2)})` : null,
     order.notes || null
   ].filter(Boolean).join(' · ');
 
-  const catalogSubtotal = saleItems.reduce((s, i) => s + (Number(i.unit_price) || 0) * (Number(i.quantity) || 0), 0);
-  const orderTotal = Number(order.total) || catalogSubtotal;
-  const tender = Math.max(orderTotal + deliveryFee, catalogSubtotal - orderDiscount + deliveryFee, 1);
+  const tender = orderTotal > 0 ? orderTotal : Math.max(1, saleItems.reduce((s, i) => s + (Number(i.unit_price) || 0) * (Number(i.quantity) || 0), 0) - orderDiscount + deliveryFee + orderTax);
   const saleData = {
     items: saleItems,
     discount: orderDiscount,
+    tax_amount: orderTax,
     amount_paid: tender,
     payments: [{ type: order.payment_method || 'online', amount: tender }],
     order_type: 'online',
@@ -4253,6 +4265,29 @@ async function acceptOnlineOrderAsSale(localId, actor, opts = {}) {
     const saleRow = getSale(saleId);
     if (saleRow) delivery.upsertFromSale(saleRow);
   } catch (_) { /* optional */ }
+
+  try {
+    const kitchenItems = [];
+    for (const si of saleItems) {
+      const prod = db.prepare('SELECT item_type FROM products WHERE id = ?').get(si.product_id);
+      const t = String(prod?.item_type || 'food').toLowerCase();
+      if (['food', 'drink', 'combo', 'side'].includes(t)) {
+        kitchenItems.push({
+          product_name: si.product_name,
+          quantity: si.quantity,
+          modifiers: si.modifiers_text || null
+        });
+      }
+    }
+    if (kitchenItems.length) {
+      const features = require('./features');
+      features.createKitchenOrder({
+        sale_id: saleId,
+        order_number: order.order_number || sale.order_number,
+        items: kitchenItems
+      }, actorId);
+    }
+  } catch (_) { /* KDS optional */ }
 
   return {
     order: db.prepare('SELECT * FROM online_orders_local WHERE id = ?').get(localId),

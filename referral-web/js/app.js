@@ -33,7 +33,9 @@
 
     const res = await ReferralAPI.getPublicAgent(code);
     if (!res?.success || !res?.data) {
-      app.innerHTML = `<div class="ref-error">${esc(res?.error || 'Referral code not recognised')}</div>`;
+      const errMsg = res?.error || 'Referral code not recognised';
+      app.innerHTML = `<div class="ref-error">${esc(errMsg)}</div>
+        <p style="text-align:center;margin-top:16px"><a href="${esc(orderUrl())}">Continue to order online</a></p>`;
       return;
     }
     const p = res.data;

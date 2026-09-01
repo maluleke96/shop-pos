@@ -625,7 +625,7 @@ const RecipeProductionApp = {
         <div class="rp-prep-card-media">${m.picture_path ? '<span class="rp-prep-ph">…</span>' : '<div class="rp-prep-ph-empty">Prep</div>'}</div>
         <div class="rp-prep-card-body">
           <strong>${m.name}</strong>
-          <div class="rp-muted">${m.production_capacity ?? 0} meals · ${m.prep_time_minutes || 0}+${m.cook_time_minutes || 0} min</div>
+          <div class="rp-muted">${m.available_meals ?? m.production_capacity ?? 0} meals · ${m.prep_time_minutes || 0}+${m.cook_time_minutes || 0} min</div>
           ${m.allergens ? `<div class="rp-allergen">Allergens: ${this.escapeAttr(m.allergens)}</div>` : ''}
           <div class="rp-prep-steps">${(m.instructions || m.kitchen_notes || 'No prep steps yet')
             .split(/\n+|·|\u2022/).map(s => s.trim()).filter(Boolean).slice(0, 5)
@@ -642,7 +642,7 @@ const RecipeProductionApp = {
         </tr></thead><tbody>
           ${rows.map(m => `<tr>
             <td><strong>${m.name}</strong></td>
-            <td>${m.production_capacity ?? 0} meals</td>
+            <td>${m.available_meals ?? m.production_capacity ?? 0} meals</td>
             <td class="rp-muted">${m.limiting_ingredient_name || '—'}</td>
             <td class="rp-muted">${m.prep_time_minutes || 0} + ${m.cook_time_minutes || 0} min</td>
             <td class="rp-muted">${m.allergens || '—'}</td>
@@ -677,9 +677,9 @@ const RecipeProductionApp = {
       ${section('Almost out (≤5 meals)', b.low_capacity, 'None running low.')}
       ${section('Out of stock / cannot make', b.out_of_stock, 'All meals can still be made.')}`;
     const prepRows = [
-      ...(b.available_today || []).map(m => ({ section: 'Available Today', meal: m.name, available: m.production_capacity ?? 0, limiting: m.limiting_ingredient_name || '—', prep_min: `${m.prep_time_minutes || 0}+${m.cook_time_minutes || 0}`, allergens: m.allergens || '', notes: m.kitchen_notes || m.instructions || '' })),
-      ...(b.low_capacity || []).map(m => ({ section: 'Low capacity', meal: m.name, available: m.production_capacity ?? 0, limiting: m.limiting_ingredient_name || '—', prep_min: `${m.prep_time_minutes || 0}+${m.cook_time_minutes || 0}`, allergens: m.allergens || '', notes: m.kitchen_notes || m.instructions || '' })),
-      ...(b.out_of_stock || []).map(m => ({ section: 'Out of stock', meal: m.name, available: m.production_capacity ?? 0, limiting: m.limiting_ingredient_name || '—', prep_min: `${m.prep_time_minutes || 0}+${m.cook_time_minutes || 0}`, allergens: m.allergens || '', notes: m.kitchen_notes || m.instructions || '' }))
+      ...(b.available_today || []).map(m => ({ section: 'Available Today', meal: m.name, available: m.available_meals ?? m.production_capacity ?? 0, limiting: m.limiting_ingredient_name || '—', prep_min: `${m.prep_time_minutes || 0}+${m.cook_time_minutes || 0}`, allergens: m.allergens || '', notes: m.kitchen_notes || m.instructions || '' })),
+      ...(b.low_capacity || []).map(m => ({ section: 'Low capacity', meal: m.name, available: m.available_meals ?? m.production_capacity ?? 0, limiting: m.limiting_ingredient_name || '—', prep_min: `${m.prep_time_minutes || 0}+${m.cook_time_minutes || 0}`, allergens: m.allergens || '', notes: m.kitchen_notes || m.instructions || '' })),
+      ...(b.out_of_stock || []).map(m => ({ section: 'Out of stock', meal: m.name, available: m.available_meals ?? m.production_capacity ?? 0, limiting: m.limiting_ingredient_name || '—', prep_min: `${m.prep_time_minutes || 0}+${m.cook_time_minutes || 0}`, allergens: m.allergens || '', notes: m.kitchen_notes || m.instructions || '' }))
     ];
     this.bindDocActions('rp-prep', () => ({
       title: `Daily Prep Board — ${b.date || 'today'}`,

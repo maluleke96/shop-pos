@@ -177,10 +177,54 @@ const OnlineOrdersWidget = {
     return `<span class="tag ${map[st] || 'tag-warn'}">${this.esc(st.toUpperCase())}</span>`;
   },
 
+  sourceTag(order) {
+    const src = String(order.order_source || 'ONLINE').toUpperCase();
+    const isWeb = src === 'ONLINE' || src === 'WEB';
+    return `<span class="tag ${isWeb ? 'tag-info' : ''}" title="Order channel">${this.esc(isWeb ? 'WEB' : src)}</span>`;
+  },
+
+  itemModifiersHtml(item) {
+    const parts = [];
+    if (item.modifiers_text) parts.push(item.modifiers_text);
+    else if (Array.isArray(item.modifiers) && item.modifiers.length) {
+      parts.push(item.modifiers.map((m) => m.name || m).join(', '));
+    }
+    if (item.removals?.length) parts.push(`Without: ${item.removals.map((r) => r.name || r).join(', ')}`);
+    if (!parts.length) return '';
+    return `<br><small class="muted">${this.esc(parts.join(' · '))}</small>`;
+  },
+
+  financialSummaryHtml(order) {
+    const sub = Number(order.subtotal);
+    const disc = Number(order.discount) || 0;
+    const delivery = Number(order.delivery_fee) || 0;
+    const tax = Number(order.tax_amount) || 0;
+    const loyalty = Number(order.loyalty_points_used) || 0;
+    const rows = [];
+    if (Number.isFinite(sub) && sub > 0) rows.push(`<div class="row"><span>Subtotal</span><span>${Utils.formatMoney(sub, this.currency())}</span></div>`);
+    if (disc > 0) {
+      const discLabel = [
+        order.coupon_code ? `Coupon: ${order.coupon_code}` : null,
+        loyalty > 0 ? `Loyalty: ${loyalty} pts` : null
+      ].filter(Boolean).join(' · ') || 'Discount';
+      rows.push(`<div class="row"><span>${this.esc(discLabel)}</span><span>-${Utils.formatMoney(disc, this.currency())}</span></div>`);
+    }
+    if (delivery > 0) rows.push(`<div class="row"><span>Delivery fee</span><span>${Utils.formatMoney(delivery, this.currency())}</span></div>`);
+    if (tax > 0) rows.push(`<div class="row"><span>Tax</span><span>${Utils.formatMoney(tax, this.currency())}</span></div>`);
+    if (order.coupon_code) rows.push(`<div class="row"><span>Coupon</span><span>${this.esc(order.coupon_code)}</span></div>`);
+    if (loyalty > 0) rows.push(`<div class="row"><span>Loyalty points</span><span>${loyalty} pts</span></div>`);
+    rows.push(`<div class="row" style="font-weight:700"><span>Total</span><span>${Utils.formatMoney(order.total, this.currency())}</span></div>`);
+    return rows.join('');
+  },
+
   renderOrderRow(order, opts = {}) {
     const items = this.parseItems(order);
-    const itemLine = items.slice(0, 2).map((i) => `${this.esc(i.name)} ×${i.quantity}`).join(', ');
+    const itemLine = items.slice(0, 2).map((i) => {
+      const mods = i.modifiers_text || (Array.isArray(i.modifiers) ? i.modifiers.map((m) => m.name).join(', ') : '');
+      return `${this.esc(i.name)} ×${i.quantity}${mods ? ` (${this.esc(mods)})` : ''}`;
+    }).join(', ');
     const more = items.length > 2 ? ` +${items.length - 2} more` : '';
+    const fulfillment = order.fulfillment_type || order.fulfillment || 'collection';
     const actions = opts.actions !== false && String(order.status).toLowerCase() === 'pending'
       ? `<button type="button" class="btn btn-primary btn-sm oo-open" data-oo-id="${order.id}">Open</button>`
       : `<button type="button" class="btn btn-ghost btn-sm oo-open" data-oo-id="${order.id}">View</button>`;
@@ -189,11 +233,13 @@ const OnlineOrdersWidget = {
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
           <strong>${this.esc(order.order_number || `#${order.id}`)}</strong>
           ${this.statusTag(order)}
-          ${order.sale_id ? '<span class="tag tag-ok">ON POS</span>' : ''}
+          ${this.sourceTag(order)}
+          ${order.sale_id ? '<span class="tag tag-ok">ON POS</span>' : '<span class="tag tag-warn">NOT ON POS</span>'}
         </div>
-        <div class="muted" style="font-size:12px;margin-top:4px">${this.esc(order.customer_name || 'Customer')} · ${this.esc(order.customer_phone || '—')}</div>
+        <div class="muted" style="font-size:12px;margin-top:4px"><strong>${this.esc(order.customer_name || 'Customer')}</strong>${order.customer_email ? ` · ${this.esc(order.customer_email)}` : ''} · ${this.esc(order.customer_phone || '—')}</div>
         <div class="muted" style="font-size:12px">${this.esc(itemLine)}${more}</div>
-        <div style="font-size:12px;margin-top:4px">${this.formatWhen(order)} · ${this.esc(order.fulfillment_type || order.fulfillment || 'collection')}</div>
+        <div style="font-size:12px;margin-top:4px">${this.formatWhen(order)} · ${this.esc(fulfillment)}${fulfillment === 'delivery' && order.delivery_address ? ` · ${this.esc(order.delivery_address)}` : ''}</div>
+        ${order.notes ? `<div class="muted" style="font-size:12px;margin-top:2px">Note: ${this.esc(order.notes)}</div>` : ''}
       </div>
       <div style="text-align:right;white-space:nowrap">
         <div style="font-weight:700">${Utils.formatMoney(order.total, this.currency())}</div>
@@ -207,12 +253,15 @@ const OnlineOrdersWidget = {
     this._popupOpen = true;
     const items = this.parseItems(order);
     const title = isReminder ? '⏰ Online order needs attention' : '🛒 New online order';
+    const fulfillment = order.fulfillment_type || order.fulfillment || 'collection';
     Utils.showModal(title, `
-      <p><strong>${this.esc(order.order_number)}</strong> · ${Utils.formatMoney(order.total, this.currency())}</p>
-      <p>${this.esc(order.customer_name || 'Customer')} · ${this.esc(order.customer_phone || '')}</p>
-      <p class="muted">${this.esc(order.fulfillment_type || 'collection')} · ${items.length} item(s)</p>
-      <ul style="margin:8px 0;padding-left:18px;font-size:13px">${items.slice(0, 5).map((i) =>
-        `<li>${this.esc(i.name)} ×${i.quantity}</li>`).join('')}</ul>`,
+      <p><strong>${this.esc(order.order_number)}</strong> · ${Utils.formatMoney(order.total, this.currency())} ${this.sourceTag(order)}</p>
+      <p><strong>${this.esc(order.customer_name || 'Customer')}</strong>${order.customer_email ? `<br>${this.esc(order.customer_email)}` : ''}<br>${this.esc(order.customer_phone || '—')}</p>
+      <p class="muted">${this.esc(fulfillment)}${fulfillment === 'delivery' && order.delivery_address ? ` · ${this.esc(order.delivery_address)}` : ''} · ${items.length} item(s)</p>
+      ${order.notes ? `<p class="muted"><strong>Note:</strong> ${this.esc(order.notes)}</p>` : ''}
+      <ul style="margin:8px 0;padding-left:18px;font-size:13px">${items.slice(0, 8).map((i) =>
+        `<li>${this.esc(i.name)} ×${i.quantity}${this.itemModifiersHtml(i)}</li>`).join('')}</ul>
+      ${this.financialSummaryHtml(order)}`,
       `<button type="button" class="btn btn-ghost" id="oo-popup-later">Later</button>
        <button type="button" class="btn btn-ghost" id="oo-popup-view">View all</button>
        <button type="button" class="btn btn-primary" id="oo-popup-accept">Accept on POS</button>`,
@@ -316,18 +365,22 @@ const OnlineOrdersWidget = {
       : `<button type="button" class="btn btn-ghost" id="oo-back">Back to list</button>
          ${order.sale_id ? `<button type="button" class="btn btn-primary" id="oo-view-sale">View on POS receipt</button>` : ''}`;
 
+    const fulfillment = order.fulfillment_type || order.fulfillment || 'collection';
     Utils.showModal(`Order ${this.esc(order.order_number || order.id)}`, `
-      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">${this.statusTag(order)}${order.sale_id ? '<span class="tag tag-ok">Linked to POS sale</span>' : ''}</div>
-      <p><strong>Customer:</strong> ${this.esc(order.customer_name)}<br>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">${this.statusTag(order)}${this.sourceTag(order)}${order.sale_id ? '<span class="tag tag-ok">Linked to POS sale</span>' : '<span class="tag tag-warn">Awaiting POS accept</span>'}</div>
+      <p><strong>Customer:</strong> ${this.esc(order.customer_name || '—')}<br>
+      ${order.customer_email ? `<strong>Email:</strong> ${this.esc(order.customer_email)}<br>` : ''}
       <strong>Phone:</strong> ${this.esc(order.customer_phone || '—')}<br>
-      <strong>Type:</strong> ${this.esc(order.fulfillment_type || order.fulfillment || 'collection')}<br>
-      ${order.delivery_address ? `<strong>Address:</strong> ${this.esc(order.delivery_address)}<br>` : ''}
+      <strong>Source:</strong> ${this.esc(order.order_source || 'ONLINE')} (web order — not placed on POS)<br>
+      <strong>Fulfillment:</strong> ${this.esc(fulfillment)}<br>
+      ${fulfillment === 'delivery' && order.delivery_address ? `<strong>Delivery address:</strong> ${this.esc(order.delivery_address)}<br>` : ''}
       <strong>Payment:</strong> ${this.esc(order.payment_status || '—')} · ${this.esc(order.payment_method || 'online')}<br>
       <strong>Placed:</strong> ${this.formatWhen(order)}</p>
+      ${order.notes ? `<p><strong>Customer note:</strong> ${this.esc(order.notes)}</p>` : ''}
       <table class="table"><thead><tr><th>Item</th><th>Qty</th><th>Price</th></tr></thead><tbody>
-      ${items.map((i) => `<tr><td>${this.esc(i.name)}${i.modifiers_text ? `<br><small>${this.esc(i.modifiers_text)}</small>` : ''}</td><td>${i.quantity}</td><td>${Utils.formatMoney(i.unit_price, this.currency())}</td></tr>`).join('')}
+      ${items.map((i) => `<tr><td>${this.esc(i.name)}${this.itemModifiersHtml(i)}</td><td>${i.quantity}</td><td>${Utils.formatMoney(i.unit_price, this.currency())}</td></tr>`).join('')}
       </tbody></table>
-      <p><strong>Total:</strong> ${Utils.formatMoney(order.total, this.currency())}</p>
+      <div style="margin-top:10px">${this.financialSummaryHtml(order)}</div>
       ${order.reject_reason ? `<p class="muted"><strong>Reject reason:</strong> ${this.esc(order.reject_reason)}</p>` : ''}`,
       footer);
 
@@ -349,6 +402,8 @@ const OnlineOrdersWidget = {
       if (r?.error) throw new Error(r.error);
       this._remindedIds.delete(String(order.id));
       Utils.toast(`Online order ${order.order_number} accepted on POS`, 'success');
+      try { await API.refreshKitchenDisplay?.(); } catch (_) { /* optional */ }
+      try { await API.refreshCustomerDisplay?.(); } catch (_) { /* optional */ }
       await this.refreshOrders();
       this._panelTab = 'accepted';
       this.renderPanel();

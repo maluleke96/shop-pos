@@ -41,6 +41,9 @@ function getSalesList(filters = {}) {
     sql += ' AND EXISTS (SELECT 1 FROM sale_items si WHERE si.sale_id = s.id AND si.product_name LIKE ?)';
     params.push(`%${filters.product}%`);
   }
+  if (filters.pos_only) {
+    sql += " AND (COALESCE(s.order_type, '') != 'online' AND COALESCE(s.order_source, '') NOT IN ('ONLINE','WEB'))";
+  }
   if (filters.branch_id != null && filters.branch_id !== '' && filters.branch_id !== 'all' && flags.sales) {
     sql += ' AND s.branch_id = ?';
     params.push(Number(filters.branch_id));

@@ -5,6 +5,8 @@ const ManagerApp = {
   token: localStorage.getItem('manager_token') || '',
   user: null,
   period: 'today',
+  customFrom: '',
+  customTo: '',
   dashboard: null,
   orders: [],
   alerts: [],
@@ -99,8 +101,13 @@ const ManagerApp = {
   async refresh() {
     if (!this.token) return;
     try {
+      const filters = { period: this.period };
+      if (this.period === 'custom' && this.customFrom && this.customTo) {
+        filters.from = this.customFrom;
+        filters.to = this.customTo;
+      }
       const [dash, alerts, pos] = await Promise.all([
-        ManagerAPI.dashboard({ period: this.period }),
+        ManagerAPI.dashboard(filters),
         ManagerAPI.alerts(30),
         ManagerAPI.posStatus()
       ]);
@@ -109,6 +116,7 @@ const ManagerApp = {
       this.posStatus = pos;
       this.lastUpdated = new Date();
       if (alerts.length) this.lastAlertId = Math.max(this.lastAlertId, ...alerts.map((a) => a.id));
+      if (this.tab === 'orders') await this.loadOrders();
       if (this.view === 'main') this.render();
     } catch (err) {
       if (/session|revoked|not authenticated/i.test(err.message)) {
@@ -117,6 +125,37 @@ const ManagerApp = {
         this.render();
       }
     }
+  },
+
+  async loadOrders() {
+    const filters = { period: this.period, limit: 50 };
+    if (this.period === 'custom' && this.customFrom && this.customTo) {
+      filters.from = this.customFrom;
+      filters.to = this.customTo;
+    }
+    this.orders = await ManagerAPI.orders(filters);
+  },
+
+  orderIdFromAlert(a) {
+    const p = a?.payload || {};
+    if (p.sale_id) return String(p.sale_id);
+    if (p.online_order_id) return `online:${p.online_order_id}`;
+    return '';
+  },
+
+  periodToolbarHtml() {
+    return `<div class="toolbar">
+      <select id="period-select" class="filter-select">
+        <option value="today" ${this.period === 'today' ? 'selected' : ''}>Today</option>
+        <option value="yesterday" ${this.period === 'yesterday' ? 'selected' : ''}>Yesterday</option>
+        <option value="week" ${this.period === 'week' ? 'selected' : ''}>This week</option>
+        <option value="month" ${this.period === 'month' ? 'selected' : ''}>This month</option>
+        <option value="custom" ${this.period === 'custom' ? 'selected' : ''}>Custom range</option>
+      </select>
+      ${this.period === 'custom' ? `<input type="date" id="custom-from" value="${this.esc(this.customFrom)}" style="margin-left:8px;padding:8px;border-radius:8px;border:1px solid var(--border)">
+        <input type="date" id="custom-to" value="${this.esc(this.customTo)}" style="margin-left:4px;padding:8px;border-radius:8px;border:1px solid var(--border)">
+        <button type="button" class="btn-primary btn-sm" data-act="apply-custom" style="margin-left:8px">Apply</button>` : ''}
+    </div>`;
   },
 
   async openOrder(id) {
@@ -149,6 +188,7 @@ const ManagerApp = {
         this.tab = btn.dataset.tab;
         this.view = 'main';
         try { localStorage.setItem('manager_tab', this.tab); } catch (_) { /* ignore */ }
+        if (this.tab === 'orders') this.orders = [];
         await this.refresh();
         return;
       }
@@ -183,6 +223,15 @@ const ManagerApp = {
       if (act === 'order') { await this.openOrder(btn.dataset.id); return; }
       if (act === 'back') { this.view = 'main'; this.orderDetail = null; this.render(); return; }
       if (act === 'period') { this.period = btn.dataset.period; await this.refresh(); return; }
+      if (act === 'apply-custom') {
+        this.customFrom = document.getElementById('custom-from')?.value || '';
+        this.customTo = document.getElementById('custom-to')?.value || '';
+        if (!this.customFrom || !this.customTo) { this.toast('Select from and to dates', 'error'); return; }
+        this.period = 'custom';
+        this.orders = [];
+        await this.refresh();
+        return;
+      }
       if (act === 'mark-read') {
         await ManagerAPI.markRead([]);
         await this.refresh();
@@ -210,7 +259,12 @@ const ManagerApp = {
       }
       if (e.target.id === 'period-select') {
         this.period = e.target.value;
-        await this.refresh();
+        if (this.period !== 'custom') {
+          this.orders = [];
+          await this.refresh();
+        } else {
+          this.render();
+        }
       }
     };
   },
@@ -248,10 +302,19 @@ const ManagerApp = {
           <div class="row"><span>Time</span><span>${this.esc(String(o.time).slice(0, 16))}</span></div>
           <div class="row"><span>Cashier</span><span>${this.esc(o.cashier || '—')}</span></div>
           <div class="row"><span>Status</span><span>${this.esc(o.status)}</span></div>
+          ${o.order_source ? `<div class="row"><span>Source</span><span>${this.esc(o.order_source)}${o.is_online_pending ? ' (web — not on POS yet)' : ''}</span></div>` : ''}
+          ${o.customer_name ? `<div class="row"><span>Customer</span><span>${this.esc(o.customer_name)}${o.customer_phone ? ` · ${this.esc(o.customer_phone)}` : ''}</span></div>` : ''}
+          ${o.customer_email ? `<div class="row"><span>Email</span><span>${this.esc(o.customer_email)}</span></div>` : ''}
+          ${o.fulfillment_type ? `<div class="row"><span>Fulfillment</span><span>${this.esc(o.fulfillment_type)}</span></div>` : ''}
+          ${o.delivery_address ? `<div class="row"><span>Delivery</span><span>${this.esc(o.delivery_address)}</span></div>` : ''}
+          ${o.notes ? `<div class="row"><span>Notes</span><span>${this.esc(o.notes)}</span></div>` : ''}
           <ul class="order-items">${(o.items || []).map((i) =>
-            `<li>${this.esc(i.name)} × ${i.quantity} <span style="float:right">${this.money(i.total || i.unit_price * i.quantity)}</span></li>`).join('')}</ul>
+            `<li>${this.esc(i.name)} × ${i.quantity}${i.modifiers_text ? ` <small>(${this.esc(i.modifiers_text)})</small>` : ''} <span style="float:right">${this.money(i.total || i.unit_price * i.quantity)}</span></li>`).join('')}</ul>
           <div class="row"><span>Subtotal</span><span>${this.money(o.subtotal)}</span></div>
           ${o.discount ? `<div class="row"><span>Discount</span><span>-${this.money(o.discount)}</span></div>` : ''}
+          ${o.delivery_fee ? `<div class="row"><span>Delivery fee</span><span>${this.money(o.delivery_fee)}</span></div>` : ''}
+          ${o.coupon_code ? `<div class="row"><span>Coupon</span><span>${this.esc(o.coupon_code)}</span></div>` : ''}
+          ${o.loyalty_points_used ? `<div class="row"><span>Loyalty</span><span>${o.loyalty_points_used} pts</span></div>` : ''}
           <div class="row" style="font-weight:800;font-size:1.1rem"><span>Total</span><span>${this.money(o.total)}</span></div>
           <div class="row"><span>Payment</span><span>${this.esc(o.payment)}</span></div>
         </div></div>`);
@@ -264,14 +327,7 @@ const ManagerApp = {
         <h1>${this.esc(d.greeting || 'Hello')}, ${this.esc(d.user_name || this.user?.full_name || '')}</h1>
         <div class="sub">${d.multi_branch ? 'All branches' : (this.user?.branches?.[0]?.name || 'Your branch')} · ${this.esc(d.period || 'Today')}</div>
       </div><div class="mgr-main">
-        <div class="toolbar">
-          <select id="period-select" class="filter-select">
-            <option value="today" ${this.period === 'today' ? 'selected' : ''}>Today</option>
-            <option value="yesterday" ${this.period === 'yesterday' ? 'selected' : ''}>Yesterday</option>
-            <option value="week" ${this.period === 'week' ? 'selected' : ''}>This week</option>
-            <option value="month" ${this.period === 'month' ? 'selected' : ''}>This month</option>
-          </select>
-        </div>
+        ${this.periodToolbarHtml()}
         <div class="stat-grid">
           <div class="stat-card"><div class="label">Orders</div><div class="value">${d.orders ?? '—'}</div></div>
           <div class="stat-card"><div class="label">Sales</div><div class="value">${this.money(d.sales)}</div></div>
@@ -284,7 +340,8 @@ const ManagerApp = {
         <div class="list-card"><h3>Recent orders</h3>
           ${(d.recent_orders || []).map((o) =>
             `<div class="list-row" data-act="order" data-id="${o.id}">
-              <div><strong>#${this.esc(o.number)}</strong><div class="meta">${this.esc(String(o.time).slice(11, 16))}</div></div>
+              <div><strong>#${this.esc(o.number)}</strong>${o.order_source && o.order_source !== 'POS' ? ` <small>(${this.esc(o.order_source)})</small>` : ''}
+              <div class="meta">${this.esc(String(o.time).slice(11, 16))}${o.status ? ` · ${this.esc(o.status)}` : ''}</div></div>
               <strong>${this.money(o.total)}</strong></div>`).join('') || '<div class="empty">No orders yet</div>'}
         </div>
         ${this.lastUpdated ? `<div class="updated">Last updated: ${this.lastUpdated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>` : ''}
@@ -293,20 +350,29 @@ const ManagerApp = {
       return;
     }
     if (this.tab === 'orders') {
-      const load = async () => {
-        if (!this.orders.length) this.orders = await ManagerAPI.orders({ period: this.period, limit: 40 });
-      };
-      load().then(() => {
-        app.innerHTML = this.shell(`<div class="mgr-header"><h1>Orders</h1></div><div class="mgr-main">
+      const renderOrders = () => {
+        app.innerHTML = this.shell(`<div class="mgr-header"><h1>Orders</h1>
+          <div class="sub">${this.esc(this.dashboard?.period || 'Today')}</div></div><div class="mgr-main">
+          ${this.periodToolbarHtml()}
           <input type="search" id="order-search" class="search-bar" placeholder="Search order number…" style="width:100%;margin-bottom:12px;padding:12px;border-radius:10px;border:1px solid var(--border);background:var(--bg);color:var(--text)">
           <div class="list-card">${this.orders.map((o) =>
             `<div class="list-row" data-act="order" data-id="${o.id}">
               <div><strong>#${this.esc(o.order_number || o.receipt_number)}</strong>
-                <div class="meta">${this.esc(o.branch_name)} · ${this.esc(String(o.time).slice(11, 16))} · ${this.esc(o.payment)}</div></div>
-              <strong>${this.money(o.total)}</strong></div>`).join('') || '<div class="empty">No orders</div>'}
+                ${o.order_source && String(o.order_source).toUpperCase() !== 'POS' ? `<small> (${this.esc(o.order_source)})</small>` : ''}
+                <div class="meta">${this.esc(o.branch_name)} · ${this.esc(String(o.time).slice(11, 16))} · ${this.esc(o.payment)} · ${this.esc(o.status || '')}</div></div>
+              <strong>${this.money(o.total)}</strong></div>`).join('') || '<div class="empty">No orders for this period</div>'}
           </div></div>`);
         this.bind();
-      });
+      };
+      if (!this.orders.length) {
+        app.innerHTML = this.shell(`<div class="mgr-header"><h1>Orders</h1></div><div class="mgr-main"><p class="muted">Loading orders…</p></div>`);
+        this.loadOrders().then(renderOrders).catch((err) => {
+          this.toast(err.message, 'error');
+          renderOrders();
+        });
+      } else {
+        renderOrders();
+      }
       return;
     }
     if (this.tab === 'branches') {
@@ -328,11 +394,13 @@ const ManagerApp = {
     if (this.tab === 'alerts') {
       app.innerHTML = this.shell(`<div class="mgr-header"><h1>Alerts</h1>
         <button type="button" class="btn-ghost" data-act="mark-read" style="margin-top:8px">Mark all read</button></div><div class="mgr-main">
-        <div class="list-card">${this.alerts.map((a) =>
-          `<div class="list-row" data-act="${a.payload?.sale_id ? 'order' : ''}" data-id="${a.payload?.sale_id || ''}">
+        <div class="list-card">${this.alerts.map((a) => {
+          const oid = this.orderIdFromAlert(a);
+          return `<div class="list-row" data-act="${oid ? 'order' : ''}" data-id="${oid}">
             <div><strong>${a.read ? '' : '● '}${this.esc(a.title)}</strong>
               <div class="meta">${this.esc(a.body?.replace(/\n/g, ' · '))}</div>
-              <div class="meta">${this.esc(String(a.created_at).slice(0, 16))}</div></div></div>`).join('') || '<div class="empty">No alerts</div>'}
+              <div class="meta">${this.esc(String(a.created_at).slice(0, 16))}${oid ? ' · Tap to view order' : ''}</div></div></div>`;
+        }).join('') || '<div class="empty">No alerts</div>'}
         </div></div>`);
       this.bind();
       return;
