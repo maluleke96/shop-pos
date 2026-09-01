@@ -33,7 +33,7 @@ function assertUserActor(actor, allowedRoles = []) {
   }
   return {
     ...user,
-    override_reason: actor.override_reason || actor.overrideReason || null
+    override_reason: actor?.override_reason || actor?.overrideReason || null
   };
 }
 
