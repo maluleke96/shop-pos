@@ -6,6 +6,8 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev || npm install --omit=dev
 
+# Cache-bust static UI deploys (Railway layer cache)
+COPY deploy-version.txt ./
 COPY . .
 
 ENV NODE_ENV=production
