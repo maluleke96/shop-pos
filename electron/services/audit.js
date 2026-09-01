@@ -454,7 +454,7 @@ function getDailyClosingReport(date) {
   const giftcard = paymentsByType.find(p => p.payment_type === 'giftcard')?.total || 0;
   const refunds = db.prepare(`SELECT COALESCE(SUM(total_refund),0) as total FROM returns WHERE date(created_at)=date(?)`).get(d);
   const discounts = db.prepare(`SELECT COALESCE(SUM(discount),0) as total FROM sales WHERE date(created_at)=date(?) AND status='completed'`).get(d);
-  const expenses = db.prepare(`SELECT COALESCE(SUM(amount),0) as total FROM expenses WHERE expense_date=date(?)`).get(d);
+  const expenses = db.prepare(`SELECT COALESCE(SUM(amount),0) as total FROM expenses WHERE date(expense_date)=date(?)`).get(d);
   const profit = db.prepare(`
     SELECT COALESCE(SUM(si.total - si.buying_price * si.quantity),0) as p FROM sale_items si
     JOIN sales s ON si.sale_id=s.id WHERE date(s.created_at)=date(?) AND s.status='completed'
