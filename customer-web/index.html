@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0f766e">
+  <meta name="description" content="Order online — delivery & collection">
+  <title>Order Online</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/order.css">
+</head>
+<body>
+  <div id="app"></div>
+  <div id="toast-root"></div>
+  <div id="modal-root" class="modal hidden" aria-hidden="true">
+    <div class="modal-backdrop" data-act="modal-close"></div>
+    <div class="modal-card" role="dialog">
+      <header class="modal-head"><h2 id="modal-title"></h2><button type="button" class="modal-x" data-act="modal-close">×</button></header>
+      <div id="modal-body" class="modal-body"></div>
+      <footer id="modal-foot" class="modal-foot"></footer>
+    </div>
+  </div>
+  <script src="js/config.js"></script>
+  <script src="js/api.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

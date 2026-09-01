@@ -2,6 +2,23 @@ const AdminPage = {
   section: 'overview',
   settings: null,
 
+  /** Run an admin save API call and only toast success when it actually worked. */
+  async awaitSave(promise, okMsg, failMsg) {
+    try {
+      const r = await promise;
+      if (!r || r.success === false) {
+        Utils.toast(r?.error || failMsg || 'Save failed', 'error');
+        return null;
+      }
+      if (okMsg) Utils.toast(okMsg, 'success');
+      window.DataCache?.invalidate?.('settings', 'products', 'categories', 'customers', 'suppliers', 'dashboard');
+      return r;
+    } catch (err) {
+      Utils.toast(err?.message || failMsg || 'Save failed', 'error');
+      return null;
+    }
+  },
+
   sections: [
     { id: 'overview', label: '🏠 Overview', icon: 'overview' },
     { id: 'printer', label: '🖨️ Printer Setup', icon: 'printer' },
@@ -27,17 +44,24 @@ const AdminPage = {
     { id: 'importexport', label: '📁 Import & Export', icon: 'importexport' },
     { id: 'customize', label: '🎨 Customization', icon: 'customize' },
     { id: 'branches', label: '🏢 Branches', icon: 'branches' },
+    { id: 'online-orders', label: '🛒 Online Orders', icon: 'online' },
+    { id: 'deliveries', label: '🚚 Deliveries', icon: 'delivery' },
+    { id: 'mobile-app', label: '📱 Mobile App Users', icon: 'mobile' },
+    { id: 'business-manager', label: '📊 Business Manager', icon: 'mobile' },
     { id: 'device', label: '💻 Device Settings', icon: 'device' },
     { id: 'backup', label: '💾 Backup & Restore', icon: 'backup' },
     { id: 'opscompliance', label: '📋 Operations & Compliance', icon: 'opscompliance' },
     { id: 'combos', label: '🎁 Combos & Promos', icon: 'combos' },
     { id: 'recipe', label: '🍳 Recipe & Production', icon: 'recipe' },
     { id: 'staffhr', label: '👷 Staff & HR', icon: 'staffhr' },
+    { id: 'hr-workspace', label: '📋 HR, Payroll & Documents', icon: 'staffhr' },
+    { id: 'accounting-workspace', label: '💼 Accounting & Bookkeeping', icon: 'accounting' },
     { id: 'staffportal', label: '👷 Staff Portal', icon: 'staffportal' },
     { id: 'onaccount', label: '📒 On Account', icon: 'onaccount' },
     { id: 'hrcontracts', label: '📄 Contracts & Probation', icon: 'hrcontracts' },
     { id: 'recruitment', label: '💼 Recruitment', icon: 'recruitment' },
-    { id: 'marketing-mgmt', label: '📣 Marketing Management', icon: 'marketing' },
+    { id: 'marketing-mgmt', label: '📣 Marketing Command Centre', icon: 'marketing' },
+    { id: 'delivery-dept', label: '🚚 Delivery Department', icon: 'delivery' },
     { id: 'payroll', label: '💼 Payroll & Compliance', icon: 'payroll' },
     { id: 'employee-of-month', label: '🏆 Employee of Month', icon: 'employee-of-month' }
   ],
@@ -115,7 +139,7 @@ const AdminPage = {
 
   async renderSection(el) {
     const lazySections = new Set([
-      'hrcontracts', 'recruitment', 'marketing-mgmt', 'employee-of-month', 'staffhr', 'staffportal', 'payroll',
+      'hrcontracts', 'recruitment', 'marketing-mgmt', 'employee-of-month', 'staffhr', 'hr-workspace', 'staffportal', 'payroll',
       'opscompliance', 'combos', 'recipe', 'quotes',
       'salesmgmt', 'saleexplorer', 'soldproducts', 'returnsmgmt', 'activity',
       'exceptions', 'alerts', 'dailyclose', 'discount-report'
@@ -159,6 +183,10 @@ const AdminPage = {
       importexport: () => this.renderImportExport(el),
       customize: () => this.renderCustomize(el),
       branches: () => this.renderBranchesSync(el),
+      'online-orders': () => this.renderOnlineOrders(el),
+      deliveries: () => this.renderDeliveries(el),
+      'mobile-app': () => this.renderMobileAppUsers(el),
+      'business-manager': () => this.renderBusinessManager(el),
       device: () => this.renderDevice(el),
       backup: () => this.renderBackup(el),
       hrcontracts: async () => tryModule(
@@ -175,6 +203,11 @@ const AdminPage = {
         () => window.AdminMarketingPage,
         () => window.AdminMarketingPage.render(el, this.app || this),
         'Marketing Management'
+      ),
+      'delivery-dept': async () => tryModule(
+        () => window.AdminDeliveryPage,
+        () => window.AdminDeliveryPage.render(el, this.app || this),
+        'Delivery Department'
       ),
       'employee-of-month': async () => tryModule(
         () => window.AdminEmployeeMonthPage,
@@ -196,6 +229,28 @@ const AdminPage = {
         () => this.renderStaffHR(el),
         'Staff & HR'
       ),
+      'hr-workspace': () => {
+        el.innerHTML = `<div class="admin-section">
+          <h2>HR, Payroll &amp; Documents</h2>
+          <p class="muted">Human Resources, Payroll, Employee Records, Contracts &amp; Compliance Management — unified workspace connected to your existing employees, attendance, payroll and accounting.</p>
+          <div class="admin-quick-actions" style="margin:16px 0">
+            <button type="button" class="btn btn-primary" id="admin-open-hr-workspace">Open HR Workspace</button>
+          </div>
+          <p class="muted" style="font-size:13px">Existing Admin sections (Staff &amp; HR, Contracts, Payroll, Recruitment) remain available — this workspace brings them together without replacing them.</p>
+        </div>`;
+        el.querySelector('#admin-open-hr-workspace')?.addEventListener('click', () => this.app?.openHr?.({ fromApp: true }));
+      },
+      'accounting-workspace': () => {
+        el.innerHTML = `<div class="admin-section">
+          <h2>Accounting &amp; Bookkeeping</h2>
+          <p class="muted">Central accounting &amp; bookkeeping — journals, invoices, bank reconciliation, VAT, payroll posting, and POS integration. One shared ledger across your devices. Uses your Admin login when opened from here.</p>
+          <div class="admin-quick-actions" style="margin:16px 0">
+            <button type="button" class="btn btn-primary" id="admin-open-accounting">Open Accounting &amp; Bookkeeping</button>
+          </div>
+          <p class="muted" style="font-size:13px">POS sales, online orders, expenses, payroll and cash-ups post automatically to the central books when transactions complete.</p>
+        </div>`;
+        el.querySelector('#admin-open-accounting')?.addEventListener('click', () => this.app?.openAccounting?.({ fromApp: true, skipLogin: true }));
+      },
       onaccount: () => tryModule(
         () => typeof this.renderOnAccount === 'function',
         () => this.renderOnAccount(el),
@@ -208,7 +263,17 @@ const AdminPage = {
       )
     };
     el.innerHTML = '<p class="muted">Loading…</p>';
-    await (renderers[this.section] || renderers.overview)();
+    const renderer = renderers[this.section];
+    if (renderer) {
+      await renderer();
+    } else {
+      el.innerHTML = `<div class="admin-section"><p class="muted">The "${Utils.escHtml(this.section)}" section could not load. Try reloading admin modules.</p>
+        <button type="button" class="btn btn-primary" id="admin-reload-ext">Reload</button></div>`;
+      document.getElementById('admin-reload-ext')?.addEventListener('click', async () => {
+        if (window.App?.ensurePageScripts) await App.ensurePageScripts('admin');
+        await AdminPage.renderSection(el);
+      });
+    }
   },
 
   async renderOverview(el) {
@@ -252,9 +317,30 @@ const AdminPage = {
           </tr>`).join('')}</tbody></table></div>
         <button type="button" class="btn btn-primary" id="admin-open-recipe" style="margin-top:10px">Open Recipe & Production</button>
       </div></div>` : ''}
+      <div class="card" style="margin-top:16px"><div class="card-body">
+        <h4>Business Manager</h4>
+        <p class="muted">Monitor sales, orders, and POS status on your phone or here in Admin — no extra login when you open it from Admin.</p>
+        <div class="admin-quick-actions" style="margin-top:12px">
+          <button type="button" class="btn btn-primary" id="admin-open-business-manager">Open Business Manager</button>
+          <button type="button" class="btn btn-ghost" id="admin-manage-mobile-users">Manage mobile users</button>
+          <button type="button" class="btn btn-ghost" id="admin-open-accounting-overview">Accounting &amp; Bookkeeping</button>
+        </div>
+      </div></div>
     </div>`;
     document.getElementById('admin-open-recipe')?.addEventListener('click', () => {
       this.app.openRecipeProduction({ fromApp: true });
+    });
+    document.getElementById('admin-open-business-manager')?.addEventListener('click', () => {
+      this.app?.openBusinessManager?.({ embed: true });
+    });
+    document.getElementById('admin-manage-mobile-users')?.addEventListener('click', () => {
+      this.section = 'mobile-app';
+      document.querySelectorAll('.admin-nav-btn').forEach((b) =>
+        b.classList.toggle('active', b.dataset.section === 'mobile-app'));
+      this.renderSection(el);
+    });
+    document.getElementById('admin-open-accounting-overview')?.addEventListener('click', () => {
+      this.app?.openAccounting?.({ fromApp: true, skipLogin: true });
     });
   },
 
@@ -503,7 +589,12 @@ const AdminPage = {
 
     document.getElementById('save-printer').addEventListener('click', async () => {
       const data = collectData();
-      await API.saveJsonSetting('printer_settings', data, this.app.user);
+      const r = await this.awaitSave(
+        API.saveJsonSetting('printer_settings', data, this.app.user),
+        null,
+        'Could not save printer settings'
+      );
+      if (!r) return;
       this.settings.printer_settings = data;
       if (typeof App !== 'undefined' && App.settings) App.settings.printer_settings = data;
       syncDevicePrinter(data);
@@ -613,12 +704,15 @@ const AdminPage = {
         return_policy: document.getElementById('rd-return').value.trim(),
         custom_notes: document.getElementById('rd-notes').value.trim()
       };
-      await API.saveJsonSetting('receipt_design', rd, this.app.user);
+      const r1 = await this.awaitSave(API.saveJsonSetting('receipt_design', rd, this.app.user), null, 'Could not save receipt design');
+      if (!r1) return;
       await API.saveSettings({
         thank_you_message: rd.thank_you,
         receipt_footer: rd.footer_message,
         return_policy: rd.return_policy
       }, this.app.user);
+      this.settings.receipt_design = rd;
+      if (this.app) this.app.settings = { ...this.app.settings, receipt_design: rd };
       Utils.toast('Receipt design saved', 'success');
     });
   },
@@ -1101,6 +1195,10 @@ const AdminPage = {
 
   async renderPermissions(el) {
     const usersRes = await API.getUsers(this.app.user);
+    if (!usersRes.success) {
+      el.innerHTML = `<div class="admin-section"><p class="error-msg">${Utils.escHtml(usersRes.error || 'Could not load users')}</p></div>`;
+      return;
+    }
     const users = usersRes.data || [];
     const active = users.filter(u => u.is_active);
     const inactive = users.filter(u => !u.is_active);
@@ -1202,7 +1300,12 @@ const AdminPage = {
         decimal_places: parseInt(document.getElementById('cur-dec').value) || 2,
         thousands_sep: document.getElementById('cur-sep').value
       };
-      await API.saveSettings(patch, this.app.user);
+      const r = await this.awaitSave(
+        API.saveSettings(patch, this.app.user),
+        null,
+        'Could not save tax & currency'
+      );
+      if (!r) return;
       // Keep bookkeeping VAT in sync
       try {
         const bk = await API.getBookkeepingSettings();
@@ -1313,7 +1416,7 @@ const AdminPage = {
 
     document.getElementById('tax-hub-refresh')?.addEventListener('click', load);
     document.getElementById('tax-hub-branch')?.addEventListener('change', load);
-    document.getElementById('tax-hub-bookkeeping')?.addEventListener('click', () => this.app?.navigate?.('bookkeeping'));
+    document.getElementById('tax-hub-bookkeeping')?.addEventListener('click', () => this.app?.openAccounting?.({ fromApp: true, skipLogin: true }));
     document.getElementById('tax-hub-pdf')?.addEventListener('click', async () => {
       const t = this._lastTaxReport;
       if (!t) return Utils.toast('Refresh the report first', 'error');
@@ -1937,10 +2040,10 @@ const AdminPage = {
         loyalty_discounts: document.getElementById('disc-loyalty').checked,
         employee_discounts: document.getElementById('disc-employee').checked
       };
-      await API.saveJsonSetting('discount_settings', dsSave, this.app.user);
+      const r = await this.awaitSave(API.saveJsonSetting('discount_settings', dsSave, this.app.user), 'Discount settings saved', 'Could not save discount settings');
+      if (!r) return;
       this.settings.discount_settings = dsSave;
       if (this.app) this.app.settings = { ...this.app.settings, discount_settings: dsSave };
-      Utils.toast('Discount settings saved', 'success');
     });
   },
 
@@ -1991,9 +2094,10 @@ const AdminPage = {
         point_value: parseFloat(document.getElementById('loy-value').value) || 1,
         min_sale_total: parseFloat(document.getElementById('loy-min').value) || 0
       };
-      await API.saveJsonSetting('loyalty_settings', data, this.app.user);
+      const r = await this.awaitSave(API.saveJsonSetting('loyalty_settings', data, this.app.user), 'Loyalty settings saved', 'Could not save loyalty settings');
+      if (!r) return;
       this.settings.loyalty_settings = data;
-      Utils.toast('Loyalty settings saved', 'success');
+      if (this.app) this.app.settings = { ...this.app.settings, loyalty_settings: data };
     });
   },
 
@@ -2174,9 +2278,10 @@ const AdminPage = {
         account_enabled: document.getElementById('pm-account').checked,
         eft_enabled: document.getElementById('pm-eft').checked
       };
-      await API.saveJsonSetting('payment_settings', data, this.app.user);
+      const r = await this.awaitSave(API.saveJsonSetting('payment_settings', data, this.app.user), 'Payment settings saved', 'Could not save payment settings');
+      if (!r) return;
       this.settings.payment_settings = data;
-      Utils.toast('Payment settings saved', 'success');
+      if (this.app) this.app.settings = { ...this.app.settings, payment_settings: data };
     });
   },
 
@@ -2260,7 +2365,7 @@ const AdminPage = {
 
     document.getElementById('save-customize').addEventListener('click', async () => {
       const bizType = document.getElementById('cu-type').value;
-      await API.saveSettings({
+      const settingsPatch = {
         shop_name: document.getElementById('cu-name').value.trim(),
         app_display_name: document.getElementById('cu-app-name').value.trim() || document.getElementById('cu-name').value.trim(),
         business_type: bizType,
@@ -2269,8 +2374,10 @@ const AdminPage = {
         website: document.getElementById('cu-website').value.trim(),
         social_media: document.getElementById('cu-social').value.trim(),
         logo_path: logoPath
-      }, this.app.user);
-      await API.saveJsonSetting('customization', {
+      };
+      const r1 = await this.awaitSave(API.saveSettings(settingsPatch, this.app.user), null, 'Could not save shop settings');
+      if (!r1) return;
+      const customization = {
         button_color: document.getElementById('cu-color').value,
         accent_color: document.getElementById('cu-accent').value,
         login_message: document.getElementById('cu-login-msg').value.trim(),
@@ -2284,14 +2391,19 @@ const AdminPage = {
         pos_grid_columns: parseInt(document.getElementById('cu-pos-cols').value, 10) || 4,
         low_stock_threshold: parseInt(document.getElementById('cu-low-stock').value, 10) || 0,
         idle_lock_minutes: parseInt(document.getElementById('cu-idle').value, 10) || 0
-      }, this.app.user);
+      };
+      const r2 = await this.awaitSave(API.saveJsonSetting('customization', customization, this.app.user), null, 'Could not save customization');
+      if (!r2) return;
       if (bizType === 'restaurant') {
         const ps = this.settings.printer_settings || {};
         if (ps.kitchen_enabled !== true) {
           await API.saveJsonSetting('printer_settings', { ...ps, kitchen_enabled: true, kitchen_auto: ps.kitchen_auto !== false }, this.app.user);
         }
       }
-      const settingsRes = await API.getSettingsParsed();
+      window.DataCache?.invalidate?.('settings');
+      const settingsRes = API.getSettingsParsed?._uncached
+        ? await API.getSettingsParsed._uncached()
+        : await API.getSettingsParsed();
       if (settingsRes.success) {
         this.settings = settingsRes.data;
         this.app.settings = settingsRes.data;
@@ -2369,6 +2481,27 @@ const AdminPage = {
         </div>
         <input type="file" id="sync-recipe-file" accept="application/json,.json" class="hidden">
       </div></div></div>`;
+
+    const cloudBase = (window.__SHOP_POS_ENV__?.RPC_URL || window.__SHOP_POS_ENV__?.SHOP_POS_RPC_URL || '')
+      .replace(/\/rpc\/?$/i, '') || 'https://peaceful-motivation-production-7dd2.up.railway.app';
+    const orderUrl = `${cloudBase.replace(/\/$/, '')}/order/`;
+    const orderLink = `<div class="card" style="margin-top:16px"><div class="card-body">
+      <h4 style="margin-top:0">Customer ordering website</h4>
+      <p class="muted" style="font-size:12px">Connected to Railway + Supabase (same menu &amp; stock as POS). Orders appear in POS and Admin → Online Orders.</p>
+      <p><a href="${orderUrl}" target="_blank" rel="noopener">${Utils.escHtml(orderUrl)}</a>
+        <button type="button" class="btn btn-sm btn-ghost" id="br-copy-order-link">Copy link</button></p>
+      <button type="button" class="btn btn-ghost btn-sm" id="br-open-online-admin">Open Online Orders admin</button>
+    </div></div>`;
+    el.querySelector('.admin-section')?.insertAdjacentHTML('beforeend', orderLink);
+    document.getElementById('br-copy-order-link')?.addEventListener('click', () => {
+      navigator.clipboard?.writeText(orderUrl);
+      Utils.toast('Order link copied', 'success');
+    });
+    document.getElementById('br-open-online-admin')?.addEventListener('click', () => {
+      this.section = 'online-orders';
+      document.querySelectorAll('.admin-nav-btn').forEach((b) => b.classList.toggle('active', b.dataset.section === 'online-orders'));
+      this.renderSection(document.getElementById('admin-content'));
+    });
 
     document.getElementById('br-add')?.addEventListener('click', async () => {
       const name = document.getElementById('br-name').value.trim();
@@ -2723,6 +2856,296 @@ const AdminPage = {
         } else Utils.toast('Receipt not found', 'error');
       });
     });
+  },
+
+  async renderOnlineOrders(el) {
+    const currency = this.settings?.currency || 'R';
+    const [ordersRes, analyticsRes, settingsRes] = await Promise.all([
+      API.webAdminOrders?.({}, this.app?.user) || API.getOnlineOrdersLocal?.(''),
+      API.webAdminAnalytics?.({}, this.app?.user).catch(() => ({ data: {} })),
+      API.webGetSettings?.().catch(() => ({ data: {} }))
+    ]);
+    const orders = ordersRes?.data || ordersRes || [];
+    const list = Array.isArray(orders) ? orders : [];
+    const stats = analyticsRes?.data || analyticsRes || {};
+    const global = settingsRes?.data || settingsRes || {};
+    const cloudBase = (window.__SHOP_POS_ENV__?.RPC_URL || window.__SHOP_POS_ENV__?.SHOP_POS_RPC_URL || '')
+      .replace(/\/rpc\/?$/i, '') || 'https://peaceful-motivation-production-7dd2.up.railway.app';
+    const orderUrl = `${cloudBase.replace(/\/$/, '')}/order/`;
+
+    el.innerHTML = `<div class="admin-section"><h3>Online Orders</h3>
+      <p class="muted">Customer website orders flow to POS with source <strong>ONLINE</strong>. 
+        <a href="${orderUrl}" target="_blank" rel="noopener">Open customer site</a></p>
+      <div class="stats-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin:12px 0">
+        <div class="card"><div class="card-body"><div class="muted">Orders</div><strong>${stats.orders || 0}</strong></div></div>
+        <div class="card"><div class="card-body"><div class="muted">Revenue</div><strong>${Utils.formatMoney(stats.revenue || 0, currency)}</strong></div></div>
+        <div class="card"><div class="card-body"><div class="muted">Rejected</div><strong>${stats.rejected || 0}</strong></div></div>
+      </div>
+      <div class="card"><div class="card-body">
+        <h4 style="margin-top:0">Settings</h4>
+        <label><input type="checkbox" id="oo-enabled" ${global.online?.enabled !== false ? 'checked' : ''}> Enable online orders</label><br>
+        <label><input type="checkbox" id="oo-coupons" ${global.online?.coupons_enabled !== false ? 'checked' : ''}> Coupons</label>
+        <label style="margin-left:12px"><input type="checkbox" id="oo-loyalty" ${global.online?.loyalty_enabled !== false ? 'checked' : ''}> Loyalty</label>
+        <div class="field" style="margin-top:12px">
+          <label>POS reminder if order not attended (minutes)</label>
+          <input type="number" id="oo-reminder-min" min="1" max="60" value="${Number(global.online?.pos_reminder_minutes) || 2}" style="max-width:120px">
+          <p class="muted" style="font-size:12px;margin:4px 0 0">POS will alert cashiers after this many minutes on pending online orders.</p>
+        </div>
+        <button type="button" class="btn btn-primary btn-sm" id="oo-save-settings" style="margin-top:8px">Save settings</button>
+      </div></div>
+      <div class="table-wrap" style="margin-top:16px"><table class="table">
+        <thead><tr><th>Order</th><th>Branch</th><th>Customer</th><th>Total</th><th>Status</th><th>Source</th><th></th></tr></thead>
+        <tbody>${list.slice(0, 100).map((o) => `<tr>
+          <td>${Utils.escHtml(o.order_number)}</td>
+          <td>${Utils.escHtml(String(o.branch_id))}</td>
+          <td>${Utils.escHtml(o.customer_name || '—')}</td>
+          <td>${Utils.formatMoney(o.total, currency)}</td>
+          <td><span class="tag">${Utils.escHtml(o.status)}</span></td>
+          <td>${Utils.escHtml(o.order_source || 'ONLINE')}</td>
+          <td>${o.status === 'pending' ? `<button type="button" class="btn btn-sm btn-primary oo-accept" data-id="${o.id}">Accept</button>` : ''}</td>
+        </tr>`).join('') || '<tr><td colspan="7" class="muted">No online orders yet</td></tr>'}
+        </tbody></table></div></div>`;
+
+    document.getElementById('oo-save-settings')?.addEventListener('click', async () => {
+      const r = await API.webSaveGlobalSettings?.({
+        enabled: document.getElementById('oo-enabled').checked,
+        coupons_enabled: document.getElementById('oo-coupons').checked,
+        loyalty_enabled: document.getElementById('oo-loyalty').checked,
+        pos_reminder_minutes: Math.max(1, parseInt(document.getElementById('oo-reminder-min')?.value, 10) || 2)
+      }, this.app?.user);
+      if (r?.success === false) return Utils.toast(r.error, 'error');
+      Utils.toast('Online settings saved', 'success');
+    });
+    el.querySelectorAll('.oo-accept').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const r = await API.acceptOnlineOrderAsSale(parseInt(btn.dataset.id, 10), {}, this.app?.user);
+        if (r?.success === false) return Utils.toast(r.error, 'error');
+        Utils.toast('Order accepted into POS', 'success');
+        this.renderOnlineOrders(el);
+      });
+    });
+  },
+
+  async renderDeliveries(el) {
+    const currency = this.settings?.currency || 'R';
+    const [deliveriesRes, driversRes] = await Promise.all([
+      API.listDeliveries?.({}, this.app?.user) || { data: [] },
+      API.listDeliveryDrivers?.(this.app?.user) || { data: [] }
+    ]);
+    const list = deliveriesRes?.data || deliveriesRes || [];
+    const rows = Array.isArray(list) ? list : [];
+    const drivers = driversRes?.data || driversRes || [];
+    const driverOpts = Array.isArray(drivers) ? drivers : [];
+
+    el.innerHTML = `<div class="admin-section"><h3>Delivery Drivers</h3>
+      <p class="muted">Assign drivers to delivery orders from POS and online checkout.</p>
+      <div class="table-wrap"><table class="table">
+        <thead><tr><th>Order</th><th>Customer</th><th>Address</th><th>Total</th><th>Status</th><th>Driver</th><th></th></tr></thead>
+        <tbody>${rows.length ? rows.map((d) => `<tr>
+          <td>${Utils.escHtml(d.order_number || d.source_id)}</td>
+          <td>${Utils.escHtml(d.customer_name || '—')}<br><small class="muted">${Utils.escHtml(d.customer_phone || '')}</small></td>
+          <td>${Utils.escHtml(d.delivery_address || '—')}</td>
+          <td>${Utils.formatMoney(d.total, currency)}</td>
+          <td><span class="tag">${Utils.escHtml(d.status)}</span></td>
+          <td>${Utils.escHtml(d.driver_name || '—')}</td>
+          <td>
+            ${d.status === 'pending' || d.status === 'assigned' ? `
+              <select class="input input-sm del-driver" data-id="${d.id}" style="max-width:140px;margin-right:4px">
+                <option value="">Assign driver…</option>
+                ${driverOpts.map((dr) => `<option value="${dr.id}" ${String(dr.id) === String(d.driver_employee_id) ? 'selected' : ''}>${Utils.escHtml(dr.full_name)}</option>`).join('')}
+              </select>
+              <button type="button" class="btn btn-sm btn-primary del-assign" data-id="${d.id}">Assign</button>
+            ` : ''}
+            ${d.status === 'assigned' ? `<button type="button" class="btn btn-sm btn-ghost del-out" data-id="${d.id}">Out for delivery</button>` : ''}
+            ${d.status === 'out_for_delivery' ? `<button type="button" class="btn btn-sm btn-primary del-done" data-id="${d.id}">Delivered</button>` : ''}
+          </td>
+        </tr>`).join('') : '<tr><td colspan="7" class="muted">No delivery orders yet</td></tr>'}
+        </tbody></table></div></div>`;
+
+    el.querySelectorAll('.del-assign').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const id = parseInt(btn.dataset.id, 10);
+        const sel = el.querySelector(`.del-driver[data-id="${id}"]`);
+        const employeeId = parseInt(sel?.value, 10);
+        if (!employeeId) return Utils.toast('Select a driver', 'error');
+        const r = await API.assignDeliveryDriver(id, employeeId, this.app?.user);
+        if (r?.success === false) return Utils.toast(r.error || 'Assign failed', 'error');
+        Utils.toast('Driver assigned', 'success');
+        this.renderDeliveries(el);
+      });
+    });
+    el.querySelectorAll('.del-out').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const r = await API.updateDeliveryStatus(parseInt(btn.dataset.id, 10), 'out_for_delivery', '', this.app?.user);
+        if (r?.success === false) return Utils.toast(r.error, 'error');
+        Utils.toast('Marked out for delivery', 'success');
+        this.renderDeliveries(el);
+      });
+    });
+    el.querySelectorAll('.del-done').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const r = await API.updateDeliveryStatus(parseInt(btn.dataset.id, 10), 'delivered', '', this.app?.user);
+        if (r?.success === false) return Utils.toast(r.error, 'error');
+        Utils.toast('Delivery completed', 'success');
+        this.renderDeliveries(el);
+      });
+    });
+  },
+
+  async renderMobileAppUsers(el) {
+    const [usersRes, branchesRes] = await Promise.all([
+      API.mobileAdminListUsers?.(this.app?.user).catch(() => []),
+      API.getBranches?.().catch(() => ({ data: [] }))
+    ]);
+    const users = usersRes?.data || usersRes || [];
+    const list = Array.isArray(users) ? users : [];
+    const branches = branchesRes?.data || branchesRes || [];
+    const cloudBase = (window.__SHOP_POS_ENV__?.RPC_URL || window.__SHOP_POS_ENV__?.SHOP_POS_RPC_URL || '')
+      .replace(/\/rpc\/?$/i, '') || 'https://peaceful-motivation-production-7dd2.up.railway.app';
+    const managerUrl = `${cloudBase.replace(/\/$/, '')}/manager/`;
+
+    el.innerHTML = `<div class="admin-section"><h3>Mobile App Users</h3>
+      <p class="muted">Create accounts for owners/managers to monitor sales & orders on the 
+        <a href="${managerUrl}" target="_blank" rel="noopener">Business Manager app</a>. Permissions are enforced server-side.</p>
+      <div class="admin-quick-actions" style="margin:12px 0">
+        <button type="button" class="btn btn-primary" id="ma-open-manager">Open Business Manager</button>
+        <button type="button" class="btn btn-ghost" id="ma-new-user">+ Create mobile user</button>
+      </div>
+      <div class="table-wrap"><table class="table">
+        <thead><tr><th>Name</th><th>Username</th><th>Role</th><th>Branches</th><th>Last login</th><th>Status</th><th></th></tr></thead>
+        <tbody>${list.map((u) => `<tr>
+          <td>${Utils.escHtml(u.full_name)}</td>
+          <td>${Utils.escHtml(u.username)}</td>
+          <td>${Utils.escHtml(u.role)}</td>
+          <td>${u.all_branches ? 'All' : 'Selected'}</td>
+          <td class="muted">${Utils.escHtml(String(u.last_login_at || '—').slice(0, 16))}</td>
+          <td><span class="tag ${u.is_active ? 'tag-ok' : 'tag-warn'}">${u.is_active ? 'Active' : 'Disabled'}</span></td>
+          <td>
+            <button type="button" class="btn btn-ghost btn-sm ma-edit" data-id="${u.id}">Edit</button>
+            <button type="button" class="btn btn-ghost btn-sm ma-devices" data-id="${u.id}">Devices</button>
+            <button type="button" class="btn btn-ghost btn-sm ma-toggle" data-id="${u.id}" data-active="${u.is_active ? '1' : '0'}">${u.is_active ? 'Disable' : 'Enable'}</button>
+          </td></tr>`).join('') || '<tr><td colspan="7" class="muted">No mobile users yet — create one above</td></tr>'}
+        </tbody></table></div>
+      <div id="ma-form-host"></div></div>`;
+
+    const showForm = async (userId) => {
+      const host = document.getElementById('ma-form-host');
+      let u = { role: 'branch_manager', all_branches: 0, branch_ids: [], permissions: {}, is_active: true };
+      if (userId) {
+        const r = await API.mobileAdminGetUser?.(userId, this.app?.user);
+        u = r?.data || r || u;
+      }
+      const branchChecks = (Array.isArray(branches) ? branches : []).map((b) =>
+        `<label style="display:block"><input type="checkbox" class="ma-branch" value="${b.id}" ${u.all_branches || (u.branch_ids || []).includes(b.id) ? 'checked' : ''}> ${Utils.escHtml(b.name)}</label>`).join('');
+      host.innerHTML = `<div class="card" style="margin-top:16px"><div class="card-body">
+        <h4>${userId ? 'Edit' : 'Create'} mobile user</h4>
+        <div class="form-grid" style="display:grid;gap:10px;max-width:480px">
+          <label>Full name<input id="ma-name" value="${Utils.escHtml(u.full_name || '')}"></label>
+          <label>Username<input id="ma-username" value="${Utils.escHtml(u.username || '')}" ${userId ? 'readonly' : ''}></label>
+          <label>${userId ? 'New password (optional)' : 'Password'}<input type="password" id="ma-pass"></label>
+          <label>Role<select id="ma-role">
+            <option value="super_admin" ${u.role === 'super_admin' ? 'selected' : ''}>Super Admin</option>
+            <option value="business_admin" ${u.role === 'business_admin' ? 'selected' : ''}>Business Admin</option>
+            <option value="branch_manager" ${u.role === 'branch_manager' ? 'selected' : ''}>Branch Manager</option>
+            <option value="custom" ${u.role === 'custom' ? 'selected' : ''}>Custom</option>
+          </select></label>
+          <label><input type="checkbox" id="ma-all-branches" ${u.all_branches ? 'checked' : ''}> All branches</label>
+          <div id="ma-branch-list">${branchChecks}</div>
+          <fieldset><legend>Permissions</legend>
+            ${['view_orders', 'view_sales', 'receive_order_notifications', 'view_staff_activity', 'manage_orders'].map((p) =>
+              `<label><input type="checkbox" class="ma-perm" data-p="${p}" ${u.permissions?.[p] !== false ? 'checked' : ''}> ${p.replace(/_/g, ' ')}</label>`).join('<br>')}
+          </fieldset>
+          <button type="button" class="btn btn-primary" id="ma-save">Save user</button>
+          <button type="button" class="btn btn-ghost" id="ma-cancel">Cancel</button>
+        </div></div></div>`;
+      document.getElementById('ma-all-branches')?.addEventListener('change', (e) => {
+        document.getElementById('ma-branch-list').style.opacity = e.target.checked ? '0.5' : '1';
+      });
+      document.getElementById('ma-cancel')?.addEventListener('click', () => { host.innerHTML = ''; });
+      document.getElementById('ma-save')?.addEventListener('click', async () => {
+        const perms = {};
+        document.querySelectorAll('.ma-perm').forEach((cb) => { perms[cb.dataset.p] = cb.checked; });
+        const data = {
+          id: userId || undefined,
+          full_name: document.getElementById('ma-name').value.trim(),
+          username: document.getElementById('ma-username').value.trim(),
+          password: document.getElementById('ma-pass').value,
+          role: document.getElementById('ma-role').value,
+          all_branches: document.getElementById('ma-all-branches').checked,
+          branch_ids: [...document.querySelectorAll('.ma-branch:checked')].map((c) => Number(c.value)),
+          permissions: perms,
+          is_active: true
+        };
+        const r = await API.mobileAdminSaveUser?.(data, this.app?.user);
+        if (r?.success === false) return Utils.toast(r.error, 'error');
+        Utils.toast('Mobile user saved', 'success');
+        this.renderMobileAppUsers(el);
+      });
+    };
+
+    document.getElementById('ma-new-user')?.addEventListener('click', () => showForm(null));
+    document.getElementById('ma-open-manager')?.addEventListener('click', () => {
+      this.app?.openBusinessManager?.({ embed: true });
+    });
+    el.querySelectorAll('.ma-edit').forEach((btn) => btn.addEventListener('click', () => showForm(Number(btn.dataset.id))));
+    el.querySelectorAll('.ma-toggle').forEach((btn) => btn.addEventListener('click', async () => {
+      const active = btn.dataset.active !== '1';
+      const r = await API.mobileAdminSetActive?.(Number(btn.dataset.id), active, this.app?.user);
+      if (r?.success === false) return Utils.toast(r.error, 'error');
+      Utils.toast(active ? 'User enabled' : 'User disabled', 'success');
+      this.renderMobileAppUsers(el);
+    }));
+    el.querySelectorAll('.ma-devices').forEach((btn) => btn.addEventListener('click', async () => {
+      const devices = await API.mobileAdminListDevices?.(Number(btn.dataset.id), this.app?.user);
+      const rows = (devices?.data || devices || []).map((d) =>
+        `<tr><td>${Utils.escHtml(d.device_name)}</td><td>${Utils.escHtml(d.platform)}</td>
+          <td>${Utils.escHtml(String(d.last_active_at || '').slice(0, 16))}</td>
+          <td>${Utils.escHtml(d.status)}</td>
+          <td>${d.status === 'active' ? `<button type="button" class="btn btn-sm btn-danger ma-revoke" data-did="${d.id}">Revoke</button>` : ''}</td></tr>`).join('');
+      Utils.showModal('Authorized devices', `<table class="table"><thead><tr><th>Device</th><th>Platform</th><th>Last active</th><th>Status</th><th></th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="5" class="muted">No devices</td></tr>'}</tbody></table>`, '');
+      document.querySelectorAll('.ma-revoke').forEach((b) => b.addEventListener('click', async () => {
+        await API.mobileAdminRevokeDevice?.(Number(b.dataset.did), this.app?.user);
+        Utils.forceHideModal?.();
+        Utils.toast('Device revoked', 'success');
+      }));
+    }));
+  },
+
+  async renderBusinessManager(el) {
+    el.innerHTML = `<div class="admin-section admin-manager-embed"><p class="muted">Loading Business Manager…</p></div>`;
+    let url = this._managerUrl;
+    if (!url) {
+      try {
+        url = await this.app?.getBusinessManagerUrl?.();
+        this._managerUrl = url;
+      } catch (err) {
+        el.innerHTML = `<div class="admin-section">
+          <h3>Business Manager</h3>
+          <p class="muted" style="color:var(--danger)">${Utils.escHtml(err.message || 'Could not open Business Manager')}</p>
+          <button type="button" class="btn btn-primary" id="bm-retry">Try again</button>
+        </div>`;
+        document.getElementById('bm-retry')?.addEventListener('click', () => {
+          this._managerUrl = null;
+          this.renderBusinessManager(el);
+        });
+        return;
+      }
+    }
+    const who = Utils.escHtml(this.app?.user?.full_name || this.app?.user?.username || 'Admin');
+    el.innerHTML = `<div class="admin-manager-embed">
+      <div class="admin-manager-embed-bar">
+        <button type="button" class="btn btn-ghost btn-sm" id="bm-back-mobile">← Mobile App Users</button>
+        <span class="muted">Signed in as ${who} — no extra password needed</span>
+        <button type="button" class="btn btn-ghost btn-sm" id="bm-open-tab">Open in new tab</button>
+      </div>
+      <iframe id="admin-manager-frame" src="${url}" title="Business Manager" allow="notifications"></iframe>
+    </div>`;
+    document.getElementById('bm-back-mobile')?.addEventListener('click', () => {
+      this.section = 'mobile-app';
+      this.renderSection(el);
+    });
+    document.getElementById('bm-open-tab')?.addEventListener('click', () => window.open(url, '_blank', 'noopener,noreferrer'));
   }
 };
 window.AdminPage = AdminPage;

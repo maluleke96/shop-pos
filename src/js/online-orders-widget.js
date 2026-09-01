@@ -1,10 +1,13 @@
-/** POS online orders — badge + panel (no popups until shift is open). */
+/** POS online orders — live updates, popups, reminders (after shift is open). */
 const OnlineOrdersWidget = {
   _timer: null,
   _app: null,
   _orders: [],
   _panelTab: 'pending',
-  _lastPendingCount: 0,
+  _knownIds: new Set(),
+  _remindedIds: new Set(),
+  _popupOpen: false,
+  _pollMs: 4000,
 
   bind(app) {
     this._app = app;
@@ -13,6 +16,11 @@ const OnlineOrdersWidget = {
   isAllowed() {
     const pos = window.POSPage;
     return !!pos?.canShowOnlineOrders?.();
+  },
+
+  reminderMinutes() {
+    const m = Number(this._app?.settings?.online?.pos_reminder_minutes);
+    return m > 0 ? m : 2;
   },
 
   currency() {
@@ -36,21 +44,75 @@ const OnlineOrdersWidget = {
   startPolling() {
     this.stopPolling();
     if (!this.isAllowed()) return;
-    this._timer = setInterval(() => this.poll(), 12000);
+    this._timer = setInterval(() => this.poll(), this._pollMs);
     this.poll();
+  },
+
+  orderAgeMs(order) {
+    const raw = order.created_at || order.updated_at;
+    if (!raw) return 0;
+    const t = new Date(raw).getTime();
+    return Number.isFinite(t) ? Date.now() - t : 0;
   },
 
   async poll() {
     if (!this.isAllowed()) return;
     if (typeof API === 'undefined' || !API.getOnlineOrdersLocal) return;
     try {
+      const prevPending = this.pendingOrders();
+      const prevIds = new Set(prevPending.map((o) => String(o.id)));
       await this.refreshOrders();
-      const pending = this.pendingOrders().length;
-      if (pending > this._lastPendingCount && this._lastPendingCount > 0) {
-        Utils.toast(`${pending - this._lastPendingCount} new online order(s) — tap Online Orders`, 'info');
+      const pending = this.pendingOrders();
+      const newOnes = pending.filter((o) => !prevIds.has(String(o.id)) && !this._knownIds.has(String(o.id)));
+
+      for (const o of pending) this._knownIds.add(String(o.id));
+
+      if (newOnes.length) {
+        this.playAlert();
+        for (const order of newOnes) {
+          this.showNewOrderPopup(order);
+        }
+        Utils.toast(`${newOnes.length} new online order(s)!`, 'info');
       }
-      this._lastPendingCount = pending;
+
+      this.checkReminders(pending);
+      this.updateBadge(pending.length);
+
+      // Refresh open panel without manual click
+      if (document.getElementById('oo-list') && !this._popupOpen) {
+        this.renderPanel();
+      }
     } catch (_) { /* ignore */ }
+  },
+
+  playAlert() {
+    try {
+      const ns = this._app?.settings?.notification_settings || {};
+      if (ns.sound_enabled === false) return;
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.connect(g);
+      g.connect(ctx.destination);
+      o.frequency.value = 880;
+      g.gain.value = 0.08;
+      o.start();
+      setTimeout(() => { o.stop(); ctx.close(); }, 180);
+    } catch (_) { /* */ }
+  },
+
+  checkReminders(pending) {
+    const limitMs = this.reminderMinutes() * 60 * 1000;
+    for (const order of pending) {
+      const id = String(order.id);
+      if (this._remindedIds.has(id)) continue;
+      if (this.orderAgeMs(order) >= limitMs) {
+        this._remindedIds.add(id);
+        Utils.toast(`⏰ Reminder: ${order.order_number || 'Online order'} not attended (${this.reminderMinutes()} min)`, 'error');
+        this.playAlert();
+        if (!this._popupOpen) this.showNewOrderPopup(order, true);
+      }
+    }
   },
 
   async refreshOrders() {
@@ -90,6 +152,7 @@ const OnlineOrdersWidget = {
     }
     const btn = document.getElementById('pos-online-orders');
     if (btn) {
+      btn.classList.toggle('has-orders', n > 0);
       btn.title = this.isAllowed()
         ? (n ? `${n} new online order(s)` : 'View online orders')
         : 'Open your shift first';
@@ -139,6 +202,38 @@ const OnlineOrdersWidget = {
     </div>`;
   },
 
+  showNewOrderPopup(order, isReminder = false) {
+    if (!this.isAllowed() || !order) return;
+    this._popupOpen = true;
+    const items = this.parseItems(order);
+    const title = isReminder ? '⏰ Online order needs attention' : '🛒 New online order';
+    Utils.showModal(title, `
+      <p><strong>${this.esc(order.order_number)}</strong> · ${Utils.formatMoney(order.total, this.currency())}</p>
+      <p>${this.esc(order.customer_name || 'Customer')} · ${this.esc(order.customer_phone || '')}</p>
+      <p class="muted">${this.esc(order.fulfillment_type || 'collection')} · ${items.length} item(s)</p>
+      <ul style="margin:8px 0;padding-left:18px;font-size:13px">${items.slice(0, 5).map((i) =>
+        `<li>${this.esc(i.name)} ×${i.quantity}</li>`).join('')}</ul>`,
+      `<button type="button" class="btn btn-ghost" id="oo-popup-later">Later</button>
+       <button type="button" class="btn btn-ghost" id="oo-popup-view">View all</button>
+       <button type="button" class="btn btn-primary" id="oo-popup-accept">Accept on POS</button>`,
+      { noDismiss: true });
+
+    document.getElementById('oo-popup-later')?.addEventListener('click', () => {
+      this._popupOpen = false;
+      Utils.forceHideModal?.() || Utils.hideModal();
+    });
+    document.getElementById('oo-popup-view')?.addEventListener('click', () => {
+      this._popupOpen = false;
+      Utils.forceHideModal?.() || Utils.hideModal();
+      this.openPanel('pending');
+    });
+    document.getElementById('oo-popup-accept')?.addEventListener('click', async () => {
+      this._popupOpen = false;
+      Utils.hideModal();
+      await this.accept(order);
+    });
+  },
+
   async openPanel(tab = 'pending') {
     if (!this.isAllowed()) {
       Utils.toast('Open your shift first — online orders will appear after that', 'error');
@@ -159,7 +254,7 @@ const OnlineOrdersWidget = {
     const title = tab === 'accepted' ? 'Accepted on POS' : tab === 'history' ? 'Order history' : 'New online orders';
 
     Utils.showModal('🛒 Online Orders', `
-      <p class="muted" style="margin:0 0 10px">Manage web orders for this till. New orders wait here until you accept or reject them.</p>
+      <p class="muted" style="margin:0 0 10px">Live web orders — updates every few seconds. Reminder after ${this.reminderMinutes()} min unattended.</p>
       <div class="form-tabs" id="oo-tabs" style="margin:0">
         <button type="button" class="form-tab ${tab === 'pending' ? 'active' : ''}" data-oo-tab="pending">New <span class="tag tag-warn" style="margin-left:4px">${pending.length}</span></button>
         <button type="button" class="form-tab ${tab === 'accepted' ? 'active' : ''}" data-oo-tab="accepted">Accepted <span class="tag tag-ok" style="margin-left:4px">${accepted.length}</span></button>
@@ -171,14 +266,9 @@ const OnlineOrdersWidget = {
           ? rows.map((o) => this.renderOrderRow(o)).join('')
           : `<p class="muted" style="padding:16px 0;text-align:center">No orders in this list.</p>`}
       </div>`,
-      `<button type="button" class="btn btn-ghost" id="oo-refresh">Refresh</button>
-       <button type="button" class="btn btn-primary" id="oo-close">Close</button>`);
+      `<button type="button" class="btn btn-ghost" id="oo-close">Close</button>`);
 
     document.getElementById('oo-close')?.addEventListener('click', () => Utils.hideModal());
-    document.getElementById('oo-refresh')?.addEventListener('click', async () => {
-      await this.refreshOrders();
-      this.renderPanel();
-    });
     document.getElementById('oo-tabs')?.addEventListener('click', (e) => {
       const btn = e.target.closest('[data-oo-tab]');
       if (!btn) return;
@@ -228,12 +318,13 @@ const OnlineOrdersWidget = {
   },
 
   async accept(order) {
-    const btn = document.getElementById('oo-accept');
+    const btn = document.getElementById('oo-accept') || document.getElementById('oo-popup-accept');
     if (btn) { btn.disabled = true; btn.textContent = 'Accepting…'; }
     try {
       const r = await API.acceptOnlineOrderAsSale(order.id, { fulfillment: order.fulfillment_type || order.fulfillment }, this._app?.user);
       if (r?.success === false) throw new Error(r.error || 'Accept failed');
       if (r?.error) throw new Error(r.error);
+      this._remindedIds.delete(String(order.id));
       Utils.toast(`Online order ${order.order_number} accepted on POS`, 'success');
       await this.refreshOrders();
       this._panelTab = 'accepted';

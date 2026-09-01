@@ -1,1 +1,1 @@
-deploy-20260901-online-orders-panel-v2
+deploy-20260901-online-pro-loyalty-pos
