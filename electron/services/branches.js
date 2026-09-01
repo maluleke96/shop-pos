@@ -564,7 +564,6 @@ module.exports = {
   getBranchStockQuantity,
   adjustBranchStock,
   ensureDefaultBranch,
-  upsertBranchStockQuantity,
   assertBranchRoleSlot,
   ensureBranchSchema,
   hasColumn,
