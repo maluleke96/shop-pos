@@ -250,11 +250,13 @@ const StockPage = {
       const r = type === 'adjust'
         ? await API.adjustStock(productId, qty, 'set', notes, this.app.user)
         : await API.adjustStock(productId, qty, type, notes, this.app.user);
-      if (r?.success === false) return Utils.toast(r.error || 'Stock update failed', 'error');
-      const min = r?.data?.min_stock;
+      if (!r || r.success === false) return Utils.toast(r?.error || 'Stock update failed', 'error');
+      const newStock = r.data?.new_stock;
       Utils.hideModal();
+      this._stockItems = [];
+      window.DataCache?.invalidate?.('products', 'stockReport', 'stockHistory', 'dashboard', 'pos');
       StockPage.render(document.getElementById('page-content'), this.app);
-      Utils.toast(min != null ? `Stock updated · min stock ${Number(min).toFixed(2)}` : 'Stock updated', 'success');
+      Utils.toast(newStock != null ? `Stock saved — now ${newStock} on hand` : 'Stock saved', 'success');
     });
   }
 };

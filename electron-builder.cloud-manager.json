@@ -1,0 +1,43 @@
+{
+  "appId": "com.shoppos.manager",
+  "productName": "Business Manager",
+  "directories": {
+    "output": "dist\\cloud-apps\\manager",
+    "buildResources": "build"
+  },
+  "files": [
+    "electron/manager-shell.js",
+    "package.json"
+  ],
+  "extraMetadata": {
+    "main": "electron/manager-shell.js",
+    "name": "com.shoppos.manager"
+  },
+  "win": {
+    "target": [
+      {
+        "target": "nsis",
+        "arch": [
+          "x64"
+        ]
+      },
+      {
+        "target": "portable",
+        "arch": [
+          "x64"
+        ]
+      }
+    ]
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "artifactName": "ShopPOS-Manager-Setup.${ext}",
+    "shortcutName": "Business Manager"
+  },
+  "portable": {
+    "artifactName": "ShopPOS-Manager-Portable.${ext}"
+  }
+}

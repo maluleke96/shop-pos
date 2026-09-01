@@ -16,6 +16,33 @@ function decodeRpcValue(value) {
   return out;
 }
 
+function isLocalInstaller() {
+  return !!(window.__SHOP_POS_LOCAL_INSTALLER__ && !window.__SHOP_POS_CLOUD__);
+}
+
+async function invokeCloud(method, args, timeoutMs) {
+  const bridge = window.ShopPosCloudBridge;
+  if (!bridge || typeof bridge.rpc !== 'function') return null;
+  if (navigator.onLine === false) return null;
+  try {
+    return await bridge.rpc(method, args, timeoutMs);
+  } catch (_) {
+    return null;
+  }
+}
+
+function isAccChannel(channel) {
+  return String(channel || '').startsWith('acc:');
+}
+
+async function invokeCloudFirst(method, args, localInvoke) {
+  if (isLocalInstaller()) {
+    const cloud = await invokeCloud(method, args);
+    if (cloud && cloud.success !== false) return cloud;
+  }
+  return localInvoke();
+}
+
 const invoke = async (channel, ...args) => {
   if (!window.posAPI) {
     await new Promise(resolve => {
@@ -27,6 +54,17 @@ const invoke = async (channel, ...args) => {
   if (!window.posAPI) {
     return { success: false, error: 'App API not ready - restart Shop POS' };
   }
+
+  // Central accounting ledger — always prefer cloud Postgres on installers
+  if (isAccChannel(channel) && isLocalInstaller()) {
+    const cloud = await invokeCloud(channel, args);
+    if (cloud && cloud.success !== false) return cloud;
+    if (navigator.onLine === false) {
+      return { success: false, error: 'Accounting requires an internet connection to the central ledger' };
+    }
+    if (cloud && cloud.error) return cloud;
+  }
+
   const key = String(channel).replace(/[:.]/g, '_');
   const fn = window.posAPI[key];
   if (typeof fn !== 'function') {
@@ -139,6 +177,7 @@ const API = {
   deleteUser: (id, actor) => invoke('auth:deleteUser', id, actor),
   permanentlyDeleteUser: (id, confirmUsername, actor) => invoke('auth:permanentlyDeleteUser', id, confirmUsername, actor),
   verifyUserSession: (userId) => invoke('auth:verifySession', userId),
+  getSession: () => invoke('auth:session'),
 
   getSettings: () => invoke('settings:get'),
   getSettingsParsed: () => invoke('settings:getParsed'),
@@ -168,6 +207,8 @@ const API = {
   importProducts: (rows, actor) => invoke('products:import', rows, actor),
 
   adjustStock: (productId, qty, type, notes, actor) => invoke('stock:adjust', productId, qty, type, notes, actor),
+  recordStockAdjustment: (data, actor) => invoke('stock:recordAdjustment', data, actor),
+  listStockAdjustments: (filters) => invoke('stock:listAdjustments', filters || {}),
   getStockHistory: (productId) => invoke('stock:history', productId),
 
   completeSale: (data, actor) => invoke('sales:complete', data, actor),
@@ -280,6 +321,7 @@ const API = {
   printA4: (html, opts) => isCloudBrowser()
     ? Promise.resolve(printHtmlBrowser(html, 'Document'))
     : invoke('print:a4', html, opts || {}),
+  htmlToPdf: (html, opts) => invoke('print:htmlToPdf', html, opts || {}),
   openCashDrawer: () => invoke('print:openDrawer'),
   printBarcodeLabel: (product) => invoke('print:barcode', product),
   getPrinterStatus: (names) => invoke('printers:status', names),
@@ -708,7 +750,7 @@ const API = {
   getBookkeepingSettings: () => invoke('bookkeeping:getSettings'),
   saveBookkeepingSettings: (data, actor) => invoke('bookkeeping:saveSettings', data, actor),
   syncBookkeeping: (from, to) => invoke('bookkeeping:sync', from, to),
-  getFinancialDashboard: (from, to) => invoke('bookkeeping:dashboard', from, to),
+  getFinancialDashboard: (from, to, branchId) => invoke('bookkeeping:dashboard', from, to, branchId),
   searchLedger: (filters) => invoke('bookkeeping:search', filters),
   getBookkeepingIncome: (filters) => invoke('bookkeeping:getIncome', filters),
   saveBookkeepingIncome: (data, actor) => invoke('bookkeeping:saveIncome', data, actor),
@@ -841,7 +883,7 @@ const API = {
   recipeWasteReject: (id, actor) => invoke('recipe:wasteReject', id, actor),
   recipeWasteUpdate: (id, data, actor) => invoke('recipe:wasteUpdate', id, data, actor),
   recipeWasteDelete: (id, actor) => invoke('recipe:wasteDelete', id, actor),
-  recipeProductionMeals: (actor) => invoke('recipe:productionMeals', actor),
+  recipeProductionMeals: (actor, filters) => invoke('recipe:productionMeals', actor, filters || {}),
   recipeIngredientStockHistory: (filters, actor) => invoke('recipe:ingredientStockHistory', filters, actor),
   recipeProfitsLosses: (filters, actor) => invoke('recipe:profitsLosses', filters, actor),
   recipeListPurchaseOrders: (filters, actor) => invoke('recipe:listPurchaseOrders', filters, actor),
@@ -892,6 +934,7 @@ const API = {
   rejectFlyer: (id, actor, notes) => invoke('flyers:reject', id, actor, notes),
   getFlyerAnalytics: (id) => invoke('flyers:analytics', id),
   getSmartPromotionSuggestions: (filters, actor) => invoke('flyers:smartSuggestions', filters, actor),
+  generateAiFlyer: (filters, actor) => invoke('flyers:aiGenerate', filters, actor),
   bulkUpdateFlyerPrices: (id, updates, actor) => invoke('flyers:bulkPrices', id, updates, actor),
   recordFlyerEvent: (id, eventType) => invoke('flyers:recordEvent', id, eventType),
   getBrandKit: () => invoke('flyers:brandKit'),
@@ -954,6 +997,233 @@ const API = {
   mktMenuTemplates: (actor) => invoke('mkt:menuTemplates', actor),
   mktSaveMenuTemplate: (data, actor) => invoke('mkt:saveMenuTemplate', data, actor),
 
+  // Marketing Command Centre
+  mktpDashboard: (f, actor) => invoke('mktp:dashboard', f, actor),
+  mktpBusinesses: (f) => invoke('mktp:businesses', f),
+  mktpGetBusiness: (id) => invoke('mktp:getBusiness', id),
+  mktpSaveBusiness: (data, actor) => invoke('mktp:saveBusiness', data, actor),
+  mktpSetBusinessActive: (id, active, actor) => invoke('mktp:setBusinessActive', id, active, actor),
+  mktpBranches: (f) => invoke('mktp:branches', f),
+  mktpLinkBranch: (branchId, businessId, actor) => invoke('mktp:linkBranch', branchId, businessId, actor),
+  mktpPromotions: (f, actor) => invoke('mktp:promotions', f, actor),
+  mktpGetPromotion: (id) => invoke('mktp:getPromotion', id),
+  mktpSavePromotion: (data, actor) => invoke('mktp:savePromotion', data, actor),
+  mktpSetPromotionStatus: (id, status, actor) => invoke('mktp:setPromotionStatus', id, status, actor),
+  mktpCampaigns: (f, actor) => invoke('mktp:campaigns', f, actor),
+  mktpGetCampaign: (id) => invoke('mktp:getCampaign', id),
+  mktpSaveCampaign: (data, actor) => invoke('mktp:saveCampaign', data, actor),
+  mktpDuplicateCampaign: (id, actor) => invoke('mktp:duplicateCampaign', id, actor),
+  mktpSetCampaignStatus: (id, status, actor) => invoke('mktp:setCampaignStatus', id, status, actor),
+  mktpGenerateAssets: (id, actor) => invoke('mktp:generateAssets', id, actor),
+  mktpSocialPosts: (f, actor) => invoke('mktp:socialPosts', f, actor),
+  mktpSaveSocialPost: (data, actor) => invoke('mktp:saveSocialPost', data, actor),
+  mktpPublishSocialPost: (id, actor) => invoke('mktp:publishSocialPost', id, actor),
+  mktpWhatsappBlasts: (f, actor) => invoke('mktp:whatsappBlasts', f, actor),
+  mktpSaveWhatsappBlast: (data, actor) => invoke('mktp:saveWhatsappBlast', data, actor),
+  mktpWhatsappAudience: (seg, biz, branch) => invoke('mktp:whatsappAudience', seg, biz, branch),
+  mktpCustomers: (f, actor) => invoke('mktp:customers', f, actor),
+  mktpSegments: (f, actor) => invoke('mktp:segments', f, actor),
+  mktpSaveSegment: (data, actor) => invoke('mktp:saveSegment', data, actor),
+  mktpEvaluateSegment: (id) => invoke('mktp:evaluateSegment', id),
+  mktpLoyaltyRules: (f, actor) => invoke('mktp:loyaltyRules', f, actor),
+  mktpSaveLoyaltyRule: (data, actor) => invoke('mktp:saveLoyaltyRule', data, actor),
+  mktpAgents: (f, actor) => invoke('mktp:agents', f, actor),
+  mktpGetAgent: (id) => invoke('mktp:getAgent', id),
+  mktpApplyAgent: (data) => invoke('mktp:applyAgent', data),
+  mktpApproveAgent: (id, data, actor) => invoke('mktp:approveAgent', id, data, actor),
+  mktpSetAgentStatus: (id, status, reason, actor) => invoke('mktp:setAgentStatus', id, status, reason, actor),
+  mktpLinkAgentUser: (agentId, userId, actor) => invoke('mktp:linkAgentUser', agentId, userId, actor),
+  mktpRecordClick: (code, meta) => invoke('mktp:recordClick', code, meta),
+  mktpAttribute: (data, actor) => invoke('mktp:attribute', data, actor),
+  mktpCommissions: (f, actor) => invoke('mktp:commissions', f, actor),
+  mktpSetCommissionStatus: (id, status, notes, actor) => invoke('mktp:setCommissionStatus', id, status, notes, actor),
+  mktpCommissionRules: (f, actor) => invoke('mktp:commissionRules', f, actor),
+  mktpSaveCommissionRule: (data, actor) => invoke('mktp:saveCommissionRule', data, actor),
+  mktpPayments: (f, actor) => invoke('mktp:payments', f, actor),
+  mktpSavePayment: (data, actor) => invoke('mktp:savePayment', data, actor),
+  mktpContractTemplates: (f, actor) => invoke('mktp:contractTemplates', f, actor),
+  mktpSaveContractTemplate: (data, actor) => invoke('mktp:saveContractTemplate', data, actor),
+  mktpContracts: (f, actor) => invoke('mktp:contracts', f, actor),
+  mktpCreateContract: (agentId, templateId, actor) => invoke('mktp:createContract', agentId, templateId, actor),
+  mktpSetContractStatus: (id, status, actor) => invoke('mktp:setContractStatus', id, status, actor),
+  mktpAcceptContract: (id, sig, actor) => invoke('mktp:acceptContract', id, sig, actor),
+  mktpIncentives: (f, actor) => invoke('mktp:incentives', f, actor),
+  mktpSaveIncentive: (data, actor) => invoke('mktp:saveIncentive', data, actor),
+  mktpQrCodes: (f, actor) => invoke('mktp:qrCodes', f, actor),
+  mktpCreateQr: (data, actor) => invoke('mktp:createQr', data, actor),
+  mktpCoupons: (f, actor) => invoke('mktp:coupons', f, actor),
+  mktpCreateCoupon: (data, actor) => invoke('mktp:createCoupon', data, actor),
+  mktpRedeemCoupon: (code, saleId, actor) => invoke('mktp:redeemCoupon', code, saleId, actor),
+  mktpCalendar: (f, actor) => invoke('mktp:calendar', f, actor),
+  mktpSaveCalendar: (data, actor) => invoke('mktp:saveCalendar', data, actor),
+  mktpCampaignAnalytics: (id, actor) => invoke('mktp:campaignAnalytics', id, actor),
+  mktpLeaderboard: (f, actor) => invoke('mktp:leaderboard', f, actor),
+  mktpRoi: (f, actor) => invoke('mktp:roi', f, actor),
+  mktpNotifications: (f, actor) => invoke('mktp:notifications', f, actor),
+  mktpReadNotification: (id, actor) => invoke('mktp:readNotification', id, actor),
+  mktpSettings: () => invoke('mktp:settings'),
+  mktpSaveSettings: (data, actor) => invoke('mktp:saveSettings', data, actor),
+  mktpAudit: (f, actor) => invoke('mktp:audit', f, actor),
+  mktpAgentDashboard: (actor) => invoke('mktp:agentDashboard', actor),
+  mktpPublicAgent: (code) => invoke('mktp:publicAgent', code),
+
+  accLogin: (username, password) => invoke('acc:login', username, password),
+  accSessionFromPos: (actor) => invoke('acc:sessionFromPos', actor),
+  accLogout: () => invoke('acc:logout'),
+  accDashboard: (f, actor) => invoke('acc:dashboard', f, actor),
+  accSearch: (q, actor) => invoke('acc:search', q, actor),
+  accSettings: () => invoke('acc:settings'),
+  accSaveSettings: (data, actor) => invoke('acc:saveSettings', data, actor),
+  accAccounts: (f, actor) => invoke('acc:accounts', f, actor),
+  accSaveAccount: (data, actor) => invoke('acc:saveAccount', data, actor),
+  accSetAccountActive: (id, active, actor) => invoke('acc:setAccountActive', id, active, actor),
+  accJournals: (f, actor) => invoke('acc:journals', f, actor),
+  accGetJournal: (id) => invoke('acc:getJournal', id),
+  accPostJournal: (data, actor) => invoke('acc:postJournal', data, actor),
+  accPublishJournal: (id, actor) => invoke('acc:publishJournal', id, actor),
+  accReverseJournal: (id, actor) => invoke('acc:reverseJournal', id, actor),
+  accLedger: (f, actor) => invoke('acc:ledger', f, actor),
+  accTrialBalance: (asOf, actor) => invoke('acc:trialBalance', asOf, actor),
+  accProfitLoss: (from, to, actor) => invoke('acc:profitLoss', from, to, actor),
+  accBalanceSheet: (asOf, actor) => invoke('acc:balanceSheet', asOf, actor),
+  accCashFlow: (from, to, actor) => invoke('acc:cashFlow', from, to, actor),
+  accPeriods: (actor) => invoke('acc:periods', actor),
+  accClosePeriod: (id, actor) => invoke('acc:closePeriod', id, actor),
+  accReopenPeriod: (id, actor) => invoke('acc:reopenPeriod', id, actor),
+  accLockPeriod: (id, actor) => invoke('acc:lockPeriod', id, actor),
+  accYearEnd: (actor) => invoke('acc:yearEnd', actor),
+  accInvoices: (f, actor) => invoke('acc:invoices', f, actor),
+  accGetInvoice: (id) => invoke('acc:getInvoice', id),
+  accSaveInvoice: (data, actor) => invoke('acc:saveInvoice', data, actor),
+  accPostInvoice: (id, actor) => invoke('acc:postInvoice', id, actor),
+  accCreditNotes: (f, actor) => invoke('acc:creditNotes', f, actor),
+  accSaveCreditNote: (data, actor) => invoke('acc:saveCreditNote', data, actor),
+  accPostCreditNote: (id, actor) => invoke('acc:postCreditNote', id, actor),
+  accDebitNotes: (actor) => invoke('acc:debitNotes', actor),
+  accSaveDebitNote: (data, actor) => invoke('acc:saveDebitNote', data, actor),
+  accPostDebitNote: (id, actor) => invoke('acc:postDebitNote', id, actor),
+  accBills: (f, actor) => invoke('acc:bills', f, actor),
+  accSaveBill: (data, actor) => invoke('acc:saveBill', data, actor),
+  accPostBill: (id, actor) => invoke('acc:postBill', id, actor),
+  accPayments: (f, actor) => invoke('acc:payments', f, actor),
+  accSavePayment: (data, actor) => invoke('acc:savePayment', data, actor),
+  accRefunds: (actor) => invoke('acc:refunds', actor),
+  accSaveRefund: (data, actor) => invoke('acc:saveRefund', data, actor),
+  accAgingAr: (asOf, actor) => invoke('acc:agingAr', asOf, actor),
+  accAgingAp: (asOf, actor) => invoke('acc:agingAp', asOf, actor),
+  accCustomerStatement: (id, from, to, actor) => invoke('acc:customerStatement', id, from, to, actor),
+  accSupplierStatement: (id, from, to, actor) => invoke('acc:supplierStatement', id, from, to, actor),
+  accBankAccounts: (actor) => invoke('acc:bankAccounts', actor),
+  accSaveBankAccount: (data, actor) => invoke('acc:saveBankAccount', data, actor),
+  accBankTxns: (f, actor) => invoke('acc:bankTxns', f, actor),
+  accSaveBankTxn: (data, actor) => invoke('acc:saveBankTxn', data, actor),
+  accImportBankStmt: (bankId, lines, actor) => invoke('acc:importBankStmt', bankId, lines, actor),
+  accParseBankStmt: (text, filename, format, actor) => invoke('acc:parseBankStmt', text, filename, format, actor),
+  accMatchBankStmt: (lineId, txnId, actor) => invoke('acc:matchBankStmt', lineId, txnId, actor),
+  accCreateReconciliation: (data, actor) => invoke('acc:createReconciliation', data, actor),
+  accCompleteReconciliation: (id, actor) => invoke('acc:completeReconciliation', id, actor),
+  accCashAccounts: (actor) => invoke('acc:cashAccounts', actor),
+  accCashTxns: (f, actor) => invoke('acc:cashTxns', f, actor),
+  accSaveCashTxn: (data, actor) => invoke('acc:saveCashTxn', data, actor),
+  accPettyCash: (actor) => invoke('acc:pettyCash', actor),
+  accSavePettyCash: (data, actor) => invoke('acc:savePettyCash', data, actor),
+  accCashupFinance: (data, actor) => invoke('acc:cashupFinance', data, actor),
+  accExpenses: (f, actor) => invoke('acc:expenses', f, actor),
+  accRecordExpense: (data, actor) => invoke('acc:recordExpense', data, actor),
+  accRecurring: (actor) => invoke('acc:recurring', actor),
+  accSaveRecurring: (data, actor) => invoke('acc:saveRecurring', data, actor),
+  accProcessRecurring: (actor) => invoke('acc:processRecurring', actor),
+  accOtherIncome: (actor) => invoke('acc:otherIncome', actor),
+  accSaveOtherIncome: (data, actor) => invoke('acc:saveOtherIncome', data, actor),
+  accAssets: (actor) => invoke('acc:assets', actor),
+  accSaveAsset: (data, actor) => invoke('acc:saveAsset', data, actor),
+  accRunDepreciation: (asOf, actor) => invoke('acc:runDepreciation', asOf, actor),
+  accLoans: (actor) => invoke('acc:loans', actor),
+  accSaveLoan: (data, actor) => invoke('acc:saveLoan', data, actor),
+  accLoanPayment: (data, actor) => invoke('acc:loanPayment', data, actor),
+  accOwnerTxns: (actor) => invoke('acc:ownerTxns', actor),
+  accSaveOwnerTxn: (data, actor) => invoke('acc:saveOwnerTxn', data, actor),
+  accTaxRates: (actor) => invoke('acc:taxRates', actor),
+  accSaveTaxRate: (data, actor) => invoke('acc:saveTaxRate', data, actor),
+  accTaxSummary: (from, to, actor) => invoke('acc:taxSummary', from, to, actor),
+  accSalesReport: (from, to, actor) => invoke('acc:salesReport', from, to, actor),
+  accPurchaseReport: (from, to, actor) => invoke('acc:purchaseReport', from, to, actor),
+  accExpenseReport: (from, to, actor) => invoke('acc:expenseReport', from, to, actor),
+  accStockValue: (actor) => invoke('acc:stockValue', actor),
+  accDrillDown: (metric, from, to, actor) => invoke('acc:drillDown', metric, from, to, actor),
+  accDocuments: (f, actor) => invoke('acc:documents', f, actor),
+  accSaveDocument: (data, actor) => invoke('acc:saveDocument', data, actor),
+  accRecordStockAdjustment: (data, actor) => invoke('acc:recordStockAdjustment', data, actor),
+  accStockAdjustments: (actor) => invoke('acc:stockAdjustments', {}, actor),
+  accGetDocumentFile: (id, actor) => invoke('acc:getDocumentFile', id, actor),
+  accProcessOcr: (id, actor) => invoke('acc:processOcr', id, actor),
+  accConfirmOcr: (id, data, actor) => invoke('acc:confirmOcr', id, data, actor),
+  accStatements: (f, actor) => invoke('acc:statements', f, actor),
+  accSaveStatement: (data, actor) => invoke('acc:saveStatement', data, actor),
+  accGetStatement: (id, actor) => invoke('acc:getStatement', id, actor),
+  accApprovals: (f, actor) => invoke('acc:approvals', f, actor),
+  accDecideApproval: (id, decision, notes, actor) => invoke('acc:decideApproval', id, decision, notes, actor),
+  accNotifications: (actor) => invoke('acc:notifications', actor),
+  accReadNotification: (id, actor) => invoke('acc:readNotification', id, actor),
+  accAudit: (f, actor) => invoke('acc:audit', f, actor),
+  accIntegrations: (f, actor) => invoke('acc:integrations', f, actor),
+  accRetryIntegration: (id, actor) => invoke('acc:retryIntegration', id, actor),
+  accFinancialHealth: (f, actor) => invoke('acc:financialHealth', f, actor),
+  accReconcileCentre: (actor) => invoke('acc:reconcileCentre', actor),
+  accBankStmtLines: (f, actor) => invoke('acc:bankStmtLines', f, actor),
+  accListCashupFinance: (f, actor) => invoke('acc:listCashupFinance', f, actor),
+  accSyncMissing: (actor) => invoke('acc:syncMissing', actor),
+  accPurchaseOrders: (actor) => invoke('acc:purchaseOrders', actor),
+  accPayroll: (actor) => invoke('acc:payroll', actor),
+
+  hrLogin: (username, password) => invoke('hr:login', username, password),
+  hrDashboard: (f, actor) => invoke('hr:dashboard', f, actor),
+  hrSearch: (q, actor) => invoke('hr:search', q, actor),
+  hrSettings: (actor) => invoke('hr:settings', actor),
+  hrSaveSettings: (data, actor) => invoke('hr:saveSettings', data, actor),
+  hrPeople: (f, actor) => invoke('hr:people', f, actor),
+  hrListPayroll: (f, actor) => invoke('hr:listPayroll', f, actor),
+  hrAttendanceHub: (f, actor) => invoke('hr:attendanceHub', f, actor),
+  hrSchedules: (f, actor) => invoke('hr:schedules', f, actor),
+  hrLeaveBalances: (actor) => invoke('hr:leaveBalances', actor),
+  hrEmployeeDocuments: (f, actor) => invoke('hr:employeeDocuments', f, actor),
+  hrOffboardingList: (f, actor) => invoke('hr:offboardingList', f, actor),
+  hrOnboardingList: (actor) => invoke('hr:onboardingList', actor),
+  hrPayrollDeductions: (f, actor) => invoke('hr:payrollDeductions', f, actor),
+  hrStatutorySummary: (f, actor) => invoke('hr:statutorySummary', f, actor),
+  hrPerformanceHub: (f, actor) => invoke('hr:performanceHub', f, actor),
+  hrStaffWarnings: (f, actor) => invoke('hr:staffWarnings', f, actor),
+  hrEmployeeProfile: (id, actor) => invoke('hr:employeeProfile', id, actor),
+  hrEmployeeTimeline: (id, actor) => invoke('hr:employeeTimeline', id, actor),
+  hrApprovals: (f, actor) => invoke('hr:approvals', f, actor),
+  hrComplianceCentre: (actor) => invoke('hr:complianceCentre', actor),
+  hrComplianceEvents: (f, actor) => invoke('hr:complianceEvents', f, actor),
+  hrSaveComplianceEvent: (data, actor) => invoke('hr:saveComplianceEvent', data, actor),
+  hrPolicies: (f, actor) => invoke('hr:policies', f, actor),
+  hrSavePolicy: (data, actor) => invoke('hr:savePolicy', data, actor),
+  hrAcknowledgePolicy: (policyId, employeeId, data, actor) => invoke('hr:acknowledgePolicy', policyId, employeeId, data, actor),
+  hrBusinessRules: (f, actor) => invoke('hr:businessRules', f, actor),
+  hrSaveBusinessRule: (data, actor) => invoke('hr:saveBusinessRule', data, actor),
+  hrIncidents: (f, actor) => invoke('hr:incidents', f, actor),
+  hrSaveIncident: (data, actor) => invoke('hr:saveIncident', data, actor),
+  hrDisciplinaryCases: (f, actor) => invoke('hr:disciplinaryCases', f, actor),
+  hrSaveDisciplinaryCase: (data, actor) => invoke('hr:saveDisciplinaryCase', data, actor),
+  hrOnboardingTemplates: (actor) => invoke('hr:onboardingTemplates', actor),
+  hrOnboardingProgress: (employeeId, actor) => invoke('hr:onboardingProgress', employeeId, actor),
+  hrSaveOnboardingProgress: (data, actor) => invoke('hr:saveOnboardingProgress', data, actor),
+  hrForms: (f, actor) => invoke('hr:forms', f, actor),
+  hrSaveForm: (data, actor) => invoke('hr:saveForm', data, actor),
+  hrCreateExternalLink: (data, actor) => invoke('hr:createExternalLink', data, actor),
+  hrRequests: (f, actor) => invoke('hr:requests', f, actor),
+  hrSaveRequest: (data, actor) => invoke('hr:saveRequest', data, actor),
+  hrDecideRequest: (id, decision, notes, actor) => invoke('hr:decideRequest', id, decision, notes, actor),
+  hrEmployerRecords: (f, actor) => invoke('hr:employerRecords', f, actor),
+  hrSaveEmployerRecord: (data, actor) => invoke('hr:saveEmployerRecord', data, actor),
+  hrSalaryHistory: (employeeId, actor) => invoke('hr:salaryHistory', employeeId, actor),
+  hrSaveSalaryChange: (data, actor) => invoke('hr:saveSalaryChange', data, actor),
+  hrSaveOffboarding: (data, actor) => invoke('hr:saveOffboarding', data, actor),
+  hrPostPayrollAccounting: (payrollId, actor) => invoke('hr:postPayrollAccounting', payrollId, actor),
+
   getWhatsAppTemplates: (filters) => invoke('whatsapp:getTemplates', filters),
   getWhatsAppTemplate: (id) => invoke('whatsapp:getTemplate', id),
   saveWhatsAppTemplate: (data, actor) => invoke('whatsapp:saveTemplate', data, actor),
@@ -990,15 +1260,70 @@ const API = {
   saveBranch: (data, actor) => invoke('branches:save', data, actor),
   setActiveBranch: (branchId, actor) => invoke('branches:setActive', branchId, actor),
   saveBranchSettings: (branchId, data, actor) => invoke('branches:saveSettings', branchId, data, actor),
-  getSyncStatus: () => ({ success: true, data: { enabled: false, registered: false, removed: true, mode: (window.__SHOP_POS_CLOUD__ ? 'cloud' : 'local') } }),
-  saveSyncSettings: async () => ({ success: false, error: 'Sync hub removed — local tills stay on this device; set SHOP_POS_RPC_URL for cloud' }),
-  registerSyncDevice: async () => ({ success: false, error: 'Sync hub removed' }),
-  syncNow: async () => ({ success: true, data: { pushed: 0, newOrders: 0 } }),
-  publishProductsToHub: async () => ({ success: false, error: 'Sync hub removed' }),
-  syncBranchesToHub: async () => ({ success: false, error: 'Sync hub removed' }),
-  getOnlineOrdersLocal: async () => ({ success: true, data: [] }),
-  updateOnlineOrderStatus: async () => ({ success: false, error: 'Online ordering removed' }),
-  acceptOnlineOrderAsSale: async () => ({ success: false, error: 'Online ordering removed' })
+  getSyncStatus: () => invoke('sync:getStatus'),
+  saveSyncSettings: (data, actor) => invoke('sync:saveSettings', data, actor),
+  registerSyncDevice: (role, name) => invoke('sync:register', role, name),
+  syncNow: async () => {
+    if (window.ShopPosCloudBridge?.pullOnlineOrders) {
+      await window.ShopPosCloudBridge.pullOnlineOrders().catch(() => {});
+    }
+    return invoke('sync:now');
+  },
+  publishProductsToHub: () => invoke('sync:publishProducts'),
+  syncBranchesToHub: () => invoke('sync:branchesToHub'),
+  getOnlineOrdersLocal: async (status) => {
+    if (window.ShopPosCloudBridge?.pullOnlineOrders) {
+      await window.ShopPosCloudBridge.pullOnlineOrders().catch(() => {});
+    }
+    return invoke('sync:getOnlineOrders', status);
+  },
+  updateOnlineOrderStatus: (id, status, actor, opts) => invoke('sync:updateOnlineOrder', id, status, opts || {}),
+  rejectOnlineOrder: (id, reason, actor) => invoke('sync:rejectOnlineOrder', id, reason, actor),
+  listDeliveries: (filters, actor) => invoke('delivery:list', filters || {}, actor),
+  deliveryDashboard: (filters, actor) => invoke('delivery:dashboard', filters || {}, actor),
+  getDelivery: (id, actor) => invoke('delivery:get', id, actor),
+  listDeliveryDrivers: (filters, actor) => invoke('delivery:drivers', filters || {}, actor),
+  getDeliveryDriver: (id, actor) => invoke('delivery:getDriver', id, actor),
+  saveDeliveryDriver: (data, actor) => invoke('delivery:saveDriver', data, actor),
+  approveDeliveryDriver: (id, actor) => invoke('delivery:approveDriver', id, actor),
+  rejectDeliveryDriver: (id, reason, actor) => invoke('delivery:rejectDriver', id, reason, actor),
+  assignDeliveryDriver: (id, driverId, actor) => invoke('delivery:assign', id, driverId, actor),
+  autoAssignDelivery: (id, actor) => invoke('delivery:autoAssign', id, actor),
+  updateDeliveryStatus: (id, status, notes, actor) => invoke('delivery:updateStatus', id, status, notes, actor),
+  getDeliverySettings: (actor) => invoke('delivery:settings', actor),
+  saveDeliverySettings: (data, actor) => invoke('delivery:saveSettings', data, actor),
+  deliveryReports: (filters, actor) => invoke('delivery:reports', filters || {}, actor),
+  getDeliveryTracking: (token) => invoke('delivery:tracking', token),
+  acceptOnlineOrderAsSale: (id, opts, actor) => invoke('sync:acceptOnlineOrder', id, opts, actor),
+
+  webGetSettings: () => invoke('web:getSettings'),
+  webGetBranches: () => invoke('web:getBranches'),
+  webGetMenu: (branchId, filters) => invoke('web:getMenu', branchId, filters),
+  webGetProduct: (branchId, productId) => invoke('web:getProduct', branchId, productId),
+  webRegister: (data) => invoke('web:register', data),
+  webLogin: (login, password) => invoke('web:login', login, password),
+  webAccount: (token) => invoke('web:account', token),
+  webValidateCart: (branchId, cart) => invoke('web:validateCart', branchId, cart),
+  webValidateCoupon: (code, branchId, cart, customerId) => invoke('web:validateCoupon', code, branchId, cart, customerId),
+  webSubmitOrder: (branchId, payload, token, idem) => invoke('web:submitOrder', branchId, payload, token, idem),
+  webGetOrder: (orderId, token) => invoke('web:getOrder', orderId, token),
+  webListOrders: (token, limit) => invoke('web:listOrders', token, limit),
+  webToggleFavorite: (token, productId, branchId) => invoke('web:toggleFavorite', token, productId, branchId),
+  webAdminOrders: (filters, actor) => invokeCloudFirst('web:adminOrders', [filters || {}, actor], () => invoke('web:adminOrders', filters, actor)),
+  webAdminAnalytics: (filters, actor) => invokeCloudFirst('web:adminAnalytics', [filters || {}, actor], () => invoke('web:adminAnalytics', filters, actor)),
+  webSaveGlobalSettings: (data, actor) => invokeCloudFirst('web:saveGlobalSettings', [data || {}, actor], () => invoke('web:saveGlobalSettings', data, actor)),
+  webSaveBranchSettings: (branchId, data, actor) => invokeCloudFirst('web:saveBranchSettings', [branchId, data || {}, actor], () => invoke('web:saveBranchSettings', branchId, data, actor)),
+  webGetBranchSettings: (branchId) => invokeCloudFirst('web:getBranchSettings', [branchId], () => invoke('web:getBranchSettings', branchId)),
+  webRejectOrder: (orderId, reason, actor) => invokeCloudFirst('web:rejectOrder', [orderId, reason, actor], () => invoke('web:rejectOrder', orderId, reason, actor)),
+  webUpdateOrderStatus: (orderId, status, actor, opts) => invokeCloudFirst('web:updateOrderStatus', [orderId, status, actor, opts || {}], () => invoke('web:updateOrderStatus', orderId, status, actor, opts)),
+
+  mobileAdminListUsers: (actor) => invokeCloudFirst('mobile:adminListUsers', [actor], () => invoke('mobile:adminListUsers', actor)),
+  mobileBootstrapAdmin: (actor) => invokeCloudFirst('mobile:bootstrapAdmin', [actor], () => invoke('mobile:bootstrapAdmin', actor)),
+  mobileAdminGetUser: (id, actor) => invokeCloudFirst('mobile:adminGetUser', [id, actor], () => invoke('mobile:adminGetUser', id, actor)),
+  mobileAdminSaveUser: (data, actor) => invokeCloudFirst('mobile:adminSaveUser', [data, actor], () => invoke('mobile:adminSaveUser', data, actor)),
+  mobileAdminSetActive: (id, active, actor) => invokeCloudFirst('mobile:adminSetActive', [id, active, actor], () => invoke('mobile:adminSetActive', id, active, actor)),
+  mobileAdminListDevices: (userId, actor) => invokeCloudFirst('mobile:adminListDevices', [userId, actor], () => invoke('mobile:adminListDevices', userId, actor)),
+  mobileAdminRevokeDevice: (deviceId, actor) => invokeCloudFirst('mobile:adminRevokeDevice', [deviceId, actor], () => invoke('mobile:adminRevokeDevice', deviceId, actor))
 };
 
 window.API = API;

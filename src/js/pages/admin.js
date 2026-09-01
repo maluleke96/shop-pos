@@ -107,6 +107,7 @@ const AdminPage = {
       el.querySelectorAll('.admin-nav-btn').forEach(b => b.classList.toggle('active', b.dataset.section === this.section));
       this.toggleOpsComplianceLayout(this.section === 'opscompliance');
       this.renderSection(document.getElementById('admin-content'));
+      window.App?._saveNavState?.();
     });
 
     this.toggleOpsComplianceLayout(this.section === 'opscompliance');

@@ -16,7 +16,9 @@ const apps = [
   { mode: 'pos', config: 'capacitor.pos.json', apkName: 'ShopPOS-POS.apk', label: 'Shop POS' },
   { mode: 'staff', config: 'capacitor.staff.json', apkName: 'ShopPOS-StaffPortal.apk', label: 'Staff Portal' },
   { mode: 'marketing', config: 'capacitor.marketing.json', apkName: 'ShopPOS-Marketing.apk', label: 'Marketing Agent' },
-  { mode: 'recipe', config: 'capacitor.recipe.json', apkName: 'ShopPOS-Recipe.apk', label: 'Recipe & Production' }
+  { mode: 'recipe', config: 'capacitor.recipe.json', apkName: 'ShopPOS-Recipe.apk', label: 'Recipe & Production' },
+  { mode: 'hr', config: 'capacitor.hr.json', apkName: 'ShopPOS-HR.apk', label: 'HR, Payroll & Documents' },
+  { mode: 'accounting', config: 'capacitor.accounting.json', apkName: 'ShopPOS-Accounting.apk', label: 'Business Accounting' }
 ];
 
 const destRoot = path.join(
@@ -55,9 +57,18 @@ function writeUtf8NoBom(filePath, content) {
   fs.writeFileSync(filePath, content, { encoding: 'utf8' });
 }
 
+function xmlEscape(s) {
+  return String(s || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
 function patchStringsXml(appName, appId) {
+  const safeName = xmlEscape(appName);
   const p = path.join(root, 'android', 'app', 'src', 'main', 'res', 'values', 'strings.xml');
-  const xml = `<?xml version='1.0' encoding='utf-8'?>\n<resources>\n    <string name="app_name">${appName}</string>\n    <string name="title_activity_main">${appName}</string>\n    <string name="package_name">${appId}</string>\n    <string name="custom_url_scheme">${appId}</string>\n</resources>\n`;
+  const xml = `<?xml version='1.0' encoding='utf-8'?>\n<resources>\n    <string name="app_name">${safeName}</string>\n    <string name="title_activity_main">${safeName}</string>\n    <string name="package_name">${appId}</string>\n    <string name="custom_url_scheme">${appId}</string>\n</resources>\n`;
   writeUtf8NoBom(p, xml);
 }
 
@@ -116,7 +127,13 @@ function bakeAppMode(mode) {
 
 const results = [];
 
-for (const a of apps) {
+const only = (process.env.BUILD_ANDROID_ONLY || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+const appList = only.length ? apps.filter((a) => only.includes(a.mode)) : apps;
+
+for (const a of appList) {
   console.log(`\n========== Building ${a.label} (${a.mode}) — local-first ==========`);
   bakeAppMode(a.mode);
   const cfgSrc = path.join(root, 'capacitor-apps', a.config);
@@ -152,12 +169,20 @@ Same apps as before — open and install from this folder.
   ShopPOS-StaffPortal.apk
   ShopPOS-Marketing.apk
   ShopPOS-Recipe.apk
+  ShopPOS-HR.apk
+  ShopPOS-Accounting.apk
+  ShopPOS-Manager.apk
+  ShopPOS-OnlineOrdering.apk
 
 Admin          — Sign in + Set up shop
 POS            — Till only (cashier/manager usernames from Admin)
 StaffPortal    — Employee ID + PIN only
-Marketing      — Marketing login only
+Marketing      — Marketing / referral agent login only
 Recipe         — Recipe & production login only
+HR             — HR, payroll & documents login only
+Accounting     — Business accounting login only
+Manager        — Business monitoring (cloud)
+OnlineOrdering — Customer ordering (cloud)
 
 Works offline. When online, syncs to your Railway shop.
 Sign in online once so the phone uses the same shop as the browser.

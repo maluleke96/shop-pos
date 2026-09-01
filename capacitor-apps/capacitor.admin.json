@@ -1,0 +1,8 @@
+{
+  "appId": "com.shoppos.admin",
+  "appName": "Shop POS Admin",
+  "webDir": "www",
+  "android": {
+    "allowMixedContent": true
+  }
+}

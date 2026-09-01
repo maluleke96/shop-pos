@@ -371,6 +371,31 @@ async function printPdfBuffer(buffer, filename = 'document.pdf', printOpts = {})
   }
 }
 
+async function htmlToPdf(html, options = {}) {
+  const widthMm = Number(options.widthMm) || 210;
+  const heightMm = Number(options.heightMm) || 297;
+  const pxW = Math.round(widthMm * 3.78);
+  const pxH = Math.round(heightMm * 3.78);
+  const printWin = new BrowserWindow({
+    show: false,
+    width: pxW,
+    height: pxH,
+    webPreferences: { nodeIntegration: false, contextIsolation: true }
+  });
+  try {
+    await printWin.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+    await new Promise((r) => setTimeout(r, 450));
+    const pdf = await printWin.webContents.printToPDF({
+      printBackground: true,
+      pageSize: { width: widthMm / 25.4, height: heightMm / 25.4 },
+      margins: { marginType: 'none' }
+    });
+    return pdf;
+  } finally {
+    try { if (!printWin.isDestroyed()) printWin.close(); } catch (_) { /* ignore */ }
+  }
+}
+
 module.exports = {
   getPrintersFromWindow,
   mergePrintSettings,
@@ -381,6 +406,7 @@ module.exports = {
   connectPrinter,
   printHtml,
   printPdfBuffer,
+  htmlToPdf,
   openPreviewWindow,
   openKitchenDisplay,
   closeKitchenDisplay,

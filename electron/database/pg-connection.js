@@ -54,6 +54,8 @@ function databaseUrl() {
 }
 
 function hasDatabaseConfig() {
+  // Windows/Android local installers always use on-device SQLite (offline-first).
+  if (process.env.SHOP_POS_LOCAL_INSTALLER === '1') return false;
   try {
     return !!databaseUrl();
   } catch (_) {

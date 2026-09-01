@@ -37,7 +37,7 @@ const ReportsPage = {
           { id: 'auditlog', label: 'Audit Log', icon: '🔍' },
           { id: 'payroll', label: 'Payroll Summary', icon: '💼' },
           { id: 'shifts', label: 'Shift Schedule', icon: '📅' },
-          { id: 'bookkeeping', label: 'Bookkeeping', icon: '📒' }
+          { id: 'bookkeeping', label: 'Accounting', icon: '📒' }
         ].map(r => `<div class="card report-card" style="cursor:pointer;padding:20px;text-align:center" data-report="${r.id}">
           <div style="font-size:28px;margin-bottom:6px">${r.icon}</div><strong>${r.label}</strong></div>`).join('')}
       </div>
@@ -293,17 +293,9 @@ const ReportsPage = {
         break;
       }
       case 'bookkeeping': {
-        const res = await API.getFinancialReport('summary', from, to);
-        const d = res.data || {};
-        title = 'Bookkeeping Summary'; filename = `bookkeeping-${from}.pdf`;
-        headers = ['Metric', 'Amount'];
-        rows = [
-          ['Total Income', Utils.formatMoney(d.total_income || 0, currency)],
-          ['Total Expenses', Utils.formatMoney(d.total_expenses || 0, currency)],
-          ['Net Profit', Utils.formatMoney(d.net_profit || 0, currency)],
-          ['Cash Balance', Utils.formatMoney(d.cash_balance || 0, currency)]
-        ];
-        break;
+        this.app.openAccounting({ fromApp: true, skipLogin: true });
+        output.innerHTML = '<p class="muted">Opened Accounting Command Centre — official financial reports live there.</p>';
+        return;
       }
     }
 

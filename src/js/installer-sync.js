@@ -8,7 +8,7 @@
   const DEFAULT_CLOUD = 'https://peaceful-motivation-production-7dd2.up.railway.app';
   const TOKEN_KEY = 'shoppos_sync_session';
   const RPC_TIMEOUT_MS = 5000;
-  const WRITE_RE = /^(auth_|sales_|stock_|products_|categories_|customers_|suppliers_|po_|returns_|expenses_|shifts_|staff_|recipe_|hr_|payroll_|held_|quotes_|layby_|giftcards_|waste_|cashup_|combos_|settings_save|settings_saveJson|ops_|salaryClaims_)/;
+  const WRITE_RE = /^(auth_|sales_|stock_|products_|categories_|customers_|suppliers_|po_|returns_|expenses_|shifts_|staff_|recipe_|hr_|payroll_|held_|quotes_|layby_|giftcards_|waste_|cashup_|combos_|settings_save|settings_saveJson|ops_|salaryClaims_|mkt_|whatsapp_|flyers_|bookkeeping_|acc_|web_|mobile_)/;
 
   function isBrowserCloud() {
     return !!(window.__SHOP_POS_CLOUD__);
@@ -42,7 +42,13 @@
   try { sessionToken = localStorage.getItem(TOKEN_KEY) || ''; } catch (_) { /* ignore */ }
 
   function setConn(state, detail) {
-    try { window.ShopPosConnection?.set?.(state, detail); } catch (_) { /* ignore */ }
+    try {
+      if (window.__SHOP_POS_APP_MODE__ === 'pos') {
+        window.ShopPosConnection?.setPos?.(state, detail);
+        return;
+      }
+      window.ShopPosConnection?.set?.(state, detail);
+    } catch (_) { /* ignore */ }
   }
 
   async function sendRpc(method, args, timeoutMs) {
@@ -320,4 +326,37 @@
   });
   if (window.posAPI) wrapPosApi();
   setConn(navigator.onLine === false ? 'offline' : 'online');
+
+  window.ShopPosCloudBridge = {
+    rpc(method, args, timeoutMs) {
+      const key = String(method).replace(/[:.]/g, '_');
+      return sendRpc(key, args || [], timeoutMs || RPC_TIMEOUT_MS);
+    },
+    async pullOnlineOrders(actor) {
+      if (navigator.onLine === false) return { success: true, imported: 0 };
+      try {
+        const res = unwrap(await sendRpc('web_adminOrders', [{ status: 'pending' }, actor || null], 10000));
+        const orders = res.data || res || [];
+        if (!Array.isArray(orders) || !orders.length) return { success: true, imported: 0 };
+        const api = window.posAPI;
+        if (api?.sync_importCloudOrders) {
+          const local = await api.sync_importCloudOrders(orders);
+          return { success: true, imported: orders.length, local };
+        }
+        return { success: true, imported: orders.length, orders };
+      } catch (e) {
+        return { success: false, error: e.message || 'Could not pull online orders' };
+      }
+    },
+    async heartbeat(actor) {
+      if (navigator.onLine === false) return;
+      try {
+        const uid = localStorage.getItem('shoppos_device_uid') || `pos-${Date.now()}`;
+        localStorage.setItem('shoppos_device_uid', uid);
+        const branchId = actor?.branch_id || actor?.branchId || 1;
+        await sendRpc('mobile_heartbeat', [branchId, uid, 'POS Till'], 4000);
+        await sendRpc('acc_flushIntegrations', [], 8000);
+      } catch (_) { /* ignore */ }
+    }
+  };
 })();

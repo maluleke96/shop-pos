@@ -86,6 +86,18 @@ function buildHandlers(store) {
     try { schedulePersist(); } catch (_) { try { persistNow(); } catch (_) { /* ignore */ } }
   }
 
+  /** Railway / cloud RPC server — never call cloud fallback (would recurse into self). */
+  function isServerCloudRpc() {
+    try {
+      return typeof process !== 'undefined'
+        && process.env
+        && process.env.SHOP_POS_CLOUD === '1'
+        && process.env.SHOP_POS_LOCAL_INSTALLER !== '1';
+    } catch (_) {
+      return false;
+    }
+  }
+
   add('app:quit', async () => ({ success: true }));
 
   const CLOUD_SYNC =
@@ -94,13 +106,23 @@ function buildHandlers(store) {
     'https://peaceful-motivation-production-7dd2.up.railway.app';
 
   async function mobileCloudRpc(method, args) {
+    if (isServerCloudRpc()) {
+      throw new Error('Cloud fallback is not available on the server');
+    }
     const base = String(CLOUD_SYNC).replace(/\/$/, '');
-    const r = await fetch(base + '/rpc', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ method, args: args || [] })
-    });
-    return r.json();
+    const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const timer = ctrl ? setTimeout(() => ctrl.abort(), 15000) : null;
+    try {
+      const r = await fetch(base + '/rpc', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ method, args: args || [] }),
+        signal: ctrl ? ctrl.signal : undefined
+      });
+      return r.json();
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   add('auth:login', async (u, p, pin) => {
@@ -113,6 +135,8 @@ function buildHandlers(store) {
     if (local && local.success) return local;
     const err = String(local?.error || '');
     if (err && !/invalid username or password/i.test(err)) return local;
+    // Server is authoritative — do not RPC self on failed login (causes hang / recursion).
+    if (isServerCloudRpc()) return local;
     if (typeof navigator !== 'undefined' && navigator.onLine === false) return local;
     try {
       const cloud = await mobileCloudRpc('auth_login', [u, p, pin || null]);
@@ -181,10 +205,15 @@ function buildHandlers(store) {
     return s.permanentlyDeleteUser(id, confirm, a.id, a.username);
   }));
   add('auth:verifySession', wrapSync(userId => s.verifyUserSession(userId)));
+  add('auth:session', wrapSync(() => {
+    const u = requireSession();
+    return u;
+  }));
   add('auth:hasRecovery', async () => {
     try {
       if (s.hasRecoverySecret()) return { success: true, data: true };
     } catch (_) { /* ignore */ }
+    if (isServerCloudRpc()) return { success: true, data: !!s.hasRecoverySecret?.() };
     if (typeof navigator !== 'undefined' && navigator.onLine === false) return { success: true, data: false };
     try {
       const cloud = await mobileCloudRpc('auth_hasRecovery', []);
@@ -202,6 +231,7 @@ function buildHandlers(store) {
     try {
       return { success: true, data: s.getUsernamesForRecovery(sec) };
     } catch (localErr) {
+      if (isServerCloudRpc()) return { success: false, error: localErr.message };
       if (typeof navigator !== 'undefined' && navigator.onLine === false) {
         return { success: false, error: localErr.message };
       }
@@ -220,6 +250,7 @@ function buildHandlers(store) {
     try {
       return s.resetPasswordViaRecovery(sec, u, p);
     } catch (localErr) {
+      if (isServerCloudRpc()) return { success: false, error: localErr.message };
       if (typeof navigator !== 'undefined' && navigator.onLine === false) {
         return { success: false, error: localErr.message };
       }
@@ -269,16 +300,20 @@ function buildHandlers(store) {
   add('settings:detectExistingBusiness', wrapSync(() => s.detectExistingBusiness()));
   add('settings:adoptExistingBusiness', wrapSync(() => s.adoptExistingBusiness()));
   add('settings:save', wrapSync((d, a) => {
-    s.requireActor(a, ['owner', 'manager']);
-    s.saveSettings(d, a.id, a.username || a.full_name);
+    const user = s.requireActor(a, ['owner', 'manager']);
+    const { assertUserPermission } = require('../electron/services/authz');
+    if (user.role !== 'owner') assertUserPermission(user, 'system_settings', ['owner', 'manager']);
+    s.saveSettings(d, user.id, user.username || user.full_name);
+    persistCritical();
     return true;
   }));
   add('settings:saveJson', wrapSync((k, v, a) => {
     const roles = k === 'staff_portal_settings'
       ? ['owner', 'manager', 'supervisor', 'assistant_manager']
       : ['owner', 'manager'];
-    s.requireActor(a, roles);
-    s.saveJsonSetting(k, v, a.id, a.username || a.full_name);
+    const user = s.requireActor(a, roles);
+    s.saveJsonSetting(k, v, user.id, user.username || user.full_name);
+    persistCritical();
     return true;
   }));
   add('settings:completeSetup', wrapAsync(d => s.completeSetup(d)));
@@ -308,11 +343,14 @@ function buildHandlers(store) {
   add('categories:get', wrapSync((f) => s.getCategories(f || {})));
   add('categories:save', wrapSync((d, a) => {
     const user = s.requireActor(a, ['owner', 'manager', 'supervisor', 'assistant_manager']);
-    return s.saveCategory(d, user.id, user.username);
+    const out = s.saveCategory(d, user.id, user.username);
+    persistCritical();
+    return out;
   }));
   add('categories:delete', wrapSync((id, a) => {
     const user = s.requireActor(a, ['owner', 'manager']);
     s.deleteCategory(id, user.id, user.username);
+    persistCritical();
     return true;
   }));
 
@@ -321,12 +359,15 @@ function buildHandlers(store) {
   add('products:getByBarcode', wrapSync(b => s.getProductByBarcode(b)));
   add('products:calcRecipe', wrapSync(d => s.calcRecipeMetrics(d)));
   add('products:save', wrapSync((d, a) => {
-    const user = s.requireActor(a, ['owner', 'manager', 'supervisor', 'assistant_manager']);
-    return s.saveProduct(d, user.id, user.username);
+    const user = s.requireActor(a || s.getUserSession?.(), ['owner', 'manager', 'supervisor', 'assistant_manager']);
+    const out = s.saveProduct(d, user.id, user.username);
+    persistCritical();
+    return out;
   }));
   add('products:delete', wrapSync((id, a) => {
     const user = s.requireActor(a, ['owner', 'manager']);
     s.deleteProduct(id, user.id, user.username);
+    persistCritical();
     return true;
   }));
   add('products:saveOtherSell', wrapSync((d, a) => {
@@ -340,9 +381,18 @@ function buildHandlers(store) {
   }));
 
   add('stock:adjust', wrapSync((pid, q, t, n, a) => {
-    const user = s.requireActor(a, ['owner', 'manager', 'supervisor', 'assistant_manager']);
-    return s.adjustStock(pid, q, t, n, user.id, 'manual', null);
+    const user = s.requireActor(a || s.getUserSession?.(), ['owner', 'manager', 'supervisor', 'assistant_manager']);
+    const out = s.recordStockAdjustment({ product_id: pid, qty: q, direction: t, reason: n }, user);
+    persistCritical();
+    return out;
   }));
+  add('stock:recordAdjustment', wrapSync((data, a) => {
+    const user = s.requireActor(a || s.getUserSession?.(), ['owner', 'manager', 'supervisor', 'assistant_manager']);
+    const out = s.recordStockAdjustment(data || {}, user);
+    persistCritical();
+    return out;
+  }));
+  add('stock:listAdjustments', wrapSync((f) => s.listStockAdjustments(f || {})));
   add('stock:history', wrapSync(pid => pid ? s.getStockHistory(pid) : s.getAllStockHistory()));
 
   add('sales:complete', wrapSync((d, a) => {
@@ -432,7 +482,8 @@ function buildHandlers(store) {
   add('dashboard:stats', wrapSync((f, t, actor) => {
     requireSession();
     const sess = s.getUserSession?.() || actor;
-    const branchId = sess?.role === 'manager' && sess?.branch_id ? sess.branch_id : null;
+    const scope = s.resolveBranchScope(sess || null);
+    const branchId = scope.allBranches ? null : scope.branchId;
     return s.getDashboardStats(f, t, branchId);
   }));
   add('inventory:stats', wrapSync(() => s.getInventoryStats()));
@@ -581,6 +632,15 @@ function buildHandlers(store) {
       const settings = s.getSettingsParsed();
       const result = await printService.printBarcodeLabel(product, settings);
       return { success: true, ...result };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+  add('print:htmlToPdf', async (html, options = {}) => {
+    try {
+      const { htmlToPdf } = require('../electron/services/html-pdf-server');
+      const pdf = htmlToPdf(html, options || {});
+      return { success: true, data: pdf.toString('base64'), mime: 'application/pdf' };
     } catch (err) {
       return { success: false, error: err.message };
     }
@@ -1395,6 +1455,63 @@ function buildHandlers(store) {
   add('hr:probationLetterPdf', wrapSync((id, dec, a) => { s.requireActor(a, hrRead); return s.buildProbationLetterPdf(id, dec, s.getSettingsParsed()); }));
   add('hr:getPersonnelFile', wrapSync((eid, a) => { s.requireActor(a, hrRead); return s.getEmployeePersonnelFile(eid); }));
 
+  const hrPlatA = (a) => a || s.getUserSession();
+  add('hr:login', async (u, p) => {
+    try {
+      const r = s.hrLogin(u, p);
+      if (!r || r.success === false) return { success: false, error: r?.error || 'Login failed' };
+      return { success: true, data: r.data ?? r.user };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+  add('hr:dashboard', wrapSync((f, a) => s.getHrDashboard(f || {}, hrPlatA(a))));
+  add('hr:search', wrapSync((q, a) => s.hrGlobalSearch(q, hrPlatA(a))));
+  add('hr:settings', wrapSync((a) => s.getHrSettings(hrPlatA(a))));
+  add('hr:saveSettings', wrapSync((d, a) => s.saveHrSettings(d || {}, hrPlatA(a))));
+  add('hr:people', wrapSync((f, a) => s.listPeople(f || {}, hrPlatA(a))));
+  add('hr:listPayroll', wrapSync((f, a) => s.listPayrollRecords(f || {}, hrPlatA(a))));
+  add('hr:attendanceHub', wrapSync((f, a) => s.listAttendanceHub(f || {}, hrPlatA(a))));
+  add('hr:schedules', wrapSync((f, a) => s.listShiftSchedules(f || {}, hrPlatA(a))));
+  add('hr:leaveBalances', wrapSync((a) => s.listLeaveBalances(hrPlatA(a))));
+  add('hr:employeeDocuments', wrapSync((f, a) => s.listAllEmployeeDocuments(f || {}, hrPlatA(a))));
+  add('hr:offboardingList', wrapSync((f, a) => s.listOffboardingRecords(f || {}, hrPlatA(a))));
+  add('hr:onboardingList', wrapSync((a) => s.listOnboardingProgressAll(hrPlatA(a))));
+  add('hr:payrollDeductions', wrapSync((f, a) => s.listPayrollDeductions(f || {}, hrPlatA(a))));
+  add('hr:statutorySummary', wrapSync((f, a) => s.getStatutorySummary(f || {}, hrPlatA(a))));
+  add('hr:performanceHub', wrapSync((f, a) => s.getPerformanceHub(f || {}, hrPlatA(a))));
+  add('hr:staffWarnings', wrapSync((f, a) => s.listStaffWarnings(f || {}, hrPlatA(a))));
+  add('hr:employeeProfile', wrapSync((id, a) => s.getEmployeeProfile(id, hrPlatA(a))));
+  add('hr:employeeTimeline', wrapSync((id, a) => s.getEmployeeTimeline(id, hrPlatA(a))));
+  add('hr:approvals', wrapSync((f, a) => s.listApprovals(f || {}, hrPlatA(a))));
+  add('hr:complianceCentre', wrapSync((a) => s.getComplianceCentre(hrPlatA(a))));
+  add('hr:complianceEvents', wrapSync((f, a) => s.listComplianceEvents(f || {}, hrPlatA(a))));
+  add('hr:saveComplianceEvent', wrapSync((d, a) => s.saveComplianceEvent(d || {}, hrPlatA(a))));
+  add('hr:policies', wrapSync((f, a) => s.listPolicies(f || {}, hrPlatA(a))));
+  add('hr:savePolicy', wrapSync((d, a) => s.savePolicy(d || {}, hrPlatA(a))));
+  add('hr:acknowledgePolicy', wrapSync((pid, eid, d, a) => s.acknowledgePolicy(pid, eid, d || {}, hrPlatA(a))));
+  add('hr:businessRules', wrapSync((f, a) => s.listBusinessRules(f || {}, hrPlatA(a))));
+  add('hr:saveBusinessRule', wrapSync((d, a) => s.saveBusinessRule(d || {}, hrPlatA(a))));
+  add('hr:incidents', wrapSync((f, a) => s.listIncidents(f || {}, hrPlatA(a))));
+  add('hr:saveIncident', wrapSync((d, a) => s.saveIncident(d || {}, hrPlatA(a))));
+  add('hr:disciplinaryCases', wrapSync((f, a) => s.listDisciplinaryCases(f || {}, hrPlatA(a))));
+  add('hr:saveDisciplinaryCase', wrapSync((d, a) => s.saveDisciplinaryCase(d || {}, hrPlatA(a))));
+  add('hr:onboardingTemplates', wrapSync((a) => s.listOnboardingTemplates(hrPlatA(a))));
+  add('hr:onboardingProgress', wrapSync((eid, a) => s.getOnboardingProgress(eid, hrPlatA(a))));
+  add('hr:saveOnboardingProgress', wrapSync((d, a) => s.saveOnboardingProgress(d || {}, hrPlatA(a))));
+  add('hr:forms', wrapSync((f, a) => s.listForms(f || {}, hrPlatA(a))));
+  add('hr:saveForm', wrapSync((d, a) => s.saveForm(d || {}, hrPlatA(a))));
+  add('hr:createExternalLink', wrapSync((d, a) => s.createExternalLink(d || {}, hrPlatA(a))));
+  add('hr:requests', wrapSync((f, a) => s.listRequests(f || {}, hrPlatA(a))));
+  add('hr:saveRequest', wrapSync((d, a) => s.saveRequest(d || {}, hrPlatA(a))));
+  add('hr:decideRequest', wrapSync((id, dec, notes, a) => s.decideRequest(id, dec, notes, hrPlatA(a))));
+  add('hr:employerRecords', wrapSync((f, a) => s.listEmployerRecords(f || {}, hrPlatA(a))));
+  add('hr:saveEmployerRecord', wrapSync((d, a) => s.saveEmployerRecord(d || {}, hrPlatA(a))));
+  add('hr:salaryHistory', wrapSync((eid, a) => s.listSalaryHistory(eid, hrPlatA(a))));
+  add('hr:saveSalaryChange', wrapSync((d, a) => s.saveSalaryChange(d || {}, hrPlatA(a))));
+  add('hr:saveOffboarding', wrapSync((d, a) => s.saveOffboarding(d || {}, hrPlatA(a))));
+  add('hr:postPayrollAccounting', wrapSync((pid, a) => s.postPayrollToAccounting(pid, hrPlatA(a))));
+
   add('hrTraining:getTemplates', wrapSync((type, a) => s.getHrContractTemplates(type, a)));
   add('hrTraining:saveTemplate', wrapSync((d, a) => s.saveHrContractTemplate(d, a)));
   add('hrTraining:deleteTemplate', wrapSync((id, a) => s.deleteHrContractTemplate(id, a)));
@@ -1799,7 +1916,7 @@ function buildHandlers(store) {
   add('recipe:wasteReject', wrapSync((id, a) => { s.rejectRecipeWaste(id, a); return true; }));
   add('recipe:wasteUpdate', wrapSync((id, d, a) => s.updateRecipeWaste(id, d || {}, a)));
   add('recipe:wasteDelete', wrapSync((id, a) => { s.deleteRecipeWaste(id, a); return true; }));
-  add('recipe:productionMeals', wrapSync((a) => s.listProductionMeals(a)));
+  add('recipe:productionMeals', wrapSync((a, f) => s.listProductionMeals(a, f || {})));
   add('recipe:ingredientStockHistory', wrapSync((f, a) => s.getIngredientStockHistory(f || {}, a)));
   add('recipe:profitsLosses', wrapSync((f, a) => s.getProfitsLosses(f || {}, a)));
   add('recipe:listPurchaseOrders', wrapSync((f, a) => s.listRecipePurchaseOrders(f || {}, a)));
@@ -1851,6 +1968,7 @@ function buildHandlers(store) {
   add('flyers:reject', wrapSync((id, a, notes) => s.rejectFlyer(id, a, notes)));
   add('flyers:analytics', wrapSync(id => s.getFlyerAnalytics(id)));
   add('flyers:smartSuggestions', wrapSync((f, a) => s.getSmartPromotionSuggestions(f, a)));
+  add('flyers:aiGenerate', wrapSync((f, a) => s.generateAiFlyer(f, a)));
   add('flyers:bulkPrices', wrapSync((id, u, a) => s.bulkUpdateFlyerPrices(id, u, a)));
   add('flyers:recordEvent', wrapSync((id, eventType) => s.recordFlyerEvent(id, eventType)));
   add('flyers:brandKit', wrapSync(() => s.getBrandKit()));
@@ -1913,6 +2031,324 @@ function buildHandlers(store) {
   add('mkt:menuPrintHtml', wrapSync((id, a) => s.buildMenuPrintHtml(id, mktA(a))));
   add('mkt:menuTemplates', wrapSync((a) => s.listMenuTemplates(mktA(a))));
   add('mkt:saveMenuTemplate', wrapSync((data, a) => s.saveMenuTemplate(data || {}, mktA(a))));
+
+  // Marketing Command Centre (mktp:*)
+  const mktpReady = () => { try { s.ensurePlatformReady?.(); } catch (_) { /* ignore */ } };
+  add('mktp:dashboard', wrapSync((f, a) => { mktpReady(); return s.getCommandCentreDashboard(f || {}, mktA(a)); }));
+  add('mktp:businesses', wrapSync((f) => { mktpReady(); return s.listBusinesses(f || {}); }));
+  add('mktp:getBusiness', wrapSync((id) => s.getBusiness(id)));
+  add('mktp:saveBusiness', wrapSync((data, a) => s.saveBusiness(data || {}, mktA(a))));
+  add('mktp:setBusinessActive', wrapSync((id, active, a) => s.setBusinessActive(id, active, mktA(a))));
+  add('mktp:branches', wrapSync((f) => s.listMktBranches(f || {})));
+  add('mktp:linkBranch', wrapSync((branchId, businessId, a) => s.saveBranchBusinessLink(branchId, businessId, mktA(a))));
+  add('mktp:promotions', wrapSync((f, a) => s.listPromotions(f || {}, mktA(a))));
+  add('mktp:getPromotion', wrapSync((id) => s.getPromotion(id)));
+  add('mktp:savePromotion', wrapSync((data, a) => s.savePromotion(data || {}, mktA(a))));
+  add('mktp:setPromotionStatus', wrapSync((id, status, a) => s.setPromotionStatus(id, status, mktA(a))));
+  add('mktp:campaigns', wrapSync((f, a) => s.listCampaignsV2(f || {}, mktA(a))));
+  add('mktp:getCampaign', wrapSync((id) => s.getCampaignV2(id)));
+  add('mktp:saveCampaign', wrapSync((data, a) => s.saveCampaignV2(data || {}, mktA(a))));
+  add('mktp:duplicateCampaign', wrapSync((id, a) => s.duplicateCampaignV2(id, mktA(a))));
+  add('mktp:setCampaignStatus', wrapSync((id, status, a) => s.setCampaignStatus(id, status, mktA(a))));
+  add('mktp:generateAssets', wrapSync((id, a) => s.generateCampaignAssets(id, mktA(a))));
+  add('mktp:socialPosts', wrapSync((f, a) => s.listSocialPosts(f || {}, mktA(a))));
+  add('mktp:saveSocialPost', wrapSync((data, a) => s.saveSocialPost(data || {}, mktA(a))));
+  add('mktp:publishSocialPost', wrapAsync(async (id, a) => s.publishSocialPostLive(id, mktA(a))));
+  add('mktp:whatsappBlasts', wrapSync((f, a) => s.listWhatsappBlasts(f || {}, mktA(a))));
+  add('mktp:saveWhatsappBlast', wrapSync((data, a) => s.saveWhatsappBlast(data || {}, mktA(a))));
+  add('mktp:whatsappAudience', wrapSync((seg, biz, branch) => s.previewWhatsappAudience(seg, biz, branch)));
+  add('mktp:customers', wrapSync((f, a) => s.listMktCustomers(f || {}, mktA(a))));
+  add('mktp:segments', wrapSync((f, a) => s.listCustomerSegments(f || {}, mktA(a))));
+  add('mktp:saveSegment', wrapSync((data, a) => s.saveCustomerSegment(data || {}, mktA(a))));
+  add('mktp:evaluateSegment', wrapSync((id) => s.evaluateSegment(id)));
+  add('mktp:loyaltyRules', wrapSync((f, a) => s.listLoyaltyRules(f || {}, mktA(a))));
+  add('mktp:saveLoyaltyRule', wrapSync((data, a) => s.saveLoyaltyRule(data || {}, mktA(a))));
+  add('mktp:agents', wrapSync((f, a) => s.listReferralAgents(f || {}, mktA(a))));
+  add('mktp:getAgent', wrapSync((id) => s.getReferralAgent(id)));
+  add('mktp:applyAgent', wrapSync((data) => s.applyAsReferralAgent(data || {})));
+  add('mktp:approveAgent', wrapSync((id, data, a) => s.approveReferralAgent(id, data || {}, mktA(a))));
+  add('mktp:setAgentStatus', wrapSync((id, status, reason, a) => s.setReferralAgentStatus(id, status, reason, mktA(a))));
+  add('mktp:linkAgentUser', wrapSync((agentId, userId, a) => s.linkAgentUser?.(agentId, userId, mktA(a))));
+  add('mktp:recordClick', wrapSync((code, meta) => s.recordReferralClick(code, meta || {})));
+  add('mktp:attribute', wrapSync((data, a) => s.attributeReferral(data || {}, mktA(a))));
+  add('mktp:commissions', wrapSync((f, a) => s.listCommissions(f || {}, mktA(a))));
+  add('mktp:setCommissionStatus', wrapSync((id, status, notes, a) => s.setCommissionStatus(id, status, notes, mktA(a))));
+  add('mktp:commissionRules', wrapSync((f, a) => s.listCommissionRules(f || {}, mktA(a))));
+  add('mktp:saveCommissionRule', wrapSync((data, a) => s.saveCommissionRule(data || {}, mktA(a))));
+  add('mktp:payments', wrapSync((f, a) => s.listAgentPayments(f || {}, mktA(a))));
+  add('mktp:savePayment', wrapSync((data, a) => s.saveAgentPayment(data || {}, mktA(a))));
+  add('mktp:contractTemplates', wrapSync((f, a) => s.listContractTemplates(f || {}, mktA(a))));
+  add('mktp:saveContractTemplate', wrapSync((data, a) => s.saveContractTemplate(data || {}, mktA(a))));
+  add('mktp:contracts', wrapSync((f, a) => s.listAgentContracts(f || {}, mktA(a))));
+  add('mktp:createContract', wrapSync((agentId, templateId, a) => s.createAgentContractFromTemplate(agentId, templateId, mktA(a))));
+  add('mktp:setContractStatus', wrapSync((id, status, a) => s.setContractStatus(id, status, mktA(a))));
+  add('mktp:acceptContract', wrapSync((id, sig, a) => s.acceptContract(id, sig, mktA(a))));
+  add('mktp:incentives', wrapSync((f, a) => s.listIncentives(f || {}, mktA(a))));
+  add('mktp:saveIncentive', wrapSync((data, a) => s.saveIncentive(data || {}, mktA(a))));
+  add('mktp:qrCodes', wrapSync((f, a) => s.listQrCodes(f || {}, mktA(a))));
+  add('mktp:createQr', wrapSync((data, a) => s.createQrCode(data || {}, mktA(a))));
+  add('mktp:coupons', wrapSync((f, a) => s.listCoupons(f || {}, mktA(a))));
+  add('mktp:createCoupon', wrapSync((data, a) => s.createCoupon(data || {}, mktA(a))));
+  add('mktp:redeemCoupon', wrapSync((code, saleId, a) => s.redeemCoupon(code, saleId, mktA(a))));
+  add('mktp:calendar', wrapSync((f, a) => s.listCalendarEvents(f || {}, mktA(a))));
+  add('mktp:saveCalendar', wrapSync((data, a) => s.saveCalendarEvent(data || {}, mktA(a))));
+  add('mktp:campaignAnalytics', wrapSync((id, a) => s.getCampaignAnalytics(id, mktA(a))));
+  add('mktp:leaderboard', wrapSync((f, a) => s.getLeaderboard(f || {}, mktA(a))));
+  add('mktp:roi', wrapSync((f, a) => s.getMarketingRoi(f || {}, mktA(a))));
+  add('mktp:notifications', wrapSync((f, a) => s.listMktNotifications(f || {}, mktA(a))));
+  add('mktp:readNotification', wrapSync((id, a) => s.markMktNotificationRead(id, mktA(a))));
+  add('mktp:settings', wrapSync(() => s.getMktSettings()));
+  add('mktp:saveSettings', wrapSync((data, a) => s.saveMktSettings(data || {}, mktA(a))));
+  add('mktp:audit', wrapSync((f, a) => s.listPlatformAudit(f || {}, mktA(a))));
+  add('mktp:agentDashboard', wrapSync((a) => s.getReferralAgentDashboard(mktA(a))));
+  add('mktp:publicAgent', wrapSync((code) => s.getAgentPublicProfile(code)));
+
+  const ACC_SESSION_ROLES = ['owner', 'manager', 'accountant', 'bookkeeper', 'auditor', 'finance_manager', 'finance', 'payroll', 'hr', 'admin', 'supervisor', 'assistant_manager', 'viewer', 'read_only'];
+  const ACC_WRITE_ROLES = ['owner', 'manager', 'accountant', 'bookkeeper', 'finance_manager', 'finance', 'admin'];
+  function accActor(clientActor) {
+    if (isServerCloudRpc()) return requireUserSession(ACC_SESSION_ROLES);
+    try {
+      return requireUserSession(ACC_SESSION_ROLES);
+    } catch (e) {
+      if (clientActor && clientActor.id != null) return s.requireActor(clientActor, ACC_SESSION_ROLES);
+      throw e;
+    }
+  }
+  function accWriteActor(clientActor) {
+    const user = accActor(clientActor);
+    if (isServerCloudRpc() && !ACC_WRITE_ROLES.includes(user.role)) {
+      throw new Error('You do not have permission for this action');
+    }
+    return user;
+  }
+  function accAdminActor(clientActor) {
+    const user = accActor(clientActor);
+    if (isServerCloudRpc() && !['owner', 'manager', 'accountant', 'finance_manager'].includes(user.role)) {
+      throw new Error('Owner or finance role required');
+    }
+    return user;
+  }
+  add('acc:login', wrapSync((u, p) => s.accountingLogin(u, p)));
+  add('acc:sessionFromPos', wrapSync((a) => s.accountingSessionFromPos(a || requireUserSession(['owner', 'manager', 'supervisor', 'assistant_manager']))));
+  add('acc:logout', wrapSync(() => s.accountingLogout()));
+  add('acc:dashboard', wrapSync((f, a) => s.getAccDashboard(f || {}, accActor(a))));
+  add('acc:search', wrapSync((q, a) => s.globalSearch(q, accActor(a))));
+  add('acc:settings', wrapSync(() => s.getAccSettings()));
+  add('acc:saveSettings', wrapSync((d, a) => s.saveAccSettings(d || {}, accAdminActor(a))));
+  add('acc:accounts', wrapSync((f, a) => s.listAccounts(f || {}, accActor(a))));
+  add('acc:saveAccount', wrapSync((d, a) => s.saveAccount(d || {}, accActor(a))));
+  add('acc:journals', wrapSync((f, a) => s.listJournals(f || {}, accActor(a))));
+  add('acc:getJournal', wrapSync((id, a) => { accActor(a); return s.getJournal(id); }));
+  add('acc:postJournal', wrapSync((d, a) => s.postJournal(d || {}, accWriteActor(a))));
+  add('acc:publishJournal', wrapSync((id, a) => s.publishJournal(id, accWriteActor(a))));
+  add('acc:reverseJournal', wrapSync((id, a) => s.reverseJournal(id, accWriteActor(a))));
+  add('acc:ledger', wrapSync((f, a) => s.listLedger(f || {}, accActor(a))));
+  add('acc:trialBalance', wrapSync((asOf, a) => s.trialBalance(asOf, accActor(a))));
+  add('acc:profitLoss', wrapSync((from, to, a) => s.profitAndLoss(from, to, accActor(a))));
+  add('acc:balanceSheet', wrapSync((asOf, a) => s.balanceSheet(asOf, accActor(a))));
+  add('acc:cashFlow', wrapSync((from, to, a) => s.cashFlow(from, to, accActor(a))));
+  add('acc:invoices', wrapSync((f, a) => s.listInvoices(f || {}, accActor(a))));
+  add('acc:saveInvoice', wrapSync((d, a) => s.saveInvoice(d || {}, accActor(a))));
+  add('acc:postInvoice', wrapSync((id, a) => s.postInvoice(id, accActor(a))));
+  add('acc:bills', wrapSync((f, a) => s.listBills(f || {}, accActor(a))));
+  add('acc:saveBill', wrapSync((d, a) => s.saveBill(d || {}, accActor(a))));
+  add('acc:postBill', wrapSync((id, a) => s.postBill(id, accActor(a))));
+  add('acc:payments', wrapSync((f, a) => s.listPayments(f || {}, accActor(a))));
+  add('acc:savePayment', wrapSync((d, a) => s.savePayment(d || {}, accActor(a))));
+  add('acc:agingAr', wrapSync((asOf, a) => s.arAging(asOf, accActor(a))));
+  add('acc:agingAp', wrapSync((asOf, a) => s.apAging(asOf, accActor(a))));
+  add('acc:bankAccounts', wrapSync((a) => s.listBankAccounts(accActor(a))));
+  add('acc:expenses', wrapSync((f, a) => s.listAccExpenses(f || {}, accActor(a))));
+  add('acc:recordExpense', wrapSync((d, a) => s.recordExpenseViaAccounting(d || {}, accActor(a))));
+  add('acc:taxSummary', wrapSync((from, to, a) => s.taxSummary(from, to, accActor(a))));
+  add('acc:stockValue', wrapSync((a) => s.stockValueReport(accActor(a))));
+  add('acc:audit', wrapSync((f, a) => s.listAudit(f || {}, accActor(a))));
+  add('acc:integrations', wrapSync((f, a) => s.listIntegrationErrors(f || {}, accActor(a))));
+  add('acc:retryIntegration', wrapSync((id, a) => s.retryIntegrationError(id, accActor(a))));
+  add('acc:financialHealth', wrapSync((f, a) => s.getFinancialHealth(f || {}, accActor(a))));
+  add('acc:reconcileCentre', wrapSync((a) => s.listReconcileCentre(accActor(a))));
+  add('acc:bankStmtLines', wrapSync((f, a) => s.listBankStatementLines(f || {}, accActor(a))));
+  add('acc:listCashupFinance', wrapSync((f, a) => s.listCashupFinance(f || {}, accActor(a))));
+  add('acc:syncMissing', wrapSync((a) => s.syncMissingIntegrations(accActor(a))));
+  add('acc:periods', wrapSync((a) => s.listPeriods(accActor(a))));
+  add('acc:assets', wrapSync((a) => s.listAssets(accActor(a))));
+  add('acc:documents', wrapSync((f, a) => s.listDocuments(f || {}, accActor(a))));
+  add('acc:approvals', wrapSync((f, a) => s.listApprovals(f || {}, accActor(a))));
+  add('acc:setAccountActive', wrapSync((id, active, a) => s.setAccountActive(id, active, accActor(a))));
+  add('acc:closePeriod', wrapSync((id, a) => s.closePeriod(id, accAdminActor(a))));
+  add('acc:reopenPeriod', wrapSync((id, a) => s.reopenPeriod(id, accAdminActor(a))));
+  add('acc:lockPeriod', wrapSync((id, a) => s.lockPeriod(id, accAdminActor(a))));
+  add('acc:yearEnd', wrapSync((a) => s.runYearEnd(accAdminActor(a))));
+  add('acc:getInvoice', wrapSync((id) => s.getInvoice(id)));
+  add('acc:creditNotes', wrapSync((f, a) => s.listCreditNotes(f || {}, accActor(a))));
+  add('acc:saveCreditNote', wrapSync((d, a) => s.saveCreditNote(d || {}, accActor(a))));
+  add('acc:postCreditNote', wrapSync((id, a) => s.postCreditNote(id, accActor(a))));
+  add('acc:debitNotes', wrapSync((a) => s.listDebitNotes(accActor(a))));
+  add('acc:saveDebitNote', wrapSync((d, a) => s.saveDebitNote(d || {}, accActor(a))));
+  add('acc:postDebitNote', wrapSync((id, a) => s.postDebitNote(id, accActor(a))));
+  add('acc:refunds', wrapSync((a) => s.listRefunds(accActor(a))));
+  add('acc:saveRefund', wrapSync((d, a) => s.saveRefund(d || {}, accActor(a))));
+  add('acc:customerStatement', wrapSync((id, from, to, a) => s.customerStatement(id, from, to, accActor(a))));
+  add('acc:supplierStatement', wrapSync((id, from, to, a) => s.supplierStatement(id, from, to, accActor(a))));
+  add('acc:saveBankAccount', wrapSync((d, a) => s.saveBankAccount(d || {}, accActor(a))));
+  add('acc:bankTxns', wrapSync((f, a) => s.listBankTxns(f || {}, accActor(a))));
+  add('acc:saveBankTxn', wrapSync((d, a) => s.saveBankTxn(d || {}, accActor(a))));
+  add('acc:importBankStmt', wrapSync((bankId, lines, a) => s.importBankStatement(bankId, lines || [], accActor(a))));
+  add('acc:parseBankStmt', wrapSync((text, filename, format, a) => { accActor(a); return s.parseBankStatement(text, filename, format); }));
+  add('acc:matchBankStmt', wrapSync((lineId, txnId, a) => s.matchBankStmtLine(lineId, txnId, accActor(a))));
+  add('acc:createReconciliation', wrapSync((d, a) => s.createReconciliation(d || {}, accActor(a))));
+  add('acc:completeReconciliation', wrapSync((id, a) => s.completeReconciliation(id, accActor(a))));
+  add('acc:cashAccounts', wrapSync((a) => s.listCashAccounts(accActor(a))));
+  add('acc:cashTxns', wrapSync((f, a) => s.listCashTxns(f || {}, accActor(a))));
+  add('acc:saveCashTxn', wrapSync((d, a) => s.saveCashTxn(d || {}, accActor(a))));
+  add('acc:pettyCash', wrapSync((a) => s.listPettyCash(accActor(a))));
+  add('acc:savePettyCash', wrapSync((d, a) => s.savePettyCashExpense(d || {}, accActor(a))));
+  add('acc:cashupFinance', wrapSync((d, a) => s.saveCashupFinance(d || {}, accActor(a))));
+  add('acc:recurring', wrapSync((a) => s.listRecurring(accActor(a))));
+  add('acc:saveRecurring', wrapSync((d, a) => s.saveRecurring(d || {}, accActor(a))));
+  add('acc:processRecurring', wrapSync((a) => s.processDueRecurring(accActor(a))));
+  add('acc:otherIncome', wrapSync((a) => s.listOtherIncome(accActor(a))));
+  add('acc:saveOtherIncome', wrapSync((d, a) => s.saveOtherIncome(d || {}, accActor(a))));
+  add('acc:saveAsset', wrapSync((d, a) => s.saveAsset(d || {}, accActor(a))));
+  add('acc:runDepreciation', wrapSync((asOf, a) => s.runDepreciation(asOf, accActor(a))));
+  add('acc:loans', wrapSync((a) => s.listLoans(accActor(a))));
+  add('acc:saveLoan', wrapSync((d, a) => s.saveLoan(d || {}, accActor(a))));
+  add('acc:loanPayment', wrapSync((d, a) => s.recordLoanPayment(d || {}, accActor(a))));
+  add('acc:ownerTxns', wrapSync((a) => s.listOwnerTxns(accActor(a))));
+  add('acc:saveOwnerTxn', wrapSync((d, a) => s.saveOwnerTxn(d || {}, accActor(a))));
+  add('acc:taxRates', wrapSync((a) => s.listTaxRates(accActor(a))));
+  add('acc:saveTaxRate', wrapSync((d, a) => s.saveTaxRate(d || {}, accActor(a))));
+  add('acc:salesReport', wrapSync((from, to, a) => s.salesReport(from, to, accActor(a))));
+  add('acc:purchaseReport', wrapSync((from, to, a) => s.purchaseReport(from, to, accActor(a))));
+  add('acc:expenseReport', wrapSync((from, to, a) => s.expenseReport(from, to, accActor(a))));
+  add('acc:drillDown', wrapSync((metric, from, to, a) => s.drillDown(metric, from, to, accActor(a))));
+  add('acc:recordStockAdjustment', wrapSync((d, a) => s.recordStockAdjustment(d || {}, accActor(a))));
+  add('acc:stockAdjustments', wrapSync((f, a) => { accActor(a); return s.listStockAdjustments(f || {}); }));
+  add('acc:getDocumentFile', wrapSync((id, a) => s.getDocumentFile(id, accActor(a))));
+  add('acc:processOcr', wrapSync((id, a) => s.processOcrDocument(id, accActor(a))));
+  add('acc:statements', wrapSync((f, a) => s.listStatementHistory(f || {}, accActor(a))));
+  add('acc:saveStatement', wrapSync((d, a) => s.saveStatementHistory(d || {}, accActor(a))));
+  add('acc:getStatement', wrapSync((id, a) => s.getStatementHistory(id, accActor(a))));
+  add('acc:confirmOcr', wrapSync((id, d, a) => s.confirmOcrDocument(id, d || {}, accActor(a))));
+  add('acc:decideApproval', wrapSync((id, decision, notes, a) => s.decideApproval(id, decision, notes, accActor(a))));
+  add('acc:notifications', wrapSync((a) => s.listNotifications(accActor(a))));
+  add('acc:readNotification', wrapSync((id, a) => s.markNotificationRead(id, accActor(a))));
+  add('acc:purchaseOrders', wrapSync((a) => s.listPurchaseOrders(accActor(a))));
+  add('acc:payroll', wrapSync((a) => s.listPayrollSummary(accActor(a))));
+  add('acc:integrate', wrapSync((payload) => {
+    const central = require('../electron/services/accounting-central');
+    return central.runIntegratePayload(payload || {});
+  }));
+  add('acc:flushIntegrations', wrapSync(() => {
+    requireUserSession(['owner', 'manager']);
+    const central = require('../electron/services/accounting-central');
+    return central.flushIntegrationOutbox();
+  }));
+  add('acc:reflushFailedIntegrations', wrapSync(() => {
+    requireUserSession(['owner', 'manager']);
+    const central = require('../electron/services/accounting-central');
+    return central.reflushFailedIntegrations();
+  }));
+  add('acc:ensureSchema', wrapSync(() => {
+    requireUserSession(['owner']);
+    const { getDb } = require('../electron/database/db');
+    const { ensureAccSchema } = require('../electron/database/ensure-pg-schema');
+    const { ensurePgMigrations } = require('../electron/database/ensure-pg-migrations');
+    const db = getDb();
+    try {
+      db.prepare(`DELETE FROM pg_schema_migrations WHERE name LIKE '%accounting%'`).run();
+    } catch (_) { /* */ }
+    const migrations = ensurePgMigrations(db);
+    const accounting = ensureAccSchema(db);
+    let accOk = false;
+    try {
+      accOk = !!db.prepare(`
+        SELECT 1 AS ok FROM information_schema.tables
+        WHERE table_schema = 'public' AND table_name = 'acc_settings' LIMIT 1
+      `).get()?.ok;
+    } catch (_) { /* */ }
+    return { migrations, accounting, acc_settings: accOk };
+  }));
+
+  const dp = require('../electron/services/delivery-platform');
+
+  add('delivery:dashboard', wrapSync((f, a) => {
+    const user = requireUserSession(['owner', 'manager', 'supervisor', 'assistant_manager', 'delivery_manager']);
+    return dp.deliveryDashboard(f || {}, user);
+  }));
+  add('delivery:list', wrapSync((f, a) => {
+    const user = requireUserSession(['owner', 'manager', 'supervisor', 'assistant_manager', 'cashier', 'delivery_manager']);
+    const { assertUserPermission } = require('../electron/services/authz');
+    assertUserPermission(user, 'delivery', ['owner', 'manager', 'supervisor', 'assistant_manager', 'cashier', 'delivery_manager']);
+    return dp.listDeliveries(f || {}, user);
+  }));
+  add('delivery:get', wrapSync((id, a) => {
+    requireUserSession(['owner', 'manager', 'supervisor', 'assistant_manager', 'delivery_manager']);
+    return dp.getDelivery(id);
+  }));
+  add('delivery:drivers', wrapSync((f, a) => {
+    requireUserSession(['owner', 'manager', 'supervisor', 'assistant_manager', 'delivery_manager']);
+    return dp.listDrivers(f || {});
+  }));
+  add('delivery:getDriver', wrapSync((id, a) => {
+    requireUserSession(['owner', 'manager', 'supervisor', 'assistant_manager', 'delivery_manager']);
+    return dp.getDriver(id);
+  }));
+  add('delivery:saveDriver', wrapSync((d, a) => {
+    const user = requireUserSession(['owner', 'manager', 'supervisor', 'delivery_manager']);
+    return dp.saveDriver(d || {}, user);
+  }));
+  add('delivery:approveDriver', wrapSync((id, a) => {
+    const user = requireUserSession(['owner', 'manager', 'delivery_manager']);
+    return dp.approveDriver(id, user);
+  }));
+  add('delivery:rejectDriver', wrapSync((id, reason, a) => {
+    const user = requireUserSession(['owner', 'manager', 'delivery_manager']);
+    return dp.rejectDriver(id, reason, user);
+  }));
+  add('delivery:registerDriver', wrapSync((d) => dp.registerDriver(d || {})));
+  add('delivery:assign', wrapSync((id, driverId, a) => {
+    const user = requireUserSession(['owner', 'manager', 'supervisor', 'assistant_manager', 'delivery_manager']);
+    return dp.assignDriver(id, driverId, user);
+  }));
+  add('delivery:autoAssign', wrapSync((id, a) => {
+    const user = requireUserSession(['owner', 'manager', 'supervisor', 'assistant_manager', 'delivery_manager']);
+    return dp.autoAssignDriver(id, user);
+  }));
+  add('delivery:updateStatus', wrapSync((id, status, notes, a) => {
+    const user = requireUserSession(['owner', 'manager', 'supervisor', 'assistant_manager', 'cashier', 'delivery_manager']);
+    return dp.updateDeliveryStatus(id, status, user, { notes });
+  }));
+  add('delivery:settings', wrapSync((a) => {
+    requireUserSession(['owner', 'manager', 'delivery_manager']);
+    return dp.getSettings();
+  }));
+  add('delivery:saveSettings', wrapSync((d, a) => {
+    const user = requireUserSession(['owner', 'manager']);
+    return dp.saveSettings(d || {}, user);
+  }));
+  add('delivery:branchSettings', wrapSync((branchId, a) => {
+    requireUserSession(['owner', 'manager', 'supervisor', 'delivery_manager']);
+    return dp.getBranchSettings(branchId);
+  }));
+  add('delivery:saveBranchSettings', wrapSync((branchId, d, a) => {
+    const user = requireUserSession(['owner', 'manager', 'supervisor']);
+    return dp.saveBranchSettings(branchId, d || {}, user);
+  }));
+  add('delivery:reports', wrapSync((f, a) => {
+    const user = requireUserSession(['owner', 'manager', 'delivery_manager']);
+    return dp.deliveryReports(f || {}, user);
+  }));
+  add('delivery:tracking', wrapSync((token) => dp.getDeliveryByTracking(token)));
+
+  add('driver:login', wrapSync((username, password, device) => dp.driverLogin(username, password, device || {})));
+  add('driver:logout', wrapSync((token) => dp.driverLogout(token)));
+  add('driver:dashboard', wrapSync((token) => dp.driverDashboard(token)));
+  add('driver:orders', wrapSync((token, f) => dp.driverListOrders(token, f || {})));
+  add('driver:accept', wrapSync((token, id) => dp.driverAcceptDelivery(token, id)));
+  add('driver:reject', wrapSync((token, id, reason) => dp.driverRejectDelivery(token, id, reason)));
+  add('driver:updateStatus', wrapSync((token, id, status, notes) => dp.driverUpdateStatus(token, id, status, { notes })));
+  add('driver:availability', wrapSync((token, availability) => dp.setDriverAvailability(token, availability)));
 
   add('whatsapp:getTemplates', wrapSync(f => s.getWhatsAppTemplates(f)));
   add('whatsapp:getTemplate', wrapSync(id => s.getTemplate(id)));
@@ -1979,9 +2415,14 @@ function buildHandlers(store) {
   add('sync:publishProducts', async () => s.publishProductsToHub());
   add('sync:branchesToHub', async () => s.syncBranchesToHub());
   add('sync:getOnlineOrders', wrapSync(st => s.getOnlineOrdersLocal(st)));
-  add('sync:updateOnlineOrder', wrapAsync(async (id, st) => {
+  add('sync:importCloudOrders', wrapSync((orders) => s.importCloudOrders(orders || [])));
+  add('sync:updateOnlineOrder', wrapAsync(async (id, st, opts) => {
     requireUserSession(['owner', 'manager', 'supervisor', 'cashier']);
-    return s.updateOnlineOrderStatus(id, st);
+    return s.updateOnlineOrderStatus(id, st, opts || {});
+  }));
+  add('sync:rejectOnlineOrder', wrapAsync(async (id, reason) => {
+    const user = requireUserSession(['owner', 'manager', 'supervisor', 'cashier']);
+    return s.rejectOnlineOrder(id, reason, user);
   }));
   add('sync:acceptOnlineOrder', wrapAsync(async (id, opts) => {
     const user = requireUserSession(['owner', 'manager', 'supervisor', 'cashier']);
@@ -2003,7 +2444,12 @@ function buildHandlers(store) {
   add('audit:timeline', wrapSync((f, t) => s.getActivityTimeline(f, t)));
   add('audit:exceptions', wrapSync((f, t) => s.getExceptionReport(f, t)));
   add('audit:alerts', wrapSync(() => s.getAdminAlerts()));
-  add('audit:dashboard', wrapSync((f, t) => s.getAdminDashboardFull(f, t)));
+  add('audit:dashboard', wrapSync((f, t) => {
+    const sess = s.getUserSession();
+    const scope = s.resolveBranchScope(sess);
+    const branchId = scope.allBranches ? null : scope.branchId;
+    return s.getAdminDashboardFull(f, t, branchId);
+  }));
   add('audit:dailyClosing', wrapSync(d => s.getDailyClosingReport(d)));
   add('audit:customerSummary', wrapSync(id => s.getCustomerPurchaseSummary(id)));
   add('audit:topCustomers', wrapSync((f, t, l) => s.getTopCustomers(f, t, l)));
@@ -2035,6 +2481,100 @@ function buildHandlers(store) {
   add('dev:resetTrial', wrapSync(actor => {
     s.requireActor(actor, ['owner']);
     return s.resetTrial();
+  }));
+
+  const web = require('../electron/services/online-ordering');
+  add('web:getSettings', wrapSync(() => web.getGlobalSettings()));
+  add('web:getBranches', wrapSync(() => web.getPublicBranches()));
+  add('web:getMenu', wrapSync((branchId, filters) => web.getBranchMenu(branchId, filters || {})));
+  add('web:getProduct', wrapSync((branchId, productId) => web.getProductDetail(branchId, productId)));
+  add('web:register', wrapSync((data) => web.registerWebCustomer(data || {})));
+  add('web:login', wrapSync((login, password) => web.loginWebCustomer(login, password)));
+  add('web:account', wrapSync((token) => web.getCustomerAccount(token)));
+  add('web:validateCart', wrapSync((branchId, cart) => web.validateCart(branchId, cart || {})));
+  add('web:validateCoupon', wrapSync((code, branchId, cart, customerId) => web.validateCoupon(code, branchId, cart || {}, customerId)));
+  add('web:submitOrder', wrapSync((branchId, payload, token, idem) => web.submitOrder(branchId, payload || {}, token, idem)));
+  add('web:getOrder', wrapSync((orderId, token) => web.getOrder(orderId, token)));
+  add('web:listOrders', wrapSync((token, limit) => web.listCustomerOrders(token, limit)));
+  add('web:toggleFavorite', wrapSync((token, productId, branchId) => web.toggleFavorite(token, productId, branchId)));
+  add('web:adminOrders', wrapSync((filters, actor) => {
+    requireUserSession(['owner', 'manager', 'supervisor']);
+    return web.listAdminOrders(filters || {});
+  }));
+  add('web:adminAnalytics', wrapSync((filters, actor) => {
+    requireUserSession(['owner', 'manager']);
+    return web.getOnlineAnalytics(filters || {});
+  }));
+  add('web:saveGlobalSettings', wrapSync((data, actor) => {
+    const user = requireUserSession(['owner', 'manager']);
+    if (isServerCloudRpc() && user.role !== 'owner') {
+      const { assertUserPermission } = require('../electron/services/authz');
+      assertUserPermission(user, 'system_settings');
+    }
+    return web.saveGlobalOnlineSettings(data || {}, actor);
+  }));
+  add('web:saveBranchSettings', wrapSync((branchId, data, actor) => {
+    const user = requireUserSession(['owner', 'manager']);
+    if (isServerCloudRpc() && user.role !== 'owner') {
+      const { assertUserPermission } = require('../electron/services/authz');
+      assertUserPermission(user, 'system_settings');
+    }
+    return web.saveBranchOnlineSettings(branchId, data || {}, actor);
+  }));
+  add('web:getBranchSettings', wrapSync((branchId) => web.getBranchOnlineSettings(branchId)));
+  add('web:rejectOrder', wrapAsync(async (orderId, reason, actor) => {
+    const user = requireUserSession(['owner', 'manager', 'supervisor', 'cashier']);
+    return web.rejectOrder(orderId, reason, user);
+  }));
+  add('web:updateOrderStatus', wrapAsync(async (orderId, status, actor, opts) => {
+    const user = requireUserSession(['owner', 'manager', 'supervisor', 'cashier']);
+    return web.updateOrderStatus(orderId, status, user, opts || {});
+  }));
+
+  const mm = require('../electron/services/mobile-manager');
+  add('mobile:login', wrapSync((username, password, deviceInfo) => mm.login(username, password, deviceInfo || {})));
+  add('mobile:bootstrapAdmin', wrapSync((actor) => {
+    const user = requireUserSession(['owner', 'manager', 'supervisor', 'assistant_manager']);
+    return mm.bootstrapFromAdmin(user, { platform: 'admin', device_name: 'Admin Panel' });
+  }));
+  add('mobile:logout', wrapSync((token) => mm.logout(token)));
+  add('mobile:profile', wrapSync((token) => mm.getProfile(token)));
+  add('mobile:dashboard', wrapSync((token, filters) => mm.getDashboard(token, filters || {})));
+  add('mobile:orders', wrapSync((token, filters) => mm.listOrders(token, filters || {})));
+  add('mobile:order', wrapSync((token, orderId) => mm.getOrder(token, orderId)));
+  add('mobile:searchOrders', wrapSync((token, query) => mm.searchOrders(token, query || {})));
+  add('mobile:staffActivity', wrapSync((token, filters) => mm.getStaffActivity(token, filters || {})));
+  add('mobile:posStatus', wrapSync((token) => mm.getPosStatus(token)));
+  add('mobile:alerts', wrapSync((token, limit) => mm.listAlerts(token, limit)));
+  add('mobile:markRead', wrapSync((token, ids) => mm.markNotificationsRead(token, ids)));
+  add('mobile:getPrefs', wrapSync((token) => mm.getNotificationPrefs(token)));
+  add('mobile:savePrefs', wrapSync((token, prefs) => mm.saveNotificationPrefs(token, prefs)));
+  add('mobile:registerPush', wrapSync((token, pushToken) => mm.registerPushToken(token, pushToken)));
+  add('mobile:poll', wrapSync((token, sinceId) => mm.pollNotifications(token, sinceId)));
+  add('mobile:heartbeat', wrapSync((branchId, deviceId, label) => mm.recordPosHeartbeat(branchId, deviceId, label)));
+  add('mobile:adminListUsers', wrapSync((actor) => {
+    requireUserSession(['owner', 'manager']);
+    return mm.listMobileUsers();
+  }));
+  add('mobile:adminGetUser', wrapSync((id, actor) => {
+    requireUserSession(['owner', 'manager']);
+    return mm.getMobileUser(id);
+  }));
+  add('mobile:adminSaveUser', wrapSync((data, actor) => {
+    requireUserSession(['owner', 'manager']);
+    return mm.saveMobileUser(data || {});
+  }));
+  add('mobile:adminSetActive', wrapSync((id, active, actor) => {
+    requireUserSession(['owner', 'manager']);
+    return mm.setMobileUserActive(id, !!active);
+  }));
+  add('mobile:adminListDevices', wrapSync((userId, actor) => {
+    requireUserSession(['owner', 'manager']);
+    return mm.listMobileDevices(userId);
+  }));
+  add('mobile:adminRevokeDevice', wrapSync((deviceId, actor) => {
+    requireUserSession(['owner', 'manager']);
+    return mm.revokeMobileDevice(deviceId);
   }));
 
   scheduleDailyBackup(store);

@@ -847,6 +847,116 @@
   line-height: 1.4;
 }
 .retail-combo-prices strong { font-size: 1.15em; }
+
+/* Combo Products — products on the right, circular images optional */
+.retail-layout-combo-right {
+  display: grid !important;
+  grid-template-columns: 38% 1fr;
+  gap: 0;
+  flex-direction: unset;
+}
+.retail-combo-left {
+  padding: 6% 5%;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  justify-content: center;
+  z-index: 2;
+}
+.retail-combo-left .retail-headline { font-size: clamp(18px, 5vw, 36px); }
+.retail-combo-left-meta {
+  font-size: clamp(9px, 2vw, 12px);
+  font-weight: 700;
+  opacity: .9;
+  line-height: 1.4;
+  margin-top: 8px;
+}
+.retail-shape-toggle-hint {
+  font-size: 10px;
+  opacity: .7;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+.retail-combo-right {
+  padding: 4% 4% 4% 2%;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: hidden;
+  background: rgba(0, 0, 0, .18);
+  z-index: 2;
+}
+.retail-combo-row {
+  display: grid;
+  grid-template-columns: 72px 1fr;
+  gap: 12px;
+  align-items: center;
+  background: rgba(255, 255, 255, .14);
+  border-radius: 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, .12);
+}
+.retail-combo-row-img {
+  width: 64px;
+  height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.retail-combo-row-img .retail-prod-img {
+  width: 64px;
+  height: 64px;
+  max-height: none;
+  object-fit: cover;
+}
+.retail-prod-img-circle {
+  border-radius: 50% !important;
+  object-fit: cover !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .35);
+}
+.retail-combo-row-name {
+  font-weight: 800;
+  font-size: clamp(11px, 2.2vw, 15px);
+  margin-bottom: 4px;
+}
+.retail-combo-row-prices {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+}
+.retail-combo-row-prices .retail-now {
+  background: #facc15;
+  color: #111;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: clamp(13px, 2.4vw, 18px);
+}
+.retail-combo-row-prices .retail-was {
+  color: #fff;
+  opacity: .85;
+  font-size: clamp(10px, 1.8vw, 13px);
+}
+.retail-off-badge {
+  background: #dc2626;
+  color: #fff;
+  font-weight: 800;
+  font-size: clamp(9px, 1.6vw, 11px);
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+.flyer-shape-bar {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin: 8px 0;
+  flex-wrap: wrap;
+}
+.flyer-shape-bar .btn.active {
+  background: #0f766e;
+  color: #fff;
+}
 .retail-footer-bar {
   position: relative;
   z-index: 2;

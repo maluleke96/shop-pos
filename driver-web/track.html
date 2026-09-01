@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Delivery Tracking</title>
+  <link rel="stylesheet" href="css/driver.css">
+</head>
+<body>
+  <div class="drv-wrap"><div class="drv-card" id="track-app"><p>Loading…</p></div></div>
+  <script src="js/config.js"></script>
+  <script src="js/api.js"></script>
+  <script>
+    (async () => {
+      const token = (location.pathname.split('/').pop() || '').trim();
+      const el = document.getElementById('track-app');
+      if (!token || token === 'track') { el.innerHTML = '<p>Invalid tracking link.</p>'; return; }
+      try {
+        const t = await DriverAPI.tracking(token);
+        const data = t.data || t;
+        el.innerHTML = `<h1>Order ${data.order_number || ''}</h1>
+          <p class="status-pill">${data.status_label || data.status}</p>
+          <ol class="timeline">${(data.timeline || []).map((s) =>
+            `<li class="${s.done ? 'done' : ''} ${s.active ? 'active' : ''}">${s.label}</li>`).join('')}</ol>`;
+      } catch (e) {
+        el.innerHTML = `<p>${e.message || 'Tracking unavailable'}</p>`;
+      }
+    })();
+  </script>
+</body>
+</html>

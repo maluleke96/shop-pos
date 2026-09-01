@@ -1,0 +1,8 @@
+{
+  "appId": "com.shoppos.staff",
+  "appName": "Staff Portal",
+  "webDir": "www",
+  "android": {
+    "allowMixedContent": true
+  }
+}

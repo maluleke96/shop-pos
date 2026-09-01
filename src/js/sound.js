@@ -5,7 +5,12 @@ const SoundService = {
   _testTimer: null,
   _audioCtx: null,
 
+  isPosSilent() {
+    return window.__SHOP_POS_APP_MODE__ === 'pos';
+  },
+
   isEnabled(settings) {
+    if (this.isPosSilent()) return false;
     const ns = settings?.notification_settings || {};
     return ns.sound_enabled !== false;
   },
@@ -52,6 +57,7 @@ const SoundService = {
   },
 
   async startAlert(settings) {
+    if (this.isPosSilent()) return;
     if (this.playing || !this.isEnabled(settings)) return;
     this.playing = true;
     const url = await this.resolveUrl(settings);
@@ -86,6 +92,7 @@ const SoundService = {
   },
 
   async playScanBeep() {
+    if (this.isPosSilent()) return;
     try {
       const ctx = await this.ensureAudioContext();
       const osc = ctx.createOscillator();
@@ -101,6 +108,7 @@ const SoundService = {
   },
 
   async playOnce(settings) {
+    if (this.isPosSilent()) return;
     if (!this.isEnabled(settings)) return;
     const url = await this.resolveUrl(settings);
     if (url) {
@@ -121,6 +129,7 @@ const SoundService = {
 
   /** Preview alert sound (user click satisfies autoplay policy). */
   async testAlert(settings, opts = {}) {
+    if (this.isPosSilent()) return;
     const { durationMs = 8000 } = opts;
     this.stopAlert();
     if (!this.isEnabled(settings)) throw new Error('Alert sounds are disabled');

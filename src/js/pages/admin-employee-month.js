@@ -2,10 +2,8 @@
 (function () {
   if (!window.AdminPage) return;
 
-  AdminPage.sections.splice(6, 0, { id: 'employee-of-month', label: '🏆 Employee of Month', icon: 'employee-of-month' });
-  if (AdminPage.sections.filter(s => s.id === 'employee-of-month').length > 1) {
-    AdminPage.sections = AdminPage.sections.filter((s, i, arr) =>
-      s.id !== 'employee-of-month' || arr.findIndex(x => x.id === 'employee-of-month') === i);
+  if (!AdminPage.sections.some((s) => s.id === 'employee-of-month')) {
+    AdminPage.sections.splice(6, 0, { id: 'employee-of-month', label: '🏆 Employee of Month', icon: 'employee-of-month' });
   }
 
   const AdminEmployeeMonthPage = {

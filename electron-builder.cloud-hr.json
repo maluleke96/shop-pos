@@ -1,0 +1,46 @@
+{
+  "appId": "com.shoppos.hr",
+  "productName": "HR, Payroll & Documents",
+  "directories": {
+    "output": "dist\\cloud-apps\\hr-build",
+    "buildResources": "build"
+  },
+  "files": [
+    "electron/**/*",
+    "src/**/*",
+    "mobile/**/*",
+    "lib/**/*",
+    "package.json"
+  ],
+  "extraMetadata": {
+    "main": "electron/cloud-shell-config-hr.js",
+    "name": "com.shoppos.hr"
+  },
+  "win": {
+    "target": [
+      {
+        "target": "nsis",
+        "arch": [
+          "x64"
+        ]
+      },
+      {
+        "target": "portable",
+        "arch": [
+          "x64"
+        ]
+      }
+    ]
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "artifactName": "ShopPOS-HR-Setup.${ext}",
+    "shortcutName": "HR, Payroll & Documents"
+  },
+  "portable": {
+    "artifactName": "ShopPOS-HR-Portable.${ext}"
+  }
+}

@@ -1,11 +1,14 @@
 const { getDb } = require('../database/db');
 const { verifyPin, verifyPinWithUpgrade } = require('./pin');
+const branchesSvc = require('./branches');
 
 function getSalesList(filters = {}) {
   const db = getDb();
+  const flags = branchesSvc.ensureBranchSchema();
+  const branchSelect = flags.sales ? 's.branch_id' : 'NULL as branch_id';
   let sql = `
     SELECT s.id, s.receipt_number, s.order_number, s.created_at, s.subtotal, s.discount, s.tax_amount, s.total,
-      s.amount_paid, s.change_amount, s.status, s.void_reason, s.branch_id, s.notes, s.order_type, s.table_name, s.delivery_address,
+      s.amount_paid, s.change_amount, s.status, s.void_reason, ${branchSelect}, s.notes, s.order_type, s.table_name, s.delivery_address,
       u.full_name as cashier_name, c.name as customer_name,
       (SELECT GROUP_CONCAT(payment_type || ' ' || amount) FROM sale_payments WHERE sale_id = s.id) as payment_methods,
       (SELECT payment_type FROM sale_payments WHERE sale_id = s.id LIMIT 1) as primary_payment,
@@ -37,6 +40,10 @@ function getSalesList(filters = {}) {
   if (filters.product) {
     sql += ' AND EXISTS (SELECT 1 FROM sale_items si WHERE si.sale_id = s.id AND si.product_name LIKE ?)';
     params.push(`%${filters.product}%`);
+  }
+  if (filters.branch_id != null && filters.branch_id !== '' && filters.branch_id !== 'all' && flags.sales) {
+    sql += ' AND s.branch_id = ?';
+    params.push(Number(filters.branch_id));
   }
   sql += ' ORDER BY s.created_at DESC';
   if (filters.limit) { sql += ' LIMIT ?'; params.push(filters.limit); }
@@ -96,7 +103,15 @@ function voidSale(saleId, reason, actorId, actorName) {
       }
     }
     features.reverseSaleBenefits(saleId, actorId, 1);
+    try {
+      require('./marketing-platform').reverseCommissionsForSale(saleId, { id: actorId, full_name: actorName, role: 'owner' }, 'Sale voided');
+    } catch (_) { /* best effort */ }
   })();
+  try {
+    require('./accounting-platform').reverseSaleAccounting(saleId, reason || 'Sale voided');
+  } catch (err) {
+    console.warn('[voidSale] accounting reversal:', err.message || err);
+  }
   db.prepare(`INSERT INTO audit_log (user_id, username, action, entity_type, entity_id, details) VALUES (?,?,?,?,?,?)`)
     .run(actorId, actorName, 'void_sale', 'sale', saleId, JSON.stringify({ receipt_number: sale.receipt_number, reason, total: sale.total }));
   return { success: true };
@@ -254,7 +269,12 @@ function getAdminAlerts() {
   const pendingPO = db.prepare("SELECT COUNT(*) as c FROM purchase_orders WHERE status IN ('pending','partial')").get().c;
   if (pendingPO > 0) alerts.push({ level: 'yellow', message: `${pendingPO} purchase orders pending`, action: 'po' });
 
-  const settings = db.prepare('SELECT last_backup, backup_settings FROM shop_settings WHERE id=1').get();
+  let settings = null;
+  try {
+    settings = db.prepare('SELECT last_backup, backup_settings FROM shop_settings WHERE id=1').get();
+  } catch (_) {
+    try { settings = db.prepare('SELECT last_backup FROM shop_settings WHERE id=1').get(); } catch (__) { settings = null; }
+  }
   if (!settings?.last_backup) {
     alerts.push({ level: 'red', message: 'Database backup has never been done', action: 'backup' });
   } else {
@@ -271,8 +291,9 @@ function getAdminAlerts() {
   return alerts;
 }
 
-function getAdminDashboardFull(from, to) {
+function getAdminDashboardFull(from, to, branchId) {
   const db = getDb();
+  const flags = branchesSvc.ensureBranchSchema();
   const today = new Date().toLocaleDateString('en-CA');
   const rangeFrom = from || today;
   const rangeTo = to || today;
@@ -281,6 +302,12 @@ function getAdminDashboardFull(from, to) {
   const saleDate = "date(created_at, 'localtime')";
   const saleItemDate = "date(s.created_at, 'localtime')";
   const returnDate = "date(created_at, 'localtime')";
+  const canScopeSales = !!(branchId && flags.sales);
+  const canScopeExpenses = !!(branchId && flags.expenses);
+  const canScopeStock = !!(branchId && flags.branch_stock);
+  const saleBranch = canScopeSales ? ' AND branch_id = ?' : '';
+  const saleBranchJoin = canScopeSales ? ' AND s.branch_id = ?' : '';
+  const saleBranchParams = canScopeSales ? [branchId] : [];
   const soft = (label, fn, fallback) => {
     try { return fn(); }
     catch (err) {
@@ -290,36 +317,38 @@ function getAdminDashboardFull(from, to) {
   };
 
   const coreQueries = [
-    { method: 'get', sql: `SELECT COALESCE(SUM(total),0) as total, COUNT(*) as count FROM sales WHERE ${saleDate} BETWEEN date(?) AND date(?) AND status='completed'`, params: [rangeFrom, rangeTo] },
-    { method: 'get', sql: `SELECT COALESCE(SUM(total),0) as total, COUNT(*) as count FROM sales WHERE ${saleDate}=date(?) AND status='completed'`, params: [yesterday] },
-    { method: 'get', sql: `SELECT COALESCE(SUM(total),0) as total, COUNT(*) as count FROM sales WHERE ${saleDate}>=date(?) AND status='completed'`, params: [monthStart] },
-    { method: 'get', sql: `SELECT COALESCE(SUM(si.quantity),0) as qty FROM sale_items si JOIN sales s ON si.sale_id=s.id WHERE ${saleItemDate} BETWEEN date(?) AND date(?) AND s.status='completed'`, params: [rangeFrom, rangeTo] },
-    { method: 'get', sql: `SELECT COALESCE(SUM(si.buying_price * si.quantity),0) as cost FROM sale_items si JOIN sales s ON si.sale_id=s.id WHERE ${saleItemDate} BETWEEN date(?) AND date(?) AND s.status='completed'`, params: [rangeFrom, rangeTo] },
-    { method: 'get', sql: `SELECT COALESCE(SUM(amount),0) as total FROM expenses WHERE date(expense_date) BETWEEN date(?) AND date(?)`, params: [rangeFrom, rangeTo] },
-    { method: 'get', sql: `SELECT COALESCE(SUM(total_refund),0) as total FROM returns WHERE ${returnDate} BETWEEN date(?) AND date(?)`, params: [rangeFrom, rangeTo] },
-    { method: 'get', sql: `SELECT COALESCE(SUM(discount),0) as total FROM sales WHERE ${saleDate} BETWEEN date(?) AND date(?) AND status='completed'`, params: [rangeFrom, rangeTo] },
-    { method: 'all', sql: `SELECT si.product_name, SUM(si.quantity) as qty, SUM(si.total) as revenue FROM sale_items si JOIN sales s ON si.sale_id=s.id WHERE ${saleItemDate} BETWEEN date(?) AND date(?) AND s.status='completed' GROUP BY si.product_name ORDER BY qty DESC LIMIT 10`, params: [rangeFrom, rangeTo] },
-    { method: 'all', sql: `SELECT COALESCE(c.name, 'Uncategorised') as category_name, SUM(si.total) as revenue, SUM(si.quantity) as qty FROM sale_items si JOIN sales s ON si.sale_id=s.id LEFT JOIN products p ON si.product_id=p.id LEFT JOIN categories c ON p.category_id=c.id WHERE ${saleItemDate} BETWEEN date(?) AND date(?) AND s.status='completed' GROUP BY COALESCE(c.name, 'Uncategorised') ORDER BY revenue DESC LIMIT 10`, params: [rangeFrom, rangeTo] },
-    { method: 'all', sql: `SELECT name, stock_quantity, min_stock FROM products WHERE is_active=1 AND stock_quantity <= min_stock AND stock_quantity > 0 ORDER BY stock_quantity LIMIT 10`, params: [] },
-    { method: 'all', sql: `SELECT name FROM products WHERE is_active=1 AND stock_quantity <= 0 LIMIT 10`, params: [] },
-    { method: 'all', sql: `SELECT sp.payment_type, SUM(sp.amount) as total FROM sale_payments sp JOIN sales s ON sp.sale_id=s.id WHERE ${saleItemDate} BETWEEN date(?) AND date(?) AND s.status='completed' GROUP BY sp.payment_type`, params: [rangeFrom, rangeTo] },
-    { method: 'all', sql: `SELECT u.full_name, COUNT(s.id) as orders, SUM(s.total) as revenue FROM sales s JOIN users u ON s.user_id=u.id WHERE ${saleItemDate} BETWEEN date(?) AND date(?) AND s.status='completed' GROUP BY u.id, u.full_name ORDER BY revenue DESC`, params: [rangeFrom, rangeTo] },
-    { method: 'get', sql: `SELECT COALESCE(SUM(stock_quantity * buying_price),0) as val FROM products WHERE is_active=1`, params: [] },
+    { method: 'get', sql: `SELECT COALESCE(SUM(total),0) as total, COUNT(*) as count FROM sales WHERE ${saleDate} BETWEEN date(?) AND date(?) AND status='completed'${saleBranch}`, params: [rangeFrom, rangeTo, ...saleBranchParams] },
+    { method: 'get', sql: `SELECT COALESCE(SUM(total),0) as total, COUNT(*) as count FROM sales WHERE ${saleDate}=date(?) AND status='completed'${saleBranch}`, params: [yesterday, ...saleBranchParams] },
+    { method: 'get', sql: `SELECT COALESCE(SUM(total),0) as total, COUNT(*) as count FROM sales WHERE ${saleDate}>=date(?) AND status='completed'${saleBranch}`, params: [monthStart, ...saleBranchParams] },
+    { method: 'get', sql: `SELECT COALESCE(SUM(si.quantity),0) as qty FROM sale_items si JOIN sales s ON si.sale_id=s.id WHERE ${saleItemDate} BETWEEN date(?) AND date(?) AND s.status='completed'${saleBranchJoin}`, params: [rangeFrom, rangeTo, ...saleBranchParams] },
+    { method: 'get', sql: `SELECT COALESCE(SUM(si.buying_price * si.quantity),0) as cost FROM sale_items si JOIN sales s ON si.sale_id=s.id WHERE ${saleItemDate} BETWEEN date(?) AND date(?) AND s.status='completed'${saleBranchJoin}`, params: [rangeFrom, rangeTo, ...saleBranchParams] },
+    { method: 'get', sql: `SELECT COALESCE(SUM(amount),0) as total FROM expenses WHERE date(expense_date) BETWEEN date(?) AND date(?)${canScopeExpenses ? ' AND branch_id = ?' : ''}`, params: canScopeExpenses ? [rangeFrom, rangeTo, branchId] : [rangeFrom, rangeTo] },
+    { method: 'get', sql: `SELECT COALESCE(SUM(r.total_refund),0) as total FROM returns r LEFT JOIN sales s ON s.id=r.sale_id WHERE ${returnDate.replace('created_at', 'r.created_at')} BETWEEN date(?) AND date(?)${canScopeSales ? ' AND s.branch_id = ?' : ''}`, params: canScopeSales ? [rangeFrom, rangeTo, branchId] : [rangeFrom, rangeTo] },
+    { method: 'get', sql: `SELECT COALESCE(SUM(discount),0) as total FROM sales WHERE ${saleDate} BETWEEN date(?) AND date(?) AND status='completed'${saleBranch}`, params: [rangeFrom, rangeTo, ...saleBranchParams] },
+    { method: 'all', sql: `SELECT si.product_name, SUM(si.quantity) as qty, SUM(si.total) as revenue FROM sale_items si JOIN sales s ON si.sale_id=s.id WHERE ${saleItemDate} BETWEEN date(?) AND date(?) AND s.status='completed'${saleBranchJoin} GROUP BY si.product_name ORDER BY qty DESC LIMIT 10`, params: [rangeFrom, rangeTo, ...saleBranchParams] },
+    { method: 'all', sql: `SELECT COALESCE(c.name, 'Uncategorised') as category_name, SUM(si.total) as revenue, SUM(si.quantity) as qty FROM sale_items si JOIN sales s ON si.sale_id=s.id LEFT JOIN products p ON si.product_id=p.id LEFT JOIN categories c ON p.category_id=c.id WHERE ${saleItemDate} BETWEEN date(?) AND date(?) AND s.status='completed'${saleBranchJoin} GROUP BY COALESCE(c.name, 'Uncategorised') ORDER BY revenue DESC LIMIT 10`, params: [rangeFrom, rangeTo, ...saleBranchParams] },
+    { method: 'all', sql: canScopeStock
+      ? `SELECT p.name, bs.quantity as stock_quantity, bs.min_stock as min_stock FROM branch_stock bs JOIN products p ON p.id=bs.product_id WHERE bs.branch_id=? AND p.is_active=1 AND bs.quantity <= bs.min_stock AND bs.quantity > 0 ORDER BY bs.quantity LIMIT 10`
+      : `SELECT name, stock_quantity, min_stock FROM products WHERE is_active=1 AND stock_quantity <= min_stock AND stock_quantity > 0 ORDER BY stock_quantity LIMIT 10`, params: canScopeStock ? [branchId] : [] },
+    { method: 'all', sql: canScopeStock
+      ? `SELECT p.name FROM branch_stock bs JOIN products p ON p.id=bs.product_id WHERE bs.branch_id=? AND p.is_active=1 AND bs.quantity <= 0 LIMIT 10`
+      : `SELECT name FROM products WHERE is_active=1 AND stock_quantity <= 0 LIMIT 10`, params: canScopeStock ? [branchId] : [] },
+    { method: 'all', sql: `SELECT sp.payment_type, SUM(sp.amount) as total FROM sale_payments sp JOIN sales s ON sp.sale_id=s.id WHERE ${saleItemDate} BETWEEN date(?) AND date(?) AND s.status='completed'${saleBranchJoin} GROUP BY sp.payment_type`, params: [rangeFrom, rangeTo, ...saleBranchParams] },
+    { method: 'all', sql: `SELECT u.full_name, COUNT(s.id) as orders, SUM(s.total) as revenue FROM sales s JOIN users u ON s.user_id=u.id WHERE ${saleItemDate} BETWEEN date(?) AND date(?) AND s.status='completed'${saleBranchJoin} GROUP BY u.id, u.full_name ORDER BY revenue DESC`, params: [rangeFrom, rangeTo, ...saleBranchParams] },
+    { method: 'get', sql: canScopeStock
+      ? `SELECT COALESCE(SUM(bs.quantity * p.buying_price),0) as val FROM branch_stock bs JOIN products p ON p.id=bs.product_id WHERE bs.branch_id=? AND p.is_active=1`
+      : `SELECT COALESCE(SUM(stock_quantity * buying_price),0) as val FROM products WHERE is_active=1`, params: canScopeStock ? [branchId] : [] },
     { method: 'get', sql: `SELECT COUNT(*) as c FROM shifts WHERE status='open'`, params: [] },
     { method: 'get', sql: `SELECT COUNT(*) as c FROM shifts WHERE status='closed' AND date(closed_at, 'localtime')=date(?)`, params: [rangeTo] },
-    { method: 'all', sql: `SELECT ${saleDate} as day, SUM(total) as total FROM sales WHERE ${saleDate} BETWEEN date(?) AND date(?) AND status='completed' GROUP BY ${saleDate} ORDER BY day`, params: [rangeFrom, rangeTo] },
+    { method: 'all', sql: `SELECT ${saleDate} as day, SUM(total) as total FROM sales WHERE ${saleDate} BETWEEN date(?) AND date(?) AND status='completed'${saleBranch} GROUP BY ${saleDate} ORDER BY day`, params: [rangeFrom, rangeTo, ...saleBranchParams] },
     { method: 'get', sql: `SELECT COUNT(*) as c FROM employee_leave WHERE status='pending'`, params: [] }
   ];
 
-  let core;
-  if (typeof db.batch === 'function') {
-    core = db.batch(coreQueries);
-  } else {
-    core = coreQueries.map((q) => {
-      const st = db.prepare(q.sql);
-      return q.method === 'get' ? st.get(...(q.params || [])) : st.all(...(q.params || []));
-    });
-  }
+  // Run per-query so one missing table/column cannot blank the whole dashboard.
+  const core = coreQueries.map((q, idx) => soft(`core[${idx}]`, () => {
+    const st = db.prepare(q.sql);
+    return q.method === 'get' ? st.get(...(q.params || [])) : st.all(...(q.params || []));
+  }, q.method === 'get' ? {} : []));
 
   const [
     periodSales, yesterdaySales, monthSales, periodItems, periodCost, periodExpenses, periodRefunds, periodDiscounts,
@@ -337,12 +366,17 @@ function getAdminDashboardFull(from, to) {
     GROUP BY ri.product_name ORDER BY qty DESC LIMIT 10
   `).all(), []);
 
-  const recentSales = soft('recentSales', () => getSalesList({ from: rangeFrom, to: rangeTo, limit: 20 }), []);
+  const recentSales = soft('recentSales', () => getSalesList({
+    from: rangeFrom,
+    to: rangeTo,
+    limit: 20,
+    ...(canScopeSales ? { branch_id: branchId } : {})
+  }), []);
   const hourlySales = rangeFrom === rangeTo
     ? soft('hourlySales', () => db.prepare(`
         SELECT strftime('%H', created_at, 'localtime') as hour, SUM(total) as total FROM sales
-        WHERE ${saleDate}=date(?) AND status='completed' GROUP BY hour ORDER BY hour
-      `).all(rangeFrom), [])
+        WHERE ${saleDate}=date(?) AND status='completed'${saleBranch} GROUP BY hour ORDER BY hour
+      `).all(rangeFrom, ...saleBranchParams), [])
     : [];
   const recentActivity = soft('activity', () => getActivityTimeline(rangeFrom, rangeTo).slice(0, 15), []);
   const alerts = soft('alerts', () => getAdminAlerts(), []);
@@ -405,7 +439,7 @@ function getDailyClosingReport(date) {
   const saleRows = db.prepare(`
     SELECT s.id, s.receipt_number, s.order_number, s.created_at, s.total, s.discount, s.tax_amount, s.status,
       s.order_type, s.table_name, u.full_name as cashier_name, c.name as customer_name,
-      (SELECT GROUP_CONCAT(payment_type || ' ' || printf('%.2f', amount), ', ') FROM sale_payments WHERE sale_id = s.id) as payments
+      (SELECT GROUP_CONCAT(payment_type || ' ' || amount, ', ') FROM sale_payments WHERE sale_id = s.id) as payments
     FROM sales s
     LEFT JOIN users u ON s.user_id = u.id
     LEFT JOIN customers c ON s.customer_id = c.id

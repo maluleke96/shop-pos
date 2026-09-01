@@ -16,6 +16,10 @@ const MarketingFlyersPage = {
   dragState: null,
   /** When set (e.g. Marketing Agent shell), keep studio inside that host instead of POS #page-content */
   hostEl: null,
+  /** Owner/manager shell tab — 'command' (Marketing Command Centre) or 'flyers' (Flyer Studio) */
+  shellTab: 'command',
+  /** Id of the element the flyer views render into when the shell tabs are shown */
+  SHELL_BODY_ID: 'mkt-shell-body',
 
   resolveRoot(el) {
     if (this.hostEl && this.hostEl.isConnected) return this.hostEl;
@@ -119,11 +123,87 @@ const MarketingFlyersPage = {
     return ['owner', 'manager'].includes(user?.role);
   },
 
+  /** Owner/manager get the Command Centre + Flyer Studio tab shell; agents go straight to the studio. */
+  showsShellTabs(el, app) {
+    if (this.hostEl) return false;
+    if (el && el.id === this.SHELL_BODY_ID) return false;
+    return ['owner', 'manager'].includes(app?.user?.role);
+  },
+
+  async renderShellTabs(el, app) {
+    const tabs = [['command', 'Command Centre'], ['flyers', 'Flyers & Studio']];
+    el.innerHTML = `<div class="page-toolbar" style="margin-bottom:12px">
+      <div class="form-tabs" id="mkt-shell-tabs">
+        ${tabs.map(([k, label]) =>
+          `<button type="button" class="form-tab ${this.shellTab === k ? 'active' : ''}" data-mkt-shell="${k}">${label}</button>`).join('')}
+      </div>
+    </div>
+    <div id="${this.SHELL_BODY_ID}">${Utils.pageSkeleton ? Utils.pageSkeleton(3) : '<p class="muted">Loading…</p>'}</div>`;
+
+    el.querySelectorAll('[data-mkt-shell]').forEach((btn) => btn.addEventListener('click', () => {
+      const next = btn.dataset.mktShell;
+      if (next === this.shellTab) return;
+      this.shellTab = next;
+      this.renderShellTabs(el, app);
+    }));
+
+    const body = document.getElementById(this.SHELL_BODY_ID);
+    if (this.shellTab === 'command') {
+      await this.renderCommandCentre(body, app);
+      return;
+    }
+    await this.render(body, app);
+  },
+
+  async renderCommandCentre(body, app) {
+    if (!window.AdminMarketingPage?.render && typeof Utils?.loadScript === 'function') {
+      try { await Utils.loadScript('js/pages/admin-marketing.js'); } catch (_) { /* fall back to the admin bundle */ }
+    }
+    if (!window.AdminMarketingPage?.render && typeof App?.ensurePageScripts === 'function') {
+      try { await App.ensurePageScripts('admin'); } catch (_) { /* handled below */ }
+    }
+    if (!window.AdminMarketingPage?.render) {
+      body.innerHTML = `<div class="card"><div class="card-body">
+        <p class="error-msg">Marketing Command Centre failed to load.</p>
+        <p class="muted">Use the Flyers &amp; Studio tab to keep designing, then restart Shop POS.</p>
+      </div></div>`;
+      return;
+    }
+    await window.AdminMarketingPage.render(body, app);
+  },
+
   async render(el, app) {
     this.app = app;
     this.currency = app.settings?.currency || 'R';
     if (!['owner', 'manager', 'marketing_agent'].includes(app.user?.role)) {
       el.innerHTML = '<p class="muted">Marketing campaigns are available to owner, manager, and marketing agent.</p>';
+      return;
+    }
+    if (this.showsShellTabs(el, app)) return this.renderShellTabs(el, app);
+    if (this.pendingOpenFlyerId) {
+      const id = this.pendingOpenFlyerId;
+      this.pendingOpenFlyerId = null;
+      return this.openFlyer(id, el, 2);
+    }
+    if (this.pendingAiFlyer) {
+      this.pendingAiFlyer = false;
+      this.view = 'wizard';
+      if (!this.brandKit) {
+        const kitRes = await API.getBrandKit().catch(() => ({ success: false }));
+        this.brandKit = kitRes.success ? kitRes.data : null;
+      }
+      if (!this.draft) {
+        this.draft = this.emptyDraft(this.brandKit);
+        this.step = 1;
+      }
+      await this.renderWizard(el);
+      if (typeof this.showAiFlyerModal === 'function') {
+        this.showAiFlyerModal(this.draft, () => {
+          this.step = 2;
+          const content = document.getElementById('fly-step-content');
+          if (content && typeof this.renderStep4 === 'function') this.renderStep4(content);
+        });
+      }
       return;
     }
     if (this.view === 'quick') return this.renderQuickWizard(el);
@@ -1269,4 +1349,12 @@ const MarketingFlyersPage = {
     }
   }
 };
+
+/** `topTab` is the alias the Command Centre uses when it hands the user to the studio. */
+Object.defineProperty(MarketingFlyersPage, 'topTab', {
+  configurable: true,
+  get() { return this.shellTab; },
+  set(value) { this.shellTab = value === 'flyers' ? 'flyers' : 'command'; }
+});
+
 window.MarketingFlyersPage = MarketingFlyersPage;

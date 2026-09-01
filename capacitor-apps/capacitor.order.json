@@ -1,0 +1,12 @@
+{
+  "appId": "com.shoppos.order",
+  "appName": "Online Ordering",
+  "webDir": "www",
+  "server": {
+    "url": "https://peaceful-motivation-production-7dd2.up.railway.app/order/",
+    "cleartext": false
+  },
+  "android": {
+    "allowMixedContent": false
+  }
+}

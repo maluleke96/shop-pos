@@ -28,7 +28,6 @@ const App = {
     { id: 'recipe', label: '🍳 Recipe & Production', roles: ['owner', 'manager'] },
     { id: 'purchase-orders', label: '📝 Purchase Orders', roles: ['owner', 'manager'] },
     { id: 'reports', label: '📈 Reports', roles: ['owner', 'manager'] },
-    { id: 'bookkeeping', label: '📒 Bookkeeping', roles: ['owner', 'manager'] },
     { id: 'users', label: '👤 Users', roles: ['owner', 'manager'] },
     { id: 'audit', label: '🔍 Audit Log', roles: ['owner', 'manager'] }
   ],
@@ -76,6 +75,7 @@ const App = {
       'js/pages/admin-employee-month.js',
       'js/pages/admin-recruitment.js',
       'js/pages/admin-marketing.js',
+      'js/pages/admin-delivery.js',
       'js/pages/users.js'
     ]
   },
@@ -107,7 +107,7 @@ const App = {
     settings: 'SettingsPage'
   },
   _lazyScripts: {
-    marketing: ['js/pages/marketing-flyers-studio.js']
+    marketing: ['js/pages/marketing-flyers-studio.js', 'js/pages/admin-marketing.js']
   },
   _scheduledDocInterval: null,
 
@@ -119,6 +119,86 @@ const App = {
     return this.appMode() === 'pos';
   },
 
+  _navStateKey: 'shoppos_nav_v1',
+
+  _navFromHash() {
+    try {
+      const raw = String(location.hash || '').replace(/^#/, '');
+      if (!raw || raw.startsWith('app=')) {
+        const p = new URLSearchParams(raw.includes('=') ? raw : '');
+        const page = p.get('page');
+        if (page) return { page, adminSection: p.get('section') || null };
+      }
+      const p = new URLSearchParams(raw.includes('&') || raw.includes('=') ? raw : '');
+      const page = p.get('page');
+      if (page) return { page, adminSection: p.get('section') || null };
+    } catch (_) { /* ignore */ }
+    return null;
+  },
+
+  _loadNavState() {
+    const fromHash = this._navFromHash();
+    if (fromHash?.page) return fromHash;
+    try {
+      const raw = localStorage.getItem(this._navStateKey);
+      if (!raw) return null;
+      const s = JSON.parse(raw);
+      if (s?.mode && s.mode !== this.appMode()) return null;
+      return s;
+    } catch (_) {
+      return null;
+    }
+  },
+
+  _saveNavState() {
+    if (!this.user) return;
+    try {
+      const state = {
+        page: this.currentPage,
+        adminSection: (typeof AdminPage !== 'undefined' && AdminPage.section) ? AdminPage.section : null,
+        mode: this.appMode(),
+        ts: Date.now()
+      };
+      localStorage.setItem(this._navStateKey, JSON.stringify(state));
+      let hash = `app=${state.mode}`;
+      if (state.page) hash += `&page=${encodeURIComponent(state.page)}`;
+      if (state.page === 'admin' && state.adminSection) {
+        hash += `&section=${encodeURIComponent(state.adminSection)}`;
+      }
+      const next = `#${hash}`;
+      if (location.hash !== next) {
+        history.replaceState(null, '', `${location.pathname}${location.search}${next}`);
+      }
+    } catch (_) { /* ignore */ }
+  },
+
+  _clearNavState() {
+    try { localStorage.removeItem(this._navStateKey); } catch (_) { /* ignore */ }
+    try {
+      const mode = this.appMode();
+      history.replaceState(null, '', `${location.pathname}${location.search}#app=${mode}`);
+    } catch (_) { /* ignore */ }
+  },
+
+  async tryRestoreSession() {
+    let token = '';
+    try { token = localStorage.getItem('shoppos_rpc_session') || ''; } catch (_) { /* ignore */ }
+    if (!token) return false;
+    try {
+      const res = await API.getSession();
+      const user = res?.data || res?.user;
+      if (!res?.success || !user?.id) return false;
+      this.user = user;
+      this.user.is_active = 1;
+      this.applyPosKioskChrome();
+      this._restoredNav = this._loadNavState();
+      await this.enterApp({ restored: true });
+      return true;
+    } catch (_) {
+      return false;
+    }
+  },
+
   applyPosKioskChrome() {
     const on = this.isPosKiosk();
     document.documentElement.classList.toggle('pos-kiosk', on);
@@ -126,6 +206,11 @@ const App = {
     if (on) {
       document.getElementById('login-back-welcome')?.classList.add('hidden');
       this.closeSidebar?.();
+      SoundService?.stopAlert();
+      this.stopNotificationRefresh();
+      this.stopNotificationSoundMonitor();
+      this.stopScheduledDocMonitor();
+      document.getElementById('notif-badge')?.classList.add('hidden');
     }
   },
 
@@ -188,11 +273,24 @@ const App = {
         await this.openRecipeProduction();
         return;
       }
+      if (mode === 'accounting') {
+        this.hideMobileLoading();
+        this.ensureSettingsLoaded().catch(() => {});
+        await this.openAccountingLogin();
+        return;
+      }
+      if (mode === 'hr') {
+        this.hideMobileLoading();
+        this.ensureSettingsLoaded().catch(() => {});
+        await this.openHr({ fromLogin: true });
+        return;
+      }
 
       // POS-only installer: show login immediately (no setup / welcome delay)
       if (mode === 'pos') {
         this.applyPosKioskChrome();
         this.hideMobileLoading();
+        if (await this.tryRestoreSession()) return;
         this.showScreen('login');
         this.startLoginOperatingTimer?.();
         this.prefetchLoginScripts();
@@ -205,6 +303,7 @@ const App = {
 
       // Show Sign in ASAP — load settings in background (don't block login UI)
       this.hideMobileLoading();
+      if (await this.tryRestoreSession()) return;
       this.showWelcome({ shopReady: true, status: 'Loading shop…' });
       this.prefetchLoginScripts();
 
@@ -293,6 +392,7 @@ const App = {
       }
     }
     this.showScreen('welcome');
+    this.applyLoginChrome();
   },
 
   hideMobileLoading() {
@@ -335,6 +435,15 @@ const App = {
     document.getElementById('welcome-setup')?.addEventListener('click', () => {
       this.showScreen('setup');
     });
+    document.getElementById('welcome-accounting')?.addEventListener('click', () => {
+      this.openAccountingLogin({ fromWelcome: true });
+    });
+    document.getElementById('welcome-hr')?.addEventListener('click', () => {
+      this.openHr({ fromWelcome: true });
+    });
+    document.getElementById('welcome-staff')?.addEventListener('click', () => {
+      this.openStaffPortal();
+    });
     document.getElementById('login-back-welcome')?.addEventListener('click', () => {
       this.stopLoginOperatingTimer();
       this.showWelcome({ shopReady: !!Number(this.settings?.setup_complete) });
@@ -343,6 +452,18 @@ const App = {
       this.showWelcome({ needsSetup: !Number(this.settings?.setup_complete) });
     });
     document.getElementById('login-forgot')?.addEventListener('click', () => this.showRecoveryModal());
+    document.getElementById('login-register-agent')?.addEventListener('click', () => {
+      this.openMarketingAgentLogin({ fromLogin: true, view: 'apply' });
+    });
+    document.getElementById('login-open-accounting')?.addEventListener('click', () => {
+      this.openAccountingLogin({ fromLogin: true });
+    });
+    document.getElementById('login-open-hr')?.addEventListener('click', () => {
+      this.openHr({ fromLogin: true });
+    });
+    document.getElementById('login-open-staff')?.addEventListener('click', () => {
+      this.openStaffPortal();
+    });
     document.getElementById('setup-form').addEventListener('submit', (e) => this.handleSetup(e));
     document.getElementById('setup-restore-db')?.addEventListener('click', async () => {
       if (!confirm('Restore a .db backup onto this empty device? You will then sign in with that shop’s owner account.')) return;
@@ -415,8 +536,36 @@ const App = {
   },
 
   showScreen(name) {
-    ['welcome', 'login', 'setup', 'app', 'staff-portal', 'recipe-production', 'marketing-agent', 'display'].forEach(s =>
+    ['welcome', 'login', 'setup', 'app', 'staff-portal', 'recipe-production', 'marketing-agent', 'accounting', 'hr', 'display'].forEach(s =>
       document.getElementById(`screen-${s}`)?.classList.toggle('hidden', s !== name));
+    if (name === 'login' || name === 'welcome') this.applyLoginChrome();
+  },
+
+  /** Hide cross-app links on dedicated installers (Admin, POS, HR, etc.) */
+  applyLoginChrome() {
+    const mode = this.appMode();
+    const dedicated = new Set(['admin', 'pos', 'staff', 'marketing', 'recipe', 'accounting', 'hr']);
+    const crossIds = [
+      'login-register-agent',
+      'login-open-accounting',
+      'login-open-hr',
+      'login-open-staff',
+      'welcome-accounting',
+      'welcome-hr',
+      'welcome-staff'
+    ];
+    crossIds.forEach((id) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      const showMarketingAgent = mode === 'marketing' && id === 'login-register-agent';
+      el.classList.toggle('hidden', dedicated.has(mode) && !showMarketingAgent);
+    });
+    if (mode === 'admin') {
+      const loginName = document.getElementById('login-shop-name');
+      if (loginName && !this.settings?.shop_name) loginName.textContent = 'Shop POS Admin';
+      const welcomeTitle = document.getElementById('welcome-title');
+      if (welcomeTitle && !this.settings?.shop_name) welcomeTitle.textContent = 'Shop POS Admin';
+    }
   },
 
   openInAppDisplay(kind) {
@@ -503,13 +652,14 @@ const App = {
   },
 
   /** Open standalone Marketing Agent System (own login, like Recipe & Staff Portal) */
-  async openMarketingAgentLogin() {
-    await this.openMarketingAgent({ fromLogin: true });
+  async openMarketingAgentLogin(opts = {}) {
+    await this.openMarketingAgent({ fromLogin: true, ...opts });
   },
 
   async openMarketingAgent(opts = {}) {
     this.stopLoginOperatingTimer();
     await this.ensureFeatureCss('css/marketing-agent.css');
+    await this.ensureFeatureCss('css/marketing-command.css');
     await this.ensureFeatureCss('css/flyer-studio.css');
     await this.ensureFeatureScript('js/marketing-agent-app.js');
     await this.ensureFeatureScript('js/pages/marketing-flyers.js');
@@ -522,7 +672,12 @@ const App = {
     this._marketingFromLogin = !!opts.fromLogin || !opts.fromApp;
     this.showScreen('marketing-agent');
     const root = document.getElementById('marketing-agent-root');
-    appMod.view = 'dashboard';
+    if (opts.view === 'apply') {
+      appMod.session = null;
+      appMod.view = 'apply';
+    } else {
+      appMod.view = 'dashboard';
+    }
     await appMod.render(root, this);
   },
 
@@ -541,6 +696,155 @@ const App = {
     }
     this.showScreen('login');
     this.startLoginOperatingTimer();
+  },
+
+  async openAccountingLogin(opts = {}) {
+    await this.openAccounting({ fromLogin: true, ...opts });
+  },
+
+  async openAccounting(opts = {}) {
+    this.stopLoginOperatingTimer?.();
+    await this.ensureFeatureCss('css/accounting-command.css');
+    await this.ensureFeatureScript('js/accounting-app.js');
+    const mod = window.AccountingApp;
+    if (!mod?.render) {
+      Utils.toast('Accounting Command Centre failed to load', 'error');
+      return;
+    }
+    this._accountingFromLogin = !!opts.fromLogin || !!opts.fromWelcome || !opts.fromApp;
+    this.showScreen('accounting');
+    const root = document.getElementById('accounting-root');
+    if (this.user && (opts.fromApp || opts.skipLogin)) {
+      try {
+        const r = await API.accSessionFromPos(this.user);
+        const user = r?.data || r?.user || r;
+        if (user?.id) {
+          mod.user = user;
+          mod.view = 'app';
+          if (opts.section) mod.section = opts.section;
+          await mod.render(root, this);
+          return;
+        }
+      } catch (err) {
+        Utils.toast(err.message || 'Could not open accounting with Admin login', 'error');
+      }
+    }
+    mod.view = 'login';
+    mod.user = null;
+    await mod.render(root, this);
+  },
+
+  closeAccounting() {
+    if (this.appMode() === 'accounting') {
+      const root = document.getElementById('accounting-root');
+      if (window.AccountingApp) {
+        window.AccountingApp.view = 'login';
+        window.AccountingApp.user = null;
+        window.AccountingApp.render(root, this);
+      }
+      return;
+    }
+    if (this._accountingFromLogin || !this.user) {
+      this._accountingFromLogin = false;
+      this.showScreen('login');
+      this.startLoginOperatingTimer?.();
+      return;
+    }
+    this.showScreen('app');
+  },
+
+  async openHr(opts = {}) {
+    this.stopLoginOperatingTimer?.();
+    try {
+      if (typeof Utils.reloadStylesheet === 'function') await Utils.reloadStylesheet('css/hr-command.css');
+      else await this.ensureFeatureCss('css/hr-command.css');
+      if (typeof Utils.reloadScript === 'function') await Utils.reloadScript('js/hr-app.js');
+      else await this.ensureFeatureScript('js/hr-app.js');
+    } catch (err) {
+      console.warn('[HR] feature load', err);
+      await this.ensureFeatureCss('css/hr-command.css');
+      await this.ensureFeatureScript('js/hr-app.js');
+    }
+    const mod = window.HrApp;
+    if (!mod?.render) {
+      Utils.toast('HR workspace failed to load', 'error');
+      return;
+    }
+    mod._delegated = false;
+    this._hrFromLogin = !!opts.fromLogin || !!opts.fromWelcome || !opts.fromApp;
+    this.showScreen('hr');
+    const root = document.getElementById('hr-root');
+    if (this.user && (opts.fromApp || opts.skipLogin)) {
+      mod.user = this.user;
+      mod.view = 'app';
+    } else {
+      mod.view = 'login';
+      mod.user = null;
+    }
+    await mod.render(root, this);
+  },
+
+  closeHr() {
+    if (this.appMode() === 'hr') {
+      const root = document.getElementById('hr-root');
+      if (window.HrApp) {
+        window.HrApp.view = 'login';
+        window.HrApp.user = null;
+        window.HrApp.render(root, this);
+      }
+      return;
+    }
+    if (this._hrFromLogin || !this.user) {
+      this._hrFromLogin = false;
+      this.showScreen('login');
+      this.startLoginOperatingTimer?.();
+      return;
+    }
+    this.showScreen('app');
+  },
+
+  getCloudBaseUrl() {
+    const raw = (window.__SHOP_POS_ENV__?.RPC_URL || window.__SHOP_POS_ENV__?.SHOP_POS_RPC_URL || '').replace(/\/rpc\/?$/i, '');
+    if (raw) return raw.replace(/\/$/, '');
+    if (typeof location !== 'undefined' && location.origin && !location.origin.startsWith('file:')) {
+      return location.origin.replace(/\/$/, '');
+    }
+    return 'https://peaceful-motivation-production-7dd2.up.railway.app';
+  },
+
+  async getBusinessManagerUrl() {
+    if (!this.user) throw new Error('Sign in to Admin first');
+    const allowed = ['owner', 'manager', 'supervisor', 'assistant_manager'];
+    if (!allowed.includes(this.user.role)) throw new Error('Business Manager requires admin access');
+    const r = await API.mobileBootstrapAdmin(this.user);
+    const data = r?.data ?? r;
+    const token = data?.token;
+    if (!token) throw new Error(r?.error || 'Could not open Business Manager');
+    return `${this.getCloudBaseUrl()}/manager/#token=${encodeURIComponent(token)}&from=admin`;
+  },
+
+  async openBusinessManager(opts = {}) {
+    try {
+      const url = await this.getBusinessManagerUrl();
+      if (opts.embed && window.AdminPage) {
+        AdminPage.section = 'business-manager';
+        AdminPage._managerUrl = url;
+        document.querySelectorAll('.admin-nav-btn').forEach((b) =>
+          b.classList.toggle('active', b.dataset.section === 'business-manager'));
+        const el = document.getElementById('admin-content');
+        if (el) await AdminPage.renderSection(el);
+        return url;
+      }
+      if (opts.newTab === false) {
+        window.location.href = url;
+      } else {
+        window.open(url, '_blank', 'noopener,noreferrer');
+      }
+      return url;
+    } catch (err) {
+      Utils.toast(err.message || 'Failed to open Business Manager', 'error');
+      return null;
+    }
   },
 
   async openRecipeProduction(opts = {}) {
@@ -650,6 +954,12 @@ const App = {
     if (typeof RecipeProductionApp !== 'undefined' && RecipeProductionApp?.isOpen?.()) {
       if (typeof RecipeProductionApp.goBackInApp === 'function' && RecipeProductionApp.goBackInApp()) return;
       this.closeRecipeProduction();
+      return;
+    }
+    // Referral Agent overlay
+    if (typeof MarketingAgentApp !== 'undefined' && MarketingAgentApp?.isOpen?.()) {
+      if (typeof MarketingAgentApp.goBackInApp === 'function' && MarketingAgentApp.goBackInApp()) return;
+      this.closeMarketingAgent();
       return;
     }
     // Admin nested sections
@@ -977,7 +1287,7 @@ const App = {
     }
   },
 
-  async enterApp() {
+  async enterApp(opts = {}) {
     const isMobile = !!(window.__SHOP_POS_MOBILE__ || Utils.isNative?.());
     this.stopLoginOperatingTimer();
     this.applyPosKioskChrome();
@@ -1003,6 +1313,14 @@ const App = {
     }
 
     this.showScreen('app');
+    if (this.isPosKiosk()) {
+      SoundService?.stopAlert();
+      this.stopNotificationRefresh();
+      this.stopNotificationSoundMonitor();
+      this.stopScheduledDocMonitor();
+      document.getElementById('notif-badge')?.classList.add('hidden');
+      try { window.ShopPosConnection?.set?.('hidden'); } catch (_) { /* ignore */ }
+    }
     if (!this.isPosKiosk()) {
       this.renderNav();
       document.getElementById('sidebar-user-role').textContent =
@@ -1010,17 +1328,31 @@ const App = {
       this.refreshBranchSwitcher().catch(() => {});
     }
 
+    const savedNav = opts.restored ? (this._restoredNav || this._loadNavState()) : null;
     const preferredCustom = this.settings?.customization?.default_home_page;
     const preferred = this.isPosKiosk()
       ? 'pos'
-      : (preferredCustom
-        || (['cashier', 'supervisor', 'assistant_manager'].includes(this.user.role) ? 'pos' : 'dashboard'));
-    const startPage = Utils.canAccess(this.user, preferred)
-      ? preferred
-      : (this.navItems.map(n => n.id).find(id => Utils.canAccess(this.user, id)) || 'pos');
+      : (preferredCustom === 'recipe'
+        ? 'dashboard'
+        : (preferredCustom
+          || (['cashier', 'supervisor', 'assistant_manager'].includes(this.user.role) ? 'pos' : 'dashboard')));
+    let startPage = preferred;
+    if (savedNav?.page && Utils.canAccess(this.user, savedNav.page)) {
+      startPage = savedNav.page;
+    } else {
+      startPage = Utils.canAccess(this.user, preferred)
+        ? preferred
+        : (this.navItems.map(n => n.id).find(id => Utils.canAccess(this.user, id)) || 'pos');
+    }
+    if (startPage === 'admin' && savedNav?.adminSection && typeof AdminPage !== 'undefined') {
+      AdminPage.section = savedNav.adminSection;
+    }
 
     // Navigate ASAP — do not wait for timers / sync / notifications
     await this.navigate(startPage);
+    if (preferredCustom === 'recipe' && Utils.canAccess(this.user, 'recipe')) {
+      this.openRecipeProduction({ fromApp: true }).catch(() => {});
+    }
 
     // Background startup (never block UI) — lighter on POS kiosk
     const bg = async () => {
@@ -1118,6 +1450,13 @@ const App = {
   },
 
   async navigate(page) {
+    if (page === 'recipe') {
+      return this.openRecipeProduction({ fromApp: true });
+    }
+    if (page === 'bookkeeping') {
+      Utils.toast('Opening Accounting Command Centre', 'info');
+      return this.openAccounting({ fromApp: true, skipLogin: true });
+    }
     const navT0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
     // Immediate UI feedback — never block navigation on session/network
     this.closeSidebar();
@@ -1215,7 +1554,10 @@ const App = {
 
     try {
       await this.ensurePageScripts(page);
-      if (navGen !== this._navGen) return;
+      if (navGen !== this._navGen) {
+        content.dataset.loading = '0';
+        return;
+      }
       const pageModule = this.bindPageModule(page) || this.pages[page];
       if (!pageModule?.render) {
         host.innerHTML = '<p class="error-msg">This page failed to load. Restart Shop POS.</p>';
@@ -1230,12 +1572,19 @@ const App = {
         AdminPage.refreshAdminNav(host);
       }
     } catch (err) {
-      if (navGen !== this._navGen) return;
+      if (navGen !== this._navGen) {
+        content.dataset.loading = '0';
+        return;
+      }
       host.innerHTML = `<p class="error-msg">${Utils.escHtml(err?.message || 'Page failed to load')}</p>`;
     }
-    if (navGen !== this._navGen) return;
+    if (navGen !== this._navGen) {
+      content.dataset.loading = '0';
+      return;
+    }
     content.dataset.loading = '0';
     this.schedulePrefetch(page);
+    this._saveNavState();
   },
 
   /** Warm likely next-page reads without flooding the network. */
@@ -1306,6 +1655,7 @@ const App = {
     SoundService?.stopAlert();
     Utils.forceHideModal();
     this.clearPageHosts();
+    this._clearNavState();
     this.user = null;
     document.getElementById('login-username').value = '';
     document.getElementById('login-password').value = '';
@@ -1499,6 +1849,10 @@ const App = {
   },
 
   async checkNotificationSounds(fromCache) {
+    if (this.isPosKiosk()) {
+      SoundService?.stopAlert();
+      return;
+    }
     if (!this.user || !['owner', 'manager'].includes(this.user.role)) {
       SoundService?.stopAlert();
       return;
@@ -1521,6 +1875,7 @@ const App = {
   },
 
   async pollNotifications(force = false) {
+    if (this.isPosKiosk()) return;
     if (!this.user) return;
     try {
       const buckets = await this.fetchNotificationBuckets(force);
@@ -1552,7 +1907,17 @@ const App = {
   },
 
   async runBackgroundSync() {
-    // Hub sync / online ordering removed. Local tills stay local; cloud only when RPC_URL is set.
+    if (!this.user) return;
+    try {
+      if (window.ShopPosCloudBridge?.pullOnlineOrders) {
+        await window.ShopPosCloudBridge.pullOnlineOrders(this.user);
+      } else if (API.syncNow) {
+        await API.syncNow();
+      }
+      if (window.ShopPosCloudBridge?.heartbeat) {
+        await window.ShopPosCloudBridge.heartbeat(this.user);
+      }
+    } catch (_) { /* offline or sync paused */ }
   },
 
   startNotificationRefresh() {
@@ -1659,8 +2024,8 @@ const App = {
   },
 
   navigateToBookkeepingTab(tabId) {
-    if (window.BookkeepingPage) BookkeepingPage.tab = tabId;
-    this.navigate('bookkeeping');
+    const sectionMap = { donations: 'other-income', income: 'other-income', expenses: 'expenses', ledger: 'general-ledger' };
+    this.openAccounting({ fromApp: true, skipLogin: true, section: sectionMap[tabId] || 'dashboard' });
   },
 
   navigateToStaffTab(tabId) {
@@ -2147,6 +2512,7 @@ const App = {
   },
 
   async loadNotifications() {
+    if (this.isPosKiosk()) return;
     await this.pollNotifications(false);
   },
 
@@ -2169,6 +2535,7 @@ const App = {
   },
 
   async showNotifications(filter) {
+    if (this.isPosKiosk()) return;
     if (filter) this._notifFilter = filter;
     if (!this._notifFilter) this._notifFilter = 'today';
     Utils.showModal('Notifications', '<p class="muted">Loading…</p>', '<button class="btn btn-ghost" id="notif-close">Close</button>');

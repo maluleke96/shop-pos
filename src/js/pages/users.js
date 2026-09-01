@@ -87,7 +87,7 @@ const UsersPage = {
       try { perms = JSON.parse(user.permissions); } catch { perms = {}; }
     }
     const showPerms = !user || ['assistant_manager', 'manager', 'cashier', 'supervisor'].includes(user.role);
-    const canGrantRecipe = app.user?.role === 'owner' || app.user?.role === 'manager';
+    const canGrantRecipe = app.user?.role === 'owner';
     const editingOwner = user?.role === 'owner';
     let recipeAccess = null;
     if (canGrantRecipe && user?.id && !editingOwner) {

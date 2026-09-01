@@ -8,6 +8,72 @@ let db = null;
 let dbPath = null;
 let SQL = null;
 let usingPg = false;
+let lastKnownMtimeMs = 0;
+
+function sleepSync(ms) {
+  const n = Math.max(1, Number(ms) || 1);
+  try {
+    const sab = new SharedArrayBuffer(4);
+    Atomics.wait(new Int32Array(sab), 0, 0, n);
+  } catch (_) {
+    const end = Date.now() + n;
+    while (Date.now() < end) { /* spin */ }
+  }
+}
+
+function withDbFileLock(fn) {
+  if (!dbPath) return fn();
+  const lockPath = `${dbPath}.lock`;
+  const started = Date.now();
+  while (true) {
+    try {
+      const fd = fs.openSync(lockPath, 'wx');
+      try {
+        return fn();
+      } finally {
+        try { fs.closeSync(fd); } catch (_) { /* ignore */ }
+        try { fs.unlinkSync(lockPath); } catch (_) { /* ignore */ }
+      }
+    } catch (err) {
+      if (Date.now() - started > 8000) {
+        try { fs.unlinkSync(lockPath); } catch (_) { /* stale */ }
+        continue;
+      }
+      sleepSync(40);
+    }
+  }
+}
+
+function legacyAppDataCandidates(app) {
+  const appData = app.getPath('appData');
+  const names = [
+    'Shop POS Admin',
+    'Shop POS',
+    'shop-pos',
+    'Recipe & Production',
+    'Marketing Agent',
+    'Staff Portal',
+    'com.shoppos.admin',
+    'com.shoppos.pos',
+    'com.shoppos.offline'
+  ];
+  return names.map((n) => path.join(appData, n, 'data', 'shop-pos.db'));
+}
+
+function migrateLegacyDbIfNeeded(sharedPath, app) {
+  if (fs.existsSync(sharedPath)) return;
+  const candidates = legacyAppDataCandidates(app)
+    .filter((p) => p !== sharedPath && fs.existsSync(p))
+    .map((p) => ({ p, size: fs.statSync(p).size }))
+    .sort((a, b) => b.size - a.size);
+  if (!candidates.length) return;
+  try {
+    fs.copyFileSync(candidates[0].p, sharedPath);
+    console.log(`[DB] Migrated local database into shared store from ${candidates[0].p}`);
+  } catch (err) {
+    console.warn('[DB] Could not migrate legacy database:', err.message || err);
+  }
+}
 
 function getDbPath() {
   // Cloud / headless server mode (no Electron)
@@ -25,9 +91,24 @@ function getDbPath() {
     return path.join(fallback, 'shop-pos.db');
   }
   const isPortable = process.env.PORTABLE_EXECUTABLE_DIR;
-  const baseDir = isPortable
-    ? path.join(process.env.PORTABLE_EXECUTABLE_DIR, 'data')
-    : path.join(app.getPath('userData'), 'data');
+  if (isPortable) {
+    const baseDir = path.join(process.env.PORTABLE_EXECUTABLE_DIR, 'data');
+    if (!fs.existsSync(baseDir)) fs.mkdirSync(baseDir, { recursive: true });
+    return path.join(baseDir, 'shop-pos.db');
+  }
+
+  // Local Admin / POS / Recipe share one SQLite file so sales and stock stay in sync.
+  const useShared = process.env.SHOP_POS_LOCAL_INSTALLER === '1'
+    || process.env.SHOP_POS_SHARED_DATA === '1';
+  if (useShared) {
+    const baseDir = path.join(app.getPath('appData'), 'ShopPOS', 'Shared');
+    if (!fs.existsSync(baseDir)) fs.mkdirSync(baseDir, { recursive: true });
+    const sharedPath = path.join(baseDir, 'shop-pos.db');
+    migrateLegacyDbIfNeeded(sharedPath, app);
+    return sharedPath;
+  }
+
+  const baseDir = path.join(app.getPath('userData'), 'data');
   if (!fs.existsSync(baseDir)) fs.mkdirSync(baseDir, { recursive: true });
   return path.join(baseDir, 'shop-pos.db');
 }
@@ -36,8 +117,39 @@ let inTransaction = false;
 
 function persist() {
   if (!rawDb || !dbPath) return;
-  const data = rawDb.export();
-  fs.writeFileSync(dbPath, Buffer.from(data));
+  withDbFileLock(() => {
+    const data = rawDb.export();
+    fs.writeFileSync(dbPath, Buffer.from(data));
+    try { lastKnownMtimeMs = fs.statSync(dbPath).mtimeMs; } catch (_) { /* ignore */ }
+  });
+}
+
+let lastReloadCheckAt = 0;
+
+/** Reload in-memory sql.js DB when another ShopPOS app wrote the shared file. */
+function maybeReloadFromDisk(force = false) {
+  if (usingPg || !rawDb || !dbPath || !fs.existsSync(dbPath)) return false;
+  const now = Date.now();
+  if (!force && now - lastReloadCheckAt < 1200) return false;
+  lastReloadCheckAt = now;
+  let mtime = 0;
+  try { mtime = fs.statSync(dbPath).mtimeMs; } catch (_) { return false; }
+  if (!mtime || mtime <= lastKnownMtimeMs) return false;
+  return withDbFileLock(() => {
+    try {
+      mtime = fs.statSync(dbPath).mtimeMs;
+      if (!mtime || mtime <= lastKnownMtimeMs) return false;
+      const next = new SQL.Database(fs.readFileSync(dbPath));
+      try { rawDb.close(); } catch (_) { /* ignore */ }
+      rawDb = next;
+      db = wrapDatabase(rawDb);
+      lastKnownMtimeMs = mtime;
+      return true;
+    } catch (err) {
+      console.warn('[DB] Reload from disk failed:', err.message || err);
+      return false;
+    }
+  });
 }
 
 class Statement {
@@ -51,8 +163,18 @@ class Statement {
       const sanitized = params.map(p => (p === undefined ? null : p));
       this.database.run(this.sql, sanitized);
       if (!inTransaction) persist();
-      const result = rawDb.exec('SELECT last_insert_rowid() AS id');
-      const lastInsertRowid = result.length ? result[0].values[0][0] : 0;
+      let lastInsertRowid = 0;
+      try {
+        const stmt = rawDb.prepare('SELECT last_insert_rowid() AS id');
+        if (stmt.step()) {
+          const obj = stmt.getAsObject();
+          lastInsertRowid = Number(obj.id) || 0;
+        }
+        stmt.free();
+      } catch (_) {
+        const result = rawDb.exec('SELECT last_insert_rowid() AS id');
+        lastInsertRowid = result.length ? Number(result[0].values[0][0]) || 0 : 0;
+      }
       return { lastInsertRowid, changes: rawDb.getRowsModified() };
     } catch (err) {
       throw new Error(err.message || 'Database error');
@@ -117,8 +239,12 @@ function wrapDatabase(database) {
   };
 }
 
-function isBenignMigrationError(message) {
+function isBenignMigrationError(message, sql) {
   const msg = String(message || '').toLowerCase();
+  const stmt = String(sql || '').trim().toLowerCase();
+  if (msg.includes('no such table')) {
+    if (stmt.startsWith('alter table') || stmt.startsWith('create index')) return true;
+  }
   return msg.includes('duplicate column')
     || msg.includes('already exists')
     || msg.includes('unique constraint')
@@ -166,7 +292,7 @@ function runMigrationFile(versionLabel, filePath, { failHard = false } = {}) {
     try {
       rawDb.run(sql);
     } catch (err) {
-      if (isBenignMigrationError(err.message)) return;
+      if (isBenignMigrationError(err.message, sql)) return;
       console.error(`[Migration ${versionLabel}] Statement failed:`, err.message);
       console.error('[Migration SQL]', sql.slice(0, 300));
       if (failHard) throw new Error(`Migration ${versionLabel} failed: ${err.message}`);
@@ -207,11 +333,20 @@ async function initDatabase() {
     process.env.SHOP_POS_CLOUD = '1';
     db = await pgDb.initPgDatabase();
     try {
-      const { ensurePgSchema } = require('./ensure-pg-schema');
+      const { ensurePgSchema, ensureAccSchema } = require('./ensure-pg-schema');
       ensurePgSchema(db);
     } catch (err) {
       console.error('[DB] ensurePgSchema failed:', err.message || err);
       throw err;
+    }
+    try {
+      const { ensurePgMigrations } = require('./ensure-pg-migrations');
+      const { ensureAccSchema } = require('./ensure-pg-schema');
+      const mig = ensurePgMigrations(db);
+      const acc = ensureAccSchema(db);
+      console.log('[DB] Accounting bootstrap:', JSON.stringify({ migrations: mig, accounting: acc }));
+    } catch (err) {
+      console.error('[DB] Accounting schema bootstrap failed (non-fatal):', err.message || err);
     }
     console.log('[DB] Using Postgres via SHOP_POS_DATABASE_URL / DATABASE_URL');
     return db;
@@ -223,8 +358,10 @@ async function initDatabase() {
 
   if (dbFileExisted) {
     rawDb = new SQL.Database(fs.readFileSync(dbPath));
+    try { lastKnownMtimeMs = fs.statSync(dbPath).mtimeMs; } catch (_) { lastKnownMtimeMs = Date.now(); }
   } else {
     rawDb = new SQL.Database();
+    lastKnownMtimeMs = 0;
   }
 
   db = wrapDatabase(rawDb);
@@ -281,6 +418,7 @@ async function initDatabase() {
 
 function getDb() {
   if (!db) throw new Error('Database not initialized. Call initDatabase() first.');
+  try { maybeReloadFromDisk(); } catch (_) { /* keep current */ }
   return db;
 }
 
@@ -318,4 +456,16 @@ function persistNow() {
   persist();
 }
 
-module.exports = { initDatabase, getDb, closeDatabase, getDbPathForBackup, getDbPath, resetDatabaseFile, validateDatabaseFile, validateDatabaseBytes, persistNow, isPgMode: () => usingPg || pgDb.isPgMode() };
+module.exports = {
+  initDatabase,
+  getDb,
+  closeDatabase,
+  getDbPathForBackup,
+  getDbPath,
+  resetDatabaseFile,
+  validateDatabaseFile,
+  validateDatabaseBytes,
+  persistNow,
+  maybeReloadFromDisk,
+  isPgMode: () => usingPg || pgDb.isPgMode()
+};

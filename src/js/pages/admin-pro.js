@@ -10,7 +10,9 @@
     { id: 'developer', label: '🔧 Developer Mode' }
   ];
 
-  AdminPage.sections.push(...extraSections);
+  if (!AdminPage.sections.some((s) => extraSections.some((e) => e.id === s.id))) {
+    AdminPage.sections.push(...extraSections);
+  }
 
   const origRenderSection = AdminPage.renderSection.bind(AdminPage);
   AdminPage.renderSection = async function (el) {

@@ -989,6 +989,78 @@ function getSmartPromotionSuggestions(filters = {}, actor) {
   };
 }
 
+const AI_PALETTES = [
+  { keys: ['black friday', 'bf', 'cyber'], template: 'black_friday', bg: '#111827', headline: 'BLACK FRIDAY MEGA DEALS', type: 'high_profit', discount: 25 },
+  { keys: ['weekend', 'saturday', 'sunday'], template: 'weekend', bg: '#2563eb', headline: 'WEEKEND SPECIALS', type: 'best_sellers', discount: 15 },
+  { keys: ['combo', 'bundle', 'meal'], template: 'combo_products', bg: '#0f766e', headline: 'COMBO DEALS', type: 'combos', discount: 12, layout: 'combo_right', productShape: 'circle' },
+  { keys: ['clearance', 'must go', 'end of line'], template: 'clearance', bg: '#f59e0b', headline: 'CLEARANCE — MUST GO', type: 'slow_movers', discount: 30 },
+  { keys: ['new', 'arrival', 'launch'], template: 'new_products', bg: '#0ea5e9', headline: 'NEW ARRIVALS', type: 'new', discount: 8 },
+  { keys: ['christmas', 'xmas', 'festive'], template: 'christmas', bg: '#dc2626', headline: 'CHRISTMAS SPECIALS', type: 'best_sellers', discount: 15 },
+  { keys: ['easter'], template: 'easter', bg: '#84cc16', headline: 'EASTER SPECIALS', type: 'best_sellers', discount: 12 },
+  { keys: ['restaurant', 'menu', 'food', 'chisanyama'], template: 'restaurant', bg: '#b45309', headline: 'RESTAURANT SPECIALS', type: 'best_sellers', discount: 10 },
+  { keys: ['premium', 'luxury', 'vip'], template: 'monthly', bg: '#7c3aed', headline: 'PREMIUM SELECTION', type: 'high_profit', discount: 8 },
+  { keys: ['stock', 'low', 'last'], template: 'clearance', bg: '#ea580c', headline: 'WHILE STOCKS LAST', type: 'low_stock', discount: 20 }
+];
+
+function detectAiFlyerPlan(prompt = '', goal = '') {
+  const text = `${prompt} ${goal}`.toLowerCase();
+  for (const plan of AI_PALETTES) {
+    if (plan.keys.some((k) => text.includes(k))) return { ...plan };
+  }
+  if (text.includes('profit') || text.includes('margin')) {
+    return { template: 'monthly', bg: '#7c3aed', headline: 'TOP PROFIT PICKS', type: 'high_profit', discount: 10 };
+  }
+  return { template: 'classic_grid', bg: '#15803d', headline: 'SPECIAL OFFERS', type: 'best_sellers', discount: 12 };
+}
+
+function generateAiFlyer(filters = {}, actor) {
+  requireRole(actor);
+  const prompt = String(filters.prompt || filters.brief || '').trim();
+  const goal = String(filters.goal || filters.campaign_goal || '').trim();
+  const limit = Math.min(Number(filters.limit) || 8, 12);
+  const plan = detectAiFlyerPlan(prompt, goal);
+  const suggestions = getSmartPromotionSuggestions({ type: plan.type || 'best_sellers', limit }, actor);
+  const db = getDb();
+  let shopName = 'Our Store';
+  try {
+    shopName = db.prepare('SELECT shop_name FROM shop_settings WHERE id=1').get()?.shop_name || shopName;
+  } catch (_) { /* ignore */ }
+  const headline = (prompt && prompt.length > 4 && prompt.length < 60) ? prompt.toUpperCase() : (plan.headline || 'SPECIAL OFFERS');
+  const discount = Number(filters.discount) || plan.discount || 12;
+  const products = (suggestions.products || []).map((p) => {
+    const price = Number(p.selling_price || p.normal_price) || 0;
+    const special = calcPromoPrice({ selling_price: price }, { promo_type: 'percent', discount_percent: discount });
+    return {
+      ...p,
+      promo_type: 'percent',
+      promo_percent: discount,
+      discount_percent: discount,
+      special_price: special,
+      original_price: price
+    };
+  });
+  return {
+    promotion_name: prompt ? prompt.slice(0, 80) : 'AI Generated Promotion',
+    title: headline,
+    headline,
+    campaign_goal: goal || plan.type || 'all',
+    flyer_size: filters.flyer_size || 'a4_portrait',
+    suggested_discount_percent: discount,
+    ai_summary: `AI selected ${products.length} products, applied ${discount}% promo pricing, and chose the ${plan.template || 'classic'} layout.`,
+    canvas: {
+      templateId: plan.template,
+      background: plan.bg,
+      headline,
+      layout: plan.layout || 'grid',
+      productShape: plan.productShape || 'square',
+      layoutCols: plan.layout === 'combo_right' ? 1 : 3,
+      itemSize: products.length <= 4 ? 'large' : 'medium'
+    },
+    products,
+    branding: { accent: plan.bg, shop_name: shopName }
+  };
+}
+
 function buildWaUrl(phone, message) {
   const digits = String(phone || '').replace(/\D/g, '');
   if (!digits) throw new Error('Phone number required');
@@ -1063,7 +1135,7 @@ module.exports = {
   applyFlyerPricesToPos, restoreFlyerPrices, syncFlyerStatuses,
   getTemplates, saveFlyerTemplate, buildFlyerPdf, calcPromoPrice, ensureBuiltinTemplates,
   submitFlyerForApproval, approveFlyer, rejectFlyer, getFlyerAnalytics,
-  getSmartPromotionSuggestions, bulkUpdateFlyerPrices, recordFlyerEvent, isScheduledToday,
+  getSmartPromotionSuggestions, generateAiFlyer, bulkUpdateFlyerPrices, recordFlyerEvent, isScheduledToday,
   getBrandKit, saveBrandKit, countLiveCampaigns, validateCampaignDates,
   goLiveFlyer, endCampaign, getActiveCampaigns, getCampaignDashboard,
   shareFlyerCampaign, campaignDisplayStatus, buildWaUrl, applyFlyerPromoOverlay

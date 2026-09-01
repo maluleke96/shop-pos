@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Driver Registration</title>
+  <link rel="stylesheet" href="css/driver.css">
+</head>
+<body>
+  <div class="drv-wrap">
+    <div class="drv-card">
+      <h1>Become a Driver</h1>
+      <p class="muted">Register to deliver orders. Admin will review your application.</p>
+      <form id="reg-form">
+        <label>Full name<input name="full_name" required></label>
+        <label>Phone<input name="phone" type="tel" required></label>
+        <label>Email<input name="email" type="email"></label>
+        <label>ID number<input name="id_number"></label>
+        <label>Address<textarea name="address" rows="2"></textarea></label>
+        <label>Vehicle info<input name="vehicle_info" placeholder="Car / bike, registration"></label>
+        <label>Password<input name="password" type="password" required minlength="6"></label>
+        <button type="submit" class="drv-btn">Submit application</button>
+      </form>
+      <p id="reg-msg" class="muted"></p>
+      <p><a href="./">Already approved? Sign in</a></p>
+    </div>
+  </div>
+  <script src="js/config.js"></script>
+  <script src="js/api.js"></script>
+  <script>
+    document.getElementById('reg-form').onsubmit = async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const data = Object.fromEntries(fd.entries());
+      const msg = document.getElementById('reg-msg');
+      try {
+        await DriverAPI.register(data);
+        msg.textContent = 'Application submitted. You will be notified when approved.';
+        e.target.reset();
+      } catch (err) {
+        msg.textContent = err.message || 'Registration failed';
+      }
+    };
+  </script>
+</body>
+</html>

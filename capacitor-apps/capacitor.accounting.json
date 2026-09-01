@@ -1,0 +1,8 @@
+{
+  "appId": "com.shoppos.accounting",
+  "appName": "Business Accounting",
+  "webDir": "www",
+  "android": {
+    "allowMixedContent": true
+  }
+}

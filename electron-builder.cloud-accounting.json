@@ -1,0 +1,46 @@
+{
+  "appId": "com.shoppos.accounting",
+  "productName": "Business Accounting",
+  "directories": {
+    "output": "dist\\cloud-apps\\accounting",
+    "buildResources": "build"
+  },
+  "files": [
+    "electron/**/*",
+    "src/**/*",
+    "mobile/**/*",
+    "lib/**/*",
+    "package.json"
+  ],
+  "extraMetadata": {
+    "main": "electron/cloud-shell-config-accounting.js",
+    "name": "com.shoppos.accounting"
+  },
+  "win": {
+    "target": [
+      {
+        "target": "nsis",
+        "arch": [
+          "x64"
+        ]
+      },
+      {
+        "target": "portable",
+        "arch": [
+          "x64"
+        ]
+      }
+    ]
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "artifactName": "ShopPOS-Accounting-Setup.${ext}",
+    "shortcutName": "Business Accounting"
+  },
+  "portable": {
+    "artifactName": "ShopPOS-Accounting-Portable.${ext}"
+  }
+}

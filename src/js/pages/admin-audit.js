@@ -15,8 +15,10 @@
     { id: 'discount-report', label: '💸 Discount Report' }
   ];
 
-  // Put audit sections first
-  AdminPage.sections = auditSections.concat(AdminPage.sections.filter(s => s.id !== 'overview'));
+  // Put audit sections first (idempotent on extender reload)
+  if (!AdminPage.sections.some((s) => s.id === 'salesmgmt')) {
+    AdminPage.sections = auditSections.concat(AdminPage.sections.filter(s => s.id !== 'overview'));
+  }
 
   const origRenderSection = AdminPage.renderSection.bind(AdminPage);
   AdminPage.renderSection = async function (el) {
@@ -274,6 +276,7 @@
 
   AdminPage.showSaleDetail = async function (saleId) {
     const res = await API.getSale(saleId);
+    if (!res.success) return Utils.toast(res.error || 'Could not load sale', 'error');
     const s = res.data;
     if (!s) return Utils.toast('Sale not found', 'error');
     const currency = this.settings.currency || 'R';

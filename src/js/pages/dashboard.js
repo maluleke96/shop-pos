@@ -70,7 +70,12 @@ const DashboardPage = {
 
     const statsEl = (el || document).querySelector?.('#dash-stats') || document.getElementById('dash-stats');
     if (!res.success) {
-      if (statsEl && !statsEl.querySelector('.value')) {
+      const contentEl = el?.querySelector?.('#dash-content') || document.getElementById('dash-content');
+      if (contentEl && (!statsEl || statsEl.querySelector('.label')?.textContent === 'Loading…' || !statsEl.querySelector('.value'))) {
+        contentEl.innerHTML = `<p style="color:var(--danger)">${Utils.escHtml(res.error || 'Failed to load dashboard stats')}</p>
+          <button type="button" class="btn btn-primary" id="dash-stats-retry">Retry</button>`;
+        document.getElementById('dash-stats-retry')?.addEventListener('click', () => this.load(el, from, to));
+      } else if (statsEl && !statsEl.querySelector('.value')) {
         statsEl.outerHTML = `<p style="color:var(--danger)">${Utils.escHtml(res.error || 'Failed to load dashboard stats')}</p>`;
       } else {
         window.DataCache?.showStaleBanner?.(this._host || el, 'Unable to refresh. Showing last updated data.');

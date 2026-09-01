@@ -49,6 +49,20 @@ const apps = [
     appId: 'com.shoppos.recipe',
     artifact: 'ShopPOS-Recipe',
     folder: 'Recipe-Production'
+  },
+  {
+    mode: 'hr',
+    name: 'HR, Payroll & Documents',
+    appId: 'com.shoppos.hr',
+    artifact: 'ShopPOS-HR',
+    folder: 'HR'
+  },
+  {
+    mode: 'accounting',
+    name: 'Business Accounting',
+    appId: 'com.shoppos.accounting',
+    artifact: 'ShopPOS-Accounting',
+    folder: 'Accounting'
   }
 ];
 
@@ -161,6 +175,10 @@ Folders:
   Staff-Portal\\       — Employee ID + PIN login only
   Marketing-Agent\\    — Marketing login only
   Recipe-Production\\  — Recipe & production login only
+  HR\\                 — HR, payroll & documents login only
+  Accounting\\         — Business accounting login only
+  Online-Ordering\\    — Customer ordering app (opens your /order/ site)
+  Manager\\             — Business Manager monitoring app
 
 In each folder:
   *-Setup.exe     — Full installer (recommended)

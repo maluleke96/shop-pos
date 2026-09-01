@@ -2,8 +2,15 @@ const BookkeepingPage = {
   tab: 'dashboard',
   from: null,
   to: null,
+  branches: [],
   categories: { expense: [], income: [] },
   unlocked: false,
+
+  branchFilterId() {
+    if (this.app?.user?.role !== 'owner') return this.app.user?.branch_id || null;
+    const v = document.getElementById('bk-branch-filter')?.value;
+    return v && v !== 'all' ? v : null;
+  },
 
   async render(el, app) {
     this.app = app;
@@ -24,6 +31,21 @@ const BookkeepingPage = {
       return;
     }
 
+    try {
+      const brRes = await API.getBranches();
+      this.branches = brRes.data || [];
+    } catch (_) {
+      this.branches = [];
+    }
+    const branchFilter = this.app.user?.role === 'owner' && this.branches.length
+      ? `<select id="bk-branch-filter" style="margin-left:8px;padding:6px 10px;border-radius:8px;border:1.5px solid var(--border)">
+          <option value="all">All branches</option>
+          ${this.branches.map((b) => `<option value="${b.id}">${Utils.escHtml(b.name)}</option>`).join('')}
+        </select>`
+      : (this.app.user?.branch_id
+        ? `<span class="muted" style="margin-left:8px">Branch: <strong>${Utils.escHtml(this.branches.find((b) => b.id === this.app.user.branch_id)?.name || 'Your branch')}</strong></span>`
+        : '');
+
     const tabs = [
       ['dashboard', 'Dashboard'], ['ledger', 'Auto Ledger'], ['income', 'Income'], ['expenses', 'Expenses'],
       ['cashbook', 'Cash Book'], ['bankbook', 'Bank Book'], ['payroll', 'Payroll'], ['tax', 'Tax'],
@@ -32,6 +54,7 @@ const BookkeepingPage = {
     ];
 
     el.innerHTML = `<div class="page-toolbar"><h3>Bookkeeping & Financial Management</h3>
+      ${branchFilter}
       <button class="btn btn-sm btn-primary" id="bk-sync">Sync Ledger</button></div>
       ${Utils.extendedDateFilterHTML('bk-date-filter', this.from, this.to)}
       <div class="form-tabs" id="bk-tabs" style="flex-wrap:wrap;margin:12px 0">${tabs.map(([id, label]) =>
@@ -54,6 +77,7 @@ const BookkeepingPage = {
       Utils.toast('Ledger synced from sales, expenses, payroll & more', 'success');
       this.renderTab();
     });
+    document.getElementById('bk-branch-filter')?.addEventListener('change', () => this.renderTab());
     await this.renderTab();
   },
 
@@ -142,14 +166,17 @@ const BookkeepingPage = {
   },
 
   async renderDashboard(el) {
-    const res = await API.getFinancialDashboard(this.from, this.to);
+    const branchId = this.branchFilterId();
+    const res = await API.getFinancialDashboard(this.from, this.to, branchId);
     if (!res.success) {
       el.innerHTML = `<p style="color:var(--danger)">${res.error || 'Failed to load dashboard'}</p>`;
       return;
     }
     const d = res.data || {};
     const c = this.currency();
-    el.innerHTML = `<div class="stats-grid" style="grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px">
+    const branchNote = d.branch_label && d.branch_label !== 'All branches'
+      ? `<p class="muted" style="margin-bottom:12px">Showing: <strong>${Utils.escHtml(d.branch_label)}</strong></p>` : '';
+    el.innerHTML = `${branchNote}<div class="stats-grid" style="grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px">
       ${this.statCard('Total Revenue', Utils.formatMoney(d.revenue, c))}
       ${this.statCard('Total Income', Utils.formatMoney(d.totalIncome, c))}
       ${this.statCard('Total Expenses', Utils.formatMoney(d.totalExpenses, c))}
@@ -246,7 +273,12 @@ const BookkeepingPage = {
   },
 
   async renderExpenses(el) {
-    const res = await API.getExpenses({ from: this.from, to: this.to });
+    const res = await API.getExpenses({
+      from: this.from,
+      to: this.to,
+      actor: this.app.user,
+      branch_id: this.branchFilterId()
+    });
     const rows = res.data || [];
     const c = this.currency();
     const cats = this.categories.expense || Utils.expenseCategories;

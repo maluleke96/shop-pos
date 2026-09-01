@@ -1,4 +1,24 @@
 const { getDb } = require('../database/db');
+const branchesSvc = require('./branches');
+
+function branchLabelForId(branchId) {
+  if (branchId == null || branchId === '') {
+    try {
+      const tillId = getDb().prepare('SELECT branch_id FROM shop_settings WHERE id = 1').get()?.branch_id || 1;
+      return branchLabelForId(tillId);
+    } catch (_) {
+      return 'MAIN';
+    }
+  }
+  const b = getDb().prepare('SELECT code, name FROM branches WHERE id = ?').get(Number(branchId));
+  return (b?.code || b?.name || String(branchId)).toUpperCase();
+}
+
+function ledgerBranchClause(branchId, alias = '') {
+  if (branchId == null || branchId === '' || branchId === 'all') return { sql: '', params: [] };
+  const col = alias ? `${alias}.branch` : 'branch';
+  return { sql: ` AND ${col} = ?`, params: [branchLabelForId(branchId)] };
+}
 
 const EXPENSE_CATEGORIES = [
   'Stock Purchases', 'Rent', 'Electricity', 'Water', 'Fuel', 'Transport', 'Salaries',
@@ -72,6 +92,11 @@ function upsertLedger(entry) {
 }
 
 function syncLedger(from, to) {
+  // Legacy bookkeeping ledger is disabled — acc_* journals are the single source of truth.
+  return { synced: 0, skipped: true, message: 'Legacy bookkeeping sync disabled. Use Accounting Command Centre.' };
+}
+
+function _syncLedgerLegacy(from, to) {
   const db = getDb();
   const range = [from, to];
 
@@ -81,7 +106,7 @@ function syncLedger(from, to) {
 
   run('sales', () => {
     db.prepare(`
-      SELECT sp.*, s.receipt_number, s.created_at, u.full_name as cashier_name FROM sale_payments sp
+      SELECT sp.*, s.receipt_number, s.created_at, s.branch_id, u.full_name as cashier_name FROM sale_payments sp
       JOIN sales s ON s.id=sp.sale_id
       LEFT JOIN users u ON u.id=s.user_id
       WHERE s.status IN ('completed','partial_return') AND date(s.created_at, 'localtime') BETWEEN date(?) AND date(?)`).all(...range).forEach(sp => {
@@ -90,21 +115,23 @@ function syncLedger(from, to) {
         category: 'Sales Income', subcategory: sp.payment_type,
         description: `Sale ${sp.receipt_number} (${sp.payment_type})`, amount: sp.amount, direction: 'in',
         payment_method: sp.payment_type, account_type: accountTypeForPayment(sp.payment_type),
-        reference_type: 'sale_payment', reference_id: sp.id, is_auto: 1, created_by_name: sp.cashier_name
+        reference_type: 'sale_payment', reference_id: sp.id, is_auto: 1, created_by_name: sp.cashier_name,
+        branch: branchLabelForId(sp.branch_id)
       });
     });
   });
 
   run('returns', () => {
     db.prepare(`
-      SELECT r.*, s.receipt_number FROM returns r LEFT JOIN sales s ON s.id=r.sale_id
+      SELECT r.*, s.receipt_number, s.branch_id FROM returns r LEFT JOIN sales s ON s.id=r.sale_id
       WHERE date(r.created_at) BETWEEN date(?) AND date(?)`).all(...range).forEach(r => {
       upsertLedger({
         txn_number: `RET-${r.id}`, txn_date: (r.created_at || '').slice(0, 10), txn_type: 'return',
         category: 'Refunds & Returns', description: `Return ${r.return_number || r.id} — ${r.reason || ''}`,
         amount: r.total_refund || 0, direction: 'out',
         payment_method: r.refund_method || 'cash', account_type: accountTypeForPayment(r.refund_method),
-        reference_type: 'return', reference_id: r.id, customer_id: r.customer_id, is_auto: 1
+        reference_type: 'return', reference_id: r.id, customer_id: r.customer_id, is_auto: 1,
+        branch: branchLabelForId(s.branch_id)
       });
     });
   });
@@ -115,7 +142,8 @@ function syncLedger(from, to) {
         txn_number: `EXP-${e.id}`, txn_date: e.expense_date, txn_type: 'expense',
         category: e.category || 'Other Expenses', description: e.description || e.category,
         amount: e.amount, direction: 'out', payment_method: 'cash', account_type: 'cash',
-        reference_type: 'expense', reference_id: e.id, is_auto: 1
+        reference_type: 'expense', reference_id: e.id, is_auto: 1,
+        branch: branchLabelForId(e.branch_id)
       });
     });
   });
@@ -151,37 +179,7 @@ function syncLedger(from, to) {
     db.prepare(`
       SELECT p.*, e.full_name FROM employee_payroll p JOIN employees e ON e.id=p.employee_id
       WHERE p.status='paid' AND date(COALESCE(p.paid_at, p.period_end)) BETWEEN date(?) AND date(?)`).all(...range).forEach(p => {
-      upsertLedger({
-        txn_number: `PAY-${p.id}`, txn_date: (p.paid_at || p.period_end || '').slice(0, 10),
-        txn_type: 'payroll', category: 'Salaries', subcategory: 'Net Salary',
-        description: `Payroll ${eName(p)} ${p.period_start}–${p.period_end}`, amount: p.net_salary, direction: 'out',
-        payment_method: p.payment_method || 'cash', account_type: accountTypeForPayment(p.payment_method),
-        reference_type: 'employee_payroll', reference_id: p.id, employee_id: p.employee_id, is_auto: 1
-      });
-      if (p.uif_employee) upsertLedger({
-        txn_number: `UIF-E-${p.id}`, txn_date: (p.paid_at || p.period_end || '').slice(0, 10),
-        txn_type: 'payroll', category: 'UIF', subcategory: 'UIF-Employee',
-        description: `UIF employee — ${eName(p)}`, amount: p.uif_employee, direction: 'out',
-        reference_type: 'employee_payroll', reference_id: p.id, employee_id: p.employee_id, is_auto: 1
-      });
-      if (p.paye) upsertLedger({
-        txn_number: `PAYE-${p.id}`, txn_date: (p.paid_at || p.period_end || '').slice(0, 10),
-        txn_type: 'payroll', category: 'PAYE', subcategory: 'PAYE',
-        description: `PAYE — ${eName(p)}`, amount: p.paye, direction: 'out',
-        reference_type: 'employee_payroll', reference_id: p.id, employee_id: p.employee_id, is_auto: 1
-      });
-      if (p.sdl) upsertLedger({
-        txn_number: `SDL-${p.id}`, txn_date: (p.paid_at || p.period_end || '').slice(0, 10),
-        txn_type: 'payroll', category: 'SDL', subcategory: 'SDL',
-        description: `SDL — ${eName(p)}`, amount: p.sdl, direction: 'out',
-        reference_type: 'employee_payroll', reference_id: p.id, employee_id: p.employee_id, is_auto: 1
-      });
-      if (p.coida) upsertLedger({
-        txn_number: `COIDA-${p.id}`, txn_date: (p.paid_at || p.period_end || '').slice(0, 10),
-        txn_type: 'payroll', category: 'COIDA', subcategory: 'COIDA',
-        description: `COIDA — ${eName(p)}`, amount: p.coida, direction: 'out',
-        reference_type: 'employee_payroll', reference_id: p.id, employee_id: p.employee_id, is_auto: 1
-      });
+      syncPayrollRow(p);
     });
   });
 
@@ -248,28 +246,87 @@ function syncLedger(from, to) {
 
 function eName(p) { return p.full_name || p.employee_id; }
 
+function syncPayrollRow(p) {
+  if (!p || p.status !== 'paid') return;
+  const txnDate = (p.paid_at || p.period_end || '').slice(0, 10);
+  upsertLedger({
+    txn_number: `PAY-${p.id}`, txn_date: txnDate,
+    txn_type: 'payroll', category: 'Salaries', subcategory: 'Net Salary',
+    description: `Payroll ${eName(p)} ${p.period_start}–${p.period_end}`, amount: p.net_salary, direction: 'out',
+    payment_method: p.payment_method || 'cash', account_type: accountTypeForPayment(p.payment_method),
+    reference_type: 'employee_payroll', reference_id: p.id, employee_id: p.employee_id, is_auto: 1
+  });
+  if (p.uif_employee) upsertLedger({
+    txn_number: `UIF-E-${p.id}`, txn_date: txnDate,
+    txn_type: 'payroll', category: 'UIF', subcategory: 'UIF-Employee',
+    description: `UIF employee — ${eName(p)}`, amount: p.uif_employee, direction: 'out',
+    reference_type: 'employee_payroll', reference_id: p.id, employee_id: p.employee_id, is_auto: 1
+  });
+  if (p.paye) upsertLedger({
+    txn_number: `PAYE-${p.id}`, txn_date: txnDate,
+    txn_type: 'payroll', category: 'PAYE', subcategory: 'PAYE',
+    description: `PAYE — ${eName(p)}`, amount: p.paye, direction: 'out',
+    reference_type: 'employee_payroll', reference_id: p.id, employee_id: p.employee_id, is_auto: 1
+  });
+  if (p.sdl) upsertLedger({
+    txn_number: `SDL-${p.id}`, txn_date: txnDate,
+    txn_type: 'payroll', category: 'SDL', subcategory: 'SDL',
+    description: `SDL — ${eName(p)}`, amount: p.sdl, direction: 'out',
+    reference_type: 'employee_payroll', reference_id: p.id, employee_id: p.employee_id, is_auto: 1
+  });
+  if (p.coida) upsertLedger({
+    txn_number: `COIDA-${p.id}`, txn_date: txnDate,
+    txn_type: 'payroll', category: 'COIDA', subcategory: 'COIDA',
+    description: `COIDA — ${eName(p)}`, amount: p.coida, direction: 'out',
+    reference_type: 'employee_payroll', reference_id: p.id, employee_id: p.employee_id, is_auto: 1
+  });
+}
+
+function syncPayrollEntry(payrollId, actor) {
+  const p = getDb().prepare(`
+    SELECT p.*, e.full_name FROM employee_payroll p JOIN employees e ON e.id=p.employee_id WHERE p.id=?`).get(payrollId);
+  if (!p) throw new Error('Payroll record not found');
+  if (p.status !== 'paid') throw new Error('Payroll must be marked as paid before syncing to accounting');
+  syncPayrollRow(p);
+  logFinancialAudit('employee_payroll', payrollId, 'sync', 'payroll', null, JSON.stringify({ net: p.net_salary }), actor);
+  return { synced: true, payroll_id: payrollId };
+}
+
 function sumLedger(sql, params) {
   return Number(getDb().prepare(sql).get(...params)?.v || 0);
 }
 
-function getFinancialDashboard(from, to) {
+function getFinancialDashboard(from, to, branchId = null) {
   syncLedger(from, to);
   const db = getDb();
   const settings = getBookkeepingSettings();
+  const branchSql = ledgerBranchClause(branchId, 'l');
 
-  const totalIncome = sumLedger(`SELECT COALESCE(SUM(amount),0) as v FROM ledger_entries WHERE direction='in' AND txn_date BETWEEN ? AND ?`, [from, to]);
-  const totalExpenses = sumLedger(`SELECT COALESCE(SUM(amount),0) as v FROM ledger_entries WHERE direction='out' AND txn_date BETWEEN ? AND ?`, [from, to]);
-  const revenue = db.prepare(`SELECT COALESCE(SUM(total),0) as v FROM sales WHERE status='completed' AND date(created_at) BETWEEN date(?) AND date(?)`).get(from, to)?.v || 0;
-  const cogs = db.prepare(`
+  const totalIncome = sumLedger(`SELECT COALESCE(SUM(amount),0) as v FROM ledger_entries l WHERE direction='in' AND txn_date BETWEEN ? AND ?${branchSql.sql}`, [from, to, ...branchSql.params]);
+  const totalExpenses = sumLedger(`SELECT COALESCE(SUM(amount),0) as v FROM ledger_entries l WHERE direction='out' AND txn_date BETWEEN ? AND ?${branchSql.sql}`, [from, to, ...branchSql.params]);
+  let revenueSql = `SELECT COALESCE(SUM(total),0) as v FROM sales WHERE status='completed' AND date(created_at) BETWEEN date(?) AND date(?)`;
+  const revenueParams = [from, to];
+  if (branchId != null && branchId !== '' && branchId !== 'all') {
+    revenueSql += ' AND branch_id = ?';
+    revenueParams.push(Number(branchId));
+  }
+  const revenue = db.prepare(revenueSql).get(...revenueParams)?.v || 0;
+  let cogsSql = `
     SELECT COALESCE(SUM(si.quantity * si.buying_price),0) as v FROM sale_items si
-    JOIN sales s ON si.sale_id=s.id WHERE s.status='completed' AND date(s.created_at) BETWEEN date(?) AND date(?)`).get(from, to)?.v || 0;
+    JOIN sales s ON si.sale_id=s.id WHERE s.status='completed' AND date(s.created_at) BETWEEN date(?) AND date(?)`;
+  const cogsParams = [from, to];
+  if (branchId != null && branchId !== '' && branchId !== 'all') {
+    cogsSql += ' AND s.branch_id = ?';
+    cogsParams.push(Number(branchId));
+  }
+  const cogs = db.prepare(cogsSql).get(...cogsParams)?.v || 0;
   const grossProfit = revenue - cogs;
   const netProfit = grossProfit - totalExpenses;
 
-  const cashIn = sumLedger(`SELECT COALESCE(SUM(amount),0) as v FROM ledger_entries WHERE direction='in' AND account_type='cash' AND txn_date<=?`, [to]);
-  const cashOut = sumLedger(`SELECT COALESCE(SUM(amount),0) as v FROM ledger_entries WHERE direction='out' AND account_type='cash' AND txn_date<=?`, [to]);
-  const bankIn = sumLedger(`SELECT COALESCE(SUM(amount),0) as v FROM ledger_entries WHERE direction='in' AND account_type='bank' AND txn_date<=?`, [to]);
-  const bankOut = sumLedger(`SELECT COALESCE(SUM(amount),0) as v FROM ledger_entries WHERE direction='out' AND account_type='bank' AND txn_date<=?`, [to]);
+  const cashIn = sumLedger(`SELECT COALESCE(SUM(amount),0) as v FROM ledger_entries l WHERE direction='in' AND account_type='cash' AND txn_date<=?${branchSql.sql}`, [to, ...branchSql.params]);
+  const cashOut = sumLedger(`SELECT COALESCE(SUM(amount),0) as v FROM ledger_entries l WHERE direction='out' AND account_type='cash' AND txn_date<=?${branchSql.sql}`, [to, ...branchSql.params]);
+  const bankIn = sumLedger(`SELECT COALESCE(SUM(amount),0) as v FROM ledger_entries l WHERE direction='in' AND account_type='bank' AND txn_date<=?${branchSql.sql}`, [to, ...branchSql.params]);
+  const bankOut = sumLedger(`SELECT COALESCE(SUM(amount),0) as v FROM ledger_entries l WHERE direction='out' AND account_type='bank' AND txn_date<=?${branchSql.sql}`, [to, ...branchSql.params]);
 
   const cashBalance = (settings.cash_opening_balance || 0) + cashIn - cashOut;
   const bankBalance = (settings.bank_opening_balance || 0) + bankIn - bankOut;
@@ -287,7 +344,9 @@ function getFinancialDashboard(from, to) {
     cashBalance, bankBalance, accountsReceivable, accountsPayable, outstandingPayments,
     payrollPending, ownerOutstanding, inventoryValue,
     grossMargin: revenue > 0 ? (grossProfit / revenue * 100) : 0,
-    netMargin: revenue > 0 ? (netProfit / revenue * 100) : 0
+    netMargin: revenue > 0 ? (netProfit / revenue * 100) : 0,
+    branch_id: branchId != null && branchId !== '' && branchId !== 'all' ? Number(branchId) : null,
+    branch_label: branchId != null && branchId !== '' && branchId !== 'all' ? branchLabelForId(branchId) : 'All branches'
   };
 }
 
@@ -771,7 +830,7 @@ function buildFinancialReportPdf(type, from, to, shopName, currency) {
 module.exports = {
   EXPENSE_CATEGORIES, INCOME_TYPES,
   getBookkeepingSettings, saveBookkeepingSettings,
-  syncLedger, getFinancialDashboard, searchLedger,
+  syncLedger, syncPayrollEntry, getFinancialDashboard, searchLedger,
   getIncomeEntries, saveIncomeEntry, deleteIncomeEntry,
   getBankTransactions, saveBankTransaction,
   getCashBook, getBankBook, getPayrollAccounting, getTaxSummary,

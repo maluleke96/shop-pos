@@ -20,6 +20,9 @@
         <p class="login-sub" id="welcome-sub">Sign in if you already have an account, or set up your shop to get started.</p>
         <p id="welcome-status" class="muted welcome-status hidden"></p>
         <button type="button" class="btn btn-primary btn-lg btn-block" id="welcome-signin">Sign In</button>
+        <button type="button" class="btn btn-ghost btn-lg btn-block" id="welcome-accounting" style="margin-top:10px">Business Accounting</button>
+        <button type="button" class="btn btn-ghost btn-lg btn-block" id="welcome-hr" style="margin-top:10px">HR, Payroll &amp; Documents</button>
+        <button type="button" class="btn btn-ghost btn-lg btn-block" id="welcome-staff" style="margin-top:10px">Staff Portal</button>
         <button type="button" class="btn btn-ghost btn-lg btn-block" id="welcome-setup" style="margin-top:10px">Set Up My Shop</button>
         <p class="muted" style="margin-top:18px;font-size:12px">Cloud till on Railway · your data stays in your shop database</p>
       </div>
@@ -49,6 +52,10 @@
           </div>
           <p id="login-error" class="error-msg hidden"></p>
           <button type="submit" class="btn btn-primary btn-lg btn-block">Sign In</button>
+          <button type="button" class="btn btn-ghost btn-block" id="login-register-agent" style="margin-top:10px">Register as Referral Agent</button>
+          <button type="button" class="btn btn-ghost btn-block" id="login-open-accounting" style="margin-top:10px">Open Business Accounting</button>
+          <button type="button" class="btn btn-ghost btn-block" id="login-open-hr" style="margin-top:10px">HR, Payroll &amp; Documents</button>
+          <button type="button" class="btn btn-ghost btn-block" id="login-open-staff" style="margin-top:10px">Staff Portal</button>
           <button type="button" class="btn btn-ghost btn-sm btn-block" id="login-back-welcome" style="margin-top:10px">← Back</button>
           <p style="text-align:center;margin-top:14px"><button type="button" class="btn btn-ghost btn-sm" id="login-forgot">Forgot username or password?</button></p>
         </form>
@@ -68,6 +75,16 @@
     <!-- Standalone Marketing Agent System -->
     <div id="screen-marketing-agent" class="screen hidden">
       <div id="marketing-agent-root" style="min-height:100vh;background:var(--bg)"></div>
+    </div>
+
+    <!-- Standalone Business Accounting Command Centre -->
+    <div id="screen-accounting" class="screen hidden">
+      <div id="accounting-root" style="height:100vh;overflow:hidden;background:var(--bg)"></div>
+    </div>
+
+    <!-- HR, Payroll & Documents workspace -->
+    <div id="screen-hr" class="screen hidden">
+      <div id="hr-root" style="height:100vh;overflow:hidden;background:var(--bg)"></div>
     </div>
 
     <!-- Setup Wizard -->

@@ -150,6 +150,13 @@ function rewriteSqliteSql(sql) {
         /date\s*\(\s*([^,()]+?)\s*,\s*'([+-]?\d+)\s+days?'\s*\)/gi,
         (_, expr, n) => `((${expr})::date + INTERVAL '${Number(n)} days')`
       )
+      // date('now', 'start of year') / fiscal year helpers
+      .replace(/date\s*\(\s*'now'\s*,\s*'start of year'\s*\)/gi, "date_trunc('year', CURRENT_DATE)::date")
+      .replace(
+        /date\s*\(\s*'now'\s*,\s*'start of year'\s*,\s*'\+1 year'\s*,\s*'-1 day'\s*\)/gi,
+        "(date_trunc('year', CURRENT_DATE) + INTERVAL '1 year' - INTERVAL '1 day')::date"
+      )
+      .replace(/date\s*\(\s*'now'\s*,\s*'start of month'\s*\)/gi, "date_trunc('month', CURRENT_DATE)::date")
       // datetime('now', …) / datetime('now')
       .replace(/datetime\s*\(\s*'now'\s*(?:,\s*'[^']*')?\s*\)/gi, 'NOW()')
       // date('now')

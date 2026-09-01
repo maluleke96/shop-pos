@@ -1,0 +1,43 @@
+{
+  "appId": "com.shoppos.order",
+  "productName": "Online Ordering",
+  "directories": {
+    "output": "dist\\cloud-apps\\order",
+    "buildResources": "build"
+  },
+  "files": [
+    "electron/order-shell.js",
+    "package.json"
+  ],
+  "extraMetadata": {
+    "main": "electron/order-shell.js",
+    "name": "com.shoppos.order"
+  },
+  "win": {
+    "target": [
+      {
+        "target": "nsis",
+        "arch": [
+          "x64"
+        ]
+      },
+      {
+        "target": "portable",
+        "arch": [
+          "x64"
+        ]
+      }
+    ]
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "artifactName": "ShopPOS-OnlineOrdering-Setup.${ext}",
+    "shortcutName": "Online Ordering"
+  },
+  "portable": {
+    "artifactName": "ShopPOS-OnlineOrdering-Portable.${ext}"
+  }
+}

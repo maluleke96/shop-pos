@@ -1,0 +1,8 @@
+{
+  "appId": "com.shoppos.hr",
+  "appName": "HR, Payroll & Documents",
+  "webDir": "www",
+  "android": {
+    "allowMixedContent": true
+  }
+}

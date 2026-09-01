@@ -1,0 +1,12 @@
+{
+  "appId": "com.shoppos.manager",
+  "appName": "Business Manager",
+  "webDir": "www",
+  "server": {
+    "url": "https://peaceful-motivation-production-7dd2.up.railway.app/manager/",
+    "cleartext": false
+  },
+  "android": {
+    "allowMixedContent": false
+  }
+}

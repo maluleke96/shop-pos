@@ -89,6 +89,11 @@ const OrderApp = {
         this.branch = branches.find((b) => String(b.id) === savedBranch) || null;
       }
       this.view = this.branch ? (this.token ? 'home' : 'welcome') : 'branches';
+      const savedView = localStorage.getItem('order_view');
+      const safeViews = ['home', 'menu', 'welcome', 'account', 'orders'];
+      if (this.branch && savedView && safeViews.includes(savedView)) {
+        this.view = savedView;
+      }
       this.render();
       if (this.branch) this.loadMenu();
     } catch (err) {
@@ -367,6 +372,7 @@ const OrderApp = {
   },
 
   async render() {
+    try { localStorage.setItem('order_view', this.view); } catch (_) { /* ignore */ }
     const app = document.getElementById('app');
     if (this.view === 'branches') {
       const branches = await OrderAPI.getBranches();

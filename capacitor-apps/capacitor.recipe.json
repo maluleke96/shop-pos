@@ -1,0 +1,8 @@
+{
+  "appId": "com.shoppos.recipe",
+  "appName": "Recipe Production",
+  "webDir": "www",
+  "android": {
+    "allowMixedContent": true
+  }
+}

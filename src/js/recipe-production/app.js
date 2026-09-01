@@ -25,6 +25,43 @@ const RecipeProductionApp = {
   _ingredients: [],
   _editingRecipe: null,
   _open: false,
+  branchId: null,
+  branches: [],
+
+  branchFilter() {
+    if (this.branchId == null || this.branchId === '' || this.branchId === 'all') return {};
+    return { branch_id: Number(this.branchId) };
+  },
+
+  async bindBranchSelect(root) {
+    const sel = root?.querySelector?.('#rp-branch-select') || document.getElementById('rp-branch-select');
+    if (!sel) return;
+    try {
+      const r = await API.getBranches?.();
+      this.branches = r?.success ? (r.data || []) : [];
+    } catch (_) {
+      this.branches = [];
+    }
+    const isOwner = this.user?.role === 'owner' || this.user?.recipe_role === 'administrator';
+    const forced = this.user?.branch_id != null ? Number(this.user.branch_id) : null;
+    if (!isOwner && forced) {
+      this.branchId = forced;
+      sel.innerHTML = (this.branches.filter((b) => Number(b.id) === forced).map((b) =>
+        `<option value="${b.id}">${Utils.escHtml(b.name)}</option>`).join(''))
+        || `<option value="${forced}">Branch ${forced}</option>`;
+      sel.value = String(forced);
+      sel.disabled = true;
+      return;
+    }
+    sel.innerHTML = `<option value="all">All branches</option>`
+      + this.branches.map((b) => `<option value="${b.id}">${Utils.escHtml(b.name)}</option>`).join('');
+    if (this.branchId != null) sel.value = String(this.branchId);
+    else sel.value = 'all';
+    sel.onchange = () => {
+      this.branchId = sel.value === 'all' ? null : Number(sel.value);
+      this.renderPage();
+    };
+  },
 
   isOpen() {
     return !!this._open;
@@ -309,6 +346,12 @@ const RecipeProductionApp = {
         <div class="rp-topbar">
           <button type="button" class="btn-icon rp-menu-toggle" id="rp-menu-toggle" aria-label="Open menu">☰</button>
           <h2 id="rp-page-title">Dashboard</h2>
+          <div class="rp-branch-bar" style="display:flex;align-items:center;gap:8px;margin-left:auto;margin-right:12px">
+            <label class="muted" style="font-size:12px;white-space:nowrap">Branch</label>
+            <select id="rp-branch-select" style="min-width:140px;padding:6px 8px;border-radius:8px;border:1px solid var(--border);font-size:13px">
+              <option value="all">All branches</option>
+            </select>
+          </div>
           <div class="rp-user-chip">
             <span>${this.user.full_name || this.user.username}</span>
             <button type="button" class="btn btn-ghost btn-sm" id="rp-logout">Logout</button>
@@ -330,6 +373,7 @@ const RecipeProductionApp = {
       else openRpMenu();
     });
     document.getElementById('rp-sidebar-backdrop')?.addEventListener('click', closeRpMenu);
+    this.bindBranchSelect(root);
     root.querySelectorAll('.rp-nav-btn[data-page]').forEach(b => b.addEventListener('click', () => {
       if (this.page && this.page !== b.dataset.page) {
         this.pageHistory.push(this.page);
@@ -928,7 +972,7 @@ const RecipeProductionApp = {
     const filters = { search: filter || undefined };
     if (this._mealRecipeFilter === 'with') filters.with_recipe = true;
     if (this._mealRecipeFilter === 'without') filters.with_recipe = false;
-    const res = await API.recipeMealProducts(filters, this.user);
+    const res = await API.recipeMealProducts({ ...filters, ...this.branchFilter() }, this.user);
     if (!res.success) throw new Error(res.error || 'Failed to load products');
     const products = res.data || [];
 
@@ -1439,7 +1483,7 @@ const RecipeProductionApp = {
       const sel = document.getElementById('rr-copy-meal');
       if (!sel) return;
       try {
-        const mealsRes = await API.recipeMealProducts({ with_recipe: true }, this.user);
+        const mealsRes = await API.recipeMealProducts({ with_recipe: true, ...this.branchFilter() }, this.user);
         const meals = (mealsRes.success ? mealsRes.data : []) || [];
         sel.innerHTML = `<option value="">Choose a meal with a recipe…</option>` +
           meals.filter(m => Number(m.id) !== Number(productId))
@@ -1627,6 +1671,7 @@ const RecipeProductionApp = {
       // Always persist per 1 meal — if scale preview > 1, divide amounts back
       const scaleN = Math.max(1, parseInt(document.getElementById('rr-scale')?.value, 10) || 1);
       const payload = {
+        ...this.branchFilter(),
         product_id: productId,
         production_mode: document.getElementById('rr-prod-mode')?.value || 'make_to_order',
         target_profit_pct: parseFloat(document.getElementById('rr-target-profit')?.value) || 40,
@@ -2180,8 +2225,8 @@ const RecipeProductionApp = {
   /* ── Approvals ─────────────────────────────────────────────────────────── */
   async pageApprovals(el) {
     const [pendingRes, prodRes] = await Promise.all([
-      API.recipeList({ status: 'pending' }, this.user),
-      API.recipeProductionMeals ? API.recipeProductionMeals(this.user) : Promise.resolve({ data: {} })
+      API.recipeList({ status: 'pending', ...this.branchFilter() }, this.user),
+      API.recipeProductionMeals ? API.recipeProductionMeals(this.user, this.branchFilter()) : Promise.resolve({ data: {} })
     ]);
     const list = pendingRes.data || [];
     const meals = (prodRes.data?.meals || []).filter(m => m.profile_status === 'pending' || m.profile_status === 'draft');
@@ -2269,8 +2314,8 @@ const RecipeProductionApp = {
   /* ── Production ────────────────────────────────────────────────────────── */
   async pageProduction(el) {
     const [prodRes, batchesRes] = await Promise.all([
-      API.recipeProductionMeals ? API.recipeProductionMeals(this.user) : Promise.resolve({ data: {} }),
-      API.recipeBatches({}, this.user)
+      API.recipeProductionMeals ? API.recipeProductionMeals(this.user, this.branchFilter()) : Promise.resolve({ data: {} }),
+      API.recipeBatches({ ...this.branchFilter() }, this.user)
     ]);
     const approved = prodRes.data?.approved_profiles || [];
     const meals = prodRes.data?.meals || [];
@@ -2463,7 +2508,7 @@ const RecipeProductionApp = {
     }
     const [list, mealsRes] = await Promise.all([
       API.recipeWasteList({}, this.user),
-      API.recipeProductionMeals ? API.recipeProductionMeals(this.user) : Promise.resolve({ data: {} })
+      API.recipeProductionMeals ? API.recipeProductionMeals(this.user, this.branchFilter()) : Promise.resolve({ data: {} })
     ]);
     const rows = list.data || [];
     const mealOpts = (mealsRes.data?.meals || mealsRes.data?.approved_profiles || []).map(m => ({
@@ -3009,7 +3054,7 @@ const RecipeProductionApp = {
       const ing = await API.recipeIngredients({}, this.user);
       this._ingredients = ing.data || [];
     }
-    const recipes = (await API.recipeList({ status: 'approved' }, this.user)).data || [];
+    const recipes = (await API.recipeList({ status: 'approved', ...this.branchFilter() }, this.user)).data || [];
     const productsWithRecipe = this._ingredients.filter(p => p.has_recipe || p.production_mode);
     el.innerHTML = `
       ${can ? `<div class="rp-panel"><h3>New Promotion</h3>
@@ -3200,9 +3245,9 @@ const RecipeProductionApp = {
       const ing = await API.recipeIngredients({}, this.user);
       this._ingredients = ing.data || [];
     }
-    const mealsRes = await API.recipeMealProducts({}, this.user);
+    const mealsRes = await API.recipeMealProducts({ ...this.branchFilter() }, this.user);
     const meals = mealsRes.data || [];
-    const recipes = (await API.recipeList({ status: 'approved' }, this.user)).data || [];
+    const recipes = (await API.recipeList({ status: 'approved', ...this.branchFilter() }, this.user)).data || [];
     const best = (await API.recipeBestSellers('month', this.user)).data || [];
     const [subsRes, forecastRes, catsRes] = await Promise.all([
       API.recipeListSubs({ status: 'pending' }, this.user),

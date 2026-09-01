@@ -33,6 +33,10 @@
     });
     const content = document.getElementById('payroll-content');
     const res = await API.getPayrollSettings();
+    if (!res.success) {
+      content.innerHTML = `<p class="error-msg">${Utils.escHtml(res.error || 'Could not load payroll settings')}</p>`;
+      return;
+    }
     this.payrollSettings = res.data || {};
     const renderers = {
       settings: () => this.renderPayrollCompanySettings(content),

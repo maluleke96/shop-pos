@@ -1,0 +1,56 @@
+{
+  "all_pass": true,
+  "phase": 4,
+  "at": "2026-08-30T16:35:09.108Z",
+  "summary": {
+    "pass": 8,
+    "fail": 0,
+    "total": 8
+  },
+  "results": [
+    {
+      "test": "accounting_menu_qa",
+      "pass": true,
+      "passed": 49,
+      "total": 49,
+      "fails": []
+    },
+    {
+      "test": "ocr_text_extract",
+      "pass": true,
+      "invoice_number": "Invoice",
+      "confidence": 95,
+      "tesseract": {
+        "installed": false,
+        "path": null
+      }
+    },
+    {
+      "test": "ocr_document_flow",
+      "pass": true,
+      "doc_id": 3
+    },
+    {
+      "test": "cloud_bookkeeping_gate",
+      "pass": true
+    },
+    {
+      "test": "auditor_write_blocked",
+      "pass": true
+    },
+    {
+      "test": "manager_bookkeeping_default",
+      "pass": true
+    },
+    {
+      "test": "sync_reflush",
+      "pass": true,
+      "requeued": 1,
+      "payload_updated": true
+    },
+    {
+      "test": "online_payment_methods",
+      "pass": true
+    }
+  ]
+}

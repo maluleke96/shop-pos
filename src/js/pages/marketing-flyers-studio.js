@@ -54,6 +54,11 @@
       slots: { logo: { x: 3, y: 2, w: 16, h: 9 }, hero: null,
         grid: { x: 8, y: 26, w: 84, h: 62, cols: 2, rows: 2 },
         headline: { x: 22, y: 12, w: 56, h: 10 } } },
+    { id: 'combo_products', name: 'Combo Products', headline: 'COMBO SPECIALS', bg: '#0f766e',
+      layout: 'combo_right', productShape: 'circle',
+      slots: { logo: { x: 4, y: 3, w: 18, h: 10 }, hero: null,
+        grid: { x: 42, y: 22, w: 54, h: 68, cols: 1, rows: 6 },
+        headline: { x: 4, y: 18, w: 36, h: 14 } } },
     { id: 'restaurant', name: 'Restaurant', headline: 'RESTAURANT SPECIALS', bg: '#b45309',
       slots: { logo: { x: 35, y: 2, w: 30, h: 10 }, hero: { x: 0, y: 0, w: 100, h: 24 },
         grid: { x: 8, y: 38, w: 84, h: 52, cols: 2, rows: 2 },
@@ -105,6 +110,7 @@
     { id: 'weekend_hero', label: 'Weekend Specials', preview: 'linear-gradient(135deg,#2563eb,#1d4ed8)' },
     { id: 'classic_grid', label: 'Single Product', preview: 'linear-gradient(135deg,#15803d,#84cc16)', maxProducts: 1 },
     { id: 'combo', label: 'Combo Deals', preview: 'linear-gradient(135deg,#ea580c,#f97316)' },
+    { id: 'combo_products', label: 'Combo Products (Right)', preview: 'linear-gradient(135deg,#0f766e,#14b8a6)' },
     { id: 'clearance', label: 'Clearance Grid', preview: 'linear-gradient(135deg,#f59e0b,#eab308)' },
     { id: 'banner_sale', label: 'Banner Sale', preview: 'linear-gradient(180deg,#dc2626,#111827)' },
     { id: 'black_friday_bold', label: 'Black Friday', preview: 'linear-gradient(135deg,#0f172a,#dc2626)' },
@@ -378,6 +384,57 @@
     d.canvas.elements = page.elements;
   };
 
+  P.applyAiFlyerResult = function (d, ai, refresh) {
+    if (!ai) return;
+    d.products = ai.products || [];
+    d.promotion_name = ai.promotion_name || d.promotion_name || 'AI Generated Promotion';
+    d.title = ai.title || ai.headline || d.title || 'AI Promotion';
+    d.campaign_goal = ai.campaign_goal || d.campaign_goal;
+    if (ai.flyer_size) d.flyer_size = ai.flyer_size;
+    d.canvas = Object.assign({}, d.canvas || {}, ai.canvas || {});
+    d.canvas.headline = ai.headline || d.canvas.headline || 'SPECIAL OFFERS';
+    if (ai.branding) d.branding = Object.assign({}, d.branding || {}, ai.branding);
+    if (ai.canvas?.templateId && typeof this.applyStudioTemplate === 'function') {
+      this.applyStudioTemplate(d, ai.canvas.templateId, refresh);
+    } else if (typeof this.generateFlyerLayout === 'function') {
+      this.generateFlyerLayout(d, refresh);
+    } else {
+      refresh?.();
+    }
+  };
+
+  P.showAiFlyerModal = function (d, onDone) {
+    const self = this;
+    Utils.showModal('AI Flyer Generator', `
+      <p class="muted">Describe your promotion — AI picks products, discount, colours and a professional layout.</p>
+      <div class="field"><label>What should this flyer promote?</label>
+        <textarea id="ai-flyer-prompt" rows="3" placeholder="e.g. Weekend family braai combo special with drinks"></textarea></div>
+      <div class="form-grid">
+        <div class="field"><label>Campaign goal</label><select id="ai-flyer-goal">
+          <option value="">Auto detect from brief</option>
+          <option value="weekend">Weekend special</option>
+          <option value="combo deals">Combo / bundle</option>
+          <option value="clearance sale">Clearance</option>
+          <option value="new arrivals">New products</option>
+          <option value="black friday">Black Friday</option>
+          <option value="restaurant menu">Restaurant / food</option>
+        </select></div>
+        <div class="field"><label>Discount %</label><input type="number" id="ai-flyer-discount" min="5" max="50" value="15"></div>
+      </div>`,
+      '<button type="button" class="btn btn-primary" id="ai-flyer-run">Generate with AI</button>');
+    document.getElementById('ai-flyer-run')?.addEventListener('click', async () => {
+      const prompt = document.getElementById('ai-flyer-prompt')?.value?.trim() || '';
+      const goal = document.getElementById('ai-flyer-goal')?.value?.trim() || '';
+      const discount = parseInt(document.getElementById('ai-flyer-discount')?.value, 10) || 15;
+      if (typeof Utils.closeModal === 'function') Utils.closeModal();
+      Utils.toast('AI is building your flyer…', 'info');
+      const r = await API.generateAiFlyer({ prompt, goal, discount, limit: 8 }, self.app.user);
+      if (!r?.success) return Utils.toast(r?.error || 'AI generation failed', 'error');
+      self.applyAiFlyerResult(d, r.data, onDone);
+      Utils.toast(r.data?.ai_summary || 'AI flyer ready — review and save', 'success');
+    });
+  };
+
   // ─── Studio extends base campaign page (list UI lives in marketing-flyers.js) ─
 
   P.showCreateFromPromotion = async function (el) {
@@ -572,17 +629,12 @@
       Utils.toast('Smart promotion loaded', 'success');
       this.renderStep2(el);
     });
-    document.getElementById('fly-ai-create').addEventListener('click', async () => {
-      const r = await API.getSmartPromotionSuggestions({ type: this._prodFilter === 'all' ? 'high_profit' : this._prodFilter, limit: 8 }, this.app.user);
-      if (!r.success) return Utils.toast(r.error, 'error');
-      d.products = r.data.products || [];
-      d.canvas.headline = r.data.headline || 'SPECIAL OFFERS';
-      d.promotion_name = 'AI Generated Promotion';
-      this.autoLayoutProducts(d.products, Math.min(8, d.products.length));
-      this.step = 2;
-      const content = document.getElementById('fly-step-content');
-      if (content) this.renderStep4(content);
-      else Utils.toast('AI layout ready — go to Design step', 'success');
+    document.getElementById('fly-ai-create').addEventListener('click', () => {
+      this.showAiFlyerModal(d, () => {
+        this.step = 2;
+        const content = document.getElementById('fly-step-content');
+        if (content) this.renderStep4(content);
+      });
     });
 
     el.querySelectorAll('.fly-prod-chk').forEach(chk => chk.addEventListener('change', () => {
@@ -774,6 +826,8 @@
     d.canvas.headline = tpl.headline;
     d.canvas.background = tpl.bg;
     d.canvas.layoutMode = d.canvas.layoutMode || 'auto';
+    d.canvas.layout = tpl.layout || 'grid';
+    d.canvas.productShape = tpl.productShape || 'rect';
     const preview = TEMPLATE_PREVIEWS.find(p => p.id === tplId);
     if (preview?.maxProducts === 1) d.canvas.layoutCols = 1;
     if (tpl.slots?.grid) {
@@ -785,7 +839,7 @@
     page.elements = page.elements.filter(e => !e.slotId && !['headline', 'product-img', 'price-tag', 'product'].includes(e.type));
     d.canvas.elements = page.elements;
     this.ensureTemplateSlots(d);
-    if (d.products?.length) {
+    if (d.products?.length && d.canvas.layout !== 'combo_right') {
       this.layoutProductsInGrid(d, d.products, this.getActiveGridSlot(d),
         d.canvas.layoutCols, d.canvas.layoutRows, d.canvas.itemSize || 'medium', true);
     }
@@ -1018,12 +1072,32 @@
     return 4;
   };
 
-  P.renderRetailProductCell = function (item, currency) {
+  P.renderRetailProductCell = function (item, currency, opts = {}) {
     const isCombo = item.kind === 'combo';
+    const shape = opts.productShape || item.image_shape || 'rect';
+    const circleClass = shape === 'circle' ? ' retail-prod-img-circle' : '';
     const src = item.picture_path || item.image_path || '';
     const imgHtml = src
-      ? `<img data-image-path="${src}" class="retail-prod-img" alt="">`
-      : `<div class="retail-prod-img retail-prod-img-empty">${isCombo ? '🎁' : '📦'}</div>`;
+      ? `<img data-image-path="${src}" class="retail-prod-img${circleClass}" alt="">`
+      : `<div class="retail-prod-img retail-prod-img-empty${circleClass}">${isCombo ? '🎁' : '📦'}</div>`;
+    if (opts.layout === 'combo_right' || isCombo && opts.forceComboRow) {
+      const normal = Number(item.normal_price ?? item.selling_price ?? item.price) || 0;
+      const special = isCombo
+        ? (Number(item.price || item.selling_price || item.special_price) || normal)
+        : this.calcPromoPrice(normal, item);
+      const savePct = normal > 0 && special < normal ? Math.round(((normal - special) / normal) * 100) : 0;
+      return `<div class="retail-combo-row">
+        <div class="retail-combo-row-img">${imgHtml}</div>
+        <div class="retail-combo-row-body">
+          <div class="retail-combo-row-name">${String(item.name || item.product_name || '').slice(0, 36)}</div>
+          <div class="retail-combo-row-prices">
+            <span class="retail-now">${currency}${special.toFixed(2)}</span>
+            ${normal > special ? `<span class="retail-was">${currency}${normal.toFixed(2)}</span>` : ''}
+            ${savePct > 0 ? `<span class="retail-off-badge">${savePct}% OFF</span>` : ''}
+          </div>
+        </div>
+      </div>`;
+    }
     if (isCombo) {
       const p1 = Number(item.price || item.selling_price) || 0;
       const p2 = Number(item.combo_price_2 || item.price_2 || p1 * 1.85) || p1 * 2;
@@ -1039,8 +1113,9 @@
     const normal = Number(item.normal_price ?? item.selling_price) || 0;
     const special = this.calcPromoPrice(normal, item);
     const save = Math.max(0, normal - special);
+    const savePct = normal > 0 && save > 0 ? Math.round((save / normal) * 100) : 0;
     return `<div class="retail-product-cell">
-      ${save > 0 ? `<div class="retail-save-badge">SAVE ${currency}${save.toFixed(0)}</div>` : ''}
+      ${savePct > 0 ? `<div class="retail-save-badge">${savePct}% OFF</div>` : (save > 0 ? `<div class="retail-save-badge">SAVE ${currency}${save.toFixed(0)}</div>` : '')}
       ${imgHtml}
       <div class="retail-price-block">
         ${normal > special ? `<span class="retail-was">${currency}${normal.toFixed(2)}</span>` : ''}
@@ -1055,6 +1130,8 @@
     const headline = (d.canvas.headline || d.title || 'SPECIAL OFFERS').toUpperCase();
     const sub = d.promotion_name || '';
     const tpl = this.getStudioTemplate(d.canvas?.templateId);
+    const layout = d.canvas.layout || tpl?.layout || 'grid';
+    const productShape = d.canvas.productShape || tpl?.productShape || 'rect';
     const bgStyle = d.canvas.backgroundImage
       ? `background:url(${d.canvas.backgroundImage}) center/cover`
       : (String(d.canvas.background || '').includes('gradient')
@@ -1072,7 +1149,29 @@
     const startFmt = this.formatFlyerDate(d.start_date);
     const endFmt = this.formatFlyerDate(d.end_date);
     const font = d.canvas.fontFamily || d.branding?.font_style || 'Impact, Arial Black, sans-serif';
-    let html = `<div class="retail-flyer-root" style="width:${cw}px;height:${ch}px;${bgStyle};font-family:${font}">`;
+    const rootClass = layout === 'combo_right' ? 'retail-flyer-root retail-layout-combo-right' : 'retail-flyer-root';
+    let html = `<div class="${rootClass}" style="width:${cw}px;height:${ch}px;${bgStyle};font-family:${font}">`;
+    if (layout === 'combo_right') {
+      html += `<div class="retail-combo-left">
+        ${logoSrc
+          ? `<div class="retail-top-logo">${String(logoSrc).startsWith('data:') ? `<img src="${logoSrc}" alt="">` : `<img data-image-path="${logoSrc}" alt="">`}</div>`
+          : `<div class="retail-top-logo retail-logo-text">${shopName}</div>`}
+        <div class="retail-headline">${headline}</div>
+        ${sub ? `<div class="retail-subhead">${sub.toUpperCase()}</div>` : ''}
+        <div class="retail-combo-left-meta">Valid ${startFmt}<br>until ${endFmt}</div>
+        <div class="retail-shape-toggle-hint">Products · ${productShape === 'circle' ? 'Circle' : 'Square'} images</div>
+      </div>`;
+      html += `<div class="retail-combo-right">`;
+      if (items.length) {
+        items.forEach(item => {
+          html += this.renderRetailProductCell(item, this.currency, { layout: 'combo_right', productShape });
+        });
+      } else {
+        html += `<div class="retail-empty-hint">Add products on the left — they appear here with sale price, original price and % OFF</div>`;
+      }
+      html += `</div></div>`;
+      return html;
+    }
     if (heroSrc || tpl?.slots?.hero) {
       const heroImg = heroSrc
         ? (String(heroSrc).startsWith('data:') ? `<img src="${heroSrc}" class="retail-hero-img" alt="">` : `<img data-image-path="${heroSrc}" class="retail-hero-img" alt="">`)
@@ -1090,7 +1189,7 @@
     </div>`;
     if (items.length) {
       html += `<div class="retail-products-grid" style="grid-template-columns:repeat(${cols},1fr)">`;
-      items.forEach(item => { html += this.renderRetailProductCell(item, this.currency); });
+      items.forEach(item => { html += this.renderRetailProductCell(item, this.currency, { productShape }); });
       html += `</div>`;
     } else {
       html += `<div class="retail-empty-hint">Select products or combos from the left panel</div>`;
@@ -1364,6 +1463,7 @@
             ${Object.entries(this.FLYER_SIZES).filter(([k]) => ['a4_portrait','a4_landscape','a3','a2','poster'].includes(k)).map(([k, v]) =>
               `<option value="${k}" ${d.flyer_size === k ? 'selected' : ''}>${v.label} (${v.w} × ${v.h} mm)</option>`).join('')}
           </select>
+          <button type="button" class="btn btn-ghost" id="flyer-header-ai">🤖 AI Generate</button>
           <button type="button" class="btn btn-ghost" id="flyer-header-my-flyers">My Flyers</button>
           <button type="button" class="btn btn-ghost" id="flyer-header-new">+ New</button>
           <button type="button" class="btn btn-ghost" id="flyer-header-preview">Preview</button>
@@ -1436,6 +1536,7 @@
         <div class="flyer-bottom-panel${phase === 2 ? ' flyer-phase-focus' : ''}${phase === 3 ? ' flyer-hidden-tools' : ''}">
           <h4>Design Tools</h4>
           <div class="flyer-design-tools-row">
+            <button type="button" class="flyer-design-tool-btn" id="studio-ai-assist"><span class="icon">🤖</span>AI Assist</button>
             <button type="button" class="flyer-design-tool-btn studio-add" data-type="text"><span class="icon">T</span>Add Text</button>
             <button type="button" class="flyer-design-tool-btn studio-add" data-type="shape"><span class="icon">⬛</span>Add Shape</button>
             <button type="button" class="flyer-design-tool-btn" id="studio-upload-banner"><span class="icon">📷</span>Add Image</button>
@@ -1468,6 +1569,11 @@
 
         <div class="flyer-bottom-panel">
           <div class="flyer-templates-header"><h4>Saved Templates</h4><a class="flyer-view-all-link" id="flyer-view-templates">View All</a></div>
+          <div class="flyer-shape-bar" id="flyer-shape-toggle">
+            <span class="muted" style="font-size:11px">Product image:</span>
+            <button type="button" class="btn btn-sm ${(d.canvas.productShape || 'rect') === 'circle' ? 'active' : 'btn-ghost'}" data-shape="circle">Circle</button>
+            <button type="button" class="btn btn-sm ${(d.canvas.productShape || 'rect') === 'rect' ? 'active' : 'btn-ghost'}" data-shape="rect">Square</button>
+          </div>
           <div class="flyer-templates-scroll">
             ${TEMPLATE_PREVIEWS.map(t =>
               `<button type="button" class="flyer-template-preview studio-tpl${d.canvas.templateId === t.id ? ' selected' : ''}" data-tpl="${t.id}" style="background:${t.preview}" title="${t.label}">
@@ -1512,10 +1618,23 @@
       this.syncStepFromDom();
       this.generateFlyerLayout(d, refresh);
     });
-    document.getElementById('flyer-header-preview')?.addEventListener('click', () => {
-      this.step = 3;
-      const root = document.getElementById('page-content');
-      if (root) this.renderWizard(root, this.app);
+    document.getElementById('flyer-header-preview')?.addEventListener('click', async () => {
+      this.syncStepFromDom();
+      try {
+        const html = await this.buildExactCanvasPrintHtml(d);
+        await API.printPreview(html, d.title || 'Flyer preview');
+        Utils.toast('Exact preview opened', 'success');
+      } catch {
+        this.step = 3;
+        const root = document.getElementById('page-content');
+        if (root) this.renderWizard(root, this.app);
+      }
+    });
+    document.getElementById('flyer-shape-toggle')?.querySelectorAll('[data-shape]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        d.canvas.productShape = btn.dataset.shape;
+        refresh();
+      });
     });
     document.getElementById('flyer-header-my-flyers')?.addEventListener('click', () => this.showMyFlyersModal(el));
     document.getElementById('flyer-header-new')?.addEventListener('click', () => {
@@ -2096,15 +2215,12 @@
       });
     }
 
-    document.getElementById('studio-ai-assist')?.addEventListener('click', async () => {
-      const r = await API.getSmartPromotionSuggestions({ type: 'high_profit', limit: 8 }, this.app.user);
-      if (!r.success) return Utils.toast(r.error, 'error');
-      if (!d.products.length) d.products = r.data.products || [];
-      d.canvas.headline = r.data.headline || d.canvas.headline || 'SPECIAL OFFERS';
-      d.promotion_name = d.promotion_name || 'AI Generated Promotion';
-      const tpl = STUDIO_TEMPLATES[Math.floor(Math.random() * STUDIO_TEMPLATES.length)];
-      this.applyStudioTemplate(d, tpl.id, refresh);
-      Utils.toast('AI layout applied — review and save', 'success');
+    document.getElementById('flyer-header-ai')?.addEventListener('click', () => {
+      this.showAiFlyerModal(d, refresh);
+    });
+
+    document.getElementById('studio-ai-assist')?.addEventListener('click', () => {
+      this.showAiFlyerModal(d, refresh);
     });
 
     el.querySelectorAll('.studio-align').forEach(btn => btn.addEventListener('click', () => this.alignLayers(d, btn.dataset.align, refresh)));
@@ -2577,24 +2693,76 @@
   };
 
   const origBuildPrintHtml = P.buildPrintHtml.bind(P);
-  const origPrintFlyer = P.printFlyer.bind(P);
+
+  P.getEmbeddedFlyerCss = function () {
+    const sheets = [...document.styleSheets];
+    let css = '';
+    for (const sheet of sheets) {
+      try {
+        const href = sheet.href || '';
+        const text = sheet.ownerNode?.textContent || '';
+        if (href && !/flyer-studio/i.test(href)) continue;
+        if (!href && !/retail-flyer/.test(text)) continue;
+        for (const rule of sheet.cssRules || []) css += `${rule.cssText}\n`;
+      } catch (_) { /* cross-origin */ }
+    }
+    if (!css) {
+      css = `.retail-flyer-root{position:relative;overflow:hidden;display:flex;flex-direction:column;color:#fff}
+.retail-layout-combo-right{display:grid!important;grid-template-columns:38% 1fr;gap:0}
+.retail-combo-left{padding:6% 5%;display:flex;flex-direction:column;gap:12px;justify-content:center}
+.retail-combo-right{padding:4%;display:flex;flex-direction:column;gap:10px;background:rgba(0,0,0,.18)}
+.retail-combo-row{display:grid;grid-template-columns:72px 1fr;gap:12px;align-items:center;background:rgba(255,255,255,.14);border-radius:12px;padding:10px}
+.retail-prod-img-circle{border-radius:50%!important;width:64px!important;height:64px!important;object-fit:cover!important}
+.retail-now{font-weight:900;font-size:1.25em}.retail-was{text-decoration:line-through;opacity:.85;margin-left:6px}
+.retail-off-badge{background:#dc2626;color:#fff;font-weight:800;font-size:11px;padding:2px 8px;border-radius:999px;margin-left:8px}
+.retail-products-grid{display:grid;gap:2%;padding:2% 4%}
+.retail-product-cell{background:rgba(255,255,255,.12);border-radius:8px;padding:6% 4%;text-align:center}
+.retail-footer-bar{margin-top:auto;padding:2% 4%;display:flex;justify-content:space-between;font-size:11px;font-weight:700}
+.retail-headline{font-size:28px;font-weight:900;line-height:1.05}`;
+    }
+    return css;
+  };
+
+  P.buildExactCanvasPrintHtml = async function (d) {
+    const size = this.FLYER_SIZES[d.flyer_size] || this.FLYER_SIZES.a4_portrait;
+    const pxW = size.px ? size.w : Math.round(size.w * 3.78);
+    const pxH = size.px ? size.h : Math.round(size.h * 3.78);
+    const bwFilter = d.canvas.printMode === 'bw' ? 'filter:grayscale(100%);' : '';
+    let body = this.renderFlyerCanvasContent(d, 1, pxW, pxH);
+    const wrap = document.createElement('div');
+    wrap.innerHTML = body;
+    if (Utils.hydrateImages) await Utils.hydrateImages(wrap);
+    wrap.querySelectorAll('img[data-image-path]').forEach((img) => {
+      if (img.src) img.removeAttribute('data-image-path');
+    });
+    body = wrap.innerHTML;
+    const css = this.getEmbeddedFlyerCss();
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${d.title || 'Flyer'}</title>
+      <style>
+        @page{size:${size.w}mm ${size.h}mm;margin:0}
+        html,body{margin:0;padding:0;${bwFilter}}
+        body{width:${pxW}px;height:${pxH}px;overflow:hidden}
+        ${css}
+        .retail-overlay-layers{position:absolute;inset:0}
+        .flyer-studio-layer,.fly-tag{position:absolute}
+      </style></head>
+      <body>${body}</body></html>`;
+  };
 
   P.buildCanvasPrintHtml = function (d, settings) {
     const s = settings || this.app?.settings || {};
     const size = this.FLYER_SIZES[d.flyer_size] || this.FLYER_SIZES.a4_portrait;
     const pxW = size.px ? size.w : Math.round(size.w * 3.78);
     const pxH = size.px ? size.h : Math.round(size.h * 3.78);
-    const cw = pxW;
-    const ch = pxH;
-    const bg = d.canvas.backgroundImage
-      ? `background:url(${d.canvas.backgroundImage}) center/cover`
-      : `background:${d.canvas.background || '#e11d48'}`;
-    const layers = this.renderStudioLayers(d, 1, cw, ch);
+    const useRetail = d.canvas?.useRetailLayout !== false;
+    const content = useRetail && this.renderFlyerCanvasContent
+      ? this.renderFlyerCanvasContent(d, 1, pxW, pxH)
+      : this.renderStudioLayers(d, 1, pxW, pxH);
     const bwFilter = d.canvas.printMode === 'bw' ? 'filter:grayscale(100%);' : '';
+    const css = this.getEmbeddedFlyerCss();
     return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${d.title || 'Flyer'}</title>
-      <style>body{margin:0;font-family:Arial,sans-serif;${bwFilter}} .flyer-print-page{position:relative;width:${pxW}px;height:${pxH}px;${bg};overflow:hidden;margin:0 auto}
-      .flyer-studio-layer,.fly-tag{position:absolute;cursor:default;user-select:none}</style></head>
-      <body><div class="flyer-print-page" id="fly-print-canvas">${layers}
+      <style>@page{margin:0} body{margin:0;${bwFilter}}${css}</style></head>
+      <body><div style="width:${pxW}px;height:${pxH}px;position:relative;overflow:hidden">${content}
       ${d.canvas.terms ? `<div style="position:absolute;bottom:2%;left:4%;right:4%;color:#fff;font-size:10px;text-align:center">${d.canvas.terms}</div>` : ''}
       <div style="position:absolute;bottom:1%;left:4%;color:#fff;font-size:9px">${s.address || ''} · ${s.phone || ''}</div>
       </div></body></html>`;
@@ -2602,6 +2770,9 @@
 
   P.buildPrintHtml = function () {
     const d = this.draft;
+    if (d?.canvas?.useRetailLayout !== false && this.renderFlyerCanvasContent) {
+      return this.buildCanvasPrintHtml(d, this.app?.settings);
+    }
     const elements = this.getStudioElements?.(d) || d?.canvas?.elements || [];
     if (elements.length && this.renderStudioLayers) {
       return this.buildCanvasPrintHtml(d, this.app?.settings);
@@ -2617,7 +2788,7 @@
   P.printFlyer = async function () {
     if (!this.draft?.id) return Utils.toast('Save the flyer first', 'error');
     this.syncStepFromDom();
-    const html = this.buildPrintHtml();
+    const html = await this.buildExactCanvasPrintHtml(this.draft);
     const title = this.draft.title || 'Flyer';
     const isMobile = !!(window.__SHOP_POS_MOBILE__ || window.Capacitor?.isNativePlatform?.());
     try {
@@ -2635,6 +2806,25 @@
       Utils.toast('Print preview opened', 'success');
     }
     if (this.draft?.id) await this.recordFlyerAnalytics(this.draft.id, 'print');
+  };
+
+  const origSaveFlyerPdfToDevice = P.saveFlyerPdfToDevice.bind(P);
+  P.saveFlyerPdfToDevice = async function (draft) {
+    try {
+      const html = await this.buildExactCanvasPrintHtml(draft);
+      if (API.htmlToPdf) {
+        const size = this.FLYER_SIZES[draft.flyer_size] || this.FLYER_SIZES.a4_portrait;
+        const r = await API.htmlToPdf(html, { widthMm: size.w, heightMm: size.h });
+        if (r.success) {
+          const bytes = r.data instanceof Uint8Array ? r.data : new Uint8Array(r.data);
+          const name = `flyer-${draft.flyer_number || draft.title || draft.id}.pdf`.replace(/[^\w.-]+/g, '-');
+          return API.saveFile(name, [{ name: 'PDF', extensions: ['pdf'] }], bytes);
+        }
+      }
+    } catch (err) {
+      console.warn('Exact PDF export failed, falling back', err);
+    }
+    return origSaveFlyerPdfToDevice(draft);
   };
 
   window.__FLYER_STUDIO_LOADED__ = true;

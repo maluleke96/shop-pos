@@ -72,10 +72,46 @@ function requireRole(actor, roles, message) {
   }
 }
 
+const ROLE_DEFAULTS = {
+  owner: { sell: true, void_sales: true, refunds: true, discounts: true, change_prices: true, view_reports: true, manage_stock: true, system_settings: true, customers: true, suppliers: true, gift_cards: true, cash_up: true, products: true, reports: true, operations: true, kitchen: true, quotes: true, layby: true, delete_sales: true, bookkeeping: true, staff_portal: true, delivery: true },
+  manager: { sell: true, void_sales: true, refunds: true, discounts: true, change_prices: true, view_reports: true, manage_stock: true, customers: true, suppliers: true, gift_cards: true, cash_up: true, products: true, reports: true, operations: true, kitchen: true, quotes: true, layby: true, owner_salary: true, bookkeeping: true, delivery: true },
+  supervisor: { sell: true, void_sales: true, refunds: true, discounts: true, cash_up: true, operations: true, kitchen: true, gift_cards: true, layby: true, quotes: true, delivery: true },
+  assistant_manager: { sell: true, void_sales: true, refunds: true, discounts: true, cash_up: true, operations: true, kitchen: true, gift_cards: true, layby: true, quotes: true, view_reports: true, customers: true, products: true, delivery: true },
+  marketing_agent: {},
+  delivery_manager: { sell: false, delivery: true, view_reports: true, manage_stock: false },
+  cashier: { sell: true, refunds: false, owner_salary: false, owner_salary_only: false, delivery: true }
+};
+
+function parsePermissions(user) {
+  let perms = user?.permissions;
+  if (typeof perms === 'string') {
+    try { perms = JSON.parse(perms); } catch { perms = {}; }
+  }
+  return perms && typeof perms === 'object' ? perms : {};
+}
+
+function hasUserPermission(user, key) {
+  if (!user) return false;
+  if (user.role === 'owner') return true;
+  const perms = parsePermissions(user);
+  if (Object.prototype.hasOwnProperty.call(perms, key)) return !!perms[key];
+  return !!(ROLE_DEFAULTS[user.role] || {})[key];
+}
+
+function assertUserPermission(actor, permissionKey, allowedRoles = ['owner', 'manager', 'supervisor', 'assistant_manager']) {
+  const user = assertUserActor(actor, allowedRoles);
+  if (!hasUserPermission(user, permissionKey)) {
+    throw new Error(`You do not have permission: ${permissionKey}`);
+  }
+  return user;
+}
+
 module.exports = {
   assertUserActor,
   assertEmployeeActor,
   requireRole,
+  hasUserPermission,
+  assertUserPermission,
   loadUserById,
   ...session
 };

@@ -148,20 +148,37 @@ function storeOnlineOrders(orders) {
   const db = getDb();
   let newCount = 0;
   for (const o of orders) {
-    const exists = db.prepare('SELECT id, status FROM online_orders_local WHERE remote_id = ?').get(o.id);
+    const remoteId = o.remote_id != null ? o.remote_id : o.id;
+    const itemsJson = typeof o.items_json === 'string'
+      ? o.items_json
+      : JSON.stringify(o.items || o.items_json || []);
+    const exists = db.prepare('SELECT id, status FROM online_orders_local WHERE remote_id = ?').get(remoteId);
     if (exists) {
-      db.prepare(`UPDATE online_orders_local SET status = ?, total = ?, notes = ?, updated_at = datetime('now')
-        WHERE remote_id = ?`).run(o.status, o.total, o.notes || null, o.id);
+      db.prepare(`UPDATE online_orders_local SET status = ?, total = ?, notes = ?, customer_name = ?, customer_phone = ?,
+        fulfillment_type = COALESCE(?, fulfillment_type), discount = COALESCE(?, discount),
+        delivery_fee = COALESCE(?, delivery_fee), items_json = COALESCE(?, items_json), updated_at = datetime('now')
+        WHERE remote_id = ?`).run(
+        o.status, o.total, o.notes || null, o.customer_name || null, o.customer_phone || null,
+        o.fulfillment_type || o.fulfillment || null, o.discount ?? null, o.delivery_fee ?? null,
+        itemsJson, remoteId
+      );
       continue;
     }
-    db.prepare(`INSERT INTO online_orders_local (remote_id, order_number, branch_id, customer_name, customer_phone, items_json, total, status, notes, created_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?)`).run(
-      o.id, o.order_number, o.branch_id, o.customer_name, o.customer_phone,
-      o.items_json, o.total, o.status, o.notes || null, o.created_at
+    db.prepare(`INSERT INTO online_orders_local (remote_id, order_number, branch_id, customer_name, customer_phone, items_json, total, status, notes, created_at, fulfillment_type, discount, delivery_fee, order_source, payment_status, payment_method, delivery_address, subtotal)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      remoteId, o.order_number, o.branch_id || null, o.customer_name || null, o.customer_phone || null,
+      itemsJson, o.total, o.status || 'pending', o.notes || null, o.created_at || new Date().toISOString(),
+      o.fulfillment_type || o.fulfillment || 'collection', o.discount || 0, o.delivery_fee || 0,
+      o.order_source || 'ONLINE', o.payment_status || 'pending', o.payment_method || null,
+      o.delivery_address || null, o.subtotal || o.total || 0
     );
-    if (o.status === 'pending') newCount++;
+    if ((o.status || 'pending') === 'pending') newCount++;
   }
   return newCount;
+}
+
+function importCloudOrders(orders) {
+  return storeOnlineOrders(orders || []);
 }
 
 async function pullUpdates() {
@@ -215,18 +232,46 @@ function getOnlineOrdersLocal(status) {
   return getDb().prepare(sql).all(...params);
 }
 
-async function updateOnlineOrderStatus(localId, status) {
-  const sync = getSyncSettings();
-  if (!sync.device_token) throw new Error('Device not registered');
+function setReservationStatus(localId, status) {
+  try {
+    getDb().prepare(`UPDATE web_stock_reservations SET status = ? WHERE order_id = ? AND status = 'reserved'`)
+      .run(status, localId);
+  } catch (_) { /* table may not exist on older schemas */ }
+}
+
+async function updateOnlineOrderStatus(localId, status, opts = {}) {
   const order = getDb().prepare('SELECT * FROM online_orders_local WHERE id = ?').get(localId);
-  if (!order?.remote_id) throw new Error('Order not found');
-  await hubFetch(`/api/online/orders/${order.remote_id}`, {
-    method: 'PATCH',
-    headers: { 'X-Device-Token': sync.device_token },
-    body: JSON.stringify({ status })
-  });
-  getDb().prepare('UPDATE online_orders_local SET status = ?, updated_at = datetime(\'now\') WHERE id = ?').run(status, localId);
-  return getDb().prepare('SELECT * FROM online_orders_local WHERE id = ?').get(localId);
+  if (!order) throw new Error('Order not found');
+  const sync = getSyncSettings();
+  if (sync.device_token && order.remote_id) {
+    try {
+      await hubFetch(`/api/online/orders/${order.remote_id}`, {
+        method: 'PATCH',
+        headers: { 'X-Device-Token': sync.device_token },
+        body: JSON.stringify({ status, reject_reason: opts.reject_reason || null })
+      });
+    } catch (_) { /* continue with local update */ }
+  }
+  const db = getDb();
+  if (opts.reject_reason != null) {
+    db.prepare(`UPDATE online_orders_local SET status = ?, reject_reason = ?, updated_at = datetime('now') WHERE id = ?`)
+      .run(status, opts.reject_reason, localId);
+  } else {
+    db.prepare('UPDATE online_orders_local SET status = ?, updated_at = datetime(\'now\') WHERE id = ?').run(status, localId);
+  }
+  if (status === 'rejected' || status === 'cancelled') {
+    setReservationStatus(localId, 'released');
+  } else if (status === 'accepted' || status === 'completed') {
+    setReservationStatus(localId, 'fulfilled');
+  }
+  return db.prepare('SELECT * FROM online_orders_local WHERE id = ?').get(localId);
+}
+
+async function rejectOnlineOrder(localId, reason, actor) {
+  const order = getDb().prepare('SELECT * FROM online_orders_local WHERE id = ?').get(localId);
+  if (!order) throw new Error('Order not found');
+  if (order.status !== 'pending') throw new Error(`Order is already ${order.status}`);
+  return updateOnlineOrderStatus(localId, 'rejected', { reject_reason: reason || 'Rejected by staff' });
 }
 
 function getSyncStatus() {
@@ -249,5 +294,5 @@ module.exports = {
   getSyncSettings, saveSyncSettings, resolveDeviceUid,
   registerDevice, publishProducts, pushOutbox, pullUpdates, syncNow,
   syncBranchesToHub, enqueueSale, getSyncStatus,
-  getOnlineOrdersLocal, updateOnlineOrderStatus
+  getOnlineOrdersLocal, updateOnlineOrderStatus, rejectOnlineOrder, importCloudOrders, storeOnlineOrders
 };

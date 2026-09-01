@@ -5,6 +5,41 @@
 const { getDb } = require('../database/db');
 const { assertUserActor } = require('./authz');
 const inventory = require('./inventory');
+const branchesSvc = require('./branches');
+
+function resolveRecipeBranchScope(actor, opts = {}) {
+  const raw = opts.branchId != null && opts.branchId !== '' ? opts.branchId : opts.branch_id;
+  const scope = branchesSvc.resolveBranchScope(actor, {
+    ...opts,
+    branchId: raw != null && raw !== '' && raw !== 'all' ? raw : opts.branchId
+  });
+  if (scope.allBranches) {
+    const bid = raw != null && raw !== '' && raw !== 'all' ? Number(raw) : null;
+    return { branchId: Number.isFinite(bid) ? bid : null, allBranches: !Number.isFinite(bid) };
+  }
+  return { branchId: scope.branchId || scope.tillId || 1, allBranches: false };
+}
+
+function appendRecipeBranchSql(sql, params, scope, { alias = '' } = {}) {
+  if (scope.allBranches) return sql;
+  const col = alias ? `${alias}.branch_id` : 'branch_id';
+  sql += ` AND ${col} = ?`;
+  params.push(scope.branchId);
+  return sql;
+}
+
+function stampBranchId(actor, data = {}) {
+  const scope = resolveRecipeBranchScope(actor, data);
+  if (data.branch_id != null && data.branch_id !== '' && data.branch_id !== 'all') {
+    return Number(data.branch_id);
+  }
+  if (!scope.allBranches) return scope.branchId;
+  try {
+    return branchesSvc.resolveBranchScope(actor, { forceTill: true }).stampId || 1;
+  } catch (_) {
+    return 1;
+  }
+}
 
 const RECIPE_ROLES = ['administrator', 'production_manager', 'kitchen_manager', 'supervisor', 'viewer'];
 
@@ -62,13 +97,12 @@ function getRecipeAccess(userId) {
 
 function canAccessRecipeModule(actor) {
   const user = assertUserActor(actor, null);
-  // Owner + manager always have full Recipe access (same as Admin Panel entry)
-  if (user.role === 'owner' || user.role === 'manager') {
+  if (user.role === 'owner') {
     return { ...user, recipe_role: 'administrator', recipe_enabled: true };
   }
   const access = getRecipeAccess(user.id);
   if (!access || !access.enabled) {
-    throw new Error('You are not authorized for the Recipe & Production Management System. Ask an Admin to grant access.');
+    throw new Error('You are not authorized for the Recipe & Production Management System. Ask the Admin to grant access in Users.');
   }
   return { ...user, recipe_role: access.recipe_role, recipe_enabled: true };
 }
@@ -108,10 +142,10 @@ function listUsersForRecipeAccess(actor) {
 /** POS owner/manager or Recipe Administrator may grant Recipe System access. */
 function assertCanManageRecipeAccess(actor) {
   const user = assertUserActor(actor, null);
-  if (user.role === 'owner' || user.role === 'manager') {
+  if (user.role === 'owner') {
     return { ...user, recipe_role: 'administrator', recipe_enabled: true };
   }
-  return requireRecipePerm(actor, 'users');
+  throw new Error('Only the owner (Admin) can grant Recipe & Production access.');
 }
 
 function setRecipeUserAccess(data, actor) {
@@ -124,16 +158,29 @@ function setRecipeUserAccess(data, actor) {
   }
   const role = RECIPE_ROLES.includes(data.recipe_role) ? data.recipe_role : 'viewer';
   const enabled = data.enabled === false || data.enabled === 0 ? 0 : 1;
+  const branchId = data.branch_id != null ? Number(data.branch_id) : null;
   const db = getDb();
   const existing = db.prepare('SELECT id FROM recipe_user_access WHERE user_id = ?').get(data.user_id);
   if (existing) {
-    db.prepare(`
-      UPDATE recipe_user_access SET recipe_role=?, enabled=?, granted_by=?, updated_at=datetime('now') WHERE user_id=?
-    `).run(role, enabled, granter?.id || null, data.user_id);
+    try {
+      db.prepare(`
+        UPDATE recipe_user_access SET recipe_role=?, enabled=?, granted_by=?, branch_id=?, updated_at=datetime('now') WHERE user_id=?
+      `).run(role, enabled, granter?.id || null, branchId, data.user_id);
+    } catch (_) {
+      db.prepare(`
+        UPDATE recipe_user_access SET recipe_role=?, enabled=?, granted_by=?, updated_at=datetime('now') WHERE user_id=?
+      `).run(role, enabled, granter?.id || null, data.user_id);
+    }
   } else {
-    db.prepare(`
-      INSERT INTO recipe_user_access (user_id, recipe_role, enabled, granted_by) VALUES (?,?,?,?)
-    `).run(data.user_id, role, enabled, granter?.id || null);
+    try {
+      db.prepare(`
+        INSERT INTO recipe_user_access (user_id, recipe_role, enabled, granted_by, branch_id) VALUES (?,?,?,?,?)
+      `).run(data.user_id, role, enabled, granter?.id || null, branchId);
+    } catch (_) {
+      db.prepare(`
+        INSERT INTO recipe_user_access (user_id, recipe_role, enabled, granted_by) VALUES (?,?,?,?)
+      `).run(data.user_id, role, enabled, granter?.id || null);
+    }
   }
   logActivity(granter, 'set_recipe_access', 'user', data.user_id, null, { role, enabled });
   return getRecipeAccess(data.user_id);
@@ -153,7 +200,7 @@ function loginToRecipeModule(username, password, pin) {
     throw new Error(result?.error || 'Login failed');
   }
   const user = result.user;
-  if (user.role === 'owner' || user.role === 'manager') {
+  if (user.role === 'owner') {
     return { ...user, recipe_role: 'administrator', recipe_enabled: true };
   }
   const access = getRecipeAccess(user.id);
@@ -621,6 +668,7 @@ function getRecipeProfile(id) {
 
 function listRecipes(filters = {}, actor) {
   canAccessRecipeModule(actor);
+  const scope = resolveRecipeBranchScope(actor, filters);
   let sql = 'SELECT * FROM recipe_profiles WHERE 1=1';
   const params = [];
   if (filters.status) {
@@ -632,6 +680,7 @@ function listRecipes(filters = {}, actor) {
     params.push(`%${filters.search}%`, `%${filters.search}%`);
   }
   if (filters.available_today) sql += ' AND available_today = 1';
+  sql = appendRecipeBranchSql(sql, params, scope);
   sql += ' ORDER BY updated_at DESC';
   return getDb().prepare(sql).all(...params);
 }
@@ -698,6 +747,9 @@ function saveRecipe(data, actor) {
   };
   if (!fields.name) throw new Error('Recipe name is required');
 
+  const recipeScope = resolveRecipeBranchScope(actor, data);
+  let branchId = stampBranchId(actor, data);
+
   let profileId = data.id;
   let productId = data.product_id || null;
 
@@ -745,6 +797,9 @@ function saveRecipe(data, actor) {
         actor?.id || null, profileId
       );
     }
+    if (branchId != null) {
+      try { db.prepare('UPDATE recipe_profiles SET branch_id = ? WHERE id = ?').run(branchId, profileId); } catch (_) { /* ignore */ }
+    }
   } else {
     let r;
     try {
@@ -754,14 +809,14 @@ function saveRecipe(data, actor) {
           serving_size, yield_qty, yield_unit, image_path, instructions, video_url, notes, allergens,
           status, production_mode, price_mode, target_profit_pct, suggested_price, override_price,
           selling_price, recipe_cost, food_cost_pct, gross_profit, profit_margin,
-          available_today, new_arrival_days, created_by, updated_by
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+          available_today, new_arrival_days, branch_id, created_by, updated_by
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
       `).run(
         productId, fields.name, fields.category, fields.description, fields.prep_time_minutes, fields.cook_time_minutes,
         fields.serving_size, fields.yield_qty, fields.yield_unit, fields.image_path, fields.instructions, fields.video_url, fields.notes, fields.allergens,
         'draft', fields.production_mode, fields.price_mode, fields.target_profit_pct, fields.suggested_price, fields.override_price,
         fields.selling_price, fields.recipe_cost, fields.food_cost_pct, fields.gross_profit, fields.profit_margin,
-        fields.available_today, fields.new_arrival_days, actor?.id || null, actor?.id || null
+        fields.available_today, fields.new_arrival_days, branchId, actor?.id || null, actor?.id || null
       );
     } catch (_) {
       r = db.prepare(`
@@ -1019,6 +1074,8 @@ function calcProductionCapacity(recipeId, actor) {
   canAccessRecipeModule(actor);
   const recipe = getRecipeWithItems(recipeId);
   if (!recipe) throw new Error('Recipe not found');
+  const scope = resolveRecipeBranchScope(actor, { branch_id: recipe.branch_id });
+  const branchId = recipe.branch_id || scope.branchId || 1;
   const items = recipe.items || [];
   let maxMeals = Infinity;
   let limiting = null;
@@ -1030,14 +1087,19 @@ function calcProductionCapacity(recipeId, actor) {
     const perMeal = (Number(item.quantity) || 0) * waste;
     const stockUnit = ing.stock_unit || ing.unit || 'each';
     const perMealStock = inventory.convertQuantity(ing.id, perMeal, item.unit || stockUnit, stockUnit);
-    const canMake = perMealStock > 0 ? Math.floor((ing.stock_quantity || 0) / perMealStock) : Infinity;
+    let stockQty = Number(ing.stock_quantity) || 0;
+    try {
+      stockQty = Number(branchesSvc.getBranchStockQuantity(ing.id, branchId)) || 0;
+    } catch (_) { /* fall back to global */ }
+    const canMake = perMealStock > 0 ? Math.floor(stockQty / perMealStock) : Infinity;
     breakdown.push({
       ingredient_product_id: ing.id,
       name: ing.name,
-      stock: ing.stock_quantity,
+      stock: stockQty,
       per_meal: perMealStock,
       unit: stockUnit,
-      can_make: canMake === Infinity ? null : canMake
+      can_make: canMake === Infinity ? null : canMake,
+      branch_id: branchId
     });
     if (canMake < maxMeals) {
       maxMeals = canMake;
@@ -1045,7 +1107,7 @@ function calcProductionCapacity(recipeId, actor) {
     }
   }
   if (maxMeals === Infinity) maxMeals = 0;
-  return { recipe_id: recipeId, max_meals: maxMeals, limiting_ingredient: limiting, breakdown, recipe_cost: recipe.recipe_cost };
+  return { recipe_id: recipeId, max_meals: maxMeals, limiting_ingredient: limiting, breakdown, recipe_cost: recipe.recipe_cost, branch_id: branchId };
 }
 
 function planProduction(data, actor) {
@@ -1098,16 +1160,17 @@ function completeProduction(data, actor) {
     if (row.actual_qty != null && row.actual_qty !== '') actualOverrides.set(id, Number(row.actual_qty));
   }
 
+  const batchBranchId = stampBranchId(actor, { branch_id: recipe.branch_id });
   let batch;
   try {
     batch = db.prepare(`
       INSERT INTO production_batches (
         recipe_profile_id, product_id, planned_qty, produced_qty, status, production_cost,
-        limiting_ingredient, max_capacity, notes, yield_variance_pct, created_by, completed_by, started_at, completed_at
-      ) VALUES (?,?,?,?, 'completed', ?,?,?,?,?,?,?, datetime('now'), datetime('now'))
+        limiting_ingredient, max_capacity, notes, yield_variance_pct, branch_id, created_by, completed_by, started_at, completed_at
+      ) VALUES (?,?,?,?, 'completed', ?,?,?,?,?,?,?,?, datetime('now'), datetime('now'))
     `).run(
       recipe.id, recipe.product_id || null, qty, actualQty, plan.production_cost,
-      plan.capacity.limiting_ingredient, plan.capacity.max_meals, data.notes || null, variancePct,
+      plan.capacity.limiting_ingredient, plan.capacity.max_meals, data.notes || null, variancePct, batchBranchId,
       actor?.id || null, actor?.id || null
     );
   } catch (_) {
@@ -1149,12 +1212,12 @@ function completeProduction(data, actor) {
       `).run(batchId, ing.id, deductQty, stockUnit, ing.buying_price || 0, lineCost);
     }
     if (deductOnProduce) {
-      store.adjustStock(ing.id, deductQty, 'remove', `Production batch #${batchId}`, actor?.id, 'production', batchId);
+      store.adjustStock(ing.id, deductQty, 'remove', `Production batch #${batchId}`, actor?.id, 'production', batchId, batchBranchId);
     }
   }
 
   if (recipe.product_id && recipe.production_mode === 'make_to_stock') {
-    store.adjustStock(recipe.product_id, actualQty, 'add', `Production batch #${batchId} yield`, actor?.id, 'production', batchId);
+    store.adjustStock(recipe.product_id, actualQty, 'add', `Production batch #${batchId} yield`, actor?.id, 'production', batchId, batchBranchId);
   }
 
   logActivity(actor, 'complete_production', 'production_batch', batchId, null, {
@@ -1198,6 +1261,7 @@ function applySuggestedSellPrice(data, actor) {
 
 function listProductionBatches(filters = {}, actor) {
   canAccessRecipeModule(actor);
+  const scope = resolveRecipeBranchScope(actor, filters);
   let sql = `
     SELECT b.*, r.name AS recipe_name FROM production_batches b
     LEFT JOIN recipe_profiles r ON r.id = b.recipe_profile_id WHERE 1=1
@@ -1205,6 +1269,10 @@ function listProductionBatches(filters = {}, actor) {
   const params = [];
   if (filters.from) { sql += ' AND date(b.created_at) >= ?'; params.push(filters.from); }
   if (filters.to) { sql += ' AND date(b.created_at) <= ?'; params.push(filters.to); }
+  if (!scope.allBranches) {
+    sql += ' AND b.branch_id = ?';
+    params.push(scope.branchId);
+  }
   sql += ' ORDER BY b.created_at DESC LIMIT 200';
   return getDb().prepare(sql).all(...params);
 }
@@ -1467,25 +1535,40 @@ function ensureApprovedProfileForMeal(productId, actor, { autoApprove = false } 
   return getRecipeWithItems(profile.id);
 }
 
-function listProductionMeals(actor) {
+function listProductionMeals(actor, filters = {}) {
   canAccessRecipeModule(actor);
-  const profiles = getDb().prepare(`
-    SELECT r.id, r.name, r.status, r.product_id, r.recipe_cost, r.production_mode, p.name AS product_name
+  const scope = resolveRecipeBranchScope(actor, filters || {});
+  let profileSql = `
+    SELECT r.id, r.name, r.status, r.product_id, r.recipe_cost, r.production_mode, r.branch_id, p.name AS product_name
     FROM recipe_profiles r
     LEFT JOIN products p ON p.id = r.product_id
     WHERE r.status = 'approved'
-    ORDER BY r.name COLLATE NOCASE
-  `).all();
-  const meals = getDb().prepare(`
+  `;
+  const profileParams = [];
+  if (!scope.allBranches) {
+    profileSql += ' AND r.branch_id = ?';
+    profileParams.push(scope.branchId);
+  }
+  profileSql += ' ORDER BY r.name COLLATE NOCASE';
+  const profiles = getDb().prepare(profileSql).all(...profileParams);
+
+  let mealSql = `
     SELECT p.id AS product_id, p.name, p.production_mode, p.recipe_cost, p.has_recipe,
-      (SELECT id FROM recipe_profiles rp WHERE rp.product_id = p.id ORDER BY rp.id DESC LIMIT 1) AS profile_id,
-      (SELECT status FROM recipe_profiles rp WHERE rp.product_id = p.id ORDER BY rp.id DESC LIMIT 1) AS profile_status
+      (SELECT id FROM recipe_profiles rp WHERE rp.product_id = p.id
+        ${scope.allBranches ? '' : 'AND rp.branch_id = ?'}
+        ORDER BY rp.id DESC LIMIT 1) AS profile_id,
+      (SELECT status FROM recipe_profiles rp WHERE rp.product_id = p.id
+        ${scope.allBranches ? '' : 'AND rp.branch_id = ?'}
+        ORDER BY rp.id DESC LIMIT 1) AS profile_status
     FROM products p
     WHERE p.is_active=1 AND p.has_recipe=1
       AND (p.item_type IS NULL OR p.item_type != 'ingredient')
     ORDER BY p.name COLLATE NOCASE
-  `).all();
-  return { approved_profiles: profiles, meals };
+  `;
+  const mealParams = [];
+  if (!scope.allBranches) mealParams.push(scope.branchId, scope.branchId);
+  const meals = getDb().prepare(mealSql).all(...mealParams);
+  return { approved_profiles: profiles, meals, branch_id: scope.branchId, all_branches: scope.allBranches };
 }
 
 function getIngredientStockHistory(filters = {}, actor) {
@@ -2357,9 +2440,18 @@ function getAiSuggestions(actor) {
   return suggestions;
 }
 
-function getRecipeActivity(limit = 50, actor) {
+function getRecipeActivity(limit = 50, actor, filters = {}) {
   canAccessRecipeModule(actor);
-  return getDb().prepare('SELECT * FROM recipe_activity_log ORDER BY created_at DESC LIMIT ?').all(limit);
+  const scope = resolveRecipeBranchScope(actor, filters);
+  let sql = 'SELECT * FROM recipe_activity_log WHERE 1=1';
+  const params = [];
+  if (!scope.allBranches) {
+    sql += ' AND (branch_id = ? OR branch_id IS NULL)';
+    params.push(scope.branchId);
+  }
+  sql += ' ORDER BY created_at DESC LIMIT ?';
+  params.push(limit);
+  return getDb().prepare(sql).all(...params);
 }
 
 let _lastClearExpiredAt = 0;
@@ -2375,8 +2467,13 @@ function clearExpiredNewArrivals() {
 
 function setAvailableToday(recipeIds, actor) {
   requireRecipePerm(actor, 'edit');
+  const scope = resolveRecipeBranchScope(actor);
   const db = getDb();
-  db.prepare('UPDATE recipe_profiles SET available_today = 0').run();
+  if (scope.allBranches) {
+    db.prepare('UPDATE recipe_profiles SET available_today = 0').run();
+  } else {
+    db.prepare('UPDATE recipe_profiles SET available_today = 0 WHERE branch_id = ? OR branch_id IS NULL').run(scope.branchId);
+  }
   db.prepare('UPDATE products SET available_today = 0 WHERE has_recipe = 1 OR production_mode IS NOT NULL').run();
   for (const id of recipeIds || []) {
     db.prepare('UPDATE recipe_profiles SET available_today = 1 WHERE id = ?').run(id);
@@ -2406,24 +2503,35 @@ function getBestSellers(period, actor) {
 
 function listMealProducts(filters = {}, actor) {
   canAccessRecipeModule(actor);
+  const scope = resolveRecipeBranchScope(actor, filters);
   let sql = `
     SELECT p.*, c.name AS category_name,
       (SELECT COUNT(*) FROM product_recipe_items pri WHERE pri.product_id = p.id) AS ingredient_count,
-      r.id AS recipe_profile_id, r.status AS recipe_status
+      r.id AS recipe_profile_id, r.status AS recipe_status, r.branch_id AS recipe_branch_id
     FROM products p
     LEFT JOIN categories c ON c.id = p.category_id
     LEFT JOIN recipe_profiles r ON r.product_id = p.id
+      ${scope.allBranches ? '' : 'AND r.branch_id = ?'}
     WHERE p.is_active = 1 AND (p.is_archived = 0 OR p.is_archived IS NULL)
       AND (p.item_type IS NULL OR p.item_type != 'ingredient')
   `;
   const params = [];
+  if (!scope.allBranches) params.push(scope.branchId);
   if (filters.search) {
     sql += ' AND (p.name LIKE ? OR p.sku LIKE ? OR p.barcode LIKE ?)';
     const q = `%${filters.search}%`;
     params.push(q, q, q);
   }
-  if (filters.with_recipe === true) sql += ' AND EXISTS (SELECT 1 FROM product_recipe_items pri WHERE pri.product_id = p.id)';
-  if (filters.with_recipe === false) sql += ' AND NOT EXISTS (SELECT 1 FROM product_recipe_items pri WHERE pri.product_id = p.id)';
+  if (filters.with_recipe === true) {
+    sql += scope.allBranches
+      ? ' AND EXISTS (SELECT 1 FROM product_recipe_items pri WHERE pri.product_id = p.id)'
+      : ' AND r.id IS NOT NULL';
+  }
+  if (filters.with_recipe === false) {
+    sql += scope.allBranches
+      ? ' AND NOT EXISTS (SELECT 1 FROM product_recipe_items pri WHERE pri.product_id = p.id)'
+      : ' AND r.id IS NULL';
+  }
   sql += ' ORDER BY p.name COLLATE NOCASE LIMIT 500';
   return getDb().prepare(sql).all(...params);
 }

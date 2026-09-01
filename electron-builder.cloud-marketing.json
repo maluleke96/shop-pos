@@ -37,10 +37,10 @@
     "allowToChangeInstallationDirectory": true,
     "createDesktopShortcut": true,
     "createStartMenuShortcut": true,
-    "artifactName": "ShopPOS-Marketing-Setup.${ext}",
+    "artifactName": "ShopPOS-Marketing-Agent-Setup.${ext}",
     "shortcutName": "Marketing Agent"
   },
   "portable": {
-    "artifactName": "ShopPOS-Marketing-Portable.${ext}"
+    "artifactName": "ShopPOS-Marketing-Agent-Portable.${ext}"
   }
 }

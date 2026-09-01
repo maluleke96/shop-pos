@@ -599,8 +599,8 @@ const ProductsPage = {
 
     try {
       const result = await API.saveProduct(data, this.app.user);
-      if (!result.success) {
-        Utils.toast(result.error || 'Failed to save product', 'error');
+      if (!result || result.success === false) {
+        Utils.toast(result?.error || 'Failed to save product', 'error');
         btn.disabled = false;
         btn.textContent = 'Save Product';
         return;
@@ -617,7 +617,17 @@ const ProductsPage = {
       }
       Utils.hideModal();
       Utils.sessionCacheClear('products_page');
-      await ProductsPage.render(document.getElementById('page-content'), this.app);
+      window.DataCache?.invalidate?.('products', 'stockReport', 'stockHistory', 'dashboard', 'pos', 'categories');
+      // Force a fresh list load — never reuse a pre-save in-flight response
+      if (API.getProducts?._uncached) {
+        const fresh = await API.getProducts._uncached({});
+        if (fresh && fresh.success !== false) {
+          this.products = Array.isArray(fresh.data) ? fresh.data : [];
+          window.DataCache?.set?.('products', [{}], fresh, 90000);
+        }
+      }
+      const host = document.getElementById('page-content') || this._host;
+      await ProductsPage.render(host, this.app);
       Utils.toast('Product saved successfully', 'success');
     } catch (err) {
       Utils.toast(err.message || 'Failed to save product', 'error');

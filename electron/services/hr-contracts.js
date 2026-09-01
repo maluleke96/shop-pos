@@ -255,6 +255,12 @@ function getContracts(filters = {}) {
   const params = [];
   if (filters.employee_id) { sql += ' AND c.employee_id = ?'; params.push(filters.employee_id); }
   if (filters.status) { sql += ' AND c.status = ?'; params.push(filters.status); }
+  if (filters.expiring) {
+    sql += ` AND c.status IN ('active','signed') AND c.expiry_date IS NOT NULL AND date(c.expiry_date) BETWEEN date('now') AND date('now','+30 day')`;
+  }
+  if (filters.expired) {
+    sql += ` AND (c.status = 'expired' OR (c.expiry_date IS NOT NULL AND date(c.expiry_date) < date('now')))`;
+  }
   sql += ' ORDER BY c.created_at DESC';
   return getDb().prepare(sql).all(...params);
 }

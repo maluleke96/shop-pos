@@ -1377,6 +1377,12 @@ function paySalary(payrollId, paymentMethod) {
     db.prepare(`UPDATE employee_payroll SET status = 'paid', payment_method = ?, paid_at = datetime('now') WHERE id = ?`)
       .run(paymentMethod || 'cash', payrollId);
   })();
+  try {
+    const { runIntegration } = require('./accounting-central');
+    runIntegration('postFromPayroll', payrollId);
+  } catch (err) {
+    console.warn('[payroll] accounting post:', err.message);
+  }
 }
 
 function getEmployeeByUserId(userId) {

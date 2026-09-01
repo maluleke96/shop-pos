@@ -43,13 +43,19 @@ const DataCache = {
 
   invalidate(...prefixes) {
     const prefs = prefixes.flat().filter(Boolean);
+    this._invalidateGen = (this._invalidateGen || 0) + 1;
+    const dropKey = (k) => !prefs.length || prefs.some((p) => k === p || k.startsWith(`${p}:`) || k.startsWith(p));
     if (!prefs.length) {
       this.mem.clear();
-      return;
-    }
-    for (const k of [...this.mem.keys()]) {
-      if (prefs.some((p) => k === p || k.startsWith(`${p}:`) || k.startsWith(p))) {
-        this.mem.delete(k);
+      this.inflight.clear();
+    } else {
+      for (const k of [...this.mem.keys()]) {
+        if (dropKey(k)) this.mem.delete(k);
+      }
+      // Drop in-flight reads too — otherwise a post-save reload can wait on a
+      // pre-save request and re-cache stale product/admin data.
+      for (const k of [...this.inflight.keys()]) {
+        if (dropKey(k)) this.inflight.delete(k);
       }
     }
     try {
@@ -62,14 +68,21 @@ const DataCache = {
   /**
    * Dedupe concurrent identical fetches. Optionally return stale cache immediately
    * while a background refresh updates memory (SWR).
+   * opts.force = true skips cache + in-flight reuse (use after mutations).
    */
   async fetch(ns, args, fetcher, opts = {}) {
     const ttl = opts.ttlMs ?? 120000;
     const swr = opts.swr !== false;
+    const force = !!opts.force;
     const k = this.key(ns, args);
-    const cached = this.peek(ns, args);
+    if (force) {
+      this.mem.delete(k);
+      this.inflight.delete(k);
+    }
+    const cached = force ? null : this.peek(ns, args);
+    const genAtStart = this._invalidateGen || 0;
 
-    if (this.inflight.has(k)) {
+    if (!force && this.inflight.has(k)) {
       this.stats.dedupes += 1;
       if (cached != null && swr) return cached;
       return this.inflight.get(k);
@@ -78,12 +91,14 @@ const DataCache = {
     const run = Promise.resolve()
       .then(() => fetcher())
       .then((res) => {
-        this.inflight.delete(k);
+        if (this.inflight.get(k) === run) this.inflight.delete(k);
+        // Do not re-cache a response that finished after a newer invalidate.
+        if ((this._invalidateGen || 0) !== genAtStart && !force) return res;
         if (res && res.success !== false) this.set(ns, args, res, ttl);
         return res;
       })
       .catch((err) => {
-        this.inflight.delete(k);
+        if (this.inflight.get(k) === run) this.inflight.delete(k);
         throw err;
       });
 
@@ -169,8 +184,10 @@ function installApiReadCache() {
   wrap('getSettingsParsed', 'settings', 300000, () => []);
   wrap('getNotifications', 'notifications', 20000, (a) => [a?.id || a?.role || a || null]);
 
-  const invalidateProducts = () =>
+  const invalidateProducts = () => {
     DataCache.invalidate('products', 'stockReport', 'stockHistory', 'dashboard', 'pos', 'categories');
+    try { window.dispatchEvent(new CustomEvent('shop-pos-stock-updated')); } catch (_) { /* */ }
+  };
   const invalidateSales = () =>
     DataCache.invalidate('dashboard', 'salesReport', 'stockReport', 'products', 'kitchen');
 
@@ -196,6 +213,9 @@ function installApiReadCache() {
     if (res?.success !== false) invalidateProducts();
   });
   after('adjustStock', (res) => {
+    if (res?.success !== false) invalidateProducts();
+  });
+  after('recordStockAdjustment', (res) => {
     if (res?.success !== false) invalidateProducts();
   });
   after('saveCategory', (res) => {

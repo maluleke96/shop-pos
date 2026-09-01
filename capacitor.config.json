@@ -1,6 +1,6 @@
 {
-  "appId": "com.shoppos.recipe",
-  "appName": "Recipe Production",
+  "appId": "com.shoppos.accounting",
+  "appName": "Business Accounting",
   "webDir": "www",
   "android": {
     "allowMixedContent": true

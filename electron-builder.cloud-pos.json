@@ -1,0 +1,46 @@
+{
+  "appId": "com.shoppos.pos",
+  "productName": "Shop POS",
+  "directories": {
+    "output": "dist\\cloud-apps\\pos",
+    "buildResources": "build"
+  },
+  "files": [
+    "electron/**/*",
+    "src/**/*",
+    "mobile/**/*",
+    "lib/**/*",
+    "package.json"
+  ],
+  "extraMetadata": {
+    "main": "electron/cloud-shell-config-pos.js",
+    "name": "com.shoppos.pos"
+  },
+  "win": {
+    "target": [
+      {
+        "target": "nsis",
+        "arch": [
+          "x64"
+        ]
+      },
+      {
+        "target": "portable",
+        "arch": [
+          "x64"
+        ]
+      }
+    ]
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "artifactName": "ShopPOS-POS-Setup.${ext}",
+    "shortcutName": "Shop POS"
+  },
+  "portable": {
+    "artifactName": "ShopPOS-POS-Portable.${ext}"
+  }
+}

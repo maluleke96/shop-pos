@@ -69,6 +69,10 @@
       const currency = this.admin.settings?.currency || 'R';
       const isOwner = this.app.user?.role === 'owner';
       const res = await API.getCombos({});
+      if (!res.success) {
+        el.innerHTML = `<p class="error-msg">${Utils.escHtml(res.error || 'Could not load combos')}</p>`;
+        return;
+      }
       const combos = res.data || [];
       el.innerHTML = `<button class="btn btn-primary" id="combo-new" style="margin-bottom:12px">+ New Combo</button>
         <div class="table-wrap"><table>

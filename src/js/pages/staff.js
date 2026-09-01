@@ -41,16 +41,14 @@
   portalToggleHtml(ps) {
     const on = (k, def = true) => (def ? ps[k] !== false : !!ps[k]);
     const row = (id, checked, title, hint) => `
-      <label class="portal-switch">
-        <span>
+      <label class="portal-switch"><span>
           <strong>${title}</strong>
           ${hint ? `<small class="muted">${hint}</small>` : ''}
         </span>
         <input type="checkbox" id="${id}" ${checked ? 'checked' : ''}>
         <span class="portal-switch-state">${checked ? 'ON' : 'OFF'}</span>
       </label>`;
-    return `<div class="portal-vis-card" id="portal-vis-card">
-      <h4 style="margin:0 0 4px">Turn staff portal sections ON or OFF</h4>
+    return `<div class="portal-vis-card" id="portal-vis-card"><h4 style="margin:0 0 4px">Turn staff portal sections ON or OFF</h4>
       <p class="muted" style="margin:0 0 12px">Use these switches for morning routines, closing routines, shift schedule, and whether a shift is required to clock in. Staff only see what is ON.</p>
       ${row('sp-set-routines', on('show_routines'), 'Routines (master switch)', 'Off hides both morning and closing from staff')}
       ${row('sp-set-morning', on('show_morning_routines'), 'Morning opening routines', 'Show morning tasks on the staff portal')}
@@ -97,7 +95,7 @@
     return this.portalSettings(app).show_shifts !== false;
   },
 
-  /** Actor for HR APIs â€” supports POS login user OR standalone portal employee */
+  /** Actor for HR APIs — supports POS login user OR standalone portal employee */
   hrActor(emp) {
     if (this.app?.user?.id) return this.app.user;
     const e = emp || this.employee;
@@ -131,9 +129,9 @@
 
     if (needsTabs) {
       const tabs = [];
-      if (showEmployees || app.user?.role !== 'cashier') tabs.push(['employees', 'ðŸ‘· Employee Portal']);
-      if (canRecruit) tabs.push(['recruitment', 'ðŸ’¼ Recruitment']);
-      if (canOwnerSalary) tabs.push(['owner-salary', 'ðŸ’¼ Owner Salary']);
+      if (showEmployees || app.user?.role !== 'cashier') tabs.push(['employees', 'Employee Portal']);
+      if (canRecruit) tabs.push(['recruitment', 'Recruitment']);
+      if (canOwnerSalary) tabs.push(['owner-salary', 'Owner Salary']);
       if (!this.staffTab || !tabs.find(t => t[0] === this.staffTab)) {
         this.staffTab = app.user?.role === 'cashier' && canOwnerSalary ? 'owner-salary' : (tabs[0]?.[0] || 'employees');
       }
@@ -192,20 +190,15 @@
   async renderAdminHub(el) {
     const ps = this.app.settings?.staff_portal_settings || {};
     const search = this._hubSearch || '';
-    const paintSettings = () => `<div class="admin-section">
-      <div class="page-toolbar" style="margin-bottom:12px">
-        <h3 style="margin:0">ðŸ‘· Staff Portal</h3>
-        <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <button type="button" class="btn btn-primary" id="sp-hub-hr">Manage Staff &amp; HR</button>
+    const paintSettings = () => `<div class="admin-section"><div class="page-toolbar" style="margin-bottom:12px"><h3 style="margin:0">Staff Portal</h3>
+        <div style="display:flex;gap:8px;flex-wrap:wrap"><button type="button" class="btn btn-primary" id="sp-hub-hr">Manage Staff &amp; HR</button>
           <button type="button" class="btn btn-ghost" id="sp-hub-worker-login">Sign in as employee</button>
         </div>
       </div>
-      <p class="muted">Open any workerâ€™s portal without their PIN. Change what staff see below.</p>
+      <p class="muted">Open any worker's portal without their PIN. Change what staff see below.</p>
       ${this.portalToggleHtml(ps)}
-      <div class="card" style="margin:16px 0"><div class="card-body">
-        <h4>More portal settings</h4>
-        <div class="form-grid">
-          <div class="field full"><label><input type="checkbox" id="sp-set-selfie" ${ps.require_login_selfie ? 'checked' : ''}> Require verification selfie before workers enter</label></div>
+      <div class="card" style="margin:16px 0"><div class="card-body"><h4>More portal settings</h4>
+        <div class="form-grid"><div class="field full"><label><input type="checkbox" id="sp-set-selfie" ${ps.require_login_selfie ? 'checked' : ''}> Require verification selfie before workers enter</label></div>
           <div class="field full"><label><input type="checkbox" id="sp-set-leave" ${ps.leave_requests_open !== false ? 'checked' : ''}> Leave requests open (sick leave always allowed)</label></div>
           <div class="field full"><label><input type="checkbox" id="sp-set-disc" ${ps.show_disciplinary !== false ? 'checked' : ''}> Show disciplinary / warnings on portal</label></div>
           <div class="field full"><label><input type="checkbox" id="sp-set-pay" ${ps.show_payslips !== false ? 'checked' : ''}> Show payslips on portal</label></div>
@@ -216,9 +209,8 @@
         </div>
         <button type="button" class="btn btn-primary" id="sp-save-settings" style="margin-top:12px">Save portal settings</button>
       </div></div>
-      <div class="card"><div class="card-body">
-        <h4>Open an employee portal</h4>
-        <div id="sp-hub-emp-wrap"><p class="muted">Loading employeesâ€¦</p></div>
+      <div class="card"><div class="card-body"><h4>Open an employee portal</h4>
+        <div id="sp-hub-emp-wrap"><p class="muted">Loading employees...</p></div>
       </div></div>
     </div>`;
 
@@ -263,7 +255,7 @@
       if (window.AdminPage?.settings) AdminPage.settings.staff_portal_settings = data;
       try { window.DataCache?.invalidate?.('settings'); } catch (_) { /* ignore */ }
       this.bindPortalToggleStates(el);
-      Utils.toast('Portal settings saved â€” staff see these immediately', 'success');
+      Utils.toast('Portal settings saved " staff see these immediately', 'success');
     });
 
     const empWrap = document.getElementById('sp-hub-emp-wrap');
@@ -276,20 +268,19 @@
       return;
     }
     const emps = res.data || [];
-    empWrap.innerHTML = `<div style="display:flex;gap:8px;flex-wrap:wrap;margin:12px 0">
-        <input type="search" id="sp-hub-search" placeholder="Search employeesâ€¦" value="${Utils.escHtml(search)}" style="flex:1;min-width:200px;padding:8px;border-radius:8px;border:1px solid var(--border)">
+    empWrap.innerHTML = `<div style="display:flex;gap:8px;flex-wrap:wrap;margin:12px 0"><input type="search" id="sp-hub-search" placeholder="Search employees..." value="${Utils.escHtml(search)}" style="flex:1;min-width:200px;padding:8px;border-radius:8px;border:1px solid var(--border)">
       </div>
       <div class="table-wrap"><table><thead><tr><th>ID</th><th>Name</th><th>Position</th><th>Status</th><th></th></tr></thead>
         <tbody>${emps.map(e => `<tr>
           <td>${Utils.escHtml(e.employee_code || '')}</td>
           <td><strong>${Utils.escHtml(e.full_name || '')}</strong></td>
-          <td>${Utils.escHtml(e.position || 'â€”')}</td>
-          <td>${Utils.escHtml(e.status || 'â€”')}</td>
+          <td>${Utils.escHtml(e.position || '"')}</td>
+          <td>${Utils.escHtml(e.status || '"')}</td>
           <td class="actions">
             <button type="button" class="btn btn-sm btn-primary sp-open-emp" data-id="${e.id}">Open portal</button>
             <button type="button" class="btn btn-sm btn-ghost sp-edit-emp" data-id="${e.id}">Edit in HR</button>
           </td>
-        </tr>`).join('') || '<tr><td colspan="5" class="muted">No employees yet â€” add them in Staff &amp; HR</td></tr>'}
+        </tr>`).join('') || '<tr><td colspan="5" class="muted">No employees yet " add them in Staff &amp; HR</td></tr>'}
       </tbody></table></div>`;
     let searchTimer;
     document.getElementById('sp-hub-search')?.addEventListener('input', (e) => {
@@ -335,18 +326,16 @@
   },
 
   renderNoEmployeeLink(el) {
-    el.innerHTML = `<div class="staff-gate card" style="max-width:480px;margin:40px auto;padding:32px;text-align:center">
-      <h2>ðŸ‘· Staff Portal</h2>
+    el.innerHTML = `<div class="staff-gate card" style="max-width:480px;margin:40px auto;padding:32px;text-align:center"><h2>Staff Portal</h2>
       <p class="muted">Your user account is not linked to an employee profile.</p>
-      <p><strong>Ask admin to link your user account to your employee profile</strong> (Admin â†’ Staff â†’ edit employee â†’ User Account).</p>
+      <p><strong>Ask admin to link your user account to your employee profile</strong> (Admin -> Staff -> edit employee -> User Account).</p>
       <button class="btn btn-ghost" id="staff-retry-link" style="margin-top:16px">Check Again</button>
     </div>`;
     document.getElementById('staff-retry-link').addEventListener('click', () => this._rerender());
   },
 
   renderSupervisorGate(el) {
-    el.innerHTML = `<div class="staff-gate card" style="max-width:420px;margin:40px auto;padding:32px;text-align:center">
-      <h2>ðŸ‘· Staff Portal</h2>
+    el.innerHTML = `<div class="staff-gate card" style="max-width:420px;margin:40px auto;padding:32px;text-align:center"><h2>Staff Portal</h2>
       <p class="muted">Manager or supervisor PIN required to open staff clocking.</p>
       <div class="field"><label>Supervisor / Manager PIN</label>
         <input type="password" id="staff-super-pin" maxlength="12" inputmode="numeric" placeholder="Daily code or manager PIN" autofocus></div>
@@ -371,17 +360,16 @@
       Utils.toast('Staff portal unlocked', 'success');
       return this._rerender();
     }
-    Utils.toast(codeRes.error || 'Invalid supervisor PIN â€” ask manager for today\'s code', 'error');
+    Utils.toast(codeRes.error || 'Invalid supervisor PIN " ask manager for today\'s code', 'error');
   },
 
   renderWorkerLogin(el) {
-    el.innerHTML = `<div class="staff-gate card" style="max-width:420px;margin:40px auto;padding:32px">
-      <h2 style="text-align:center">Employee Sign In</h2>
+    el.innerHTML = `<div class="staff-gate card" style="max-width:420px;margin:40px auto;padding:32px"><h2 style="text-align:center">Employee Sign In</h2>
       <p class="muted" style="text-align:center">Enter your Employee ID and secret PIN, or ask admin to link your POS user to your employee profile.</p>
       <div class="field"><label>Employee ID</label><input id="staff-emp-code" placeholder="EMP0001" autofocus></div>
       <div class="field"><label>PIN</label><input type="password" id="staff-emp-pin" maxlength="12" inputmode="numeric"></div>
       <button class="btn btn-primary btn-lg" id="staff-emp-login" style="width:100%">Sign In</button>
-      ${this.isStaffAdmin(this.app) ? `<button class="btn btn-ghost btn-sm" id="staff-back-hub-login" style="width:100%;margin-top:8px">â† Back to employee list</button>` : ''}
+      ${this.isStaffAdmin(this.app) ? `<button class="btn btn-ghost btn-sm" id="staff-back-hub-login" style="width:100%;margin-top:8px"><- Back to employee list</button>` : ''}
       ${!['owner', 'manager'].includes(this.app.user?.role) ? '' : `<button class="btn btn-ghost btn-sm" id="staff-relock" style="width:100%;margin-top:8px">Lock Portal</button>`}
     </div>`;
     document.getElementById('staff-emp-login').addEventListener('click', () => this.workerLogin());
@@ -405,7 +393,7 @@
     const r = await API.staffLogin(code, pin);
     if (!r.success) return Utils.toast(r.error || 'Login failed', 'error');
     this.employee = r.data;
-    // Do not retain raw PIN â€” staff:login already established pinVerified session
+    // Do not retain raw PIN " staff:login already established pinVerified session
     this.employeePin = null;
     this.pendingSelfie = !!window.StaffSelfieCapture?.selfieRequired?.();
     Utils.toast(`Welcome, ${this.employee.full_name}`, 'success');
@@ -453,8 +441,7 @@
 
   _staffSectionFail(res, label) {
     if (res && res.success !== false) return '';
-    return `<div class="staff-section-error" style="padding:10px;margin:8px 0;border:1px dashed var(--border);border-radius:8px;background:var(--bg-secondary,rgba(0,0,0,.03))">
-      <p class="error-msg" style="margin:0 0 8px">${this._esc(label)} could not be loaded. Retry.</p>
+    return `<div class="staff-section-error" style="padding:10px;margin:8px 0;border:1px dashed var(--border);border-radius:8px;background:var(--bg-secondary,rgba(0,0,0,.03))"><p class="error-msg" style="margin:0 0 8px">${this._esc(label)} could not be loaded. Retry.</p>
       <button type="button" class="btn btn-sm btn-primary staff-section-retry">Retry</button>
     </div>`;
   },
@@ -480,7 +467,7 @@
     const px = Number(size) || 40;
     const path = (emp?.photo_path || '').trim();
     if (!path) {
-      return `<div class="staff-portal-avatar" style="width:${px}px;height:${px}px;border-radius:50%;background:var(--border);display:inline-flex;align-items:center;justify-content:center;font-size:${Math.round(px * 0.45)}px;flex-shrink:0">ðŸ‘¤</div>`;
+      return `<div class="staff-portal-avatar" style="width:${px}px;height:${px}px;border-radius:50%;background:var(--border);display:inline-flex;align-items:center;justify-content:center;font-size:${Math.round(px * 0.45)}px;flex-shrink:0;font-weight:700;color:var(--muted)">${String(emp?.full_name || '?').trim().charAt(0).toUpperCase() || '?'}</div>`;
     }
     return `<div class="staff-portal-avatar" data-photo="${this._esc(path)}" style="width:${px}px;height:${px}px;border-radius:50%;background:var(--border);overflow:hidden;flex-shrink:0;display:inline-flex;align-items:center;justify-content:center;font-size:12px;color:var(--text-muted)"></div>`;
   },
@@ -496,10 +483,10 @@
         if (r?.success && (r.dataUrl || r.data)) {
           cell.innerHTML = `<img src="${r.dataUrl || r.data}" alt="" style="width:100%;height:100%;object-fit:cover">`;
         } else {
-          cell.textContent = 'ðŸ‘¤';
+          cell.textContent = '';
         }
       } catch (_) {
-        cell.textContent = 'ðŸ‘¤';
+        cell.textContent = '';
       }
     }
   },
@@ -513,49 +500,42 @@
       || myShifts.find(s => s.shift_date === yestStr && !s.is_rest_day
         && String(s.end_time || '').slice(0, 5) <= String(s.start_time || '').slice(0, 5));
     el.dataset.clockBound = '';
-    el.innerHTML = `<div class="staff-worker">
-      <div class="page-toolbar" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-        ${this._staffAvatarHtml(emp, 48)}
-        <h3 style="margin:0;flex:1">ðŸ‘· ${this._esc(emp.full_name)}</h3>
-        <div style="display:flex;gap:8px;flex-wrap:wrap">
-          ${this._adminOverride ? `<button class="btn btn-ghost" id="staff-back-hub">â† All employees</button>
+    el.innerHTML = `<div class="staff-worker"><div class="page-toolbar" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">${this._staffAvatarHtml(emp, 48)}
+        <h3 style="margin:0;flex:1">${this._esc(emp.full_name)}</h3>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">${this._adminOverride ? `<button class="btn btn-ghost" id="staff-back-hub"><- All employees</button>
             <button class="btn btn-ghost" id="staff-goto-hr">Edit in Staff &amp; HR</button>` : ''}
           <button class="btn btn-ghost" id="staff-logout-worker">${this._adminOverride ? 'Close portal' : 'Sign Out'}</button>
         </div></div>
-      ${this._adminOverride ? `<div class="card" style="margin-bottom:12px;border-color:var(--primary)"><div class="card-body">
-        <strong>Admin view</strong> â€” you are in ${this._esc(emp.full_name)}â€™s Staff Portal.
+      ${this._adminOverride ? `<div class="card" style="margin-bottom:12px;border-color:var(--primary)"><div class="card-body"><strong>Admin view</strong> — you are in ${this._esc(emp.full_name)}'s Staff Portal.
       </div></div>` : ''}
-      <div class="stats-grid" id="staff-clock-stats">
-        <div class="stat-card"><div class="label">Employee ID</div><div class="value" style="font-size:16px">${this._esc(emp.employee_code)}</div></div>
-        <div class="stat-card"><div class="label">Position</div><div class="value" style="font-size:16px">${this._esc(emp.position || 'â€”')}</div></div>
-        <div class="stat-card"><div class="label">Today's Status</div><div class="value" style="font-size:16px">${att.clock_in ? (att.clock_out ? 'Completed' : 'On Shift') : (attRes.success === false ? 'â€”' : 'Loadingâ€¦')}</div></div>
+      <div class="stats-grid" id="staff-clock-stats"><div class="stat-card"><div class="label">Employee ID</div><div class="value" style="font-size:16px">${this._esc(emp.employee_code)}</div></div>
+        <div class="stat-card"><div class="label">Position</div><div class="value" style="font-size:16px">${this._esc(emp.position || '"')}</div></div>
+        <div class="stat-card"><div class="label">Today's Status</div><div class="value" style="font-size:16px">${att.clock_in ? (att.clock_out ? 'Completed' : 'On Shift') : (attRes.success === false ? '"' : 'Loading...')}</div></div>
         <div class="stat-card"><div class="label">Hours Today</div><div class="value">${att.hours_worked || 0}h</div></div>
       </div>
-      <div class="card" style="margin-top:16px"><div class="card-body" id="staff-clock-card">
-        <h4>Clock In / Out</h4>
+      <div class="card" style="margin-top:16px"><div class="card-body" id="staff-clock-card"><h4>Clock In / Out</h4>
         ${attRes.success === false ? this._staffSectionFail(attRes, "Today's attendance / clock") : `
         <p class="muted" style="margin:4px 0 0;font-size:13px">Clock-in is only allowed on your scheduled shift
-          ${todayShift ? ` (${todayShift.shift_date === yestStr ? 'overnight from yesterday' : 'today'} ${this._esc(todayShift.start_time || '?')}â€“${this._esc(todayShift.end_time || '?')})` : ' â€” no shift assigned for today'}.
+          ${todayShift ? ` (${todayShift.shift_date === yestStr ? 'overnight from yesterday' : 'today'} ${this._esc(todayShift.start_time || '?')}"${this._esc(todayShift.end_time || '?')})` : ' " no shift assigned for today'}.
         </p>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
-          <button class="btn btn-success" data-clock="clock_in" ${att.clock_in ? 'disabled' : ''}>Clock In</button>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px"><button class="btn btn-success" data-clock="clock_in" ${att.clock_in ? 'disabled' : ''}>Clock In</button>
           <button class="btn btn-warning" data-clock="break_start" ${!att.clock_in || att.clock_out ? 'disabled' : ''}>Start Break</button>
           <button class="btn btn-ghost" data-clock="break_end" ${!att.break_start || att.break_end ? 'disabled' : ''}>End Break</button>
           <button class="btn btn-danger" data-clock="clock_out" ${!att.clock_in || att.clock_out ? 'disabled' : ''}>Clock Out</button>
         </div>
         <p class="muted" style="margin-top:10px;font-size:13px">
-          In: ${att.clock_in ? Utils.formatDateTime(att.clock_in) : 'â€”'} Â·
-          Out: ${att.clock_out ? Utils.formatDateTime(att.clock_out) : 'â€”'}
+          In: ${att.clock_in ? Utils.formatDateTime(att.clock_in) : '"'} ·
+          Out: ${att.clock_out ? Utils.formatDateTime(att.clock_out) : '"'}
         </p>`}
       </div></div>
       <div id="staff-portal-banner"></div>
       <div id="staff-routines-panel" style="margin-top:16px"></div>
-      <div id="staff-portal-secondary"><p class="muted" style="padding:16px 0">Loading attendance, leave, payroll &amp; HRâ€¦</p></div>
+      <div id="staff-portal-secondary"><p class="muted" style="padding:16px 0">Loading attendance, leave, payroll &amp; HR...</p></div>
     </div>`;
     this._hydrateStaffAvatars(el);
   },
 
-  /** Refresh stats + clock buttons after attendance loads â€” never wipes banner/secondary/routines */
+  /** Refresh stats + clock buttons after attendance loads " never wipes banner/secondary/routines */
   _updateClockCard(el, emp, attRes, schedRes) {
     const att = attRes.success !== false ? (attRes.data || {}) : {};
     const myShifts = schedRes && schedRes.success !== false ? (schedRes.data || []) : [];
@@ -568,8 +548,8 @@
     if (stats) {
       stats.innerHTML = `
         <div class="stat-card"><div class="label">Employee ID</div><div class="value" style="font-size:16px">${this._esc(emp.employee_code)}</div></div>
-        <div class="stat-card"><div class="label">Position</div><div class="value" style="font-size:16px">${this._esc(emp.position || 'â€”')}</div></div>
-        <div class="stat-card"><div class="label">Today's Status</div><div class="value" style="font-size:16px">${att.clock_in ? (att.clock_out ? 'Completed' : 'On Shift') : (attRes.success === false ? 'â€”' : 'Not Clocked In')}</div></div>
+        <div class="stat-card"><div class="label">Position</div><div class="value" style="font-size:16px">${this._esc(emp.position || '"')}</div></div>
+        <div class="stat-card"><div class="label">Today's Status</div><div class="value" style="font-size:16px">${att.clock_in ? (att.clock_out ? 'Completed' : 'On Shift') : (attRes.success === false ? '"' : 'Not Clocked In')}</div></div>
         <div class="stat-card"><div class="label">Hours Today</div><div class="value">${att.hours_worked || 0}h</div></div>`;
     }
     const card = el.querySelector('#staff-clock-card');
@@ -577,19 +557,18 @@
       card.innerHTML = attRes.success === false ? this._staffSectionFail(attRes, "Today's attendance / clock") : `
         <h4>Clock In / Out</h4>
         <p class="muted" style="margin:4px 0 0;font-size:13px">Clock-in is only allowed on your scheduled shift
-          ${todayShift ? ` (${todayShift.shift_date === yestStr ? 'overnight from yesterday' : 'today'} ${this._esc(todayShift.start_time || '?')}â€“${this._esc(todayShift.end_time || '?')})` : ' â€” no shift assigned for today'}.
+          ${todayShift ? ` (${todayShift.shift_date === yestStr ? 'overnight from yesterday' : 'today'} ${this._esc(todayShift.start_time || '?')}"${this._esc(todayShift.end_time || '?')})` : ' " no shift assigned for today'}.
           If you miss clock-out, the system auto-closes at shift end.</p>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
-          <button class="btn btn-success" data-clock="clock_in" ${att.clock_in ? 'disabled' : ''}>Clock In</button>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px"><button class="btn btn-success" data-clock="clock_in" ${att.clock_in ? 'disabled' : ''}>Clock In</button>
           <button class="btn btn-warning" data-clock="break_start" ${!att.clock_in || att.clock_out ? 'disabled' : ''}>Start Break</button>
           <button class="btn btn-ghost" data-clock="break_end" ${!att.break_start || att.break_end ? 'disabled' : ''}>End Break</button>
           <button class="btn btn-danger" data-clock="clock_out" ${!att.clock_in || att.clock_out ? 'disabled' : ''}>Clock Out</button>
         </div>
         <p class="muted" style="margin-top:10px;font-size:13px">
-          In: ${att.clock_in ? Utils.formatDateTime(att.clock_in) : 'â€”'} Â·
-          Break: ${att.break_start ? Utils.formatDateTime(att.break_start) : 'â€”'} â†’ ${att.break_end ? Utils.formatDateTime(att.break_end) : 'â€”'} Â·
-          Out: ${att.clock_out ? Utils.formatDateTime(att.clock_out) : 'â€”'}
-          ${att.auto_closed ? ' Â· <span style="color:var(--warning)">Auto-closed</span>' : ''}
+          In: ${att.clock_in ? Utils.formatDateTime(att.clock_in) : '"'} ·
+          Break: ${att.break_start ? Utils.formatDateTime(att.break_start) : '"'} -> ${att.break_end ? Utils.formatDateTime(att.break_end) : '"'} ·
+          Out: ${att.clock_out ? Utils.formatDateTime(att.clock_out) : '"'}
+          ${att.auto_closed ? ' · <span style="color:var(--warning)">Auto-closed</span>' : ''}
         </p>`;
       el.dataset.clockBound = '';
       this._bindWorkerClockOnly(el, emp);
@@ -615,7 +594,7 @@
               actor: this._adminOverride ? this.app.user : undefined
             }).finally(() => clearTimeout(timer)),
             new Promise((resolve) => {
-              timer = setTimeout(() => resolve({ success: false, error: 'Clock action timed out â€” try again' }), 12000);
+              timer = setTimeout(() => resolve({ success: false, error: 'Clock action timed out " try again' }), 12000);
             })
           ]);
           if (!r || r.success === false) {
@@ -672,12 +651,12 @@
     const yestStrEarly = Utils.daysAgo(1);
     const todayStrEarly = Utils.today();
 
-    el.innerHTML = `<div class="staff-worker"><div class="page-toolbar" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">${this._staffAvatarHtml(emp, 40)}<h3 style="margin:0;flex:1">ðŸ‘· ${this._esc(emp.full_name)}</h3>
+    el.innerHTML = `<div class="staff-worker"><div class="page-toolbar" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">${this._staffAvatarHtml(emp, 40)}<h3 style="margin:0;flex:1">${this._esc(emp.full_name)}</h3>
       <button class="btn btn-ghost" id="staff-logout-worker">${this._adminOverride ? 'Close portal' : 'Sign Out'}</button></div>
-      <p class="muted" style="padding:8px 0">Loading clockâ€¦</p></div>`;
+      <p class="muted" style="padding:8px 0">Loading clock...</p></div>`;
     document.getElementById('staff-logout-worker')?.addEventListener('click', () => this._staffSignOut());
 
-    // Paint clock shell immediately â€” never wait on APIs before buttons appear
+    // Paint clock shell immediately " never wait on APIs before buttons appear
     this._paintWorkerClockNow(el, emp, { success: true, data: {} }, { success: true, data: [] });
     this._bindWorkerClockOnly(el, emp);
     if (this.canDoRoutines(this.app, emp)) {
@@ -698,7 +677,7 @@
 
     this._updateClockCard(el, emp, attRes, schedResToday);
 
-    // PHASE 2 â€” remaining sections load in background (never blocks clock)
+    // PHASE 2 " remaining sections load in background (never blocks clock)
     this._loadWorkerPortalSecondary(el, seq, emp, attRes, {
       scheduleStart, scheduleEnd, weekStart, weekEnd, histFrom, histTo, empId, actor
     }).catch((err) => this._staffLogError('phase2', err));
@@ -764,19 +743,15 @@
     const currency = this.app.settings?.currency || 'R';
 
     const bannerHtml = `
-      ${eomFeed ? `<div class="card" style="margin-bottom:16px;border:2px solid var(--primary);background:var(--surface-alt, rgba(99,102,241,0.06))"><div class="card-body" style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">
-        ${eomPhotoHtml || '<div style="font-size:48px">ðŸ†</div>'}
-        <div style="flex:1;min-width:200px">
-          <div style="font-size:12px;text-transform:uppercase;letter-spacing:0.05em;color:var(--primary);font-weight:600">${this._esc(eomFeed.title || 'Employee of the Month')}</div>
+      ${eomFeed ? `<div class="card" style="margin-bottom:16px;border:2px solid var(--primary);background:var(--surface-alt, rgba(99,102,241,0.06))"><div class="card-body" style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">${eomPhotoHtml || '<div style="font-size:48px"></div>'}
+        <div style="flex:1;min-width:200px"><div style="font-size:12px;text-transform:uppercase;letter-spacing:0.05em;color:var(--primary);font-weight:600">${this._esc(eomFeed.title || 'Employee of the Month')}</div>
           <p style="margin:8px 0 0">${this._esc(eomFeed.message || 'Congratulations on your award!')}</p>
           ${eomFeed.created_at ? `<small class="muted">${Utils.formatDateTime(eomFeed.created_at)}</small>` : ''}
           ${emp.phone ? `<div style="margin-top:10px"><button class="btn btn-sm btn-success" id="eom-self-wa">Send Congratulations via WhatsApp</button></div>` : ''}
         </div>
       </div></div>` : ''}
-      ${checklistWarnings.length ? `<div class="card" style="margin-bottom:16px;border-color:var(--warning)"><div class="card-body">
-        <h4 style="color:var(--warning)">âš ï¸ Checklist Compliance Warnings</h4>
-        ${checklistWarnings.map(w => `<div style="padding:8px 0;border-bottom:1px solid var(--border)">
-          <strong>${w.run_type === 'opening' ? 'Morning Opening' : 'Closing'}</strong> â€” ${this._esc(w.run_date)}<br>
+      ${checklistWarnings.length ? `<div class="card" style="margin-bottom:16px;border-color:var(--warning)"><div class="card-body"><h4 style="color:var(--warning)">Checklist Compliance Warnings</h4>
+        ${checklistWarnings.map(w => `<div style="padding:8px 0;border-bottom:1px solid var(--border)"><strong>${w.run_type === 'opening' ? 'Morning Opening' : 'Closing'}</strong> " ${this._esc(w.run_date)}<br>
           <small>${this._esc(w.message || 'Routine not submitted by deadline')}</small>
           ${w.whatsapp_url ? `<br><a href="${this._esc(w.whatsapp_url)}" target="_blank" rel="noopener" class="btn btn-sm btn-ghost" style="margin-top:6px">Send WhatsApp Reminder</a>` : ''}
           ${w._worker_run ? '' : `<button class="btn btn-sm btn-ghost ack-portal-warn" data-id="${w.id}" style="margin-top:6px">Dismiss</button>`}
@@ -786,13 +761,11 @@
 `;
 
     const secondaryHtml = `
-      <div class="card" style="margin-top:16px"><div class="card-body">
-        <h4>Hours &amp; History</h4>
+      <div class="card" style="margin-top:16px"><div class="card-body"><h4>Hours &amp; History</h4>
         ${histRes.success === false ? this._staffSectionFail(histRes, 'Attendance history') : ''}
-        <p class="muted" style="font-size:13px">Showing <strong>${histFrom}</strong> â†’ <strong>${histTo}</strong>.
-          This week is ${weekStart} â†’ ${weekEnd}. Filter any dates to review older records; a new week starts each Monday.</p>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;margin:10px 0;align-items:center">
-          <input type="date" id="att-hist-from" value="${histFrom}">
+        <p class="muted" style="font-size:13px">Showing <strong>${histFrom}</strong> -> <strong>${histTo}</strong>.
+          This week is ${weekStart} -> ${weekEnd}. Filter any dates to review older records; a new week starts each Monday.</p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin:10px 0;align-items:center"><input type="date" id="att-hist-from" value="${histFrom}">
           <span>to</span>
           <input type="date" id="att-hist-to" value="${histTo}">
           <button class="btn btn-sm btn-primary" id="att-hist-go">Show records</button>
@@ -801,74 +774,61 @@
         <div class="table-wrap"><table><thead><tr><th>Date</th><th>In</th><th>Break</th><th>Out</th><th>Hours</th><th>Status</th></tr></thead>
           <tbody>${(hist.days || []).map(d => `<tr>
             <td>${d.work_date}</td>
-            <td>${d.clock_in ? Utils.formatDateTime(d.clock_in) : 'â€”'}</td>
-            <td>${d.break_start ? Utils.formatDateTime(d.break_start) : 'â€”'}${d.break_end ? ` â†’ ${Utils.formatDateTime(d.break_end)}` : ''}</td>
-            <td>${d.clock_out ? Utils.formatDateTime(d.clock_out) : 'â€”'}</td>
+            <td>${d.clock_in ? Utils.formatDateTime(d.clock_in) : '"'}</td>
+            <td>${d.break_start ? Utils.formatDateTime(d.break_start) : '"'}${d.break_end ? ` -> ${Utils.formatDateTime(d.break_end)}` : ''}</td>
+            <td>${d.clock_out ? Utils.formatDateTime(d.clock_out) : '"'}</td>
             <td><strong>${d.hours_worked ?? 0}h</strong></td>
-            <td>${d.auto_closed ? 'Auto-closed' : (d.admin_entered ? 'Admin entry' : (d.status || 'â€”'))}</td>
+            <td>${d.auto_closed ? 'Auto-closed' : (d.admin_entered ? 'Admin entry' : (d.status || '"'))}</td>
           </tr>`).join('') || '<tr><td colspan="6" class="muted">No clock records in this range (no clock-in = 0 hours)</td></tr>'}
         </tbody></table></div>
-        <p style="margin-top:8px"><strong>Period total: ${hist.total_hours || 0}h</strong> Â· Days with clock-in: ${hist.days_worked || 0}</p>
+        <p style="margin-top:8px"><strong>Period total: ${hist.total_hours || 0}h</strong> · Days with clock-in: ${hist.days_worked || 0}</p>
       </div></div>
-      ${portalSettings.show_shifts !== false ? `<div class="card" style="margin-top:16px"><div class="card-body">
-        <h4>My Shifts â€” 4 weeks (${scheduleStart} â†’ ${scheduleEnd})</h4>
+      ${portalSettings.show_shifts !== false ? `<div class="card" style="margin-top:16px"><div class="card-body"><h4>My Shifts " 4 weeks (${scheduleStart} -> ${scheduleEnd})</h4>
         ${schedRes.success === false ? this._staffSectionFail(schedRes, 'Shift information') : (myShifts.length ? `<div class="table-wrap"><table><thead><tr><th>Date</th><th>Shift</th><th>Opening</th><th>Closing</th></tr></thead>
-          <tbody>${myShifts.map(s => `<tr><td>${this._esc(s.shift_date)}</td><td>${s.is_rest_day ? 'Rest day' : this._esc(s.shift_name || 'â€”')}</td>
-            <td>${s.is_rest_day ? 'â€”' : this._esc(s.start_time || 'â€”')}</td>
-            <td>${s.is_rest_day ? 'â€”' : this._esc(s.end_time || 'â€”')}</td></tr>`).join('')}</tbody></table></div>`
-          : '<p class="muted">No shifts scheduled in this period. Ask admin to generate shifts in Admin â†’ Staff â†’ Shifts and link your user to your employee profile.</p>')}
+          <tbody>${myShifts.map(s => `<tr><td>${this._esc(s.shift_date)}</td><td>${s.is_rest_day ? 'Rest day' : this._esc(s.shift_name || '"')}</td>
+            <td>${s.is_rest_day ? '"' : this._esc(s.start_time || '"')}</td>
+            <td>${s.is_rest_day ? '"' : this._esc(s.end_time || '"')}</td></tr>`).join('')}</tbody></table></div>`
+          : '<p class="muted">No shifts scheduled in this period. Ask admin to generate shifts in Admin -> Staff -> Shifts and link your user to your employee profile.</p>')}
       </div></div>` : ''}
-      ${hrDocs.length ? `<div class="card" style="margin-top:16px"><div class="card-body">
-        <h4>HR Documents</h4>
-        ${hrDocs.map(d => `<div style="padding:8px 0;border-bottom:1px solid var(--border)">
-          <strong>${this._esc(d.doc_type || d.document_type || 'Document')}</strong>
-          ${d.title ? ` â€” ${this._esc(d.title)}` : ''}
-          ${d.created_at ? `<small class="muted"> Â· ${Utils.formatDate(d.created_at)}</small>` : ''}
+      ${hrDocs.length ? `<div class="card" style="margin-top:16px"><div class="card-body"><h4>HR Documents</h4>
+        ${hrDocs.map(d => `<div style="padding:8px 0;border-bottom:1px solid var(--border)"><strong>${this._esc(d.doc_type || d.document_type || 'Document')}</strong>
+          ${d.title ? ` " ${this._esc(d.title)}` : ''}
+          ${d.created_at ? `<small class="muted"> · ${Utils.formatDate(d.created_at)}</small>` : ''}
         </div>`).join('')}
       </div></div>` : ''}
-      ${companyRules.length ? `<div class="card" style="margin-top:16px"><div class="card-body">
-        <h4>Company Rules</h4>
-        ${companyRules.slice(0, 20).map(r => `<div style="padding:8px 0;border-bottom:1px solid var(--border)">
-          <strong>${this._esc(r.title || r.rule_number || 'Rule')}</strong>
-          ${r.category ? `<span class="muted"> Â· ${this._esc(r.category)}</span>` : ''}
+      ${companyRules.length ? `<div class="card" style="margin-top:16px"><div class="card-body"><h4>Company Rules</h4>
+        ${companyRules.slice(0, 20).map(r => `<div style="padding:8px 0;border-bottom:1px solid var(--border)"><strong>${this._esc(r.title || r.rule_number || 'Rule')}</strong>
+          ${r.category ? `<span class="muted"> · ${this._esc(r.category)}</span>` : ''}
           ${r.description ? `<p class="muted" style="margin:4px 0 0;font-size:13px">${this._esc(String(r.description).slice(0, 400))}</p>` : ''}
         </div>`).join('')}
       </div></div>` : ''}
-      ${hrSubmissions.length ? `<div class="card" style="margin-top:16px;border-color:var(--primary)"><div class="card-body">
-        <h4>HR Forms & Documents</h4>
+      ${hrSubmissions.length ? `<div class="card" style="margin-top:16px;border-color:var(--primary)"><div class="card-body"><h4>HR Forms & Documents</h4>
         <p class="muted" style="font-size:13px">Complete assigned training, probation, or employment forms and upload supporting documents.</p>
-        ${hrSubmissions.map(s => `<div style="padding:10px 0;border-bottom:1px solid var(--border)">
-          <strong>${s.template_type}</strong> â€” ${s.template_title || 'Form'} Â· <span class="tag">${s.submitted_at ? 'Submitted' : 'Pending'}</span>
+        ${hrSubmissions.map(s => `<div style="padding:10px 0;border-bottom:1px solid var(--border)"><strong>${s.template_type}</strong> " ${s.template_title || 'Form'} · <span class="tag">${s.submitted_at ? 'Submitted' : 'Pending'}</span>
           ${s.status === 'pending' && !s.submitted_at ? `<details style="margin-top:8px"><summary class="muted" style="cursor:pointer;font-size:12px">View agreement template</summary>
             <pre style="white-space:pre-wrap;font-size:11px;max-height:160px;overflow:auto;margin-top:8px;background:var(--bg-secondary);padding:8px;border-radius:6px">${Utils.escHtml((s.filled_data?.template_body || '').slice(0, 2000))}</pre></details>
-            <div style="margin-top:8px">
-            <textarea id="hr-form-${s.id}" rows="4" style="width:100%" placeholder="Fill in employee details and sign-off notesâ€¦">${Utils.escHtml(s.filled_data?.employee_response || '')}</textarea>
-            <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
-              <button class="btn btn-sm btn-ghost hr-upload-doc" data-id="${s.id}">Upload CV / Document</button>
+            <div style="margin-top:8px"><textarea id="hr-form-${s.id}" rows="4" style="width:100%" placeholder="Fill in employee details and sign-off notes...">${Utils.escHtml(s.filled_data?.employee_response || '')}</textarea>
+            <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap"><button class="btn btn-sm btn-ghost hr-upload-doc" data-id="${s.id}">Upload CV / Document</button>
               <button class="btn btn-sm btn-primary hr-submit-form" data-id="${s.id}">Submit to Admin</button>
             </div>
-          </div>` : `<p class="muted" style="font-size:12px;margin-top:4px">${s.submitted_at ? `Submitted ${Utils.formatDateTime(s.submitted_at)}` : `Updated ${Utils.formatDateTime(s.updated_at || s.created_at)}`} Â· ${s.status}</p>`}
+          </div>` : `<p class="muted" style="font-size:12px;margin-top:4px">${s.submitted_at ? `Submitted ${Utils.formatDateTime(s.submitted_at)}` : `Updated ${Utils.formatDateTime(s.updated_at || s.created_at)}`} · ${s.status}</p>`}
         </div>`).join('')}
       </div></div>` : ''}
-      <div class="staff-portal-split">
-        <div class="card"><div class="card-body">
-          <h4>Leave Balance</h4>
+      <div class="staff-portal-split"><div class="card"><div class="card-body"><h4>Leave Balance</h4>
           ${balRes.success === false ? this._staffSectionFail(balRes, 'Leave balance') : `
           <p>Annual: ${(bal.annual?.total || 0) - (bal.annual?.used || 0)} left</p>
           <p>Sick: ${(bal.sick?.total || 0) - (bal.sick?.used || 0)} left</p>
           <p>Family: ${(bal.family?.total || 0) - (bal.family?.used || 0)} left</p>`}
           <p class="muted" style="font-size:12px;margin-top:8px">
-            Portal: <strong>${leaveOpen ? 'Open' : 'Closed'}</strong> Â· Sick leave always allowed
+            Portal: <strong>${leaveOpen ? 'Open' : 'Closed'}</strong> · Sick leave always allowed
             ${maxMonth ? `<br>Requests this month: ${portalSettings.requests_this_month || 0} / ${maxMonth}` : ''}
             ${maxYear ? `<br>Requests this year: ${portalSettings.requests_this_year || 0} / ${maxYear}` : ''}
           </p>
-          ${(portalSettings.active_blackouts || []).length ? `<p class="muted" style="font-size:12px;color:var(--warning)">Blackout periods apply â€” only sick leave allowed on blocked dates.</p>` : ''}
+          ${(portalSettings.active_blackouts || []).length ? `<p class="muted" style="font-size:12px;color:var(--warning)">Blackout periods apply " only sick leave allowed on blocked dates.</p>` : ''}
           <button class="btn btn-primary btn-sm" id="staff-request-leave" style="margin-top:8px">Request Leave</button>
         </div></div>
-        ${portalSettings.show_payslips !== false ? `<div class="card"><div class="card-body">
-          <h4>Recent Payslips</h4>
-          ${payRes.success === false ? this._staffSectionFail(payRes, 'Payroll') : (payroll.length ? payroll.map(p => `<div style="padding:6px 0;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px">
-            <span>${p.period_start} â€“ ${p.period_end}<br><small class="muted">${p.status}</small></span>
+        ${portalSettings.show_payslips !== false ? `<div class="card"><div class="card-body"><h4>Recent Payslips</h4>
+          ${payRes.success === false ? this._staffSectionFail(payRes, 'Payroll') : (payroll.length ? payroll.map(p => `<div style="padding:6px 0;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px"><span>${p.period_start} " ${p.period_end}<br><small class="muted">${p.status}</small></span>
             <span style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">
               <strong>${Utils.formatMoney(p.net_salary, currency)}</strong>
               <button class="btn btn-sm btn-ghost dl-payslip" data-id="${p.id}" title="Download PDF">Download PDF</button>
@@ -877,17 +837,14 @@
           </div>`).join('') : '<p class="muted">No payslips yet</p>')}
         </div></div>` : ''}
       </div>
-      <div class="card" style="margin-top:16px"><div class="card-body">
-        <h4>My Leave Requests</h4>
+      <div class="card" style="margin-top:16px"><div class="card-body"><h4>My Leave Requests</h4>
         ${leaveRes.success === false ? this._staffSectionFail(leaveRes, 'Leave requests') : ''}
         ${leaveRes.success === false ? '' : (leaves.length ? leaves.slice(0, 8).map(l => {
           const ended = (l.end_date || l.start_date) <= Utils.today();
           const needsProof = l.status === 'approved' && ended && /sick/i.test(l.leave_type || '') && !l.proof_confirmed_at;
           const proofPending = l.proof_path && !l.proof_confirmed_at;
-          return `<div style="padding:10px 0;border-bottom:1px solid var(--border)">
-            <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px">
-              <span>${l.leave_type} Â· ${l.start_date} â€“ ${l.end_date} Â· <strong>${l.status}</strong>
-                ${proofPending ? '<br><small style="color:var(--warning)">Proof submitted â€” awaiting admin confirmation</small>' : ''}
+          return `<div style="padding:10px 0;border-bottom:1px solid var(--border)"><div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px"><span>${l.leave_type} · ${l.start_date} " ${l.end_date} · <strong>${l.status}</strong>
+                ${proofPending ? '<br><small style="color:var(--warning)">Proof submitted " awaiting admin confirmation</small>' : ''}
                 ${l.proof_confirmed_at ? '<br><small style="color:var(--success)">Proof confirmed</small>' : ''}
               </span>
               ${l.status === 'approved' ? `<span style="display:flex;gap:4px;flex-wrap:wrap">
@@ -895,22 +852,17 @@
                 ${emp.phone ? `<button class="btn btn-sm btn-success lv-wa" data-id="${l.id}">WhatsApp</button>` : ''}
               </span>` : ''}
             </div>
-            ${needsProof && !l.proof_path ? `<div style="margin-top:8px;padding:10px;background:var(--bg-secondary);border-radius:8px">
-              <small class="muted">Upload sick leave proof (doctor's note / certificate)</small>
-              <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
-                <button class="btn btn-sm btn-ghost lv-proof-upload" data-id="${l.id}" title="Upload picture">ðŸ–¼ Upload</button>
-                <button class="btn btn-sm btn-primary lv-proof-camera" data-id="${l.id}" title="Take photo">ðŸ“· Take Photo</button>
+            ${needsProof && !l.proof_path ? `<div style="margin-top:8px;padding:10px;background:var(--bg-secondary);border-radius:8px"><small class="muted">Upload sick leave proof (doctor's note / certificate)</small>
+              <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap"><button class="btn btn-sm btn-ghost lv-proof-upload" data-id="${l.id}" title="Upload picture">Upload</button>
+                <button class="btn btn-sm btn-primary lv-proof-camera" data-id="${l.id}" title="Take photo">Take Photo</button>
               </div>
             </div>` : ''}
           </div>`;
         }).join('') : '<p class="muted">No leave requests</p>')}
       </div></div>
-      ${portalSettings.show_disciplinary !== false ? `<div class="card" style="margin-top:16px"><div class="card-body">
-        <h4>Warnings, Hearings & Disciplinary</h4>
+      ${portalSettings.show_disciplinary !== false ? `<div class="card" style="margin-top:16px"><div class="card-body"><h4>Warnings, Hearings & Disciplinary</h4>
         ${discRes.success === false ? this._staffSectionFail(discRes, 'Disciplinary records') : ''}
-        ${discRes.success === false ? '' : (disciplinary.length ? disciplinary.map(d => `<div style="padding:10px 0;border-bottom:1px solid var(--border)">
-          <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px">
-            <span><strong>${this._esc(d.record_type)}</strong> Â· ${this._esc(d.incident_date)}<br>
+        ${discRes.success === false ? '' : (disciplinary.length ? disciplinary.map(d => `<div style="padding:10px 0;border-bottom:1px solid var(--border)"><div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px"><span><strong>${this._esc(d.record_type)}</strong> · ${this._esc(d.incident_date)}<br>
             <small>${this._esc(d.description || '')}</small>
             ${d.action_taken ? `<br><small class="muted">Action: ${this._esc(d.action_taken)}</small>` : ''}
             ${d.worker_response ? `<br><small style="color:var(--success)">Your response: ${this._esc(d.worker_response)}</small>` : ''}
@@ -921,13 +873,12 @@
               ${emp.phone ? `<button class="btn btn-sm btn-success disc-wa" data-id="${d.id}">WhatsApp</button>` : ''}
             </span>
           </div>
-          ${!d.worker_response && (d.requires_response || portalSettings.require_disciplinary_response) && d.status !== 'responded' ? `<div style="margin-top:8px">
-            <textarea id="disc-resp-${d.id}" rows="2" placeholder="Your written responseâ€¦" style="width:100%"></textarea>
+          ${!d.worker_response && (d.requires_response || portalSettings.require_disciplinary_response) && d.status !== 'responded' ? `<div style="margin-top:8px"><textarea id="disc-resp-${d.id}" rows="2" placeholder="Your written response..." style="width:100%"></textarea>
             <button class="btn btn-sm btn-primary disc-respond" data-id="${d.id}" style="margin-top:6px">Submit Response</button>
           </div>` : ''}
         </div>`).join('') : '<p class="muted">No disciplinary records</p>')}
       </div></div>` : ''}
-      <div id="staff-portal-deferred"><p class="muted" style="font-size:13px;padding:8px 0">Loading contracts &amp; salary claimsâ€¦</p></div>
+      <div id="staff-portal-deferred"><p class="muted" style="font-size:13px;padding:8px 0">Loading contracts &amp; salary claims...</p></div>
 `;
 
     const secondaryEl = el.querySelector('#staff-portal-secondary');
@@ -938,30 +889,23 @@
       secondaryEl.innerHTML = secondaryHtml;
     } else {
       el.dataset.clockBound = '';
-      el.innerHTML = `<div class="staff-worker">
-      <div class="page-toolbar" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-        ${this._staffAvatarHtml(emp, 48)}
-        <h3 style="margin:0;flex:1">ðŸ‘· ${this._esc(emp.full_name)}</h3>
-        <div style="display:flex;gap:8px;flex-wrap:wrap">
-          ${this._adminOverride ? `<button class="btn btn-ghost" id="staff-back-hub">â† All employees</button>
+      el.innerHTML = `<div class="staff-worker"><div class="page-toolbar" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">${this._staffAvatarHtml(emp, 48)}
+        <h3 style="margin:0;flex:1">${this._esc(emp.full_name)}</h3>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">${this._adminOverride ? `<button class="btn btn-ghost" id="staff-back-hub"><- All employees</button>
             <button class="btn btn-ghost" id="staff-goto-hr">Edit in Staff &amp; HR</button>` : ''}
           <button class="btn btn-ghost" id="staff-logout-worker">${this._adminOverride ? 'Close portal' : 'Sign Out'}</button>
         </div></div>
-      ${this._adminOverride ? `<div class="card" style="margin-bottom:12px;border-color:var(--primary)"><div class="card-body">
-        <strong>Admin view</strong> â€” you are in ${this._esc(emp.full_name)}â€™s Staff Portal.
+      ${this._adminOverride ? `<div class="card" style="margin-bottom:12px;border-color:var(--primary)"><div class="card-body"><strong>Admin view</strong> — you are in ${this._esc(emp.full_name)}'s Staff Portal.
       </div></div>` : ''}
       <div id="staff-portal-banner">${bannerHtml}</div>
       ${this.canDoRoutines(this.app, emp) ? '<div id="staff-routines-panel" style="margin-bottom:16px"></div>' : ''}
-      <div class="stats-grid">
-        <div class="stat-card"><div class="label">Employee ID</div><div class="value" style="font-size:16px">${this._esc(emp.employee_code)}</div></div>
-        <div class="stat-card"><div class="label">Position</div><div class="value" style="font-size:16px">${this._esc(emp.position || 'â€”')}</div></div>
+      <div class="stats-grid"><div class="stat-card"><div class="label">Employee ID</div><div class="value" style="font-size:16px">${this._esc(emp.employee_code)}</div></div>
+        <div class="stat-card"><div class="label">Position</div><div class="value" style="font-size:16px">${this._esc(emp.position || '"')}</div></div>
         <div class="stat-card"><div class="label">Today's Status</div><div class="value" style="font-size:16px">${att.clock_in ? (att.clock_out ? 'Completed' : 'On Shift') : 'Not Clocked In'}</div></div>
         <div class="stat-card"><div class="label">Hours Today</div><div class="value">${att.hours_worked || 0}h</div></div>
       </div>
-      <div class="card" style="margin-top:16px"><div class="card-body">
-        <h4>Clock In / Out</h4>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
-          <button class="btn btn-success" data-clock="clock_in" ${att.clock_in ? 'disabled' : ''}>Clock In</button>
+      <div class="card" style="margin-top:16px"><div class="card-body"><h4>Clock In / Out</h4>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px"><button class="btn btn-success" data-clock="clock_in" ${att.clock_in ? 'disabled' : ''}>Clock In</button>
           <button class="btn btn-warning" data-clock="break_start" ${!att.clock_in || att.clock_out ? 'disabled' : ''}>Start Break</button>
           <button class="btn btn-ghost" data-clock="break_end" ${!att.break_start || att.break_end ? 'disabled' : ''}>End Break</button>
           <button class="btn btn-danger" data-clock="clock_out" ${!att.clock_in || att.clock_out ? 'disabled' : ''}>Clock Out</button>
@@ -1138,7 +1082,7 @@
     const submitProof = async (leaveId, imageData) => {
       const r = await API.submitStaffLeaveProof(parseInt(leaveId, 10), emp.id, imageData);
       if (!r.success) return Utils.toast(r.error, 'error');
-      Utils.toast('Proof submitted â€” admin will confirm', 'success');
+      Utils.toast('Proof submitted " admin will confirm', 'success');
       this._rerender();
     };
     el.querySelectorAll('.lv-proof-upload').forEach(btn => {
@@ -1182,7 +1126,7 @@
         const phone = emp.phone;
         if (!phone) return Utils.toast('No phone on your employee record', 'error');
         const waRes = await Utils.sendDisciplinaryWhatsApp(this.app, d, emp);
-        if (!waRes?.success) Utils.openWhatsApp(phone, `${d.record_type} â€” ${d.incident_date}\n${d.description || ''}`);
+        if (!waRes?.success) Utils.openWhatsApp(phone, `${d.record_type} " ${d.incident_date}\n${d.description || ''}`);
       });
     });
 
@@ -1200,7 +1144,7 @@
       await Utils.deliverWhatsApp(r, emp.phone);
     });
 
-    // WAVE 2 â€” contracts & salary claims (never blocks clock)
+    // WAVE 2 " contracts & salary claims (never blocks clock)
     (async () => {
       const deferred = el.querySelector('#staff-portal-deferred');
       if (!deferred) return;
@@ -1212,42 +1156,37 @@
       myContracts = (contractRes.success !== false && Array.isArray(contractRes.data)) ? contractRes.data : [];
       salaryClaims = (claimRes.success !== false && Array.isArray(claimRes.data)) ? claimRes.data : [];
       deferred.innerHTML = `
-      ${myContracts.length ? `<div class="card" style="margin-top:16px;border-color:var(--warning)"><div class="card-body">
-        <h4>Employment Contracts</h4>
+      ${myContracts.length ? `<div class="card" style="margin-top:16px;border-color:var(--warning)"><div class="card-body"><h4>Employment Contracts</h4>
         <p class="muted" style="font-size:13px">When a contract expires, admin opens a re-sign window. Upload your documents, then sign.</p>
         ${myContracts.map(c => {
           const docs = (() => { try { return typeof c.doc_paths_json === 'string' ? JSON.parse(c.doc_paths_json || '[]') : (c.doc_paths || []); } catch { return []; } })();
           const needsSign = c.status === 'pending_signatures' && !c.employee_signed_at;
           const windowOpen = !c.resign_opens_at || new Date() >= new Date(c.resign_opens_at);
           const windowClosed = c.resign_closes_at && new Date() > new Date(c.resign_closes_at);
-          return `<div style="padding:10px 0;border-bottom:1px solid var(--border)">
-            <strong>${Utils.escHtml(c.template_name || c.emp_position || 'Contract')}</strong>
-            Â· <span class="tag">${c.status}</span>
+          return `<div style="padding:10px 0;border-bottom:1px solid var(--border)"><strong>${Utils.escHtml(c.template_name || c.emp_position || 'Contract')}</strong>
+            · <span class="tag">${c.status}</span>
             ${c.expires_at ? `<br><small class="muted">Expires: ${Utils.formatDateTime(c.expires_at)}</small>` : ''}
             ${c.resign_opens_at ? `<br><small class="muted">Re-sign from: ${Utils.formatDateTime(c.resign_opens_at)}${c.resign_closes_at ? ' until ' + Utils.formatDateTime(c.resign_closes_at) : ''}</small>` : ''}
             ${docs.length ? `<br><small style="color:var(--success)">${docs.length} document(s) uploaded</small>` : ''}
-            <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
-              <button class="btn btn-sm btn-ghost ctr-pdf" data-id="${c.id}">PDF</button>
+            <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap"><button class="btn btn-sm btn-ghost ctr-pdf" data-id="${c.id}">PDF</button>
               ${needsSign && windowOpen && !windowClosed ? `
                 <button class="btn btn-sm btn-ghost ctr-upload" data-id="${c.id}">Upload documents</button>
                 <button class="btn btn-sm btn-primary ctr-sign" data-id="${c.id}">Sign contract</button>` : ''}
-              ${needsSign && !windowOpen ? `<span class="muted" style="font-size:12px">Waiting for re-sign windowâ€¦</span>` : ''}
-              ${needsSign && windowClosed ? `<span class="muted" style="font-size:12px;color:var(--danger)">Re-sign window closed â€” contact admin</span>` : ''}
+              ${needsSign && !windowOpen ? `<span class="muted" style="font-size:12px">Waiting for re-sign window...</span>` : ''}
+              ${needsSign && windowClosed ? `<span class="muted" style="font-size:12px;color:var(--danger)">Re-sign window closed " contact admin</span>` : ''}
             </div>
           </div>`;
         }).join('')}
       </div></div>` : ''}
-      ${salaryClaims.length ? `<div class="card" style="margin-top:16px;border-color:var(--success)"><div class="card-body">
-        <h4>Salary Claims</h4>
+      ${salaryClaims.length ? `<div class="card" style="margin-top:16px;border-color:var(--success)"><div class="card-body"><h4>Salary Claims</h4>
         <p class="muted" style="font-size:13px">Claim your salary before the deadline. Admin must approve (with their signature) before payment.</p>
         ${salaryClaims.map(cl => {
           const canClaim = ['open', 'rejected'].includes(cl.status)
             && (!cl.claim_opens_at || new Date() >= new Date(cl.claim_opens_at))
             && (!cl.claim_deadline || new Date() <= new Date(cl.claim_deadline));
-          return `<div style="padding:10px 0;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px">
-            <span><strong>${cl.period_start} â€“ ${cl.period_end}</strong><br>
-              <small>Net ${Utils.formatMoney(cl.amount || cl.net_amount, currency)} Â· <span class="tag">${cl.status}</span></small>
-              <br><small class="muted">Claim by: ${Utils.formatDateTime(cl.claim_deadline)}${cl.payment_date ? ' Â· Pay date: ' + cl.payment_date : ''}</small>
+          return `<div style="padding:10px 0;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px"><span><strong>${cl.period_start} " ${cl.period_end}</strong><br>
+              <small>Net ${Utils.formatMoney(cl.amount || cl.net_amount, currency)} · <span class="tag">${cl.status}</span></small>
+              <br><small class="muted">Claim by: ${Utils.formatDateTime(cl.claim_deadline)}${cl.payment_date ? ' · Pay date: ' + cl.payment_date : ''}</small>
             </span>
             <span style="display:flex;gap:4px;flex-wrap:wrap">
               ${canClaim ? `<button class="btn btn-sm btn-primary sc-claim" data-id="${cl.id}">Claim salary</button>` : ''}
@@ -1337,8 +1276,7 @@
       this._staffLogError('phase2', phase2Err);
       const secondary = el.querySelector('#staff-portal-secondary');
       if (secondary) {
-        secondary.innerHTML = `<div class="card" style="padding:16px;margin-top:12px">
-          <p class="error-msg">${this._esc(phase2Err?.message || 'Could not load portal sections')}</p>
+        secondary.innerHTML = `<div class="card" style="padding:16px;margin-top:12px"><p class="error-msg">${this._esc(phase2Err?.message || 'Could not load portal sections')}</p>
           <button type="button" class="btn btn-primary staff-section-retry">Retry</button>
         </div>`;
         secondary.querySelectorAll('.staff-section-retry').forEach(btn => {
@@ -1362,11 +1300,10 @@
       showMorning ? `<button type="button" class="form-tab ${this._routineTab === 'opening' ? 'active' : ''}" data-rtab="opening">Morning Tasks</button>` : '',
       showClosing ? `<button type="button" class="form-tab ${this._routineTab === 'closing' ? 'active' : ''}" data-rtab="closing">Closing Tasks</button>` : ''
     ].filter(Boolean).join('');
-    el.innerHTML = `<div class="card" style="border:2px solid var(--primary)"><div class="card-body">
-      <h4>âœ… Today's Assigned Tasks</h4>
-      <p class="muted">Admin assigns these in Operations â†’ Morning/Closing. Tick every checkbox, then <strong>Submit to Admin</strong>.</p>
+    el.innerHTML = `<div class="card" style="border:2px solid var(--primary)"><div class="card-body"><h4>Today's Assigned Tasks</h4>
+      <p class="muted">Admin assigns these in Operations -> Morning/Closing. Tick every checkbox, then <strong>Submit to Admin</strong>.</p>
       <div class="form-tabs" id="staff-routine-tabs">${tabButtons}</div>
-      <div id="staff-routine-content"><p class="muted">Loadingâ€¦</p></div>
+      <div id="staff-routine-content"><p class="muted">Loading...</p></div>
     </div></div>`;
 
     el.querySelector('#staff-routine-tabs')?.addEventListener('click', (e) => {
@@ -1446,33 +1383,30 @@
     const emptyMsg = loadError
       || (myTemplates.length
         ? 'Could not start your task list. Tap Start to try again.'
-        : `No ${type === 'opening' ? 'morning' : 'closing'} tasks are assigned to you. Ask admin to assign tasks to your name (or â€œAny workerâ€).`);
+        : `No ${type === 'opening' ? 'morning' : 'closing'} tasks are assigned to you. Ask admin to assign tasks to your name (or "Any worker").`);
 
     el.innerHTML = `
       <h4 style="margin-top:12px">${label}</h4>
-      <p class="muted" style="margin:4px 0 0">Tick <strong>every</strong> task checkbox, then submit before <strong>${deadline}</strong>.${intervalMin > 0 ? ` Wait <strong>${intervalMin} min</strong> between checkboxes.` : ''} After the deadline you cannot submit â€” it is recorded as failed and affects Employee of the Month.</p>
-      ${canEdit && pastDeadline ? `<p style="color:var(--danger);margin:8px 0 0">Deadline ${deadline} has passed â€” submit is locked.</p>` : ''}
+      <p class="muted" style="margin:4px 0 0">Tick <strong>every</strong> task checkbox, then submit before <strong>${deadline}</strong>.${intervalMin > 0 ? ` Wait <strong>${intervalMin} min</strong> between checkboxes.` : ''} After the deadline you cannot submit " it is recorded as failed and affects Employee of the Month.</p>
+      ${canEdit && pastDeadline ? `<p style="color:var(--danger);margin:8px 0 0">Deadline ${deadline} has passed " submit is locked.</p>` : ''}
       ${canEdit && !allDone ? `<p class="muted" style="margin:8px 0 0">Submit unlocks when all ${items.length} checkbox(es) are done (${items.filter(i => i.item_status === 'done' || (!i.item_status && i.completed)).length}/${items.length}).</p>` : ''}
-      <div style="display:flex;gap:8px;margin:12px 0;flex-wrap:wrap">
-        ${!activeRun || activeRun.status === 'confirmed' || (isFailed && !(activeRun.items || []).length) ? `<button class="btn btn-primary btn-sm" id="sr-start">Start Today's Tasks</button>` : ''}
+      <div style="display:flex;gap:8px;margin:12px 0;flex-wrap:wrap">${!activeRun || activeRun.status === 'confirmed' || (isFailed && !(activeRun.items || []).length) ? `<button class="btn btn-primary btn-sm" id="sr-start">Start Today's Tasks</button>` : ''}
         ${canEdit ? `<button class="btn btn-success btn-sm" id="sr-submit" ${canSubmit ? '' : 'disabled title="Complete all checkboxes before the deadline"'}>Submit to Admin</button>` : ''}
         ${activeRun ? `<button class="btn btn-ghost btn-sm" id="sr-pdf">PDF</button>
           <button class="btn btn-ghost btn-sm" id="sr-print">Print</button>` : ''}
       </div>
       ${activeRun ? `<p><strong>Status:</strong> ${activeRun.status}
-        ${activeRun.submitted_at ? ` Â· Submitted ${Utils.formatDateTime(activeRun.submitted_at)}` : ''}
-        ${isFailed ? ` Â· <span style="color:var(--danger)">${Utils.escHtml(activeRun.failure_reason || 'Failed â€” deadline missed')}</span>` : ''}</p>
+        ${activeRun.submitted_at ? ` · Submitted ${Utils.formatDateTime(activeRun.submitted_at)}` : ''}
+        ${isFailed ? ` · <span style="color:var(--danger)">${Utils.escHtml(activeRun.failure_reason || 'Failed " deadline missed')}</span>` : ''}</p>
         ${(activeRun.items || []).map(i => {
           const done = i.item_status === 'done' || (!i.item_status && i.completed);
           const locked = activeRun.status === 'submitted' || activeRun.status === 'confirmed' || isFailed;
-          return `<label style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--border);cursor:${canEdit && !locked ? 'pointer' : 'default'}">
-            <input type="checkbox" class="sr-check" data-id="${i.id}" ${done ? 'checked' : ''} ${!canEdit || locked || done ? 'disabled' : ''} style="width:18px;height:18px;accent-color:var(--success)">
+          return `<label style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--border);cursor:${canEdit && !locked ? 'pointer' : 'default'}"><input type="checkbox" class="sr-check" data-id="${i.id}" ${done ? 'checked' : ''} ${!canEdit || locked || done ? 'disabled' : ''} style="width:18px;height:18px;accent-color:var(--success)">
             <span style="flex:1">${i.task_name}</span>
-            ${done ? `<small class="muted">${i.employee_name || ''}${i.comments ? ` â€” ${i.comments}` : ''}</small>` : ''}
+            ${done ? `<small class="muted">${i.employee_name || ''}${i.comments ? ` " ${i.comments}` : ''}</small>` : ''}
           </label>`;
         }).join('') || '<p class="muted">This run has no tasks.</p>'}` : `<p class="muted">${emptyMsg}</p>
-        ${!activeRun && myTemplates.length ? `<div style="margin-top:8px">${myTemplates.map(t => `<label style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border);opacity:0.7">
-            <input type="checkbox" disabled style="width:18px;height:18px"><span>${t.task_name}</span>
+        ${!activeRun && myTemplates.length ? `<div style="margin-top:8px">${myTemplates.map(t => `<label style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border);opacity:0.7"><input type="checkbox" disabled style="width:18px;height:18px"><span>${t.task_name}</span>
             <small class="muted">${t.assigned_employee_id ? '' : 'Any worker'}</small>
           </label>`).join('')}</div>` : ''}`}`;
 
@@ -1484,7 +1418,7 @@
       else Utils.toast(r.error, 'error');
     });
     document.getElementById('sr-submit')?.addEventListener('click', async () => {
-      if (pastDeadline) return Utils.toast(`Deadline ${deadline} has passed â€” cannot submit`, 'error');
+      if (pastDeadline) return Utils.toast(`Deadline ${deadline} has passed " cannot submit`, 'error');
       if (!allDone) return Utils.toast('Tick every task checkbox before submitting', 'error');
       const r = await API.submitChecklistRun(activeRun.id, this.staffRoutineActor(empIdOk));
       if (r.success) {
@@ -1517,11 +1451,10 @@
     const isSick = (t) => /sick/i.test(t || '');
     const defaultTypes = leaveOpen ? leaveTypes : leaveTypes.filter(isSick);
     if (!defaultTypes.length) {
-      return Utils.toast('Leave requests are closed. Contact admin â€” only sick leave is accepted when closed.', 'error');
+      return Utils.toast('Leave requests are closed. Contact admin " only sick leave is accepted when closed.', 'error');
     }
     Utils.showModal('Request Leave', `
-      <div class="form-grid">
-        ${!leaveOpen ? `<p class="muted full" style="color:var(--warning)">Leave portal is closed. Only sick leave can be submitted.</p>` : ''}
+      <div class="form-grid">${!leaveOpen ? `<p class="muted full" style="color:var(--warning)">Leave portal is closed. Only sick leave can be submitted.</p>` : ''}
         <div class="field"><label>Leave Type</label>
           <select id="sl-type">${defaultTypes.map(t => `<option>${t}</option>`).join('')}</select></div>
         <div class="field"><label>Start Date</label><input type="date" id="sl-start" value="${Utils.today()}"></div>
@@ -1529,7 +1462,7 @@
         <div class="field"><label>Days</label><input type="number" id="sl-days" min="0.5" step="0.5" value="1"></div>
         <div class="field full"><label>Notes</label><input id="sl-notes"></div>
         ${minNotice ? `<p class="muted full">Minimum ${minNotice} day(s) notice required for non-sick leave.</p>` : ''}
-        ${(portalSettings.active_blackouts || []).length ? `<p class="muted full">Some dates are blocked by admin â€” sick leave is exempt.</p>` : ''}
+        ${(portalSettings.active_blackouts || []).length ? `<p class="muted full">Some dates are blocked by admin " sick leave is exempt.</p>` : ''}
       </div>`,
       '<button class="btn btn-primary" id="sl-save">Submit Request</button>');
     document.getElementById('sl-save').addEventListener('click', async () => {

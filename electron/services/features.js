@@ -844,14 +844,24 @@ function addCustomerCreditCharge(customerId, amount, saleId, notes, actorId) {
   return newBal;
 }
 
-function addCustomerCreditPayment(customerId, amount, notes, actorId) {
+function addCustomerCreditPayment(customerId, amount, notes, actorId, paymentMethod) {
   const db = getDb();
   const c = db.prepare('SELECT balance FROM customers WHERE id = ?').get(customerId);
   const newBal = Math.max(0, (c?.balance || 0) - amount);
   db.prepare('UPDATE customers SET balance = ? WHERE id = ?').run(newBal, customerId);
-  db.prepare('INSERT INTO customer_credit_ledger (customer_id, amount, type, balance_after, notes, user_id) VALUES (?,?,?,?,?,?)')
+  const r = db.prepare('INSERT INTO customer_credit_ledger (customer_id, amount, type, balance_after, notes, user_id) VALUES (?,?,?,?,?,?)')
     .run(customerId, -amount, 'payment', newBal, notes, actorId);
-  return newBal;
+  const ledgerId = Number(r.lastInsertRowid) || Number(db.prepare('SELECT id FROM customer_credit_ledger ORDER BY id DESC LIMIT 1').get()?.id) || 0;
+  if (ledgerId && paymentMethod) {
+    try { db.prepare('UPDATE customer_credit_ledger SET payment_method=? WHERE id=?').run(paymentMethod, ledgerId); } catch (_) { /* optional column */ }
+  }
+  try {
+    const { runIntegration } = require('./accounting-central');
+    runIntegration('postFromCustomerCreditPayment', ledgerId);
+  } catch (err) {
+    console.warn('[customer credit] accounting:', err.message);
+  }
+  return { balance: newBal, ledger_id: ledgerId };
 }
 
 function getCustomerCreditLedger(customerId) {

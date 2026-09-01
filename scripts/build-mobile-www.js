@@ -177,7 +177,7 @@ esbuild.build({
   const re = /process\.env(?:\.[A-Za-z0-9_]+|\[)/g;
   let m;
   while ((m = re.exec(code))) {
-    const start = Math.max(0, m.index - 48);
+    const start = Math.max(0, m.index - 96);
     const ctx = code.slice(start, m.index + m[0].length + 8);
     // Allow only when preceded by a typeof process check nearby
     if (!/typeof process/.test(ctx)) {
