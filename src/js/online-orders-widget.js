@@ -7,7 +7,8 @@ const OnlineOrdersWidget = {
   _knownIds: new Set(),
   _remindedIds: new Set(),
   _popupOpen: false,
-  _pollMs: 4000,
+  _panelOpen: false,
+  _pollMs: 8000,
 
   bind(app) {
     this._app = app;
@@ -78,9 +79,8 @@ const OnlineOrdersWidget = {
       this.checkReminders(pending);
       this.updateBadge(pending.length);
 
-      // Refresh open panel without manual click
-      if (document.getElementById('oo-list') && !this._popupOpen) {
-        this.renderPanel();
+      if (this._panelOpen && document.getElementById('oo-list') && !this._popupOpen) {
+        this.refreshPanelList();
       }
     } catch (_) { /* ignore */ }
   },
@@ -241,8 +241,28 @@ const OnlineOrdersWidget = {
       return;
     }
     this._panelTab = tab;
+    this._panelOpen = true;
     await this.refreshOrders();
     this.renderPanel();
+  },
+
+  refreshPanelList() {
+    const tab = this._panelTab || 'pending';
+    const pending = this.pendingOrders();
+    const accepted = this.acceptedOrders();
+    const history = this.historyOrders();
+    const rows = tab === 'accepted' ? accepted : tab === 'history' ? history : pending;
+    const list = document.getElementById('oo-list');
+    if (!list) return;
+    list.innerHTML = rows.length
+      ? rows.map((o) => this.renderOrderRow(o)).join('')
+      : `<p class="muted" style="padding:16px 0;text-align:center">No orders in this list.</p>`;
+    document.querySelectorAll('#oo-tabs .form-tab').forEach((btn) => {
+      const t = btn.dataset.ooTab;
+      const count = t === 'accepted' ? accepted.length : t === 'history' ? history.length : pending.length;
+      const tag = btn.querySelector('.tag');
+      if (tag) tag.textContent = String(count);
+    });
   },
 
   renderPanel() {
@@ -268,7 +288,10 @@ const OnlineOrdersWidget = {
       </div>`,
       `<button type="button" class="btn btn-ghost" id="oo-close">Close</button>`);
 
-    document.getElementById('oo-close')?.addEventListener('click', () => Utils.hideModal());
+    document.getElementById('oo-close')?.addEventListener('click', () => {
+      this._panelOpen = false;
+      Utils.hideModal();
+    });
     document.getElementById('oo-tabs')?.addEventListener('click', (e) => {
       const btn = e.target.closest('[data-oo-tab]');
       if (!btn) return;

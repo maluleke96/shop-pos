@@ -973,15 +973,18 @@ function getSettingsParsed() {
     sales_targets: parseJsonField(s.sales_targets, { daily: 0, weekly: 0, monthly: 0, yearly: 0 }),
     shift_settings: normalizeShiftSettings(parseJsonField(s.shift_settings, {})),
     online: (() => {
+      if (getSettingsParsed._onlineCache) return getSettingsParsed._onlineCache;
       try {
         const web = require('./online-ordering');
-        return web.getGlobalSettings().online || {};
+        getSettingsParsed._onlineCache = web.getGlobalSettings().online || {};
       } catch (_) {
-        return { pos_reminder_minutes: 2 };
+        getSettingsParsed._onlineCache = { pos_reminder_minutes: 2 };
       }
+      return getSettingsParsed._onlineCache;
     })()
   };
 }
+getSettingsParsed._onlineCache = null;
 
 function saveJsonSetting(key, value, actorId, actorName) {
   saveSettings({ [key]: JSON.stringify(value) }, actorId, actorName);
@@ -992,6 +995,7 @@ function getSettings() {
 }
 
 function saveSettings(data, actorId, actorName) {
+  getSettingsParsed._onlineCache = null;
   const fields = Object.keys(data).filter(k => k !== 'id' && SHOP_SETTING_FIELDS.includes(k));
   if (!fields.length) return;
   const sets = fields.map(f => `${f} = ?`).join(', ');

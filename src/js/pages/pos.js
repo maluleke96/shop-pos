@@ -469,6 +469,7 @@ const POSPage = {
             <button class="btn btn-ghost btn-sm" id="pos-free-tables" title="Mark sit-in tables available">🪑 Free Table</button>
             <span id="pos-table-label" class="muted" style="font-size:12px;display:none"></span>
             <button class="btn btn-ghost" id="pos-held">📋 Held <span id="pos-held-count" class="tag tag-warn hidden" style="margin-left:4px;font-size:11px">0</span></button>
+            <button class="btn btn-ghost" id="pos-online-orders" title="Online orders">🛒 Online <span id="pos-online-orders-count" class="tag tag-warn hidden" style="margin-left:4px;font-size:11px">0</span></button>
             <button class="btn btn-ghost" id="pos-quote" title="Save cart as quote">📄 Quote</button>
             <button class="btn btn-ghost" id="pos-scanner" title="USB/Bluetooth barcode scanner">📡 Scanner</button>
             <button class="btn btn-ghost" id="pos-printers" title="This computer's printers">🖨️ Printers</button>
@@ -527,8 +528,7 @@ const POSPage = {
                 <button class="btn btn-ghost" id="pos-save-quote">Save Quote</button>
                 <button class="btn btn-warning" id="pos-laybuy" title="Create lay-bye from cart">📋 Lay-Bye</button>
                 <button class="btn btn-ghost" id="pos-laybuy-pay" title="Take lay-bye payment">💰 Pay Lay-Bye</button>
-                <button class="btn btn-ghost" id="pos-cancel">Cancel</button>
-                <button class="btn btn-ghost" id="pos-online-orders" title="Online orders">🛒 Online <span id="pos-online-orders-count" class="tag tag-warn hidden" style="margin-left:4px;font-size:11px">0</span></button>
+                <button class="btn btn-danger" id="pos-cancel">Cancel</button>
                 <button class="btn btn-success btn-pay" id="pos-pay">💳 Pay</button>
               </div>
             </div>

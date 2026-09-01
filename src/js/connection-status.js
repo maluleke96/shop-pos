@@ -61,18 +61,25 @@
     const badge = ensurePosBadge();
     if (!badge) return;
     const mode = dataMode();
+    const isFloating = badge.classList.contains('pos-conn-badge-floating');
     badge.classList.remove('pos-conn-cloud', 'pos-conn-local', 'pos-conn-online', 'pos-conn-offline', 'pos-conn-syncing');
     badge.classList.add(mode === 'cloud' ? 'pos-conn-cloud' : 'pos-conn-local');
     if (state === 'offline') badge.classList.add('pos-conn-offline');
     else if (state === 'syncing') badge.classList.add('pos-conn-syncing');
     else badge.classList.add('pos-conn-online');
     badge.title = posHint(mode);
-    if (state === 'offline') {
-      badge.textContent = '⚠ Offline';
-      badge.style.display = '';
+    const icon = mode === 'cloud' ? '☁️' : '🖥️';
+    const tier = mode === 'cloud' ? 'Cloud linked' : 'Local till';
+    let sub = 'Online';
+    if (state === 'offline') sub = 'Offline';
+    else if (state === 'syncing') sub = detail || 'Syncing…';
+    // Keep barcode/search area clear — no floating badge text near the search field.
+    if (isFloating) {
+      badge.textContent = state === 'offline' ? '⚠ Offline' : '';
+      badge.style.display = state === 'offline' ? '' : 'none';
     } else {
-      badge.textContent = '';
-      badge.style.display = 'none';
+      badge.style.display = '';
+      badge.textContent = `${icon} ${tier} · ${sub}`;
     }
   }
 
