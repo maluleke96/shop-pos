@@ -25,32 +25,48 @@ const KioskApp = {
     await this.startPairing();
   },
 
+  closeModals() {
+    document.querySelectorAll('.modal').forEach((m) => m.remove());
+  },
+
   resetIdle() {
     clearTimeout(this.idleTimer);
     document.getElementById('idle-overlay')?.classList.add('hidden');
+    const sec = Math.max(30, Number(this.idleSec) || 120);
     this.idleTimer = setTimeout(() => {
-      if (this.view !== 'confirm') document.getElementById('idle-overlay')?.classList.remove('hidden');
-    }, (this.idleSec || 120) * 1000);
+      if (this.view === 'confirm') return;
+      this.closeModals();
+      document.getElementById('idle-overlay')?.classList.remove('hidden');
+    }, sec * 1000);
   },
 
   async startPairing() {
     const meta = { platform: navigator.platform, screen: `${screen.width}x${screen.height}` };
-    const r = await KioskAPI.requestPairing(meta);
-    document.getElementById('pair-code').textContent = r.pairing_code;
-    const poll = setInterval(async () => {
-      try {
-        const st = await KioskAPI.pairingStatus(r.pairing_code);
-        if (st.status === 'approved' && st.device_token) {
-          clearInterval(poll);
-          this.deviceToken = st.device_token;
-          localStorage.setItem('kiosk_device_token', st.device_token);
-          await this.loadCatalog();
-          document.getElementById('pair-screen').classList.add('hidden');
-          this.showApp();
-          this.startHeartbeat();
-        }
-      } catch (_) { /* */ }
-    }, 3000);
+    try {
+      const r = await KioskAPI.requestPairing(meta);
+      document.getElementById('pair-code').textContent = r.pairing_code;
+      const poll = setInterval(async () => {
+        try {
+          const st = await KioskAPI.pairingStatus(r.pairing_code);
+          if (st.status === 'approved' && st.device_token) {
+            clearInterval(poll);
+            this.deviceToken = st.device_token;
+            localStorage.setItem('kiosk_device_token', st.device_token);
+            await this.loadCatalog();
+            document.getElementById('pair-screen').classList.add('hidden');
+            this.showApp();
+            this.startHeartbeat();
+          } else if (st.status === 'expired' || st.status === 'rejected') {
+            clearInterval(poll);
+            const msg = document.getElementById('pair-msg');
+            if (msg) msg.textContent = `Pairing ${st.status}. Refresh to try again.`;
+          }
+        } catch (_) { /* */ }
+      }, 3000);
+    } catch (e) {
+      const msg = document.getElementById('pair-msg');
+      if (msg) msg.textContent = e.message || 'Pairing request failed';
+    }
   },
 
   startHeartbeat() {
@@ -70,6 +86,7 @@ const KioskApp = {
     this.resetIdle();
     document.body.addEventListener('click', () => this.resetIdle());
     document.getElementById('idle-overlay')?.addEventListener('click', () => {
+      this.closeModals();
       this.cart = []; this.view = 'browse'; this.resetIdle(); this.render();
     });
   },
@@ -118,7 +135,10 @@ const KioskApp = {
     if (!this.selectedProduct?.available) return;
     this.selectedMods = []; this.qty = 1;
     const p = this.selectedProduct;
-    const mods = [...(p.modifiers || []), ...(p.options || []), ...(p.extras || [])];
+    // Prefer full modifiers list; options/extras are subsets and must not be concatenated (duplicates).
+    const mods = (p.modifiers && p.modifiers.length)
+      ? p.modifiers
+      : [...(p.options || []), ...(p.extras || []), ...(p.removals || [])];
     const modal = document.createElement('div');
     modal.className = 'modal';
     modal.innerHTML = `<div class="modal-inner">${this.productMediaHtml(p, 'modal-product-img')}

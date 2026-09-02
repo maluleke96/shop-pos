@@ -402,14 +402,30 @@ function listOrders(token, filters = {}) {
   return dbAll(sql, params).map((o) => ({ ...o, items: parseJson(o.items_json, []) }));
 }
 
+function avgServiceMinutesToday() {
+  // JS average — avoids SQLite julianday() which Postgres rejects for timestamptz
+  const rows = dbAll(`SELECT arrived_at, collected_at FROM drive_thru_orders
+    WHERE collected_at IS NOT NULL AND date(created_at)=date('now')`);
+  if (!rows.length) return 0;
+  let sum = 0;
+  let n = 0;
+  for (const r of rows) {
+    const a = Date.parse(String(r.arrived_at).replace(' ', 'T'));
+    const c = Date.parse(String(r.collected_at).replace(' ', 'T'));
+    if (Number.isFinite(a) && Number.isFinite(c) && c >= a) {
+      sum += (c - a) / 60000;
+      n += 1;
+    }
+  }
+  return n ? Math.round((sum / n) * 10) / 10 : 0;
+}
+
 function driveThruDashboard(token) {
   resolvePortal(token);
   detectStaleStations();
   const stations = dbAll('SELECT * FROM drive_thru_stations ORDER BY name');
   const active = listOrders(token, { active: true });
   const today = dbGet(`SELECT COUNT(*) AS orders, COALESCE(SUM(total),0) AS revenue FROM drive_thru_orders WHERE date(created_at)=date('now') AND status NOT IN ('cancelled')`) || {};
-  const avg = dbGet(`SELECT AVG((julianday(collected_at)-julianday(arrived_at))*24*60) AS mins FROM drive_thru_orders
-    WHERE collected_at IS NOT NULL AND date(created_at)=date('now')`) || {};
   const audioErrors = stations.filter((s) => {
     const st = parseJson(s.audio_status_json, {});
     return st.mic_error || st.speaker_error;
@@ -423,7 +439,7 @@ function driveThruDashboard(token) {
       active_orders: active.length,
       orders_today: today.orders || 0,
       revenue_today: today.revenue || 0,
-      avg_service_minutes: Math.round((avg.mins || 0) * 10) / 10,
+      avg_service_minutes: avgServiceMinutesToday(),
       audio_errors: audioErrors
     }
   };
@@ -435,7 +451,6 @@ function driveThruSummary() {
   const stations = dbAll('SELECT status, audio_status_json, error_state FROM drive_thru_stations WHERE is_active = 1');
   const today = dbGet(`SELECT COUNT(*) AS orders, COALESCE(SUM(total),0) AS revenue FROM drive_thru_orders WHERE date(created_at)=date('now') AND status NOT IN ('cancelled')`) || {};
   const active = dbGet(`SELECT COUNT(*) AS c FROM drive_thru_orders WHERE status NOT IN ('collected','cancelled')`)?.c || 0;
-  const avg = dbGet(`SELECT AVG((julianday(collected_at)-julianday(arrived_at))*24*60) AS mins FROM drive_thru_orders WHERE collected_at IS NOT NULL AND date(created_at)=date('now')`) || {};
   const audioErrors = stations.filter((s) => {
     const st = parseJson(s.audio_status_json, {});
     return st.mic_error || st.speaker_error || s.error_state;
@@ -447,7 +462,7 @@ function driveThruSummary() {
     active_orders: active,
     orders_today: today.orders || 0,
     revenue_today: today.revenue || 0,
-    avg_service_minutes: Math.round((avg.mins || 0) * 10) / 10,
+    avg_service_minutes: avgServiceMinutesToday(),
     audio_errors: audioErrors
   };
 }

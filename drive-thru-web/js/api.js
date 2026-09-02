@@ -5,8 +5,7 @@ const DriveThruAPI = {
   async call(method, args = []) {
     const noPortal = ['driveThru:login', 'driveThru:stationHeartbeat', 'driveThru:catalog', 'driveThru:getAudioConfig', 'driveThru:saveAudioConfig', 'driveThru:postAudioSignal', 'driveThru:pollAudioSignals'];
     const tok = this.portalToken();
-    const stTok = this.stationToken();
-    if (tok && !noPortal.includes(method) && !method.startsWith('driveThru:station')) {
+    if (tok && !noPortal.includes(method)) {
       args = [tok, ...args];
     }
     const res = await fetch(this.rpcUrl(), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ method, args }) });

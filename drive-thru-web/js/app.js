@@ -39,12 +39,16 @@ const DriveThruApp = {
   async connectStation() {
     const tok = document.getElementById('station-token').value.trim();
     if (!tok) return;
-    localStorage.setItem('dt_station_token', tok);
-    await DriveThruAPI.stationLogin();
-    await this.loadCatalog();
-    document.getElementById('station-setup').classList.add('hidden');
-    this.showApp();
-    this.startHeartbeat();
+    try {
+      localStorage.setItem('dt_station_token', tok);
+      await DriveThruAPI.stationLogin();
+      await this.loadCatalog();
+      document.getElementById('station-setup').classList.add('hidden');
+      this.showApp();
+      this.startHeartbeat();
+    } catch (e) {
+      alert(e.message || 'Could not connect station');
+    }
   },
 
   async loadCatalog() {

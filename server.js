@@ -103,7 +103,11 @@ function serveManagerWeb(req, res) {
     const type = MIME[ext] || 'application/octet-stream';
     fs.readFile(filePath, (e2, buf) => {
       if (e2) { res.writeHead(500); return res.end('Read error'); }
-      res.writeHead(200, { 'Content-Type': type, 'Cache-Control': ext === '.html' ? 'no-cache' : 'public, max-age=3600', ...corsHeaders() });
+      res.writeHead(200, {
+        'Content-Type': type,
+        'Cache-Control': (ext === '.html' || ext === '.js' || ext === '.css') ? 'no-cache' : 'public, max-age=3600',
+        ...corsHeaders()
+      });
       res.end(buf);
     });
   });
@@ -278,7 +282,11 @@ function servePortalWeb(req, res, baseDir, mount) {
     const type = MIME[ext] || 'application/octet-stream';
     fs.readFile(filePath, (e2, buf) => {
       if (e2) { res.writeHead(500); return res.end('Read error'); }
-      res.writeHead(200, { 'Content-Type': type, 'Cache-Control': ext === '.html' ? 'no-cache' : 'public, max-age=3600', ...corsHeaders() });
+      res.writeHead(200, {
+        'Content-Type': type,
+        'Cache-Control': (ext === '.html' || ext === '.js' || ext === '.css') ? 'no-cache' : 'public, max-age=3600',
+        ...corsHeaders()
+      });
       res.end(buf);
     });
   });
@@ -307,7 +315,11 @@ function serveDriverWeb(req, res) {
     const type = MIME[ext] || 'application/octet-stream';
     fs.readFile(filePath, (e2, buf) => {
       if (e2) { res.writeHead(500); return res.end('Read error'); }
-      res.writeHead(200, { 'Content-Type': type, 'Cache-Control': ext === '.html' ? 'no-cache' : 'public, max-age=3600', ...corsHeaders() });
+      res.writeHead(200, {
+        'Content-Type': type,
+        'Cache-Control': (ext === '.html' || ext === '.js' || ext === '.css') ? 'no-cache' : 'public, max-age=3600',
+        ...corsHeaders()
+      });
       res.end(buf);
     });
   });
@@ -350,7 +362,11 @@ function serveReferralWeb(req, res) {
     const type = MIME[ext] || 'application/octet-stream';
     fs.readFile(filePath, (e2, buf) => {
       if (e2) { res.writeHead(500); return res.end('Read error'); }
-      res.writeHead(200, { 'Content-Type': type, 'Cache-Control': ext === '.html' ? 'no-cache' : 'public, max-age=3600', ...corsHeaders() });
+      res.writeHead(200, {
+        'Content-Type': type,
+        'Cache-Control': (ext === '.html' || ext === '.js' || ext === '.css') ? 'no-cache' : 'public, max-age=3600',
+        ...corsHeaders()
+      });
       res.end(buf);
     });
   });
@@ -378,7 +394,11 @@ function serveCustomerWeb(req, res) {
     const type = MIME[ext] || 'application/octet-stream';
     fs.readFile(filePath, (e2, buf) => {
       if (e2) { res.writeHead(500); return res.end('Read error'); }
-      res.writeHead(200, { 'Content-Type': type, 'Cache-Control': ext === '.html' ? 'no-cache' : 'public, max-age=3600', ...corsHeaders() });
+      res.writeHead(200, {
+        'Content-Type': type,
+        'Cache-Control': (ext === '.html' || ext === '.js' || ext === '.css') ? 'no-cache' : 'public, max-age=3600',
+        ...corsHeaders()
+      });
       res.end(buf);
     });
   });
