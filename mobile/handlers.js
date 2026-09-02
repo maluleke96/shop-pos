@@ -2693,6 +2693,77 @@ function buildHandlers(store) {
   add('signage:ackCommand', wrapSync((deviceTok, cmdId, result) => s.ackCommand(deviceTok, cmdId, result)));
   add('signage:reportSync', wrapSync((deviceTok, pubDevId, status, err) => s.reportSync(deviceTok, pubDevId, status, err)));
   add('signage:manifest', wrapSync((deviceTok) => s.buildPlayerManifest(deviceTok)));
+  add('signage:listScreenGroups', wrapSync((tok) => s.listScreenGroups(tok)));
+  add('signage:listSchedules', wrapSync((tok) => s.listSchedules(tok)));
+  add('signage:saveSchedule', wrapSync((tok, d) => s.saveSchedule(d || {}, tok)));
+  add('signage:deleteSchedule', wrapSync((tok, id) => s.deleteSchedule(id, tok)));
+  add('signage:publishEmergency', wrapSync((tok, d) => s.publishEmergency(d || {}, tok)));
+  add('signage:cancelEmergency', wrapSync((tok, targetType, targetIds) => s.cancelEmergency(tok, targetType, targetIds || [])));
+  add('signage:previewPlaylist', wrapSync((tok, playlistId, audioId) => s.previewPlaylist(playlistId, tok, audioId)));
+  add('signage:getDeviceDiagnostics', wrapSync((tok, deviceId) => s.getDeviceDiagnostics(deviceId, tok)));
+  add('signage:listAuditLogs', wrapSync((tok, limit) => s.listAuditLogs(tok, limit || 100)));
+  add('signage:runTests', wrapAsync(() => s.runSignageTests()));
+  add('signage:tryThumbnail', wrapSync((tok, mediaId) => s.tryGenerateThumbnail(mediaId)));
+
+  // ─── Kiosk ──────────────────────────────────────────────────────────────────
+  const kioskSvc = require('../electron/services/kiosk-platform');
+  add('kiosk:login', wrapSync((u, p) => kioskSvc.kioskLogin(u, p)));
+  add('kiosk:logout', wrapSync((tok) => kioskSvc.kioskLogout(tok)));
+  add('kiosk:dashboard', wrapSync((tok) => kioskSvc.kioskDashboard(tok)));
+  add('kiosk:summary', wrapSync((a) => { requireUserSession(['owner', 'manager']); return kioskSvc.kioskSummary(); }));
+  add('kiosk:requestPairing', wrapSync((meta) => kioskSvc.requestPairing(meta || {})));
+  add('kiosk:pairingStatus', wrapSync((code) => kioskSvc.pairingStatus(code)));
+  add('kiosk:pendingPairings', wrapSync((tok) => kioskSvc.listPendingPairings(tok)));
+  add('kiosk:approvePairing', wrapSync((code, data, tok) => kioskSvc.approvePairing(code, data || {}, tok)));
+  add('kiosk:rejectPairing', wrapSync((code, tok) => kioskSvc.rejectPairing(code, tok)));
+  add('kiosk:revokeDevice', wrapSync((id, tok) => kioskSvc.revokeDevice(id, tok)));
+  add('kiosk:listDevices', wrapSync((tok) => kioskSvc.listDevices(tok)));
+  add('kiosk:saveDevice', wrapSync((tok, d) => kioskSvc.saveDevice(d || {}, tok)));
+  add('kiosk:catalog', wrapSync((deviceTok) => kioskSvc.getKioskCatalog(deviceTok)));
+  add('kiosk:placeOrder', wrapSync((deviceTok, data) => kioskSvc.placeKioskOrder(deviceTok, data || {})));
+  add('kiosk:heartbeat', wrapSync((deviceTok, payload) => kioskSvc.deviceHeartbeat(deviceTok, payload || {})));
+  add('kiosk:remoteCommand', wrapSync((tok, deviceId, cmd, payload) => kioskSvc.remoteCommand(deviceId, cmd, payload || {}, tok)));
+  add('kiosk:listOrders', wrapSync((tok, filters) => kioskSvc.listKioskOrders(tok, filters || {})));
+  add('kiosk:settings', wrapSync((tok) => kioskSvc.getKioskSettings(tok)));
+  add('kiosk:saveSettings', wrapSync((tok, d) => kioskSvc.saveKioskSettings(d || {}, tok)));
+  add('kiosk:runTests', wrapAsync(() => kioskSvc.runKioskTests()));
+  add('kiosk:adminListDevices', wrapSync((a) => { requireUserSession(['owner', 'manager']); return kioskSvc.listDevicesAdmin(); }));
+  add('kiosk:adminPendingPairings', wrapSync((a) => { requireUserSession(['owner', 'manager']); return kioskSvc.listPendingPairingsAdmin(); }));
+  add('kiosk:adminApprovePairing', wrapSync((code, data, a) => {
+    const u = requireUserSession(['owner', 'manager']);
+    return kioskSvc.approvePairingAdmin(code, data || {}, u.full_name || u.username);
+  }));
+
+  // ─── Drive-Thru ─────────────────────────────────────────────────────────────
+  const driveThruSvc = require('../electron/services/drive-thru-platform');
+  add('driveThru:login', wrapSync((u, p) => driveThruSvc.driveThruLogin(u, p)));
+  add('driveThru:logout', wrapSync((tok) => driveThruSvc.driveThruLogout(tok)));
+  add('driveThru:dashboard', wrapSync((tok) => driveThruSvc.driveThruDashboard(tok)));
+  add('driveThru:summary', wrapSync((a) => { requireUserSession(['owner', 'manager']); return driveThruSvc.driveThruSummary(); }));
+  add('driveThru:listStations', wrapSync((tok) => driveThruSvc.listStations(tok)));
+  add('driveThru:saveStation', wrapSync((tok, d) => driveThruSvc.saveStation(d || {}, tok)));
+  add('driveThru:stationHeartbeat', wrapSync((stationTok, payload) => driveThruSvc.stationHeartbeat(stationTok, payload || {})));
+  add('driveThru:stationLogin', wrapSync((tok, stationTok) => driveThruSvc.stationLogin(stationTok, tok)));
+  add('driveThru:catalog', wrapSync((stationTok) => driveThruSvc.getDriveThruCatalog(stationTok)));
+  add('driveThru:getAudioConfig', wrapSync((stationTok) => driveThruSvc.getAudioConfig(stationTok)));
+  add('driveThru:saveAudioConfig', wrapSync((stationTok, cfg, tok) => driveThruSvc.saveAudioConfig(stationTok, cfg || {}, tok)));
+  add('driveThru:postAudioSignal', wrapSync((stationTok, type, payload) => driveThruSvc.postAudioSignal(stationTok, type, payload)));
+  add('driveThru:pollAudioSignals', wrapSync((stationTok, sinceId) => driveThruSvc.pollAudioSignals(stationTok, sinceId || 0)));
+  add('driveThru:startOrder', wrapSync((tok, stationTok) => driveThruSvc.startOrder(stationTok, tok)));
+  add('driveThru:updateOrder', wrapSync((tok, id, data) => driveThruSvc.updateOrder(id, data || {}, tok)));
+  add('driveThru:confirmOrder', wrapSync((tok, id) => driveThruSvc.confirmOrder(id, tok)));
+  add('driveThru:takePayment', wrapSync((tok, id, data) => driveThruSvc.takePayment(id, data || {}, tok)));
+  add('driveThru:sendToKitchen', wrapSync((tok, id) => driveThruSvc.sendToKitchen(id, tok)));
+  add('driveThru:markReady', wrapSync((tok, id) => driveThruSvc.markReady(id, tok)));
+  add('driveThru:markCollected', wrapSync((tok, id) => driveThruSvc.markCollected(id, tok)));
+  add('driveThru:cancelOrder', wrapSync((tok, id, reason) => driveThruSvc.cancelOrder(id, reason, tok)));
+  add('driveThru:listOrders', wrapSync((tok, filters) => driveThruSvc.listOrders(tok, filters || {})));
+  add('driveThru:settings', wrapSync((tok) => driveThruSvc.getDriveThruSettings(tok)));
+  add('driveThru:saveSettings', wrapSync((tok, d) => driveThruSvc.saveDriveThruSettings(d || {}, tok)));
+  add('driveThru:listAuditLogs', wrapSync((tok, limit) => driveThruSvc.listAuditLogs(tok, limit || 100)));
+  add('driveThru:runTests', wrapAsync(() => driveThruSvc.runDriveThruTests()));
+  add('driveThru:adminListStations', wrapSync((a) => { requireUserSession(['owner', 'manager']); return driveThruSvc.listStationsAdmin(); }));
+  add('driveThru:adminSaveStation', wrapSync((data, a) => { requireUserSession(['owner', 'manager']); return driveThruSvc.saveStationAdmin(data || {}); }));
 
   scheduleDailyBackup(store);
   return H;

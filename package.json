@@ -45,7 +45,9 @@
     "package:source": "node scripts/package-source.js",
     "package:railway": "node scripts/package-railway-source.js",
     "package:netlify-manual": "node scripts/package-netlify-manual.js",
-    "smoke:rpc": "node scripts/smoke-rpc.js"
+    "smoke:rpc": "node scripts/smoke-rpc.js",
+    "test:signage": "node scripts/signage-test-suite.js",
+    "test:kiosk-drivethru": "node scripts/kiosk-drive-thru-test-suite.js"
   },
   "dependencies": {
     "@capacitor/camera": "^6.1.3",

@@ -16,7 +16,7 @@ window.AdminBusinessModulesPage = {
       <h2>🏢 Business Modules</h2>
       <p class="muted">Central control for Investor Management, App Release Centre, and AI Meeting Centre. Each module has its own login portal.</p>
       <div class="admin-tabs" id="bm-tabs">
-        ${['overview', 'investors', 'release-users', 'meeting-users'].map((t) =>
+        ${['overview', 'investors', 'release-users', 'meeting-users', 'kiosk', 'drive-thru'].map((t) =>
           `<button class="admin-tab ${this.tab === t ? 'active' : ''}" data-tab="${t}">${this.tabLabel(t)}</button>`).join('')}
       </div>
       <div id="bm-body"><p class="muted">Loading…</p></div>
@@ -33,7 +33,7 @@ window.AdminBusinessModulesPage = {
   },
 
   tabLabel(t) {
-    return { overview: 'Overview', investors: 'Investors', 'release-users': 'Release Users', 'meeting-users': 'Meeting Users' }[t] || t;
+    return { overview: 'Overview', investors: 'Investors', 'release-users': 'Release Users', 'meeting-users': 'Meeting Users', kiosk: 'Kiosk', 'drive-thru': 'Drive-Thru' }[t] || t;
   },
 
   esc(s) {
@@ -69,6 +69,8 @@ window.AdminBusinessModulesPage = {
     if (this.tab === 'investors') return this.renderInvestors(body);
     if (this.tab === 'release-users') return this.renderReleaseUsers(body);
     if (this.tab === 'meeting-users') return this.renderMeetingUsers(body);
+    if (this.tab === 'kiosk') return this.renderKiosk(body);
+    if (this.tab === 'drive-thru') return this.renderDriveThru(body);
   },
 
   renderOverview(body) {
@@ -77,6 +79,8 @@ window.AdminBusinessModulesPage = {
     const rel = s.release || {};
     const mtg = s.meeting || {};
     const sig = s.signage || {};
+    const kiosk = s.kiosk || {};
+    const dt = s.drive_thru || {};
     const cfg = this.settings || s.settings || {};
     body.innerHTML = `
       <div class="stats-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin:16px 0">
@@ -105,6 +109,20 @@ window.AdminBusinessModulesPage = {
           <a href="/signage/" target="_blank" rel="noopener" class="btn btn-ghost" style="margin-top:8px">Open Signage Centre</a>
           <a href="/signage-player/" target="_blank" rel="noopener" class="btn btn-ghost" style="margin-top:4px">TV Player</a>
         </div>
+        <div class="card card-body">
+          <h4>Self-Service Kiosk</h4>
+          <p><strong>${kiosk.online || 0}</strong> / ${kiosk.total_kiosks || 0} online</p>
+          <p class="muted">Today: ${kiosk.orders_today || 0} orders · ${this.money(kiosk.revenue_today)}</p>
+          <a href="/kiosk/" target="_blank" rel="noopener" class="btn btn-ghost" style="margin-top:8px">Open Kiosk</a>
+          <button type="button" class="btn btn-ghost" data-tab-jump="kiosk" style="margin-top:4px">Manage Kiosks</button>
+        </div>
+        <div class="card card-body">
+          <h4>Drive-Thru</h4>
+          <p><strong>${dt.online || 0}</strong> / ${dt.stations || 0} stations online</p>
+          <p class="muted">Active: ${dt.active_orders || 0} · Avg ${dt.avg_service_minutes || 0} min</p>
+          <a href="/drive-thru/" target="_blank" rel="noopener" class="btn btn-ghost" style="margin-top:8px">Open Drive-Thru</a>
+          <button type="button" class="btn btn-ghost" data-tab-jump="drive-thru" style="margin-top:4px">Manage Stations</button>
+        </div>
       </div>
       <div class="card"><div class="card-body">
         <h4>Module settings</h4>
@@ -131,7 +149,14 @@ window.AdminBusinessModulesPage = {
         }, this.actor);
         Utils.toast('Settings saved', 'success');
         await this.load();
-      } catch (err) { Utils.toast(err.message, 'error'); }
+      } catch (e) { Utils.toast(e.message, 'error'); }
+    });
+    body.querySelectorAll('[data-tab-jump]').forEach((b) => {
+      b.addEventListener('click', () => {
+        this.tab = b.dataset.tabJump;
+        this.el.querySelectorAll('.admin-tab').forEach((x) => x.classList.toggle('active', x.dataset.tab === this.tab));
+        this.renderTab();
+      });
     });
   },
 
@@ -285,6 +310,76 @@ window.AdminBusinessModulesPage = {
         await this.load();
         this.renderTab();
       } catch (e) { Utils.toast(e.message, 'error'); }
+    });
+  },
+
+  async renderKiosk(body) {
+    body.innerHTML = '<p class="muted">Loading kiosks…</p>';
+    const [devices, pending] = await Promise.all([
+      API.kioskAdminListDevices(this.actor).catch(() => []),
+      API.kioskAdminPendingPairings(this.actor).catch(() => [])
+    ]);
+    const devs = devices?.data || devices || [];
+    const pair = pending?.data || pending || [];
+    body.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center;margin:12px 0">
+      <h3>Kiosk devices</h3><a href="/kiosk/" target="_blank" class="btn btn-ghost">Open Kiosk UI</a></div>
+      <p class="muted">Portal login: <code>kiosk</code> / <code>kiosk123</code> · Orders use POS via <code>order_source=KIOSK</code></p>
+      <h4>Pending pairing</h4>
+      ${pair.map((p) => `<div class="card card-body" style="margin:8px 0">Code <strong>${this.esc(p.pairing_code)}</strong>
+        <button class="btn btn-primary btn-sm" data-approve-kiosk="${p.pairing_code}">Approve</button></div>`).join('') || '<p class="muted">No pending codes — open /kiosk/ on device</p>'}
+      <h4 style="margin-top:16px">Registered kiosks</h4>
+      <table><thead><tr><th>Name</th><th>Status</th><th>Last order</th></tr></thead>
+      <tbody>${devs.map((d) => `<tr><td>${this.esc(d.name)}</td><td>${this.esc(d.status)}</td><td>${this.esc(d.last_order_at || '—')}</td></tr>`).join('') || '<tr><td colspan="3" class="muted">None</td></tr>'}</tbody></table>
+      <button class="btn btn-ghost" id="kiosk-run-tests" style="margin-top:12px">Run kiosk tests</button>
+      <pre id="kiosk-test-out" class="muted" style="margin-top:8px"></pre>`;
+    body.querySelectorAll('[data-approve-kiosk]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const name = prompt('Kiosk name:', 'Counter Kiosk');
+        if (!name) return;
+        try {
+          const r = await API.kioskAdminApprovePairing(btn.dataset.approveKiosk, { name, location: prompt('Location:') || '' }, this.actor);
+          Utils.toast(`Approved — save device token: ${(r?.data || r)?.device_token?.slice(0, 12)}…`, 'success');
+          this.renderKiosk(body);
+        } catch (e) { Utils.toast(e.message, 'error'); }
+      });
+    });
+    body.querySelector('#kiosk-run-tests')?.addEventListener('click', async () => {
+      const r = await API.kioskRunTests();
+      const d = r?.data || r;
+      document.getElementById('kiosk-test-out').textContent = JSON.stringify(d?.results || d, null, 2);
+    });
+  },
+
+  async renderDriveThru(body) {
+    body.innerHTML = '<p class="muted">Loading stations…</p>';
+    const stations = await API.driveThruAdminListStations(this.actor).catch(() => []);
+    const list = stations?.data || stations || [];
+    body.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center;margin:12px 0">
+      <h3>Drive-Thru stations</h3>
+      <div><a href="/drive-thru/" target="_blank" class="btn btn-ghost">Open Station UI</a>
+      <button class="btn btn-primary" id="dt-add-station">Add station</button></div></div>
+      <p class="muted">Portal: <code>drivethru</code> / <code>dt123456</code> · Audio is separate from Signage · Orders use <code>order_source=DRIVE_THRU</code></p>
+      <table><thead><tr><th>Station</th><th>Lane</th><th>Status</th><th>Staff</th><th>Audio</th></tr></thead>
+      <tbody>${list.map((s) => {
+        const audio = (() => { try { return JSON.parse(s.audio_status_json || '{}'); } catch (_) { return {}; } })();
+        return `<tr><td>${this.esc(s.name)}</td><td>${this.esc(s.lane_label || '—')}</td><td>${this.esc(s.status)}</td>
+          <td>${this.esc(s.staff_name || '—')}</td><td>${this.esc(audio.mic || '—')}</td></tr>`;
+      }).join('') || '<tr><td colspan="5" class="muted">No stations — add one</td></tr>'}</tbody></table>
+      <button class="btn btn-ghost" id="dt-run-tests" style="margin-top:12px">Run drive-thru tests</button>
+      <pre id="dt-test-out" class="muted" style="margin-top:8px"></pre>`;
+    body.querySelector('#dt-add-station')?.addEventListener('click', async () => {
+      const name = prompt('Station name:', 'Drive-Thru 1');
+      if (!name) return;
+      try {
+        const r = await API.driveThruAdminSaveStation({ name, lane_label: prompt('Lane:') || 'Lane 1' }, this.actor);
+        const tok = (r?.data || r)?.station_token;
+        alert(`Station created. Save this token for the station PC:\n\n${tok}`);
+        this.renderDriveThru(body);
+      } catch (e) { Utils.toast(e.message, 'error'); }
+    });
+    body.querySelector('#dt-run-tests')?.addEventListener('click', async () => {
+      const r = await API.driveThruRunTests();
+      document.getElementById('dt-test-out').textContent = JSON.stringify((r?.data || r)?.results || r, null, 2);
     });
   }
 };

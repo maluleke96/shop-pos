@@ -24,6 +24,8 @@ const RELEASE_WEB = path.join(ROOT, 'release-web');
 const MEETING_WEB = path.join(ROOT, 'meeting-web');
 const SIGNAGE_WEB = path.join(ROOT, 'signage-web');
 const SIGNAGE_PLAYER = path.join(ROOT, 'signage-player');
+const KIOSK_WEB = path.join(ROOT, 'kiosk-web');
+const DRIVE_THRU_WEB = path.join(ROOT, 'drive-thru-web');
 
 const { loadProjectEnv } = require('./lib/load-env');
 loadProjectEnv(ROOT);
@@ -237,6 +239,20 @@ function syncSignageWebConfig() {
     fs.mkdirSync(path.join(SIGNAGE_PLAYER, 'js'), { recursive: true });
     fs.writeFileSync(path.join(SIGNAGE_PLAYER, 'js', 'config.js'), portalConfig('__SIGNAGE_PLAYER_CONFIG__', '/signage-player/'), 'utf8');
   } catch (e) { console.warn('[signage-web] config write failed:', e.message); }
+}
+
+function syncKioskWebConfig() {
+  try {
+    fs.mkdirSync(path.join(KIOSK_WEB, 'js'), { recursive: true });
+    fs.writeFileSync(path.join(KIOSK_WEB, 'js', 'config.js'), portalConfig('__KIOSK_CONFIG__', '/kiosk/'), 'utf8');
+  } catch (e) { console.warn('[kiosk-web] config write failed:', e.message); }
+}
+
+function syncDriveThruWebConfig() {
+  try {
+    fs.mkdirSync(path.join(DRIVE_THRU_WEB, 'js'), { recursive: true });
+    fs.writeFileSync(path.join(DRIVE_THRU_WEB, 'js', 'config.js'), portalConfig('__DRIVE_THRU_CONFIG__', '/drive-thru/'), 'utf8');
+  } catch (e) { console.warn('[drive-thru-web] config write failed:', e.message); }
 }
 
 function servePortalWeb(req, res, baseDir, mount) {
@@ -490,6 +506,8 @@ async function main() {
   syncReleaseWebConfig();
   syncMeetingWebConfig();
   syncSignageWebConfig();
+  syncKioskWebConfig();
+  syncDriveThruWebConfig();
   syncPublicEnvJs();
 
   console.log('Connecting to Supabase Postgres…');
@@ -533,12 +551,57 @@ async function main() {
       const token = new URLSearchParams(q).get('token');
       try {
         const signage = require('./electron/services/signage-platform');
-        const file = signage.getMediaFile(Number(mediaId), token, true);
+        let file;
+        try { file = signage.getMediaFile(Number(mediaId), token, true); }
+        catch (_) { file = signage.getMediaFile(Number(mediaId), token, false); }
         return fs.readFile(file.path, (err, buf) => {
           if (err) { res.writeHead(404); return res.end('Not found'); }
           res.writeHead(200, { 'Content-Type': file.mime, 'Cache-Control': 'private, max-age=3600', ...corsHeaders() });
           res.end(buf);
         });
+      } catch (e) {
+        res.writeHead(403);
+        return res.end(String(e.message || 'Forbidden'));
+      }
+    }
+
+    if (urlPath.startsWith('/kiosk-media/product/')) {
+      const productId = urlPath.replace('/kiosk-media/product/', '').split('?')[0];
+      const q = (req.url || '').split('?')[1] || '';
+      const token = new URLSearchParams(q).get('token');
+      try {
+        const kiosk = require('./electron/services/kiosk-platform');
+        const file = kiosk.getKioskProductImage(Number(productId), token);
+        if (file.buffer) {
+          res.writeHead(200, { 'Content-Type': file.mime, 'Cache-Control': 'private, max-age=3600', ...corsHeaders() });
+          return res.end(file.buffer);
+        }
+        return fs.readFile(file.path, (err, buf) => {
+          if (err) { res.writeHead(404); return res.end('Not found'); }
+          res.writeHead(200, { 'Content-Type': file.mime, 'Cache-Control': 'private, max-age=3600', ...corsHeaders() });
+          res.end(buf);
+        });
+      } catch (e) {
+        res.writeHead(e.message === 'Image not available' ? 404 : 403);
+        return res.end(String(e.message || 'Forbidden'));
+      }
+    }
+
+    if (urlPath.startsWith('/signage-sse/')) {
+      const deviceToken = decodeURIComponent(urlPath.replace('/signage-sse/', '').split('?')[0]);
+      try {
+        const signage = require('./electron/services/signage-platform');
+        const sse = require('./electron/services/signage-sse');
+        const deviceId = signage.resolveDeviceIdFromToken(deviceToken);
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          Connection: 'keep-alive',
+          ...corsHeaders()
+        });
+        res.write(': connected\n\n');
+        sse.subscribeDevice(deviceId, res);
+        return;
       } catch (e) {
         res.writeHead(403);
         return res.end(String(e.message || 'Forbidden'));
@@ -618,6 +681,14 @@ async function main() {
       return servePortalWeb(req, res, SIGNAGE_PLAYER, '/signage-player');
     }
 
+    if (urlPath === '/kiosk' || urlPath.startsWith('/kiosk/')) {
+      return servePortalWeb(req, res, KIOSK_WEB, '/kiosk');
+    }
+
+    if (urlPath === '/drive-thru' || urlPath.startsWith('/drive-thru/')) {
+      return servePortalWeb(req, res, DRIVE_THRU_WEB, '/drive-thru');
+    }
+
     if (urlPath === '/track' || urlPath.startsWith('/track/')) {
       return serveTrackingWeb(req, res);
     }
@@ -640,6 +711,8 @@ async function main() {
     console.log(`  Meeting:  http://localhost:${PORT}/meeting/`);
     console.log(`  Signage:  http://localhost:${PORT}/signage/`);
     console.log(`  Player:   http://localhost:${PORT}/signage-player/`);
+    console.log(`  Kiosk:    http://localhost:${PORT}/kiosk/`);
+    console.log(`  Drive-Thru: http://localhost:${PORT}/drive-thru/`);
     console.log(`  Track:    http://localhost:${PORT}/track/TOKEN`);
     console.log('');
   });

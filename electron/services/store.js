@@ -2081,7 +2081,7 @@ function resolveModifierExtras(productId, modifiers) {
     if (!mod && m.name) {
       mod = db.prepare('SELECT extra_price FROM product_modifiers WHERE product_id = ? AND name = ?').get(productId, m.name);
     }
-    extra += Number(mod?.extra_price) || 0;
+    extra += Number(mod?.extra_price) || Number(m.extra_price) || 0;
   }
   return extra;
 }
@@ -4420,7 +4420,7 @@ module.exports = {
   getProducts, getProduct, getProductByBarcode, getProductModifiers, saveProductModifiers, saveProduct, deleteProduct,
   calcRecipeMetrics: (data) => inventory.calculateRecipeMetrics(null, data.selling_price, data.recipe),
   adjustStock, restoreProductStockAfterSale, getStockHistory, getAllStockHistory,
-  recordStockAdjustment, listStockAdjustments, resolveProductRef,
+  recordStockAdjustment, listStockAdjustments, resolveProductRef, resolveModifierExtras,
   completeSale, getSale, getSaleByReceipt, holdOrder, getHeldOrders, deleteHeldOrder,
   processReturn, getReturns,
   getExpenses, saveExpense, deleteExpense,
@@ -4520,6 +4520,8 @@ module.exports = {
     const rel = require('./release-platform');
     const mtg = require('./meeting-platform');
     const sig = require('./signage-platform');
+    const kiosk = require('./kiosk-platform');
+    const driveThru = require('./drive-thru-platform');
     return {
       ...inv,
       ...rel,
@@ -4532,7 +4534,9 @@ module.exports = {
         investor: inv.investorSummary(),
         release: rel.releaseSummary(),
         meeting: mtg.meetingSummary(),
-        signage: sig.signageSummary()
+        signage: sig.signageSummary(),
+        kiosk: kiosk.kioskSummary(),
+        drive_thru: driveThru.driveThruSummary()
       })
     };
   })(),
