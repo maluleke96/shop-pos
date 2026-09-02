@@ -1,6 +1,6 @@
 * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
 html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui, sans-serif; background: #0f172a; color: #f8fafc; touch-action: manipulation; }
-.hidden { display: none !important; }
+.hidden { display: none !important; pointer-events: none !important; }
 .screen { width: 100%; height: 100%; display: flex; flex-direction: column; }
 .pair-box { margin: auto; text-align: center; padding: 40px; }
 .pair-code { font-size: 72px; letter-spacing: 12px; font-weight: bold; color: #38bdf8; margin: 20px 0; }
@@ -28,7 +28,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
 .cart-bar button { padding: 16px 32px; font-size: 20px; border: none; border-radius: 12px; cursor: pointer; font-weight: bold; }
 .btn-primary { background: #2563eb; color: #fff; }
 .btn-secondary { background: #475569; color: #fff; }
-.modal { position: fixed; inset: 0; background: rgba(0,0,0,.8); display: flex; align-items: center; justify-content: center; z-index: 50; }
+.modal { position: fixed; inset: 0; background: rgba(0,0,0,.8); display: flex; align-items: center; justify-content: center; z-index: 150; }
 .modal-inner { background: #1e293b; border-radius: 20px; padding: 28px; max-width: 520px; width: 90%; max-height: 90vh; overflow-y: auto; }
 .mod-group { margin: 12px 0; }
 .mod-opt { display: block; padding: 12px; margin: 6px 0; background: #334155; border-radius: 8px; cursor: pointer; }
@@ -36,6 +36,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
 .qty-row { display: flex; align-items: center; gap: 16px; margin: 16px 0; font-size: 24px; }
 .qty-row button { width: 48px; height: 48px; font-size: 24px; border-radius: 50%; border: none; background: #475569; color: #fff; cursor: pointer; }
 .idle-overlay { position: fixed; inset: 0; background: #0f172a; display: flex; align-items: center; justify-content: center; z-index: 100; cursor: pointer; }
+.idle-overlay.hidden { display: none !important; pointer-events: none !important; z-index: -1 !important; }
 .idle-overlay h1 { font-size: 48px; }
 .confirm-screen { text-align: center; padding: 60px 40px; }
 .confirm-screen .order-num { font-size: 80px; color: #38bdf8; font-weight: bold; margin: 24px 0; }

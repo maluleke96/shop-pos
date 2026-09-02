@@ -2660,9 +2660,9 @@ function buildHandlers(store) {
   add('signage:requestPairing', wrapSync((meta) => s.requestPairing(meta || {})));
   add('signage:pairingStatus', wrapSync((code) => s.pairingStatus(code)));
   add('signage:pendingPairings', wrapSync((tok) => s.listPendingPairings(tok)));
-  add('signage:approvePairing', wrapSync((code, data, tok) => s.approvePairing(code, data || {}, tok)));
-  add('signage:rejectPairing', wrapSync((code, tok) => s.rejectPairing(code, tok)));
-  add('signage:revokeDevice', wrapSync((id, tok) => s.revokeDevice(id, tok)));
+  add('signage:approvePairing', wrapSync((tok, code, data) => s.approvePairing(code, data || {}, tok)));
+  add('signage:rejectPairing', wrapSync((tok, code) => s.rejectPairing(code, tok)));
+  add('signage:revokeDevice', wrapSync((tok, id) => s.revokeDevice(id, tok)));
   add('signage:listDevices', wrapSync((tok) => s.listDevices(tok)));
   add('signage:saveDevice', wrapSync((tok, d) => s.saveDevice(d || {}, tok)));
   add('signage:listMedia', wrapSync((tok, f) => s.listMedia(tok, f || {})));

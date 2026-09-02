@@ -29,14 +29,32 @@ const KioskApp = {
     document.querySelectorAll('.modal').forEach((m) => m.remove());
   },
 
+  setIdleVisible(show) {
+    const el = document.getElementById('idle-overlay');
+    if (!el) return;
+    if (show) {
+      el.classList.remove('hidden');
+      el.setAttribute('aria-hidden', 'false');
+      el.style.pointerEvents = 'auto';
+    } else {
+      el.classList.add('hidden');
+      el.setAttribute('aria-hidden', 'true');
+      el.style.pointerEvents = 'none';
+    }
+  },
+
   resetIdle() {
     clearTimeout(this.idleTimer);
-    document.getElementById('idle-overlay')?.classList.add('hidden');
-    const sec = Math.max(30, Number(this.idleSec) || 120);
+    this.setIdleVisible(false);
+    const sec = Math.max(60, Number(this.idleSec) || 120);
     this.idleTimer = setTimeout(() => {
       if (this.view === 'confirm') return;
+      if (document.querySelector('.modal')) {
+        this.resetIdle();
+        return;
+      }
       this.closeModals();
-      document.getElementById('idle-overlay')?.classList.remove('hidden');
+      this.setIdleVisible(true);
     }, sec * 1000);
   },
 
