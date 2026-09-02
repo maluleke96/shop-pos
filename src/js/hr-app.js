@@ -2,7 +2,7 @@
  * HR, Payroll & Documents — unified workspace
  * Export: window.HrApp
  */
-const HR_APP_BUILD = '2026.08.28-buttons';
+const HR_APP_BUILD = '2026.09.02-hr-full-parity';
 
 const HrApp = {
   build: HR_APP_BUILD,
@@ -19,22 +19,23 @@ const HrApp = {
 
   NAV: [
     ['Dashboard', [['dashboard', 'Dashboard']]],
-    ['People', [
-      ['employees', 'Employees'], ['casual-workers', 'Casual Workers'], ['contractors', 'Contractors'],
-      ['applicants', 'Applicants'], ['employee-profile', 'Employee Profile']
+    ['Workers', [
+      ['employees', 'All Workers'], ['casual-workers', 'Casual Workers'], ['contractors', 'Contractors'],
+      ['applicants', 'Applicants'], ['employee-profile', 'Worker Profile']
     ]],
     ['Payroll', [
       ['payroll-runs', 'Payroll Runs'], ['salaries', 'Salaries'], ['payslips', 'Payslips'],
-      ['deductions', 'Deductions'], ['bonuses', 'Bonuses'], ['commissions', 'Commissions'],
-      ['advances', 'Advances'], ['loans', 'Loans']
+      ['salary-claims', 'Salary Claims'], ['deductions', 'Deductions'], ['bonuses', 'Bonuses'],
+      ['commissions', 'Commissions'], ['advances', 'Advances'], ['loans', 'Loans']
     ]],
     ['Tax & Statutory', [
-      ['paye', 'PAYE'], ['uif', 'UIF'], ['sdl', 'SDL'], ['statutory', 'Other Statutory'],
-      ['employer-records', 'Employer Records'], ['deadlines', 'Deadlines']
+      ['sars', 'SARS / EMP201'], ['paye', 'PAYE'], ['uif', 'UIF'], ['sdl', 'SDL'], ['coida', 'COIDA'],
+      ['statutory', 'Other Statutory'], ['employer-records', 'Employer Records'], ['deadlines', 'Deadlines']
     ]],
     ['Attendance', [
       ['clock-ins', 'Clock-ins'], ['hours', 'Hours'], ['overtime', 'Overtime'],
-      ['absences', 'Absences'], ['late-arrivals', 'Late Arrivals'], ['shifts', 'Shift Schedule']
+      ['absences', 'Absences'], ['late-arrivals', 'Late Arrivals'], ['shifts', 'Shift Schedule'],
+      ['login-selfies', 'Login Selfies'], ['login-events', 'Login Events']
     ]],
     ['Leave', [['leave-requests', 'Requests'], ['leave-balances', 'Balances'], ['leave-approvals', 'Approvals']]],
     ['Contracts', [
@@ -59,41 +60,54 @@ const HrApp = {
     ['Requests', [['requests', 'Requests']]],
     ['Approvals', [['approvals', 'Approvals']]],
     ['Compliance', [['compliance', 'Compliance']]],
-    ['Reports', [['reports', 'Reports']]],
+    ['Reports', [['reports', 'Reports'], ['alerts', 'Alerts']]],
     ['Audit', [['audit-log', 'Audit Log']]],
     ['Administration', [['settings', 'Settings']]]
   ],
 
   SECTION_META: {
     dashboard: ['Dashboard', 'Workforce, payroll, documents and compliance overview.'],
-    employees: ['Employees', 'All permanent and active staff records.'],
+    employees: ['All Workers', 'Permanent and active workers — same records as Admin → Staff & HR.'],
     'casual-workers': ['Casual Workers', 'Casual and temporary staff.'],
     contractors: ['Contractors', 'Independent contractors and consultants.'],
     applicants: ['Applicants', 'Job candidates from recruitment.'],
-    'employee-profile': ['Employee Profile', 'Complete employee hub — contracts, payroll, history.'],
+    'employee-profile': ['Worker Profile', 'Complete worker hub — contracts, payroll, history.'],
     'payroll-runs': ['Payroll Runs', 'Draft, review, approve and finalize payroll.'],
     salaries: ['Salaries', 'Salary and wage configuration per employee.'],
-    payslips: ['Payslips', 'Generated payslips and payment records.'],
+    payslips: ['Payslips', 'Generated payslips — also visible on Staff Portal when payday opens.'],
+    'salary-claims': ['Salary Claims', 'Staff claim windows — Admin must approve before payment. Same as Admin → Payroll.'],
     deductions: ['Deductions', 'Payroll deductions from processed runs.'],
     bonuses: ['Bonuses', 'Bonus payments in payroll records.'],
     commissions: ['Commissions', 'Commission payments in payroll records.'],
     advances: ['Salary Advances', 'Outstanding and recovered salary advances.'],
     loans: ['Employee Loans', 'Active loans and balances.'],
-    paye: ['PAYE', 'Pay-As-You-Earn totals and configuration.'],
+    sars: ['SARS / EMP201', 'Monthly EMP201 liability, tax office and IRP5-year totals — linked to Admin Payroll.'],
+    paye: ['PAYE', 'Pay-As-You-Earn totals and configuration (SARS).'],
     uif: ['UIF', 'Unemployment Insurance Fund totals and settings.'],
     sdl: ['SDL', 'Skills Development Levy totals and settings.'],
-    statutory: ['Other Statutory', 'COIDA and other statutory deductions.'],
-    'employer-records': ['Employer Records', 'UIF/SDL/PAYE employer registration records.'],
-    deadlines: ['Compliance Deadlines', 'Upcoming statutory and HR deadlines.'],
+    coida: ['COIDA', 'Compensation for Occupational Injuries and Diseases.'],
+    statutory: ['Other Statutory', 'Additional statutory deductions and notes.'],
+    'employer-records': ['Employer Records', 'UIF/SDL/PAYE/COIDA employer registration records.'],
+    deadlines: ['Compliance Deadlines', 'Upcoming statutory and HR deadlines (EMP201, UIF, SARS).'],
     'clock-ins': ['Clock-ins', 'Staff clock-in and clock-out records (shared with Staff Portal).'],
     hours: ['Hours Worked', 'Hours worked per shift and day.'],
     overtime: ['Overtime', 'Overtime hours and pay.'],
     absences: ['Absences', 'Missed shifts and absent days.'],
     'late-arrivals': ['Late Arrivals', 'Late clock-ins and attendance penalties.'],
     shifts: ['Shift Schedule', 'Weekly shift rota — same data as Admin Staff & HR.'],
+    'login-selfies': ['Login Selfies', 'Staff Portal verification selfies — same as Admin → Staff & HR.'],
+    'login-events': ['Login Events', 'Late/early Staff Portal login log.'],
     'leave-requests': ['Leave Requests', 'All leave applications.'],
     'leave-balances': ['Leave Balances', 'Annual, sick and family leave balances.'],
     'leave-approvals': ['Leave Approvals', 'Pending leave awaiting manager approval.'],
+    'contract-templates': ['Contract Templates', 'Reusable contract templates from Admin → Contracts.'],
+    'contracts-active': ['Active Contracts', 'Signed and active worker contracts.'],
+    'contracts-expiring': ['Expiring Contracts', 'Contracts due to expire soon.'],
+    'contracts-expired': ['Expired Contracts', 'Contracts that have ended.'],
+    'documents-all': ['All Documents', 'Worker documents on file — shared with Admin Staff & HR.'],
+    'documents-required': ['Required Documents', 'ID, contracts and other required worker documents.'],
+    'documents-expiring': ['Expiring Documents', 'Documents expiring within 30 days.'],
+    'documents-expired': ['Expired Documents', 'Documents past their expiry date.'],
     policies: ['Policies', 'Policy centre with version control and acknowledgements.'],
     compliance: ['Compliance Centre', 'Statutory, contracts, documents and policy status.'],
     incidents: ['Incidents', 'Incident register and investigations.'],
@@ -109,8 +123,9 @@ const HrApp = {
     'business-rules': ['Business Rules', 'Rules that apply to roles, branches and employment types.'],
     forms: ['Forms', 'HR forms and staff submission templates.'],
     requests: ['HR Requests', 'Employee requests awaiting review.'],
-    approvals: ['Approvals', 'Central approval queue — leave, payroll and requests.'],
+    approvals: ['Approvals', 'HR submits actions here; owner/manager finalizes. Includes salary claims awaiting approve.'],
     reports: ['Reports', 'Export and print HR reports.'],
+    alerts: ['Alerts', 'Staff & payroll notifications — same feed as Admin Staff & HR Alerts.'],
     'audit-log': ['Audit Log', 'Recent HR-related system audit entries.'],
     settings: ['Settings', 'HR platform and payroll configuration.']
   },
@@ -199,6 +214,15 @@ const HrApp = {
       return null;
     }
     return r.data !== undefined ? r.data : r;
+  },
+
+  /** Coerce API payloads to arrays (handles null, {rows}, accidental objects). */
+  asRows(data) {
+    if (Array.isArray(data)) return data;
+    if (data && Array.isArray(data.rows)) return data.rows;
+    if (data && Array.isArray(data.items)) return data.items;
+    if (data && Array.isArray(data.documents)) return data.documents;
+    return [];
   },
 
   btn(label, act, data = {}, cls = '') {
@@ -355,6 +379,7 @@ const HrApp = {
       'payroll-runs': 'renderPayrollRuns',
       salaries: 'renderSalaries',
       payslips: 'renderPayslips',
+      'salary-claims': 'renderSalaryClaims',
       deductions: 'renderDeductions',
       bonuses: 'renderBonuses',
       commissions: 'renderCommissions',
@@ -363,7 +388,9 @@ const HrApp = {
       paye: 'renderStatutory',
       uif: 'renderStatutory',
       sdl: 'renderStatutory',
+      coida: 'renderStatutory',
       statutory: 'renderStatutory',
+      sars: 'renderSars',
       'employer-records': 'renderEmployerRecords',
       deadlines: 'renderDeadlines',
       'clock-ins': 'renderAttendance',
@@ -372,6 +399,8 @@ const HrApp = {
       absences: 'renderAttendance',
       'late-arrivals': 'renderAttendance',
       shifts: 'renderShifts',
+      'login-selfies': 'renderLoginSelfies',
+      'login-events': 'renderLoginEvents',
       'leave-requests': 'renderLeave',
       'leave-balances': 'renderLeave',
       'leave-approvals': 'renderLeave',
@@ -400,12 +429,19 @@ const HrApp = {
       approvals: 'renderApprovals',
       compliance: 'renderCompliance',
       reports: 'renderReports',
+      alerts: 'renderAlerts',
       'audit-log': 'renderAudit',
       settings: 'renderSettings'
     };
     const fn = map[this.section] || 'renderDashboard';
+    const token = (this._sectionToken = (this._sectionToken || 0) + 1);
+    const sectionAtStart = this.section;
     body.innerHTML = `<p class="muted">Loading…</p>`;
-    try { await this[fn].call(this, body); } catch (err) {
+    try {
+      await this[fn].call(this, body);
+      if (token !== this._sectionToken || this.section !== sectionAtStart) return;
+    } catch (err) {
+      if (token !== this._sectionToken || this.section !== sectionAtStart) return;
       body.innerHTML = `${this.sectionHead('')}<p class="error-msg">${this.esc(err.message)}</p>`;
     }
   },
@@ -418,43 +454,57 @@ const HrApp = {
 
   async renderDashboard(el) {
     const d = await this.apiCall('hrDashboard', {}) || {};
+    const summary = await this.apiCall('hrStatutorySummary', {}) || {};
     const w = d.workforce || {};
     const p = d.payroll || {};
     const c = d.compliance || {};
+    const emp201 = summary.emp201 || {};
     el.innerHTML = `
-      ${this.sectionHead(`${this.btn('+ Add Employee', 'add-employee', {}, 'btn-primary')}${this.btn('+ Run Payroll', 'nav', { section: 'payroll-runs' })}${this.btn('+ Upload Document', 'nav', { section: 'documents-all' })}`)}
+      ${this.sectionHead(`${this.btn('+ Add Worker', 'add-employee', {}, 'btn-primary')}${this.btn('+ Run Payroll', 'nav', { section: 'payroll-runs' })}${this.btn('SARS / EMP201', 'nav', { section: 'sars' })}`)}
       <div class="hr-quick-actions">
-        ${this.btn('Employees', 'nav', { section: 'employees' })}${this.btn('Contracts', 'nav', { section: 'contracts-active' })}
-        ${this.btn('Payroll', 'nav', { section: 'payroll-runs' })}${this.btn('Approvals', 'nav', { section: 'approvals' })}
-        ${this.btn('Compliance', 'nav', { section: 'compliance' })}${this.btn('Policies', 'nav', { section: 'policies' })}
+        ${this.btn('Workers', 'nav', { section: 'employees' })}${this.btn('Contracts', 'nav', { section: 'contracts-active' })}
+        ${this.btn('Payroll', 'nav', { section: 'payroll-runs' })}${this.btn('UIF', 'nav', { section: 'uif' })}
+        ${this.btn('PAYE', 'nav', { section: 'paye' })}${this.btn('Documents', 'nav', { section: 'documents-all' })}
+        ${this.btn('Approvals', 'nav', { section: 'approvals' })}${this.btn('Compliance', 'nav', { section: 'compliance' })}
       </div>
       <div class="hr-kpis">
-        ${this.kpi('Total employees', String(w.total || 0), 'Workforce', 'accent')}
-        ${this.kpi('Active', String(w.active || 0), 'Currently employed', 'good')}
-        ${this.kpi('Casual workers', String(w.casual || 0), '', 'info')}
-        ${this.kpi('New hires', String(w.new_hires || 0), 'This month', 'slate')}
+        ${this.kpi('Workers', String(w.total || summary.workers?.total || 0), 'All records', 'accent')}
+        ${this.kpi('Active', String(w.active || summary.workers?.active || 0), 'Currently employed', 'good')}
+        ${this.kpi('Casual', String(w.casual || summary.workers?.casual || 0), '', 'info')}
+        ${this.kpi('Contractors', String(w.contractor || summary.workers?.contractors || 0), '', 'slate')}
         ${this.kpi('Payroll net', this.money(p.net), 'This period', 'accent')}
-        ${this.kpi('Pending approvals', String((d.approvals?.leave || 0) + (d.approvals?.requests || 0)), 'Leave & requests', 'warn')}
+        ${this.kpi('EMP201 due', this.money(emp201.total_liability), emp201.due_by ? `Due ${emp201.due_by}` : 'This month', 'warn')}
       </div>
       <div class="hr-grid-2">
-        ${this.panel('Documents & Contracts', `<div class="hr-note">Expiring documents: <strong>${d.documents?.expiring || 0}</strong><br>Contracts expiring: <strong>${d.contracts?.expiring || 0}</strong><br>Awaiting signature: <strong>${d.contracts?.awaiting_signature || 0}</strong></div>`)}
-        ${this.panel('Compliance', `<div class="hr-note">Policy acknowledgements pending: <strong>${c.pending_acknowledgements || 0}</strong><br>Open incidents: <strong>${c.disciplinary_open || 0}</strong></div>${this.btn('Open Compliance Centre', 'nav', { section: 'compliance' }, 'btn-primary')}`)}
+        ${this.panel('Documents & Contracts', `<div class="hr-note">Expiring documents: <strong>${d.documents?.expiring || 0}</strong><br>Contracts expiring: <strong>${d.contracts?.expiring || 0}</strong><br>Awaiting signature: <strong>${d.contracts?.awaiting_signature || 0}</strong></div>
+          ${this.btn('All Documents', 'nav', { section: 'documents-all' })} ${this.btn('Staff & HR Admin', 'open-admin-section', { section: 'staffhr' })}`)}
+        ${this.panel('SARS & statutory', `<div class="hr-note">PAYE: <strong>${this.money(emp201.paye)}</strong> · UIF: <strong>${this.money(emp201.uif_total)}</strong> · SDL: <strong>${this.money(emp201.sdl)}</strong><br>
+          Policy acknowledgements pending: <strong>${c.pending_acknowledgements || 0}</strong></div>
+          ${this.btn('Open SARS / EMP201', 'nav', { section: 'sars' }, 'btn-primary')} ${this.btn('Admin Payroll', 'open-admin-section', { section: 'payroll' })}`)}
       </div>`;
   },
 
   async renderPeople(el) {
     const type = this.peopleType();
-    const rows = await this.apiCall('hrPeople', { personnel_type: type }) || [];
-    const exportRows = rows.map((e) => [e.employee_code, e.full_name, e.position || '—', e.department || '—', e.status || 'Active']);
-    this.cacheExport(this.section, this.SECTION_META[this.section]?.[0] || 'People', ['ID', 'Name', 'Position', 'Department', 'Status'], exportRows);
+    const rows = this.asRows(await this.apiCall('hrPeople', { personnel_type: type }));
+    const exportRows = rows.map((e) => [
+      e.employee_code, e.full_name, e.employment_type || '—', e.position || '—', e.department || '—', e.status || 'Active',
+      e.paye_registered ? 'Y' : 'N', e.uif_registered ? 'Y' : 'N'
+    ]);
+    this.cacheExport(this.section, this.SECTION_META[this.section]?.[0] || 'Workers',
+      ['ID', 'Name', 'Type', 'Position', 'Department', 'Status', 'PAYE', 'UIF'], exportRows);
     el.innerHTML = `
-      ${this.sectionHead(`${this.btn('Add Employee', 'add-employee', {}, 'btn-primary')}${this.btn('Print', `print-${this.section}`)}${this.btn('PDF', `export-${this.section}`)}${this.btn('Refresh', 'refresh')}`)}
-      ${this.table(['Employee ID', 'Name', 'Position', 'Department', 'Status', ''],
+      ${this.sectionHead(`${this.btn('Add Worker', 'add-employee', {}, 'btn-primary')}${this.btn('Staff & HR Admin', 'open-admin-section', { section: 'staffhr' })}${this.btn('Print', `print-${this.section}`)}${this.btn('PDF', `export-${this.section}`)}${this.btn('Refresh', 'refresh')}`)}
+      <p class="muted">Same worker records as Admin → Staff &amp; HR / Staff Portal. Edit employment type and statutory flags there.</p>
+      ${this.table(['Employee ID', 'Name', 'Type', 'Position', 'Department', 'PAYE', 'UIF', 'Status', ''],
         rows.map((e) => `<tr>
           <td><span class="hr-code">${this.esc(e.employee_code)}</span></td>
           <td><button type="button" class="btn btn-link" data-hr-act="view-employee" data-id="${e.id}">${this.esc(e.full_name)}</button></td>
-          <td>${this.esc(e.position)}</td><td>${this.esc(e.department)}</td><td>${this.esc(e.status)}</td>
-          <td>${this.btn('Profile', 'view-employee', { id: e.id })}</td></tr>`).join(''), 'No employees found')}`;
+          <td>${this.esc(e.employment_type || '—')}</td>
+          <td>${this.esc(e.position)}</td><td>${this.esc(e.department)}</td>
+          <td>${e.paye_registered ? 'Yes' : '—'}</td><td>${e.uif_registered ? 'Yes' : '—'}</td>
+          <td>${this.esc(e.status)}</td>
+          <td>${this.btn('Profile', 'view-employee', { id: e.id })}</td></tr>`).join(''), 'No workers found')}`;
   },
 
   async renderApplicants(el) {
@@ -476,7 +526,7 @@ const HrApp = {
     const e = profile.employee;
     const timeline = await this.apiCall('hrEmployeeTimeline', parseInt(id, 10));
     el.innerHTML = `
-      ${this.sectionHead(`${this.btn('← Back', 'nav', { section: 'employees' })}${this.btn('Edit in Admin', 'open-admin-section', { section: 'staffhr' })}`)}
+      ${this.sectionHead(`${this.btn('← Back', 'nav', { section: 'employees' })}${this.btn('Edit in Admin', 'open-admin-section', { section: 'staffhr' })}${this.btn('SARS', 'nav', { section: 'sars' })}`)}
       <div class="hr-profile-header"><h2>${this.esc(e.full_name)}</h2>
         <p><span class="hr-code">${this.esc(e.employee_code)}</span> · ${this.esc(e.status)} · ${this.esc(e.position)} · ${this.esc(e.branch || e.department)}</p></div>
       <div class="hr-kpis">
@@ -486,7 +536,9 @@ const HrApp = {
         ${this.kpi('Leave records', String(profile.leave?.length || 0))}
       </div>
       <div class="hr-grid-2">
-        ${this.panel('Employment', `<dl class="hr-dl"><dt>Start date</dt><dd>${this.esc(e.date_hired || '—')}</dd><dt>Type</dt><dd>${this.esc(e.employment_type)}</dd><dt>Department</dt><dd>${this.esc(e.department)}</dd></dl>`)}
+        ${this.panel('Employment', `<dl class="hr-dl"><dt>Start date</dt><dd>${this.esc(e.date_hired || '—')}</dd><dt>Type</dt><dd>${this.esc(e.employment_type)}</dd><dt>Department</dt><dd>${this.esc(e.department)}</dd>
+          <dt>PAYE</dt><dd>${e.paye_registered ? 'Registered' : '—'}</dd><dt>UIF</dt><dd>${e.uif_registered ? 'Registered' : '—'}</dd><dt>SDL</dt><dd>${e.sdl_registered ? 'Registered' : '—'}</dd>
+          <dt>Tax number</dt><dd>${this.esc(e.tax_number || '—')}</dd><dt>UIF number</dt><dd>${this.esc(e.uif_number || '—')}</dd></dl>`)}
         ${this.panel('Timeline', (timeline?.events || []).slice(-8).reverse().map((ev) =>
           `<div class="hr-timeline-item"><small>${this.esc(String(ev.date).slice(0, 10))}</small> ${this.esc(ev.label)}</div>`).join('') || '<div class="hr-empty">No history yet</div>')}
       </div>
@@ -495,7 +547,7 @@ const HrApp = {
   },
 
   async renderPayrollRuns(el) {
-    const rows = await this.apiCall('hrListPayroll', {}) || [];
+    const rows = this.asRows(await this.apiCall('hrListPayroll', {}));
     el.innerHTML = `
       ${this.sectionHead(`${this.btn('Generate Payroll', 'generate-payroll', {}, 'btn-primary')}${this.btn('Open Admin Payroll', 'open-admin-section', { section: 'payroll' })}${this.btn('Refresh', 'refresh')}`)}
       ${this.table(['Period', 'Employee', 'Gross', 'Net', 'Status', ''],
@@ -505,21 +557,21 @@ const HrApp = {
   },
 
   async renderBonuses(el) {
-    const rows = await this.apiCall('hrListPayroll', { bonus: true }) || [];
+    const rows = this.asRows(await this.apiCall('hrListPayroll', { bonus: true }));
     el.innerHTML = `${this.sectionHead(this.btn('Refresh', 'refresh'))}
       ${this.table(['Employee', 'Period', 'Bonus', 'Gross', 'Status'],
         rows.map((r) => `<tr><td>${this.esc(r.full_name)}</td><td>${this.esc(r.period_end)}</td><td>${this.money(r.bonus)}</td><td>${this.money(r.gross_salary)}</td><td>${this.esc(r.status)}</td></tr>`).join(''), 'No bonus payments')}`;
   },
 
   async renderCommissions(el) {
-    const rows = await this.apiCall('hrListPayroll', { commission: true }) || [];
+    const rows = this.asRows(await this.apiCall('hrListPayroll', { commission: true }));
     el.innerHTML = `${this.sectionHead(this.btn('Refresh', 'refresh'))}
       ${this.table(['Employee', 'Period', 'Commission', 'Gross', 'Status'],
         rows.map((r) => `<tr><td>${this.esc(r.full_name)}</td><td>${this.esc(r.period_end)}</td><td>${this.money(r.commission)}</td><td>${this.money(r.gross_salary)}</td><td>${this.esc(r.status)}</td></tr>`).join(''), 'No commission payments')}`;
   },
 
   async renderSalaries(el) {
-    const rows = await this.apiCall('hrPeople', { personnel_type: 'active' }) || [];
+    const rows = this.asRows(await this.apiCall('hrPeople', { personnel_type: 'active' }));
     el.innerHTML = `
       ${this.sectionHead(`${this.btn('Refresh', 'refresh')}`)}
       ${this.table(['Employee', 'Type', 'Basic salary', 'Overtime rate', ''],
@@ -527,15 +579,61 @@ const HrApp = {
   },
 
   async renderPayslips(el) {
-    const items = await this.apiCall('hrListPayroll', { status: 'paid' }) || [];
+    const items = this.asRows(await this.apiCall('hrListPayroll', { status: 'paid' }));
+    const pending = this.asRows(await this.apiCall('hrListPayroll', { status: 'pending' }));
     el.innerHTML = `
-      ${this.sectionHead(this.btn('Refresh', 'refresh'))}
-      ${this.table(['Employee', 'Period', 'Net pay', 'Status', ''],
-        items.map((r) => `<tr><td>${this.esc(r.full_name)}</td><td>${this.esc(r.period_start)} — ${this.esc(r.period_end)}</td><td>${this.money(r.net_salary)}</td><td>${this.esc(r.status)}</td><td>${this.btn('PDF', 'payslip-pdf', { id: r.id })}</td></tr>`).join(''))}`;
+      ${this.sectionHead(`${this.btn('Salary Claims', 'nav', { section: 'salary-claims' })}${this.btn('Refresh', 'refresh')}`)}
+      <p class="muted">Paid payslips appear on Staff Portal. Pending payslips open claim windows when payroll is generated.</p>
+      ${this.panel('Pending (awaiting claim / payment)', this.table(['Employee', 'Period', 'Net pay', 'Status', ''],
+        pending.map((r) => `<tr><td>${this.esc(r.full_name)}</td><td>${this.esc(r.period_start)} — ${this.esc(r.period_end)}</td><td>${this.money(r.net_salary)}</td><td>${this.esc(r.status)}</td><td>${this.btn('PDF', 'payslip-pdf', { id: r.id })}</td></tr>`).join(''), 'No pending payslips'))}
+      ${this.panel('Paid', this.table(['Employee', 'Period', 'Net pay', 'Status', ''],
+        items.map((r) => `<tr><td>${this.esc(r.full_name)}</td><td>${this.esc(r.period_start)} — ${this.esc(r.period_end)}</td><td>${this.money(r.net_salary)}</td><td>${this.esc(r.status)}</td><td>${this.btn('PDF', 'payslip-pdf', { id: r.id })}</td></tr>`).join(''), 'No paid payslips'))}`;
+  },
+
+  async renderSalaryClaims(el) {
+    const rows = await this.apiOk(API.listSalaryClaims?.({}, this.user), 'Claims load failed') || [];
+    const list = Array.isArray(rows) ? rows : (rows.items || []);
+    const canFinalize = ['owner', 'manager'].includes(String(this.user?.role || '').toLowerCase());
+    el.innerHTML = `${this.sectionHead(`${this.btn('Open Admin Payroll Claims', 'open-admin-section', { section: 'payroll' }, 'btn-primary')}${this.btn('Refresh', 'refresh')}`)}
+      <p class="muted">Staff claim salary in Staff Portal. HR can view every claim; only owner/manager can approve and mark paid.</p>
+      ${this.table(['Employee', 'Period', 'Net', 'Deadline', 'Status', ''],
+        list.map((c) => `<tr>
+          <td>${this.esc(c.employee_name)}</td>
+          <td>${this.esc(c.period_start)} — ${this.esc(c.period_end)}</td>
+          <td>${this.money(c.net_amount || c.amount)}</td>
+          <td>${this.esc(String(c.claim_deadline || '').slice(0, 16))}</td>
+          <td>${this.esc(c.status)}</td>
+          <td>${c.status === 'claimed' && canFinalize ? this.btn('Approve', 'approve-salary-claim', { id: c.id }) + this.btn('Reject', 'reject-salary-claim', { id: c.id }) : ''}
+            ${c.status === 'approved' && canFinalize ? this.btn('Mark Paid', 'pay-salary-claim', { id: c.id }) : ''}
+            ${this.btn('PDF', 'salary-claim-pdf', { id: c.id })}</td></tr>`).join(''), 'No salary claims — generate payroll to open claim windows')}`;
+  },
+
+  async renderLoginSelfies(el) {
+    const rows = await this.apiOk(API.getStaffSelfies?.({ from: this.dateOffset(-30), to: this.today() }, this.user), 'Selfies load failed') || [];
+    const list = Array.isArray(rows) ? rows : (rows.items || rows.data || []);
+    el.innerHTML = `${this.sectionHead(`${this.btn('Staff & HR Admin', 'open-admin-section', { section: 'staffhr' })}${this.btn('Refresh', 'refresh')}`)}
+      ${this.table(['Date', 'Employee', 'Status', 'Notes', ''],
+        list.slice(0, 200).map((s) => `<tr><td>${this.esc(String(s.created_at || s.captured_at || '').slice(0, 19))}</td><td>${this.esc(s.employee_name || s.full_name)}</td><td>${this.esc(s.status || '—')}</td><td>${this.esc(s.notes || '—')}</td><td></td></tr>`).join(''), 'No login selfies in the last 30 days')}`;
+  },
+
+  async renderLoginEvents(el) {
+    const rows = await this.apiOk(API.getStaffLoginEvents?.({ from: this.dateOffset(-30), to: this.today() }), 'Login events failed') || [];
+    const list = Array.isArray(rows) ? rows : (rows.items || rows.data || []);
+    el.innerHTML = `${this.sectionHead(`${this.btn('Staff & HR Admin', 'open-admin-section', { section: 'staffhr' })}${this.btn('Refresh', 'refresh')}`)}
+      ${this.table(['Date', 'Employee', 'Event', 'Notes'],
+        list.slice(0, 200).map((e) => `<tr><td>${this.esc(String(e.created_at || e.event_at || '').slice(0, 19))}</td><td>${this.esc(e.employee_name || e.full_name)}</td><td>${this.esc(e.event_type || e.status || '—')}</td><td>${this.esc(e.notes || '—')}</td></tr>`).join(''), 'No login events')}`;
+  },
+
+  async renderAlerts(el) {
+    const rows = await this.apiOk(API.getStaffNotifications?.(), 'Alerts load failed') || [];
+    const list = Array.isArray(rows) ? rows : (rows.items || rows.data || []);
+    el.innerHTML = `${this.sectionHead(`${this.btn('Refresh', 'refresh')}`)}
+      ${this.table(['When', 'Type', 'Title', 'Message'],
+        list.slice(0, 100).map((n) => `<tr><td>${this.esc(String(n.created_at || '').slice(0, 19))}</td><td>${this.esc(n.type || n.category)}</td><td>${this.esc(n.title)}</td><td>${this.esc(n.message || n.body || '')}</td></tr>`).join(''), 'No alerts')}`;
   },
 
   async renderDeductions(el) {
-    const rows = await this.apiCall('hrPayrollDeductions', {}) || [];
+    const rows = this.asRows(await this.apiCall('hrPayrollDeductions', {}));
     el.innerHTML = `${this.sectionHead(`${this.btn('Payroll Settings', 'open-admin-section', { section: 'payroll' })}${this.btn('Refresh', 'refresh')}`)}
       ${this.table(['Employee', 'Period', 'Type', 'Amount', 'Employer', ''],
         rows.map((r) => `<tr><td>${this.esc(r.full_name)}</td><td>${this.esc(r.period_start)} — ${this.esc(r.period_end)}</td><td>${this.esc(r.deduction_type)}</td><td>${this.money(r.amount)}</td><td>${r.is_employer ? 'Yes' : 'No'}</td><td>${this.esc(r.payroll_status)}</td></tr>`).join(''), 'No deductions yet — generate payroll first')}`;
@@ -558,40 +656,144 @@ const HrApp = {
   async renderStatutory(el) {
     const summary = await this.apiCall('hrStatutorySummary', {}) || {};
     const totals = summary.totals || {};
+    const taxYear = summary.tax_year || {};
     const settings = summary.settings || {};
+    const workers = summary.workers || {};
+    const byEmp = summary.by_employee || [];
     const key = this.section;
-    const label = key === 'statutory' ? 'Other statutory' : key.toUpperCase();
+    const label = key === 'statutory' ? 'Other / COIDA' : key === 'coida' ? 'COIDA' : key.toUpperCase();
     const amountMap = {
-      paye: totals.paye, uif: this.num(totals.uif_employee) + this.num(totals.uif_employer),
-      sdl: totals.sdl, statutory: totals.coida
+      paye: totals.paye,
+      uif: this.num(totals.uif_employee) + this.num(totals.uif_employer),
+      sdl: totals.sdl,
+      coida: totals.coida,
+      statutory: totals.coida
     };
-    const monthAmt = amountMap[key] ?? totals.coida;
-    el.innerHTML = `${this.sectionHead(`${this.btn('Payroll Admin', 'open-admin-section', { section: 'payroll' })}${this.btn('Compliance PDF', 'statutory-pdf', { type: key })}${this.btn('Refresh', 'refresh')}`)}
-      ${this.kpi(`${label} this month`, this.money(monthAmt), `From ${summary.month_start || this.today()}`, 'accent')}
+    const monthAmt = amountMap[key] ?? 0;
+    const tyAmt = {
+      paye: taxYear.paye,
+      uif: this.num(taxYear.uif_employee) + this.num(taxYear.uif_employer),
+      sdl: taxYear.sdl,
+      coida: taxYear.coida,
+      statutory: taxYear.coida
+    }[key] ?? 0;
+    const enabledKey = `${key === 'statutory' ? 'coida' : key}_enabled`;
+    const enabled = settings[enabledKey];
+    const regMap = {
+      paye: settings.paye_registration_number || settings.company_paye_number,
+      uif: settings.uif_registration_number || settings.company_uif_number,
+      sdl: settings.sdl_registration_number || settings.company_sdl_number,
+      coida: settings.coida_registration_number || settings.company_coida_number,
+      statutory: settings.coida_registration_number
+    };
+    const workerReg = {
+      paye: workers.paye_registered, uif: workers.uif_registered, sdl: workers.sdl_registered
+    }[key];
+    const pdfType = key === 'statutory' ? 'coida' : key;
+    const empRows = byEmp.filter((r) => {
+      if (key === 'paye') return this.num(r.paye) > 0 || r.paye_registered;
+      if (key === 'uif') return this.num(r.uif_employee) + this.num(r.uif_employer) > 0 || r.uif_registered;
+      if (key === 'sdl') return this.num(r.sdl) > 0 || r.sdl_registered;
+      return this.num(r.coida) > 0;
+    });
+    el.innerHTML = `${this.sectionHead(`${this.btn('SARS / EMP201', 'nav', { section: 'sars' })}${this.btn('Payroll Admin', 'open-admin-section', { section: 'payroll' })}${this.btn('Compliance PDF', 'statutory-pdf', { type: pdfType })}${this.btn('Settings', 'nav', { section: 'settings' })}${this.btn('Refresh', 'refresh')}`)}
+      <div class="hr-kpis">
+        ${this.kpi(`${label} this month`, this.money(monthAmt), `From ${summary.month_start || this.today()}`, 'accent')}
+        ${this.kpi(`${label} tax year`, this.money(tyAmt), `${summary.tax_year_start || ''} → ${summary.tax_year_end || ''}`, 'info')}
+        ${this.kpi('Status', enabled ? 'Enabled' : 'Off', enabled === false ? 'Enable in Settings / Admin Payroll' : 'Shared with Admin Payroll', enabled ? 'good' : 'warn')}
+        ${this.kpi('Registration', regMap[key] || 'Not set', 'Employer reference', regMap[key] ? 'good' : 'warn')}
+        ${workerReg != null ? this.kpi('Workers registered', String(workerReg), `of ${workers.active || 0} active`, 'slate') : ''}
+      </div>
       <div class="hr-grid-2">
-        ${this.panel('Month totals', `<dl class="hr-dl"><dt>PAYE</dt><dd>${this.money(totals.paye)}</dd><dt>UIF (EE+ER)</dt><dd>${this.money(this.num(totals.uif_employee) + this.num(totals.uif_employer))}</dd><dt>SDL</dt><dd>${this.money(totals.sdl)}</dd><dt>COIDA</dt><dd>${this.money(totals.coida)}</dd><dt>Gross payroll</dt><dd>${this.money(totals.gross)}</dd><dt>Net paid</dt><dd>${this.money(totals.net)}</dd></dl>`)}
-        ${this.panel('Configuration', `<pre class="hr-pre">${this.esc(JSON.stringify(settings[key] || settings.statutory || settings, null, 2))}</pre>`)}
-      </div>`;
+        ${this.panel('Month totals (all statutory)', `<dl class="hr-dl"><dt>PAYE</dt><dd>${this.money(totals.paye)}</dd><dt>UIF employee</dt><dd>${this.money(totals.uif_employee)}</dd><dt>UIF employer</dt><dd>${this.money(totals.uif_employer)}</dd><dt>SDL</dt><dd>${this.money(totals.sdl)}</dd><dt>COIDA</dt><dd>${this.money(totals.coida)}</dd><dt>Gross payroll</dt><dd>${this.money(totals.gross)}</dd><dt>Net paid</dt><dd>${this.money(totals.net)}</dd><dt>Payslips</dt><dd>${this.esc(totals.payroll_count || 0)}</dd></dl>`)}
+        ${this.panel(`${label} configuration`, `<dl class="hr-dl">
+          <dt>Enabled</dt><dd>${enabled ? 'Yes' : 'No'}</dd>
+          <dt>Registration / ref</dt><dd>${this.esc(regMap[key] || '—')}</dd>
+          ${key === 'uif' ? `<dt>EE rate %</dt><dd>${this.esc(settings.uif_employee_rate)}</dd><dt>ER rate %</dt><dd>${this.esc(settings.uif_employer_rate)}</dd><dt>Ceiling</dt><dd>${this.money(settings.uif_ceiling)}</dd>` : ''}
+          ${key === 'sdl' ? `<dt>Rate %</dt><dd>${this.esc(settings.sdl_rate)}</dd>` : ''}
+          ${key === 'coida' || key === 'statutory' ? `<dt>Rate %</dt><dd>${this.esc(settings.coida_rate)}</dd><dt>Employer ref</dt><dd>${this.esc(settings.coida_employer_ref || '—')}</dd>` : ''}
+          ${key === 'paye' ? `<dt>Tax number</dt><dd>${this.esc(settings.tax_number || '—')}</dd><dt>SARS office</dt><dd>${this.esc(settings.sars_tax_office || '—')}</dd>` : ''}
+        </dl>${this.btn('Edit in Settings', 'nav', { section: 'settings' }, 'btn-primary')}`)}
+      </div>
+      ${this.panel(`Workers — ${label} this month`, this.table(['Code', 'Name', 'Type', 'Gross', label, ''],
+        empRows.slice(0, 100).map((r) => {
+          const amt = key === 'paye' ? r.paye
+            : key === 'uif' ? this.num(r.uif_employee) + this.num(r.uif_employer)
+              : key === 'sdl' ? r.sdl : r.coida;
+          return `<tr><td>${this.esc(r.employee_code)}</td><td>${this.esc(r.full_name)}</td><td>${this.esc(r.employment_type || '—')}</td><td>${this.money(r.gross)}</td><td>${this.money(amt)}</td><td>${this.btn('Profile', 'view-employee', { id: r.id })}</td></tr>`;
+        }).join(''), `No ${label} amounts this month — process payroll in Admin → Payroll`))}`;
+  },
+
+  async renderSars(el) {
+    const summary = await this.apiCall('hrStatutorySummary', {}) || {};
+    const emp201 = summary.emp201 || {};
+    const totals = summary.totals || {};
+    const taxYear = summary.tax_year || {};
+    const workers = summary.workers || {};
+    const settings = summary.settings || {};
+    el.innerHTML = `${this.sectionHead(`${this.btn('Admin Payroll', 'open-admin-section', { section: 'payroll' }, 'btn-primary')}${this.btn('PAYE PDF', 'statutory-pdf', { type: 'paye' })}${this.btn('UIF PDF', 'statutory-pdf', { type: 'uif' })}${this.btn('SDL PDF', 'statutory-pdf', { type: 'sdl' })}${this.btn('Settings', 'nav', { section: 'settings' })}${this.btn('Refresh', 'refresh')}`)}
+      <div class="hr-kpis">
+        ${this.kpi('EMP201 liability', this.money(emp201.total_liability), `Period ${emp201.period || '—'} · due ${emp201.due_by || '7th'}`, 'accent')}
+        ${this.kpi('PAYE', this.money(emp201.paye), 'Employee tax', 'warn')}
+        ${this.kpi('UIF total', this.money(emp201.uif_total), `EE ${this.money(emp201.uif_employee)} + ER ${this.money(emp201.uif_employer)}`, 'info')}
+        ${this.kpi('SDL', this.money(emp201.sdl), 'Skills levy', 'slate')}
+      </div>
+      <div class="hr-grid-2">
+        ${this.panel('EMP201-style summary (month)', `<dl class="hr-dl">
+          <dt>PAYE registration</dt><dd>${this.esc(emp201.employer_paye_ref || '—')}</dd>
+          <dt>UIF registration</dt><dd>${this.esc(emp201.employer_uif_ref || '—')}</dd>
+          <dt>SDL registration</dt><dd>${this.esc(emp201.employer_sdl_ref || '—')}</dd>
+          <dt>SARS tax office</dt><dd>${this.esc(emp201.sars_tax_office || settings.sars_tax_office || '—')}</dd>
+          <dt>Gross payroll</dt><dd>${this.money(totals.gross)}</dd>
+          <dt>Payslips counted</dt><dd>${this.esc(totals.payroll_count || 0)}</dd>
+          <dt>Total remittance</dt><dd><strong>${this.money(emp201.total_liability)}</strong></dd>
+        </dl>
+        <p class="muted">Figures come from processed payroll (same as Admin → Payroll &amp; Compliance). File EMP201 on eFiling by the 7th.</p>
+        ${this.btn('Deadlines', 'nav', { section: 'deadlines' })} ${this.btn('Employer Records', 'nav', { section: 'employer-records' })}`)}
+        ${this.panel('Tax year (Mar–Feb) / IRP5 totals', `<dl class="hr-dl">
+          <dt>Tax year</dt><dd>${this.esc(summary.tax_year_start)} → ${this.esc(summary.tax_year_end)}</dd>
+          <dt>PAYE YTD</dt><dd>${this.money(taxYear.paye)}</dd>
+          <dt>UIF YTD (EE+ER)</dt><dd>${this.money(this.num(taxYear.uif_employee) + this.num(taxYear.uif_employer))}</dd>
+          <dt>SDL YTD</dt><dd>${this.money(taxYear.sdl)}</dd>
+          <dt>COIDA YTD</dt><dd>${this.money(taxYear.coida)}</dd>
+          <dt>Gross YTD</dt><dd>${this.money(taxYear.gross)}</dd>
+          <dt>Payslips YTD</dt><dd>${this.esc(taxYear.payroll_count || 0)}</dd>
+        </dl>
+        <p class="muted">Use these year-to-date totals when preparing IRP5 / IT3(a) employee tax certificates.</p>
+        ${this.btn('Workers', 'nav', { section: 'employees' })} ${this.btn('COIDA', 'nav', { section: 'coida' })}`)}
+      </div>
+      ${this.panel('Workforce statutory coverage', `<div class="hr-kpis">
+        ${this.kpi('Active workers', String(workers.active || 0))}
+        ${this.kpi('PAYE flagged', String(workers.paye_registered || 0))}
+        ${this.kpi('UIF flagged', String(workers.uif_registered || 0))}
+        ${this.kpi('SDL flagged', String(workers.sdl_registered || 0))}
+      </div>
+      <p class="muted">Flag workers for PAYE/UIF/SDL in Admin → Staff &amp; HR when editing an employee.</p>
+      ${this.btn('Open Staff & HR', 'open-admin-section', { section: 'staffhr' }, 'btn-primary')}`)}`;
   },
 
   num(v) { return Number(v) || 0; },
 
   async renderEmployerRecords(el) {
-    const rows = await this.apiCall('hrEmployerRecords', {}) || [];
-    el.innerHTML = `${this.sectionHead(`${this.btn('Add Record', 'add-employer-record', {}, 'btn-primary')}${this.btn('Refresh', 'refresh')}`)}
+    const rows = this.asRows(await this.apiCall('hrEmployerRecords', {}));
+    const summary = await this.apiCall('hrStatutorySummary', {}) || {};
+    const s = summary.settings || {};
+    el.innerHTML = `${this.sectionHead(`${this.btn('Add Record', 'add-employer-record', {}, 'btn-primary')}${this.btn('SARS / EMP201', 'nav', { section: 'sars' })}${this.btn('Payroll Settings', 'nav', { section: 'settings' })}${this.btn('Refresh', 'refresh')}`)}
+      ${this.panel('From payroll settings', `<dl class="hr-dl"><dt>PAYE</dt><dd>${this.esc(s.paye_registration_number || s.company_paye_number || '—')}</dd><dt>UIF</dt><dd>${this.esc(s.uif_registration_number || s.company_uif_number || '—')}</dd><dt>SDL</dt><dd>${this.esc(s.sdl_registration_number || s.company_sdl_number || '—')}</dd><dt>COIDA</dt><dd>${this.esc(s.coida_registration_number || s.company_coida_number || '—')}</dd><dt>SARS office</dt><dd>${this.esc(s.sars_tax_office || '—')}</dd></dl>`)}
       ${this.table(['Type', 'Title', 'Reference', 'Expiry', 'Status', ''],
-        rows.map((r) => `<tr><td>${this.esc(r.record_type)}</td><td>${this.esc(r.title)}</td><td>${this.esc(r.reference_number)}</td><td>${this.esc(r.expiry_date)}</td><td>${this.esc(r.status)}</td><td>${this.btn('Edit', 'edit-employer-record', { id: r.id })}</td></tr>`).join(''), 'No employer records — add UIF/SDL/PAYE registration details')}`;
+        rows.map((r) => `<tr><td>${this.esc(r.record_type)}</td><td>${this.esc(r.title)}</td><td>${this.esc(r.reference_number)}</td><td>${this.esc(r.expiry_date)}</td><td>${this.esc(r.status)}</td><td>${this.btn('Edit', 'edit-employer-record', { id: r.id })}</td></tr>`).join(''), 'No employer records — add UIF/SDL/PAYE/COIDA registration details')}`;
   },
 
   async renderDeadlines(el) {
-    const rows = await this.apiCall('hrComplianceEvents', { upcoming_days: 365 }) || [];
+    const rows = this.asRows(await this.apiCall('hrComplianceEvents', { upcoming_days: 365 }));
     const today = this.today();
-    el.innerHTML = `${this.sectionHead(`${this.btn('Add Deadline', 'add-deadline', {}, 'btn-primary')}${this.btn('Refresh', 'refresh')}`)}
+    el.innerHTML = `${this.sectionHead(`${this.btn('Add Deadline', 'add-deadline', {}, 'btn-primary')}${this.btn('SARS / EMP201', 'nav', { section: 'sars' })}${this.btn('Refresh', 'refresh')}`)}
+      <p class="muted">Tracks EMP201, PAYE, UIF, SDL and COIDA return dates. Defaults are seeded when you open SARS / statutory pages.</p>
       ${this.table(['Type', 'Title', 'Due', 'Status', ''],
         rows.map((r) => {
-          const overdue = r.due_date && r.due_date < today;
-          return `<tr class="${overdue ? 'hr-row-warn' : ''}"><td>${this.esc(r.event_type)}</td><td>${this.esc(r.title)}</td><td>${this.esc(r.due_date)}${overdue ? ' ⚠' : ''}</td><td>${this.esc(r.status)}</td><td>${r.status !== 'completed' ? this.btn('Complete', 'complete-deadline', { id: r.id }) : ''}</td></tr>`;
-        }).join(''), 'No deadlines — add compliance events to track PAYE, UIF, COIDA returns')}`;
+          const overdue = r.due_date && r.due_date < today && r.status !== 'completed';
+          return `<tr class="${overdue ? 'hr-row-warn' : ''}"><td>${this.esc(r.event_type)}</td><td>${this.esc(r.title)}</td><td>${this.esc(r.due_date)}${overdue ? ' overdue' : ''}</td><td>${this.esc(r.status)}</td><td>${r.status !== 'completed' ? this.btn('Complete', 'complete-deadline', { id: r.id }) : ''}</td></tr>`;
+        }).join(''), 'No deadlines — open SARS / EMP201 or add EMP201, UIF, PAYE, SDL, COIDA events')}`;
   },
 
   async renderAttendance(el) {
@@ -623,7 +825,7 @@ const HrApp = {
 
   async renderLeave(el) {
     if (this.section === 'leave-balances') {
-      const rows = await this.apiCall('hrLeaveBalances') || [];
+      const rows = this.asRows(await this.apiCall('hrLeaveBalances'));
       el.innerHTML = `${this.sectionHead(this.btn('Refresh', 'refresh'))}
         ${this.table(['Employee', 'Annual left', 'Sick left', 'Family left', ''],
           rows.map((r) => `<tr><td>${this.esc(r.full_name)}</td><td>${this.esc(r.annual_left)} / ${this.esc(r.annual_total)}</td><td>${this.esc(r.sick_left)} / ${this.esc(r.sick_total)}</td><td>${this.esc(r.family_left)} / ${this.esc(r.family_total)}</td><td>${this.btn('Profile', 'view-employee', { id: r.employee_id })}</td></tr>`).join(''), 'No active employees')}`;
@@ -655,7 +857,7 @@ const HrApp = {
   },
 
   async renderDocuments(el) {
-    let docs = await this.apiCall('hrEmployeeDocuments', {}) || [];
+    let docs = this.asRows(await this.apiCall('hrEmployeeDocuments', {}));
     const today = this.today();
     if (this.section === 'documents-expiring') {
       const soon = new Date();
@@ -673,8 +875,8 @@ const HrApp = {
   },
 
   async renderOnboarding(el) {
-    const tpls = await this.apiCall('hrOnboardingTemplates') || [];
-    const progress = await this.apiCall('hrOnboardingList') || [];
+    const tpls = this.asRows(await this.apiCall('hrOnboardingTemplates'));
+    const progress = this.asRows(await this.apiCall('hrOnboardingList'));
     el.innerHTML = `${this.sectionHead(`${this.btn('Start Onboarding', 'start-onboarding', {}, 'btn-primary')}${this.btn('Refresh', 'refresh')}`)}
       ${this.panel('Active onboarding', this.table(['Employee', 'Template', 'Status', ''],
         progress.map((p) => `<tr><td>${this.esc(p.full_name)}</td><td>${this.esc(p.template_name || '—')}</td><td>${this.esc(p.status)}</td><td>${this.btn('Profile', 'view-employee', { id: p.employee_id })}</td></tr>`).join(''), 'No active onboarding'))}
@@ -683,21 +885,21 @@ const HrApp = {
   },
 
   async renderOffboarding(el) {
-    const rows = await this.apiCall('hrOffboardingList', {}) || [];
+    const rows = this.asRows(await this.apiCall('hrOffboardingList', {}));
     el.innerHTML = `${this.sectionHead(`${this.btn('Start Offboarding', 'start-offboarding', {}, 'btn-primary')}${this.btn('Refresh', 'refresh')}`)}
       ${this.table(['Employee', 'Exit type', 'Effective', 'Final day', 'Status', ''],
         rows.map((r) => `<tr><td>${this.esc(r.full_name)}</td><td>${this.esc(r.exit_type)}</td><td>${this.esc(r.effective_date)}</td><td>${this.esc(r.final_working_date || '—')}</td><td>${this.esc(r.status)}</td><td>${r.status !== 'completed' ? this.btn('Complete', 'complete-offboarding', { id: r.id, employee_id: r.employee_id }) : ''}</td></tr>`).join(''), 'No offboarding records')}`;
   },
 
   async renderIncidents(el) {
-    const rows = await this.apiCall('hrIncidents', {}) || [];
+    const rows = this.asRows(await this.apiCall('hrIncidents', {}));
     el.innerHTML = `${this.sectionHead(`${this.btn('Record Incident', 'add-incident', {}, 'btn-primary')}${this.btn('Refresh', 'refresh')}`)}
       ${this.table(['Number', 'Date', 'Employee', 'Title', 'Severity', 'Status', ''],
         rows.map((i) => `<tr><td>${this.esc(i.incident_number)}</td><td>${this.esc(i.incident_date)}</td><td>${this.esc(i.employee_name || '—')}</td><td>${this.esc(i.title)}</td><td>${this.esc(i.severity)}</td><td>${this.esc(i.status)}</td><td>${i.status !== 'resolved' ? this.btn('Resolve', 'resolve-incident', { id: i.id }) : ''}</td></tr>`).join(''), 'No incidents recorded')}`;
   },
 
   async renderWarnings(el) {
-    const rows = await this.apiCall('hrStaffWarnings', {}) || [];
+    const rows = this.asRows(await this.apiCall('hrStaffWarnings', {}));
     el.innerHTML = `${this.sectionHead(`${this.btn('Add Warning', 'add-warning', {}, 'btn-primary')}${this.btn('Refresh', 'refresh')}`)}
       ${this.table(['Date', 'Employee', 'Type', 'Reason', 'Status', ''],
         rows.map((w) => `<tr><td>${this.esc(w.incident_date)}</td><td>${this.esc(w.employee_name)}</td><td>${this.esc(w.warning_type)}</td><td>${this.esc(w.reason || w.description)}</td><td>${this.esc(w.status)}</td><td>${this.btn('PDF', 'warning-pdf', { id: w.id })}</td></tr>`).join(''), 'No warnings on file')}`;
@@ -713,7 +915,7 @@ const HrApp = {
 
   async renderDisciplinary(el) {
     const section = this.disciplinarySection();
-    const rows = await this.apiCall('hrDisciplinaryCases', section ? { section } : {}) || [];
+    const rows = this.asRows(await this.apiCall('hrDisciplinaryCases', section ? { section } : {}));
     const title = section === 'hearings' ? 'hearings' : section === 'appeals' ? 'appeals' : section === 'investigations' ? 'investigations' : 'disciplinary';
     el.innerHTML = `${this.sectionHead(`${this.btn('New Case', 'add-disciplinary', {}, 'btn-primary')}${this.btn('Refresh', 'refresh')}`)}
       ${this.table(['Case', 'Employee', 'Stage', 'Hearing', 'Appeal', 'Status', ''],
@@ -742,21 +944,21 @@ const HrApp = {
   },
 
   async renderPolicies(el) {
-    const rows = await this.apiCall('hrPolicies', {}) || [];
+    const rows = this.asRows(await this.apiCall('hrPolicies', {}));
     el.innerHTML = `${this.sectionHead(`${this.btn('Add Policy', 'add-policy', {}, 'btn-primary')}${this.btn('Refresh', 'refresh')}`)}
       ${this.table(['Code', 'Title', 'Version', 'Category', 'Ack', 'Status', ''],
         rows.map((p) => `<tr><td>${this.esc(p.code)}</td><td>${this.esc(p.title)}</td><td>${this.esc(p.version)}</td><td>${this.esc(p.category)}</td><td>${p.requires_ack ? 'Yes' : 'No'}</td><td>${this.esc(p.status)}</td><td>${p.requires_ack ? this.btn('Acknowledge', 'ack-policy', { id: p.id }) : ''}</td></tr>`).join(''), 'No policies')}`;
   },
 
   async renderBusinessRules(el) {
-    const rows = await this.apiCall('hrBusinessRules', {}) || [];
+    const rows = this.asRows(await this.apiCall('hrBusinessRules', {}));
     el.innerHTML = `${this.sectionHead(`${this.btn('Add Rule', 'add-rule', {}, 'btn-primary')}${this.btn('Refresh', 'refresh')}`)}
       ${this.table(['Title', 'Applies to', 'Position', 'Department', ''],
         rows.map((r) => `<tr><td>${this.esc(r.title)}</td><td>${this.esc(r.applies_to)}</td><td>${this.esc(r.position || '—')}</td><td>${this.esc(r.department || '—')}</td><td>${this.btn('View', 'view-rule', { id: r.id })}</td></tr>`).join(''), 'No business rules')}`;
   },
 
   async renderForms(el) {
-    const rows = await this.apiCall('hrForms', {}) || [];
+    const rows = this.asRows(await this.apiCall('hrForms', {}));
     const submissions = await this.staffApi('getHrStaffSubmissions', {}) || [];
     el.innerHTML = `${this.sectionHead(`${this.btn('Create Form', 'add-form', {}, 'btn-primary')}${this.btn('Refresh', 'refresh')}`)}
       ${this.panel('Form templates', this.table(['Title', 'Type', 'Status', ''],
@@ -766,7 +968,7 @@ const HrApp = {
   },
 
   async renderRequests(el) {
-    const rows = await this.apiCall('hrRequests', {}) || [];
+    const rows = this.asRows(await this.apiCall('hrRequests', {}));
     el.innerHTML = `${this.sectionHead(`${this.btn('New Request', 'add-request', {}, 'btn-primary')}${this.btn('Refresh', 'refresh')}`)}
       ${this.table(['Number', 'Employee', 'Type', 'Title', 'Status', ''],
         rows.map((r) => `<tr><td>${this.esc(r.request_number)}</td><td>${this.esc(r.employee_name)}</td><td>${this.esc(r.request_type)}</td><td>${this.esc(r.title || r.details)}</td><td>${this.esc(r.status)}</td>
@@ -774,26 +976,43 @@ const HrApp = {
   },
 
   async renderApprovals(el) {
-    const rows = await this.apiCall('hrApprovals', {}) || [];
-    el.innerHTML = `${this.sectionHead(this.btn('Refresh', 'refresh'))}
+    const rows = this.asRows(await this.apiCall('hrApprovals', {}));
+    const canFinalize = ['owner', 'manager'].includes(String(this.user?.role || '').toLowerCase());
+    el.innerHTML = `${this.sectionHead(`${this.btn('Admin HR Approvals', 'open-admin-section', { section: 'hr-approvals' })}${this.btn('Refresh', 'refresh')}`)}
+      <p class="muted">HR prepares actions; owner/manager finalizes. Leave can be actioned by HR; payroll pay, salary claims, employee create/update and salary changes need Admin approval.</p>
       ${this.table(['Type', 'Title', 'Employee', 'Date', 'Status', 'Action'],
         rows.map((a) => {
           let actions = '';
-          if (a.type === 'leave' && a.status === 'pending') actions = this.btn('Approve', 'approve-leave', { id: a.id }) + this.btn('Reject', 'reject-leave', { id: a.id });
-          else if (a.type === 'request') actions = this.btn('Approve', 'decide-request', { id: a.id, decision: 'approved' });
-          else if (a.type === 'payroll' && a.status === 'pending') actions = this.btn('Mark Paid', 'mark-payroll-paid', { id: a.id });
-          return `<tr><td>${this.esc(a.type)}</td><td>${this.esc(a.title)}</td><td>${this.esc(a.employee)}</td><td>${this.esc(String(a.date).slice(0, 10))}</td><td>${this.esc(a.status)}</td><td>${actions}</td></tr>`;
+          if (a.type === 'leave' && a.status === 'pending') {
+            actions = this.btn('Approve', 'approve-leave', { id: a.id }) + this.btn('Reject', 'reject-leave', { id: a.id });
+          } else if ((a.type === 'hr_action' || a.type === 'request') && canFinalize) {
+            actions = this.btn('Approve & apply', 'decide-request', { id: a.id, decision: 'approved' })
+              + this.btn('Reject', 'decide-request', { id: a.id, decision: 'rejected' });
+          } else if (a.type === 'payroll' && a.status === 'pending') {
+            actions = canFinalize
+              ? this.btn('Mark Paid', 'mark-payroll-paid', { id: a.id })
+              : this.btn('Request pay', 'request-payroll-pay', { id: a.id });
+          } else if (a.type === 'salary_claim' && canFinalize) {
+            actions = this.btn('Approve claim', 'approve-salary-claim', { id: a.id })
+              + this.btn('Reject', 'reject-salary-claim', { id: a.id });
+          } else if (!canFinalize && a.finalize) {
+            actions = '<span class="muted">Awaiting Admin</span>';
+          }
+          return `<tr><td>${this.esc(a.type)}${a.request_type ? ` / ${this.esc(a.request_type)}` : ''}</td><td>${this.esc(a.title)}</td><td>${this.esc(a.employee)}</td><td>${this.esc(String(a.date).slice(0, 10))}</td><td>${this.esc(a.status)}</td><td>${actions}</td></tr>`;
         }).join(''), 'No pending approvals')}`;
   },
 
   async renderCompliance(el) {
     const c = await this.apiCall('hrComplianceCentre', {}) || {};
+    const summary = await this.apiCall('hrStatutorySummary', {}) || {};
+    const emp201 = summary.emp201 || {};
     el.innerHTML = `
-      ${this.sectionHead(`${this.btn('Add Deadline', 'add-deadline', {}, 'btn-primary')}${this.btn('Refresh', 'refresh')}`)}
+      ${this.sectionHead(`${this.btn('Add Deadline', 'add-deadline', {}, 'btn-primary')}${this.btn('SARS / EMP201', 'nav', { section: 'sars' })}${this.btn('Refresh', 'refresh')}`)}
       <div class="hr-compliance-strip">
         <div class="hr-compliance-item">Payroll: <strong>${this.esc(c.payroll)}</strong></div>
         <div class="hr-compliance-item">UIF: <strong>${this.esc(c.uif)}</strong></div>
         <div class="hr-compliance-item">PAYE: <strong>${this.esc(c.paye)}</strong></div>
+        <div class="hr-compliance-item">EMP201: <strong>${this.money(emp201.total_liability)}</strong> due ${this.esc(emp201.due_by || '—')}</div>
         <div class="hr-compliance-item">Contracts expiring: <strong>${c.contracts_expiring || 0}</strong></div>
         <div class="hr-compliance-item">Policies awaiting: <strong>${c.policies_awaiting || 0}</strong></div>
         <div class="hr-compliance-item">Open incidents: <strong>${c.incidents_open || 0}</strong></div>
@@ -805,15 +1024,18 @@ const HrApp = {
   async renderReports(el) {
     el.innerHTML = `${this.sectionHead('')}
       <div class="hr-quick-actions">
-        ${this.btn('Employee list PDF', 'report-pdf', { type: 'employees' })}
+        ${this.btn('Worker list PDF', 'report-pdf', { type: 'employees' })}
         ${this.btn('Payroll report', 'report-pdf', { type: 'payroll' })}
         ${this.btn('Leave report', 'report-pdf', { type: 'leave' })}
         ${this.btn('Attendance report', 'report-pdf', { type: 'attendance' })}
-        ${this.btn('PAYE compliance PDF', 'statutory-pdf', { type: 'paye' })}
+        ${this.btn('PAYE / SARS PDF', 'statutory-pdf', { type: 'paye' })}
         ${this.btn('UIF compliance PDF', 'statutory-pdf', { type: 'uif' })}
+        ${this.btn('SDL compliance PDF', 'statutory-pdf', { type: 'sdl' })}
+        ${this.btn('COIDA PDF', 'statutory-pdf', { type: 'coida' })}
         ${this.btn('Shift schedule print', 'print-schedule')}
+        ${this.btn('Open SARS hub', 'nav', { section: 'sars' })}
       </div>
-      <p class="muted">Reports use the same data as Admin. Statutory returns are generated from processed payroll.</p>`;
+      <p class="muted">Reports use the same data as Admin. Statutory PDFs and EMP201 figures come from processed payroll (PAYE, UIF, SDL, COIDA).</p>`;
   },
 
   async renderAudit(el) {
@@ -826,9 +1048,29 @@ const HrApp = {
 
   async renderSettings(el) {
     const s = await this.apiCall('hrSettings') || {};
-    el.innerHTML = `${this.sectionHead(this.btn('Save', 'save-settings', {}, 'btn-primary'))}
-      ${this.panel('HR platform', `<p class="muted">Payroll statutory settings are shared with Admin → Payroll &amp; Compliance.</p>
-        <div class="field full"><label>HR notes</label><textarea id="hr-set-notes" rows="4">${this.esc(s.hr?.notes || '')}</textarea></div>`)}`;
+    const p = s.payroll || {};
+    const chk = (id, on) => `<label class="hr-check"><input type="checkbox" id="${id}" ${on ? 'checked' : ''}> Enabled</label>`;
+    el.innerHTML = `${this.sectionHead(`${this.btn('Save', 'save-settings', {}, 'btn-primary')}${this.btn('Admin Payroll', 'open-admin-section', { section: 'payroll' })}${this.btn('SARS / EMP201', 'nav', { section: 'sars' })}`)}
+      <p class="muted">Payroll statutory settings are shared with Admin → Payroll &amp; Compliance. Saving here updates both panels.</p>
+      <div class="hr-grid-2">
+        ${this.panel('PAYE (SARS)', `${chk('hr-paye-enabled', p.paye_enabled)}
+          <div class="field full"><label>PAYE registration number</label><input id="hr-paye-reg" class="input-block" value="${this.esc(p.paye_registration_number || p.company_paye_number || '')}"></div>
+          <div class="field full"><label>Tax number</label><input id="hr-tax-number" class="input-block" value="${this.esc(p.tax_number || '')}"></div>
+          <div class="field full"><label>SARS tax office</label><input id="hr-sars-office" class="input-block" value="${this.esc(p.sars_tax_office || '')}"></div>`)}
+        ${this.panel('UIF', `${chk('hr-uif-enabled', p.uif_enabled)}
+          <div class="field full"><label>UIF registration number</label><input id="hr-uif-reg" class="input-block" value="${this.esc(p.uif_registration_number || p.company_uif_number || '')}"></div>
+          <div class="field full"><label>Employee rate %</label><input id="hr-uif-ee" type="number" step="0.01" class="input-block" value="${this.esc(p.uif_employee_rate ?? 1)}"></div>
+          <div class="field full"><label>Employer rate %</label><input id="hr-uif-er" type="number" step="0.01" class="input-block" value="${this.esc(p.uif_employer_rate ?? 1)}"></div>
+          <div class="field full"><label>Ceiling (R)</label><input id="hr-uif-ceiling" type="number" step="0.01" class="input-block" value="${this.esc(p.uif_ceiling ?? 17712)}"></div>`)}
+        ${this.panel('SDL', `${chk('hr-sdl-enabled', p.sdl_enabled)}
+          <div class="field full"><label>SDL registration number</label><input id="hr-sdl-reg" class="input-block" value="${this.esc(p.sdl_registration_number || p.company_sdl_number || '')}"></div>
+          <div class="field full"><label>Rate %</label><input id="hr-sdl-rate" type="number" step="0.01" class="input-block" value="${this.esc(p.sdl_rate ?? 1)}"></div>`)}
+        ${this.panel('COIDA', `${chk('hr-coida-enabled', p.coida_enabled)}
+          <div class="field full"><label>COIDA registration</label><input id="hr-coida-reg" class="input-block" value="${this.esc(p.coida_registration_number || p.company_coida_number || '')}"></div>
+          <div class="field full"><label>Employer reference</label><input id="hr-coida-ref" class="input-block" value="${this.esc(p.coida_employer_ref || '')}"></div>
+          <div class="field full"><label>Rate %</label><input id="hr-coida-rate" type="number" step="0.01" class="input-block" value="${this.esc(p.coida_rate ?? 0)}"></div>`)}
+      </div>
+      ${this.panel('HR notes', `<div class="field full"><textarea id="hr-set-notes" rows="3" class="input-block">${this.esc(s.hr?.notes || '')}</textarea></div>`)}`;
   },
 
   cacheExport(key, title, headers, rows) {
@@ -969,11 +1211,46 @@ const HrApp = {
       const r = await API.getStaffPayslipPdf?.(d.id);
       if (r?.path) this.toast(`Payslip saved: ${r.path}`, 'success');
     },
-    'generate-payroll': function () { this.ACT['open-admin-section'].call(this, { section: 'payroll' }); },
+    'generate-payroll': async function () {
+      const start = await this.promptValue('Period start (YYYY-MM-DD):', this.dateOffset(-30));
+      if (!start) return;
+      const end = await this.promptValue('Period end (YYYY-MM-DD):', this.today());
+      if (!end) return;
+      const canFinalize = ['owner', 'manager'].includes(String(this.user?.role || '').toLowerCase());
+      if (canFinalize) {
+        const r = await this.apiOk(API.generateStaffPayroll?.(start, end), 'Generate failed');
+        if (r != null) {
+          this.toast('Payroll generated — payslips & salary claim windows opened for Staff Portal', 'success');
+          this.section = 'salary-claims';
+          this.refreshSection();
+        }
+        return;
+      }
+      const r = await this.apiCall('hrSubmitForApproval', {
+        request_type: 'payroll_generate',
+        title: `Generate payroll ${start} – ${end}`,
+        details: 'Submitted by HR — Admin must approve to run',
+        payload: { period_start: start, period_end: end }
+      });
+      if (r) { this.toast('Payroll generate sent for Admin approval', 'success'); this.section = 'approvals'; this.refreshSection(); }
+    },
     'mark-payroll-paid': async function (d) {
+      const canFinalize = ['owner', 'manager'].includes(String(this.user?.role || '').toLowerCase());
       const method = await this.promptValue('Payment method (cash/eft/card):', 'eft') || 'eft';
-      const r = await this.apiOk(API.payStaffSalary?.(parseInt(d.id, 10), method, this.user), 'Payment failed');
-      if (r != null) { this.toast('Payroll marked as paid', 'success'); this.refreshSection(); }
+      if (canFinalize) {
+        const r = await this.apiOk(API.payStaffSalary?.(parseInt(d.id, 10), method, this.user), 'Payment failed');
+        if (r != null) { this.toast('Payroll marked as paid', 'success'); this.refreshSection(); }
+        return;
+      }
+      const r = await this.apiCall('hrSubmitForApproval', {
+        request_type: 'payroll_pay',
+        title: `Mark payroll #${d.id} paid (${method})`,
+        payload: { payroll_id: parseInt(d.id, 10), payment_method: method }
+      });
+      if (r) { this.toast('Pay request sent for Admin approval', 'success'); this.section = 'approvals'; this.refreshSection(); }
+    },
+    'request-payroll-pay': async function (d) {
+      return this.ACT['mark-payroll-paid'].call(this, d);
     },
     'post-payroll-accounting': async function (d) {
       const r = await this.apiCall('hrPostPayrollAccounting', parseInt(d.id, 10));
@@ -1014,7 +1291,11 @@ const HrApp = {
       if (!amount) return;
       const reason = await this.promptValue('Reason for change:', 'Salary review') || 'Salary review';
       const r = await this.apiCall('hrSaveSalaryChange', { employee_id: parseInt(d.id, 10), new_amount: amount, reason });
-      if (r) { this.toast('Salary updated', 'success'); this.refreshSection(); }
+      if (r) {
+        this.toast(r.request_number ? 'Salary change submitted for Admin approval' : 'Salary updated', 'success');
+        if (r.request_number) this.section = 'approvals';
+        this.refreshSection();
+      }
     },
     'add-employer-record': async function () {
       const form = await this.promptForm('Add employer record', [
@@ -1028,7 +1309,7 @@ const HrApp = {
       if (r) { this.toast('Employer record saved', 'success'); this.refreshSection(); }
     },
     'edit-employer-record': async function (d) {
-      const rows = await this.apiCall('hrEmployerRecords', {}) || [];
+      const rows = this.asRows(await this.apiCall('hrEmployerRecords', {}));
       const existing = rows.find((r) => String(r.id) === String(d.id));
       const form = await this.promptForm('Edit employer record', [
         { id: 'title', label: 'Record title', required: true, value: existing?.title || '' },
@@ -1042,10 +1323,13 @@ const HrApp = {
       if (r) { this.toast('Employer record updated', 'success'); this.refreshSection(); }
     },
     'add-deadline': async function () {
-      const title = await this.promptValue('Deadline title:');
-      if (!title) return;
-      const due = await this.promptValue('Due date (YYYY-MM-DD):', this.today()) || this.today();
-      const r = await this.apiCall('hrSaveComplianceEvent', { title, event_type: 'deadline', due_date: due });
+      const form = await this.promptForm('Add compliance deadline', [
+        { id: 'title', label: 'Deadline title', required: true },
+        { id: 'event_type', label: 'Type', type: 'select', value: 'emp201', options: ['emp201', 'paye', 'uif', 'sdl', 'coida', 'deadline', 'other'] },
+        { id: 'due_date', label: 'Due date', type: 'date', value: this.today(), required: true }
+      ]);
+      if (!form) return;
+      const r = await this.apiCall('hrSaveComplianceEvent', { title: form.title, event_type: form.event_type, due_date: form.due_date });
       if (r) { this.toast('Deadline added', 'success'); this.refreshSection(); }
     },
     'add-disciplinary': async function () {
@@ -1089,16 +1373,53 @@ const HrApp = {
       if (!emp) return;
       const amount = await this.promptValue('Advance amount:');
       if (!amount) return;
-      const r = await this.staffApi('issueSalaryAdvance', { employee_id: emp.id, amount: parseFloat(amount), advance_date: this.today() });
-      if (r) { this.toast('Advance issued', 'success'); this.refreshSection(); }
+      const canFinalize = ['owner', 'manager'].includes(String(this.user?.role || '').toLowerCase());
+      if (canFinalize) {
+        const r = await this.staffApi('issueSalaryAdvance', { employee_id: emp.id, amount: parseFloat(amount), advance_date: this.today() });
+        if (r) { this.toast('Advance issued', 'success'); this.refreshSection(); }
+        return;
+      }
+      const r = await this.apiCall('hrSubmitForApproval', {
+        request_type: 'advance_issue', employee_id: emp.id,
+        title: `Advance R${amount} — ${emp.full_name}`,
+        payload: { employee_id: emp.id, amount: parseFloat(amount), advance_date: this.today() }
+      });
+      if (r) { this.toast('Advance sent for Admin approval', 'success'); this.section = 'approvals'; this.refreshSection(); }
     },
     'add-loan': async function () {
       const emp = await this.pickEmployee('Add loan for employee');
       if (!emp) return;
       const amount = await this.promptValue('Loan amount:');
       if (!amount) return;
-      const r = await this.staffApi('saveEmployeeLoan', { employee_id: emp.id, loan_amount: parseFloat(amount), loan_date: this.today() });
-      if (r) { this.toast('Loan saved', 'success'); this.refreshSection(); }
+      const canFinalize = ['owner', 'manager'].includes(String(this.user?.role || '').toLowerCase());
+      if (canFinalize) {
+        const r = await this.staffApi('saveEmployeeLoan', { employee_id: emp.id, loan_amount: parseFloat(amount), loan_date: this.today() });
+        if (r) { this.toast('Loan saved', 'success'); this.refreshSection(); }
+        return;
+      }
+      const r = await this.apiCall('hrSubmitForApproval', {
+        request_type: 'loan_add', employee_id: emp.id,
+        title: `Loan R${amount} — ${emp.full_name}`,
+        payload: { employee_id: emp.id, loan_amount: parseFloat(amount), amount: parseFloat(amount), loan_date: this.today() }
+      });
+      if (r) { this.toast('Loan sent for Admin approval', 'success'); this.section = 'approvals'; this.refreshSection(); }
+    },
+    'approve-salary-claim': async function (d) {
+      const r = await this.apiOk(API.approveSalaryClaim?.(parseInt(d.id, 10), '', this.user), 'Approve failed');
+      if (r != null) { this.toast('Salary claim approved', 'success'); this.refreshSection(); }
+    },
+    'reject-salary-claim': async function (d) {
+      const notes = await this.promptValue('Rejection notes:', 'Rejected') || 'Rejected';
+      const r = await this.apiOk(API.rejectSalaryClaim?.(parseInt(d.id, 10), notes, this.user), 'Reject failed');
+      if (r != null) { this.toast('Salary claim rejected', 'info'); this.refreshSection(); }
+    },
+    'pay-salary-claim': async function (d) {
+      const r = await this.apiOk(API.markSalaryClaimPaid?.(parseInt(d.id, 10), this.user), 'Pay failed');
+      if (r != null) { this.toast('Claim marked paid', 'success'); this.refreshSection(); }
+    },
+    'salary-claim-pdf': async function (d) {
+      await this.apiOk(API.getSalaryClaimPdf?.(parseInt(d.id, 10), this.user), 'PDF failed');
+      this.toast('Salary claim PDF ready', 'success');
     },
     'add-leave': async function () {
       const emp = await this.pickEmployee('Leave request for employee');
@@ -1166,7 +1487,7 @@ const HrApp = {
       if (r) { this.toast('Policy acknowledged', 'success'); this.refreshSection(); }
     },
     'view-rule': async function (d) {
-      const rows = await this.apiCall('hrBusinessRules', {}) || [];
+      const rows = this.asRows(await this.apiCall('hrBusinessRules', {}));
       const rule = rows.find((r) => String(r.id) === String(d.id));
       if (rule) this.openModal(rule.title, `<pre class="hr-pre">${this.esc(rule.body || 'No body text')}</pre>`);
     },
@@ -1201,12 +1522,69 @@ const HrApp = {
       const r = await this.apiOk(API.getStaffReportPdf?.(type, data), 'Report failed');
       if (r?.path) this.toast(`Report saved: ${r.path}`, 'success');
     },
-    'add-employee': function () { this.ACT['open-admin-section'].call(this, { section: 'staffhr' }); },
+    'add-employee': async function () {
+      const form = await this.promptForm('Add worker (Admin must approve)', [
+        { id: 'full_name', label: 'Full name', required: true },
+        { id: 'position', label: 'Position' },
+        { id: 'department', label: 'Department' },
+        { id: 'employment_type', label: 'Type', type: 'select', value: 'permanent', options: ['permanent', 'casual', 'contract', 'intern'] },
+        { id: 'basic_salary', label: 'Basic salary', type: 'number' },
+        { id: 'phone', label: 'Phone' }
+      ]);
+      if (!form) return;
+      const r = await this.apiCall('hrSubmitForApproval', {
+        request_type: 'employee_create',
+        title: `Add worker — ${form.full_name}`,
+        details: form.position || form.employment_type,
+        payload: {
+          full_name: form.full_name,
+          position: form.position,
+          department: form.department,
+          employment_type: form.employment_type,
+          basic_salary: parseFloat(form.basic_salary) || 0,
+          phone: form.phone,
+          status: 'Active'
+        }
+      });
+      if (r) { this.toast('New worker submitted for Admin approval', 'success'); this.section = 'approvals'; this.refreshSection(); }
+    },
     'save-settings': async function () {
-      const r = await this.apiCall('hrSaveSettings', { hr: { notes: document.getElementById('hr-set-notes')?.value || '' } });
-      if (r) this.toast('Settings saved', 'success');
+      const on = (id) => !!document.getElementById(id)?.checked;
+      const val = (id) => document.getElementById(id)?.value ?? '';
+      const num = (id) => {
+        const n = parseFloat(val(id));
+        return Number.isFinite(n) ? n : undefined;
+      };
+      const payroll = {
+        paye_enabled: on('hr-paye-enabled'),
+        paye_registration_number: val('hr-paye-reg'),
+        company_paye_number: val('hr-paye-reg'),
+        tax_number: val('hr-tax-number'),
+        sars_tax_office: val('hr-sars-office'),
+        uif_enabled: on('hr-uif-enabled'),
+        uif_registration_number: val('hr-uif-reg'),
+        company_uif_number: val('hr-uif-reg'),
+        uif_employee_rate: num('hr-uif-ee'),
+        uif_employer_rate: num('hr-uif-er'),
+        uif_ceiling: num('hr-uif-ceiling'),
+        sdl_enabled: on('hr-sdl-enabled'),
+        sdl_registration_number: val('hr-sdl-reg'),
+        company_sdl_number: val('hr-sdl-reg'),
+        sdl_rate: num('hr-sdl-rate'),
+        coida_enabled: on('hr-coida-enabled'),
+        coida_registration_number: val('hr-coida-reg'),
+        company_coida_number: val('hr-coida-reg'),
+        coida_employer_ref: val('hr-coida-ref'),
+        coida_rate: num('hr-coida-rate')
+      };
+      const r = await this.apiCall('hrSaveSettings', {
+        hr: { notes: val('hr-set-notes') },
+        payroll
+      });
+      if (r) this.toast('HR & payroll statutory settings saved (shared with Admin)', 'success');
     }
   }
 };
 
 window.HrApp = HrApp;
+if (typeof window.HrParityInit === 'function') window.HrParityInit();

@@ -28,6 +28,7 @@ const App = {
     { id: 'recipe', label: '🍳 Recipe & Production', roles: ['owner', 'manager'] },
     { id: 'purchase-orders', label: '📝 Purchase Orders', roles: ['owner', 'manager'] },
     { id: 'reports', label: '📈 Reports', roles: ['owner', 'manager'] },
+    { id: 'bookkeeping', label: '📒 Bookkeeping', roles: ['owner', 'manager'] },
     { id: 'users', label: '👤 Users', roles: ['owner', 'manager'] },
     { id: 'audit', label: '🔍 Audit Log', roles: ['owner', 'manager'] }
   ],
@@ -763,12 +764,18 @@ const App = {
     try {
       if (typeof Utils.reloadStylesheet === 'function') await Utils.reloadStylesheet('css/hr-command.css');
       else await this.ensureFeatureCss('css/hr-command.css');
-      if (typeof Utils.reloadScript === 'function') await Utils.reloadScript('js/hr-app.js');
-      else await this.ensureFeatureScript('js/hr-app.js');
+      if (typeof Utils.reloadScript === 'function') {
+        await Utils.reloadScript('js/hr-app.js');
+        await Utils.reloadScript('js/hr-parity.js');
+      } else {
+        await this.ensureFeatureScript('js/hr-app.js');
+        await this.ensureFeatureScript('js/hr-parity.js');
+      }
     } catch (err) {
       console.warn('[HR] feature load', err);
       await this.ensureFeatureCss('css/hr-command.css');
       await this.ensureFeatureScript('js/hr-app.js');
+      await this.ensureFeatureScript('js/hr-parity.js');
     }
     const mod = window.HrApp;
     if (!mod?.render) {

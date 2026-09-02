@@ -10,7 +10,7 @@ const HR_ROLES = new Set(['owner', 'manager', 'supervisor', 'assistant_manager',
 function db() { return getDb(); }
 function dbGet(sql, p = []) { return db().prepare(sql).get(...p); }
 function dbAll(sql, p = []) { return db().prepare(sql).all(...p); }
-function dbRun(sql, p = []) { return db().run(sql, ...p); }
+function dbRun(sql, p = []) { return db().prepare(sql).run(...p); }
 function today() { return new Date().toLocaleDateString('en-CA'); }
 function num(v, fb = 0) { const n = Number(v); return Number.isFinite(n) ? n : fb; }
 function textOrNull(v) { const s = v == null ? '' : String(v).trim(); return s || null; }
@@ -47,6 +47,270 @@ function requireHrWrite(actor) {
     throw new Error('Insufficient permissions for this HR action');
   }
   return user;
+}
+
+function requireAdminFinalize(actor) {
+  const user = requireHrUser(actor);
+  const role = String(user.role || '').toLowerCase();
+  if (!['owner', 'manager'].includes(role)) {
+    throw new Error('Only owner/manager can approve and finalize HR actions');
+  }
+  return user;
+}
+
+function isFinalizer(actor) {
+  const role = String(actor?.role || '').toLowerCase();
+  return role === 'owner' || role === 'manager';
+}
+
+function parsePayload(row) {
+  return parseJson(row?.payload_json, {});
+}
+
+/** HR submits work for Admin approval — does not apply changes yet. */
+function submitHrForApproval(data = {}, actor) {
+  const user = requireHrWrite(actor);
+  const requestType = data.request_type || data.action_type || 'general';
+  const title = data.title || `HR: ${requestType.replace(/_/g, ' ')}`;
+  const payload = data.payload || data.payload_json || {};
+  const employeeId = data.employee_id || payload.employee_id || null;
+  if (!employeeId && !['payroll_generate', 'payroll_pay', 'settings_change'].includes(requestType)) {
+    // allow system-level requests without employee
+  }
+  const number = nextNumber('REQ', 'hr_requests', 'request_number');
+  const r = dbRun(
+    `INSERT INTO hr_requests (request_number, employee_id, request_type, title, details, status, payload_json, effective_date)
+     VALUES (?,?,?,?,?,?,?,?)`,
+    [number, employeeId || 0, requestType, title, textOrNull(data.details),
+      'submitted', JSON.stringify(payload), textOrNull(data.effective_date)]
+  );
+  audit(user, 'hr_submit_for_approval', 'hr_request', r.lastInsertRowid, { request_type: requestType, title });
+  try {
+    require('./store').addNotification?.('hr_approval', 'HR action awaiting approval',
+      `${user.full_name || user.username}: ${title}`, {
+        entity_type: 'hr_request',
+        entity_id: r.lastInsertRowid,
+        action_page: 'admin:hr-approvals',
+        audience_roles: ['owner', 'manager']
+      });
+  } catch (_) { /* */ }
+  return dbGet(`SELECT * FROM hr_requests WHERE id=?`, [r.lastInsertRowid]);
+}
+
+function applyApprovedRequest(row, user) {
+  const type = String(row.request_type || '').toLowerCase();
+  const payload = parsePayload(row);
+  const staff = require('./staff');
+  const actorName = user.full_name || user.username;
+
+  if (type === 'salary_change') {
+    const empId = payload.employee_id || row.employee_id;
+    const emp = dbGet(`SELECT * FROM employees WHERE id=?`, [empId]);
+    if (!emp) throw new Error('Employee not found for salary change');
+    const prev = num(emp.basic_salary);
+    const next = num(payload.new_amount);
+    dbRun(
+      `INSERT INTO hr_salary_history (employee_id, effective_date, previous_amount, new_amount, salary_type, reason, approved_by, requested_by, doc_path)
+       VALUES (?,?,?,?,?,?,?,?,?)`,
+      [empId, payload.effective_date || today(), prev, next, payload.salary_type || emp.salary_type,
+        textOrNull(payload.reason), user.id, user.id, textOrNull(payload.doc_path)]
+    );
+    dbRun(`UPDATE employees SET basic_salary=?, updated_at=datetime('now') WHERE id=?`, [next, empId]);
+    return { applied: 'salary_change', employee_id: empId, previous: prev, new: next };
+  }
+
+  if (type === 'employee_create') {
+    const created = staff.saveEmployee(payload, user.id);
+    return { applied: 'employee_create', employee_id: created?.id };
+  }
+
+  if (type === 'employee_update') {
+    const id = payload.id || payload.employee_id;
+    if (!id) throw new Error('Employee id required');
+    const updated = staff.saveEmployee({ ...payload, id }, user.id);
+    return { applied: 'employee_update', employee_id: id, employee: updated };
+  }
+
+  if (type === 'payroll_pay') {
+    const payrollId = payload.payroll_id || payload.id;
+    if (!payrollId) throw new Error('Payroll id required');
+    staff.paySalary(payrollId, payload.payment_method || 'eft');
+    return { applied: 'payroll_pay', payroll_id: payrollId };
+  }
+
+  if (type === 'payroll_generate') {
+    const rows = staff.generatePayroll(payload.period_start, payload.period_end, payload.employee_ids);
+    return { applied: 'payroll_generate', count: rows?.length || 0 };
+  }
+
+  if (type === 'advance_issue') {
+    require('./payroll-compliance').issueAdvance(payload.data || payload, user);
+    return { applied: 'advance_issue' };
+  }
+
+  if (type === 'loan_add') {
+    require('./payroll-compliance').saveLoan(payload.data || payload);
+    return { applied: 'loan_add' };
+  }
+
+  if (type === 'damage_cost') {
+    require('./payroll-compliance').saveDamageCost(payload.data || payload);
+    return { applied: 'damage_cost' };
+  }
+
+  if (type === 'attendance_create') {
+    staff.createManualAttendance?.(payload, user);
+    return { applied: 'attendance_create' };
+  }
+
+  if (type === 'attendance_update') {
+    const id = payload.id;
+    staff.updateAttendance(id, payload, user.id, actorName);
+    return { applied: 'attendance_update' };
+  }
+
+  if (type === 'schedule_save') {
+    staff.saveSchedule(payload);
+    return { applied: 'schedule_save' };
+  }
+
+  if (type === 'document_upload') {
+    staff.saveHrDocument(payload, user.id, actorName);
+    return { applied: 'document_upload' };
+  }
+
+  if (type === 'leave_decision') {
+    const leaveId = payload.leave_id || payload.id;
+    staff.approveLeave(leaveId, user.id, payload.approve !== false, actorName, user);
+    return { applied: 'leave_decision', leave_id: leaveId };
+  }
+
+  const store = require('./store');
+  const hrName = user.full_name || user.username || 'admin';
+
+  if (type === 'training_save') {
+    store.saveTrainingRecord(payload.data, user);
+    return { applied: 'training_save' };
+  }
+  if (type === 'training_eval') {
+    store.saveTrainingEvaluation(payload.recordId, payload.data, user);
+    return { applied: 'training_eval' };
+  }
+  if (type === 'training_delete') {
+    store.deleteTrainingRecord(payload.id, user);
+    return { applied: 'training_delete' };
+  }
+  if (type === 'training_template_save') {
+    store.saveHrContractTemplate(payload.data, user);
+    return { applied: 'training_template_save' };
+  }
+  if (type === 'training_template_delete') {
+    store.deleteHrContractTemplate(payload.id, user);
+    return { applied: 'training_template_delete' };
+  }
+  if (type === 'staff_submission_update') {
+    store.updateStaffSubmission(payload.id, payload.data, user);
+    return { applied: 'staff_submission_update' };
+  }
+  if (type === 'staff_submission_delete') {
+    store.deleteStaffSubmission(payload.id, user);
+    return { applied: 'staff_submission_delete' };
+  }
+  if (type === 'probation_save') {
+    store.saveProbation(payload.data, user.id, hrName);
+    return { applied: 'probation_save' };
+  }
+  if (type === 'probation_delete') {
+    store.deleteProbation(payload.id, user.id, hrName);
+    return { applied: 'probation_delete' };
+  }
+  if (type === 'probation_eval') {
+    store.saveDailyEvaluation(payload.data, user.id, hrName);
+    return { applied: 'probation_eval' };
+  }
+  if (type === 'probation_decision') {
+    store.finalProbationDecision(payload.probationId, payload.decision, payload.reason || '',
+      user.id, hrName, payload.extendDays);
+    return { applied: 'probation_decision' };
+  }
+  if (type === 'hr_contract_save') {
+    store.saveContract(payload.data, user.id, hrName);
+    return { applied: 'hr_contract_save' };
+  }
+  if (type === 'hr_contract_resign') {
+    store.openContractResign(payload.id, payload.opensAt, payload.closesAt, user.id, hrName);
+    return { applied: 'hr_contract_resign' };
+  }
+  if (type === 'contract_template_save') {
+    store.saveContractTemplate(payload.data, user.id, hrName);
+    return { applied: 'contract_template_save' };
+  }
+  if (type === 'contract_template_delete') {
+    store.deleteContractTemplate(payload.id, user.id, hrName);
+    return { applied: 'contract_template_delete' };
+  }
+  if (type === 'recruitment_hire') {
+    const out = store.decideJobCandidate(payload.candidateId, payload.decision, payload.notes || '', user);
+    return { applied: 'recruitment_hire', candidate_id: payload.candidateId, result: out };
+  }
+  if (type === 'recruitment_posting_save') {
+    store.saveJobPosting(payload.data, user);
+    return { applied: 'recruitment_posting_save' };
+  }
+  if (type === 'recruitment_posting_delete') {
+    store.deleteJobPosting(payload.id, user);
+    return { applied: 'recruitment_posting_delete' };
+  }
+  if (type === 'recruitment_candidate_save') {
+    store.saveJobCandidate(payload.data, user);
+    return { applied: 'recruitment_candidate_save' };
+  }
+  if (type === 'recruitment_settings') {
+    store.saveRecruitmentSettings(payload.data, user);
+    return { applied: 'recruitment_settings' };
+  }
+  if (type === 'eom_save') {
+    store.saveEmployeeOfMonth(payload.data, user);
+    return { applied: 'eom_save' };
+  }
+  if (type === 'eom_delete') {
+    store.deleteRecord(payload.id, user);
+    return { applied: 'eom_delete' };
+  }
+  if (type === 'payroll_settings') {
+    require('./payroll-compliance').savePayrollSettings(payload.partial || payload.data || payload);
+    return { applied: 'payroll_settings' };
+  }
+  if (type === 'ops_rule_save') {
+    store.saveRule(payload.data, user);
+    return { applied: 'ops_rule_save' };
+  }
+  if (type === 'ops_rule_delete') {
+    store.archiveRule(payload.id, user);
+    return { applied: 'ops_rule_delete' };
+  }
+  if (type === 'ops_opening_save') {
+    store.saveOpeningTemplate(payload.data, user);
+    return { applied: 'ops_opening_save' };
+  }
+  if (type === 'ops_closing_save') {
+    store.saveClosingTemplate(payload.data, user);
+    return { applied: 'ops_closing_save' };
+  }
+  if (type === 'ops_signature_save') {
+    store.saveAdminSignature(payload.path, user);
+    return { applied: 'ops_signature_save' };
+  }
+  if (type === 'selfie_update') {
+    store.updateStaffSelfie(payload.id, payload.photoData, user.id, hrName, payload.notes);
+    return { applied: 'selfie_update' };
+  }
+  if (type === 'selfie_delete') {
+    store.deleteStaffSelfie(payload.id, user.id, hrName);
+    return { applied: 'selfie_delete' };
+  }
+
+  return { applied: 'recorded', request_type: type };
 }
 
 function nextNumber(prefix, table, col) {
@@ -245,18 +509,66 @@ function listApprovals(filters = {}, actor) {
   const items = [];
   try {
     dbAll(`SELECT l.*, e.full_name, e.employee_code FROM employee_leave l JOIN employees e ON e.id=l.employee_id WHERE l.status='pending' ORDER BY l.created_at DESC LIMIT 100`).forEach((r) => {
-      items.push({ id: r.id, type: 'leave', title: `${r.leave_type} leave — ${r.full_name}`, employee: r.full_name, date: r.start_date, status: r.status });
+      items.push({ id: r.id, type: 'leave', title: `${r.leave_type} leave — ${r.full_name}`, employee: r.full_name, date: r.start_date, status: r.status, finalize: false });
     });
   } catch (_) {}
   try {
     dbAll(`SELECT * FROM hr_requests WHERE status IN ('submitted','review') ORDER BY requested_at DESC LIMIT 100`).forEach((r) => {
-      const emp = dbGet(`SELECT full_name FROM employees WHERE id=?`, [r.employee_id]);
-      items.push({ id: r.id, type: 'request', title: r.title || r.request_type, employee: emp?.full_name, date: r.requested_at, status: r.status });
+      const emp = r.employee_id ? dbGet(`SELECT full_name FROM employees WHERE id=?`, [r.employee_id]) : null;
+      items.push({
+        id: r.id,
+        type: 'hr_action',
+        request_type: r.request_type,
+        title: r.title || r.request_type,
+        employee: emp?.full_name || '—',
+        date: r.requested_at,
+        status: r.status,
+        details: r.details,
+        payload: parsePayload(r),
+        finalize: true
+      });
     });
   } catch (_) {}
   try {
     dbAll(`SELECT p.*, e.full_name FROM employee_payroll p JOIN employees e ON e.id=p.employee_id WHERE p.status='pending' ORDER BY p.period_end DESC LIMIT 50`).forEach((r) => {
-      items.push({ id: r.id, type: 'payroll', title: `Payroll ${r.period_start} — ${r.period_end}`, employee: r.full_name, date: r.period_end, status: r.status });
+      items.push({ id: r.id, type: 'payroll', title: `Payroll ${r.period_start} — ${r.period_end}`, employee: r.full_name, date: r.period_end, status: r.status, finalize: true, amount: r.net_salary });
+    });
+  } catch (_) {}
+  try {
+    const claims = require('./salary-claims').listSalaryClaims({ status: 'claimed', limit: 100 }) || [];
+    claims.forEach((c) => {
+      items.push({
+        id: c.id,
+        type: 'salary_claim',
+        title: `Salary claim — ${c.employee_name} (${c.period_start}–${c.period_end})`,
+        employee: c.employee_name,
+        date: c.claimed_at || c.created_at,
+        status: c.status,
+        amount: c.net_amount || c.amount,
+        finalize: true
+      });
+    });
+  } catch (_) {}
+  try {
+    dbAll(
+      `SELECT c.id, c.name, c.status, c.employ_request_at, c.employ_request_by, p.title AS posting_title,
+              u.full_name AS requester_name
+       FROM job_candidates c
+       LEFT JOIN job_postings p ON p.id = c.posting_id
+       LEFT JOIN users u ON u.id = c.employ_request_by
+       WHERE c.status = 'employ_requested' AND (c.admin_decision IS NULL OR c.admin_decision = '')
+       ORDER BY c.employ_request_at DESC LIMIT 50`
+    ).forEach((r) => {
+      items.push({
+        id: r.id,
+        type: 'recruitment',
+        request_type: 'employ_request',
+        title: `Hire request — ${r.name}${r.posting_title ? ` (${r.posting_title})` : ''}`,
+        employee: r.name,
+        date: r.employ_request_at,
+        status: 'pending',
+        finalize: true
+      });
     });
   } catch (_) {}
   if (filters.type) return items.filter((i) => i.type === filters.type);
@@ -570,13 +882,61 @@ function saveRequest(data = {}, actor) {
 }
 
 function decideRequest(id, decision, notes, actor) {
-  const user = requireHrWrite(actor);
+  const approve = decision === 'approved' || decision === true || decision === 'approve';
+  const user = approve ? requireAdminFinalize(actor) : requireHrWrite(actor);
+  const row = dbGet(`SELECT * FROM hr_requests WHERE id=?`, [id]);
+  if (!row) throw new Error('Request not found');
+  if (!['submitted', 'review'].includes(String(row.status || ''))) {
+    throw new Error(`Request is already ${row.status}`);
+  }
+
+  let applied = null;
+  if (approve) {
+    applied = applyApprovedRequest(row, user);
+  }
+
   dbRun(
     `UPDATE hr_requests SET status=?, reviewed_by=?, reviewed_at=datetime('now'), review_notes=?, updated_at=datetime('now') WHERE id=?`,
-    [decision === 'approved' ? 'approved' : 'rejected', user.id, textOrNull(notes), id]
+    [approve ? 'approved' : 'rejected', user.id, textOrNull(notes), id]
   );
-  audit(user, 'decide_hr_request', 'hr_request', id, { decision, notes });
-  return dbGet(`SELECT * FROM hr_requests WHERE id=?`, [id]);
+  audit(user, 'decide_hr_request', 'hr_request', id, { decision: approve ? 'approved' : 'rejected', notes, applied });
+  return { ...dbGet(`SELECT * FROM hr_requests WHERE id=?`, [id]), applied };
+}
+
+function saveSalaryChange(data = {}, actor) {
+  const user = requireHrWrite(actor);
+  // Non-finalizers always queue; finalizers can force immediate with apply_now
+  const queue = data.apply_now !== true || !isFinalizer(user);
+  if (queue) {
+    return submitHrForApproval({
+      request_type: 'salary_change',
+      employee_id: data.employee_id,
+      title: `Salary change — employee #${data.employee_id}`,
+      details: data.reason || 'Salary review',
+      effective_date: data.effective_date || today(),
+      payload: {
+        employee_id: data.employee_id,
+        new_amount: data.new_amount,
+        salary_type: data.salary_type,
+        reason: data.reason,
+        effective_date: data.effective_date || today(),
+        doc_path: data.doc_path
+      }
+    }, user);
+  }
+  const emp = dbGet(`SELECT * FROM employees WHERE id=?`, [data.employee_id]);
+  if (!emp) throw new Error('Employee not found');
+  const prev = num(emp.basic_salary);
+  const next = num(data.new_amount);
+  const r = dbRun(
+    `INSERT INTO hr_salary_history (employee_id, effective_date, previous_amount, new_amount, salary_type, reason, approved_by, requested_by, doc_path)
+     VALUES (?,?,?,?,?,?,?,?,?)`,
+    [data.employee_id, data.effective_date || today(), prev, next, data.salary_type || emp.salary_type,
+      textOrNull(data.reason), user.id, data.requested_by || user.id, textOrNull(data.doc_path)]
+  );
+  dbRun(`UPDATE employees SET basic_salary=?, updated_at=datetime('now') WHERE id=?`, [next, data.employee_id]);
+  audit(user, 'salary_change', 'employee', data.employee_id, { previous: prev, new: next, reason: data.reason });
+  return dbGet(`SELECT * FROM hr_salary_history WHERE id=?`, [r.lastInsertRowid]);
 }
 
 function listEmployerRecords(filters = {}, actor) {
@@ -612,23 +972,6 @@ function listSalaryHistory(employeeId, actor) {
   requireHrUser(actor);
   return dbAll(`SELECT h.*, u.full_name AS approved_by_name FROM hr_salary_history h
     LEFT JOIN users u ON u.id=h.approved_by WHERE h.employee_id=? ORDER BY h.effective_date DESC`, [employeeId]);
-}
-
-function saveSalaryChange(data = {}, actor) {
-  const user = requireHrWrite(actor);
-  const emp = dbGet(`SELECT * FROM employees WHERE id=?`, [data.employee_id]);
-  if (!emp) throw new Error('Employee not found');
-  const prev = num(emp.basic_salary);
-  const next = num(data.new_amount);
-  const r = dbRun(
-    `INSERT INTO hr_salary_history (employee_id, effective_date, previous_amount, new_amount, salary_type, reason, approved_by, requested_by, doc_path)
-     VALUES (?,?,?,?,?,?,?,?,?)`,
-    [data.employee_id, data.effective_date || today(), prev, next, data.salary_type || emp.salary_type,
-      textOrNull(data.reason), user.id, data.requested_by || user.id, textOrNull(data.doc_path)]
-  );
-  dbRun(`UPDATE employees SET basic_salary=?, updated_at=datetime('now') WHERE id=?`, [next, data.employee_id]);
-  audit(user, 'salary_change', 'employee', data.employee_id, { previous: prev, new: next, reason: data.reason });
-  return dbGet(`SELECT * FROM hr_salary_history WHERE id=?`, [r.lastInsertRowid]);
 }
 
 function saveOffboarding(data = {}, actor) {
@@ -767,8 +1110,19 @@ function listAllEmployeeDocuments(filters = {}, actor) {
     FROM employee_documents d JOIN employees e ON e.id=d.employee_id WHERE 1=1`;
   const p = [];
   if (filters.employee_id) { sql += ` AND d.employee_id=?`; p.push(filters.employee_id); }
-  sql += ` ORDER BY d.expiry_date IS NULL, d.expiry_date LIMIT 500`;
-  return dbAll(sql, p);
+  try {
+    sql += ` ORDER BY d.expiry_date IS NULL, d.expiry_date LIMIT 500`;
+    return dbAll(sql, p);
+  } catch (err) {
+    if (!/expiry_date/i.test(String(err.message || err))) throw err;
+    return dbAll(
+      `SELECT d.*, e.full_name AS employee_name, e.employee_code
+       FROM employee_documents d JOIN employees e ON e.id=d.employee_id
+       ${filters.employee_id ? 'WHERE d.employee_id=?' : ''}
+       ORDER BY d.created_at DESC LIMIT 500`,
+      filters.employee_id ? [filters.employee_id] : []
+    );
+  }
 }
 
 function listOffboardingRecords(filters = {}, actor) {
@@ -805,7 +1159,13 @@ function listPayrollDeductions(filters = {}, actor) {
 
 function getStatutorySummary(filters = {}, actor) {
   requireHrUser(actor);
-  const monthStart = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}-01`;
+  const now = new Date();
+  const monthStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+  const taxYearStartMonth = 3; // SA tax year Mar–Feb
+  const tyStartYear = now.getMonth() + 1 >= taxYearStartMonth ? now.getFullYear() : now.getFullYear() - 1;
+  const taxYearStart = `${tyStartYear}-03-01`;
+  const taxYearEnd = `${tyStartYear + 1}-02-28`;
+
   const totals = dbGet(
     `SELECT COALESCE(SUM(paye),0) AS paye,
             COALESCE(SUM(uif_employee),0) AS uif_employee,
@@ -817,9 +1177,133 @@ function getStatutorySummary(filters = {}, actor) {
             COUNT(*) AS payroll_count
      FROM employee_payroll WHERE date(period_end) >= date(?)`, [monthStart]
   ) || {};
+
+  const taxYear = dbGet(
+    `SELECT COALESCE(SUM(paye),0) AS paye,
+            COALESCE(SUM(uif_employee),0) AS uif_employee,
+            COALESCE(SUM(uif_employer),0) AS uif_employer,
+            COALESCE(SUM(sdl),0) AS sdl,
+            COALESCE(SUM(coida),0) AS coida,
+            COALESCE(SUM(gross_salary),0) AS gross,
+            COALESCE(SUM(net_salary),0) AS net,
+            COUNT(*) AS payroll_count
+     FROM employee_payroll
+     WHERE date(period_end) >= date(?) AND date(period_end) <= date(?)`,
+    [taxYearStart, taxYearEnd]
+  ) || {};
+
+  let workers = { total: 0, active: 0, casual: 0, contractors: 0, paye_registered: 0, uif_registered: 0, sdl_registered: 0 };
+  try {
+    workers = {
+      total: num(dbGet(`SELECT COUNT(*) AS c FROM employees`)?.c),
+      active: num(dbGet(`SELECT COUNT(*) AS c FROM employees WHERE LOWER(COALESCE(status,'active')) NOT IN ('terminated','inactive','left')`)?.c),
+      casual: num(dbGet(`SELECT COUNT(*) AS c FROM employees WHERE LOWER(COALESCE(employment_type,'')) LIKE '%casual%'`)?.c),
+      contractors: num(dbGet(`SELECT COUNT(*) AS c FROM employees WHERE LOWER(COALESCE(employment_type,'')) LIKE '%contract%'`)?.c),
+      paye_registered: num(dbGet(`SELECT COUNT(*) AS c FROM employees WHERE COALESCE(paye_registered,0)=1`)?.c),
+      uif_registered: num(dbGet(`SELECT COUNT(*) AS c FROM employees WHERE COALESCE(uif_registered,0)=1`)?.c),
+      sdl_registered: num(dbGet(`SELECT COUNT(*) AS c FROM employees WHERE COALESCE(sdl_registered,0)=1`)?.c)
+    };
+  } catch (_) { /* columns may be missing on older DBs */ }
+
+  let byEmployee = [];
+  try {
+    byEmployee = dbAll(
+      `SELECT e.id, e.full_name, e.employee_code, e.employment_type, e.status,
+              COALESCE(e.paye_registered,0) AS paye_registered,
+              COALESCE(e.uif_registered,0) AS uif_registered,
+              COALESCE(e.sdl_registered,0) AS sdl_registered,
+              COALESCE(SUM(p.paye),0) AS paye,
+              COALESCE(SUM(p.uif_employee),0) AS uif_employee,
+              COALESCE(SUM(p.uif_employer),0) AS uif_employer,
+              COALESCE(SUM(p.sdl),0) AS sdl,
+              COALESCE(SUM(p.coida),0) AS coida,
+              COALESCE(SUM(p.gross_salary),0) AS gross,
+              COALESCE(SUM(p.net_salary),0) AS net
+       FROM employees e
+       LEFT JOIN employee_payroll p ON p.employee_id=e.id AND date(p.period_end) >= date(?)
+       WHERE LOWER(COALESCE(e.status,'active')) NOT IN ('terminated','inactive','left')
+       GROUP BY e.id, e.full_name, e.employee_code, e.employment_type, e.status,
+                e.paye_registered, e.uif_registered, e.sdl_registered
+       ORDER BY e.full_name LIMIT 300`,
+      [monthStart]
+    );
+  } catch (_) {
+    try {
+      byEmployee = dbAll(
+        `SELECT e.id, e.full_name, e.employee_code, e.employment_type, e.status,
+                0 AS paye_registered, 0 AS uif_registered, 0 AS sdl_registered,
+                COALESCE(SUM(p.paye),0) AS paye,
+                COALESCE(SUM(p.uif_employee),0) AS uif_employee,
+                COALESCE(SUM(p.uif_employer),0) AS uif_employer,
+                COALESCE(SUM(p.sdl),0) AS sdl,
+                COALESCE(SUM(p.coida),0) AS coida,
+                COALESCE(SUM(p.gross_salary),0) AS gross,
+                COALESCE(SUM(p.net_salary),0) AS net
+         FROM employees e
+         LEFT JOIN employee_payroll p ON p.employee_id=e.id AND date(p.period_end) >= date(?)
+         GROUP BY e.id ORDER BY e.full_name LIMIT 300`,
+        [monthStart]
+      );
+    } catch (_) { /* */ }
+  }
+
   let settings = {};
   try { settings = require('./payroll-compliance').getPayrollSettings() || {}; } catch (_) {}
-  return { month_start: monthStart, totals, settings };
+
+  const emp201 = {
+    period: monthStart.slice(0, 7),
+    paye: round2(totals.paye),
+    uif_employee: round2(totals.uif_employee),
+    uif_employer: round2(totals.uif_employer),
+    uif_total: round2(num(totals.uif_employee) + num(totals.uif_employer)),
+    sdl: round2(totals.sdl),
+    total_liability: round2(num(totals.paye) + num(totals.uif_employee) + num(totals.uif_employer) + num(totals.sdl)),
+    due_by: (() => {
+      const d = new Date(now.getFullYear(), now.getMonth() + 1, 7);
+      return d.toLocaleDateString('en-CA');
+    })(),
+    employer_paye_ref: settings.paye_registration_number || settings.company_paye_number || '',
+    employer_uif_ref: settings.uif_registration_number || settings.company_uif_number || '',
+    employer_sdl_ref: settings.sdl_registration_number || settings.company_sdl_number || '',
+    sars_tax_office: settings.sars_tax_office || ''
+  };
+
+  try { ensureDefaultStatutoryDeadlines(actor); } catch (_) { /* */ }
+
+  return {
+    month_start: monthStart,
+    tax_year_start: taxYearStart,
+    tax_year_end: taxYearEnd,
+    totals,
+    tax_year: taxYear,
+    workers,
+    by_employee: byEmployee,
+    emp201,
+    settings
+  };
+}
+
+function ensureDefaultStatutoryDeadlines(actor) {
+  const count = num(dbGet(`SELECT COUNT(*) AS c FROM hr_compliance_events WHERE event_type IN ('emp201','uif','sdl','coida','paye')`)?.c);
+  if (count > 0) return { seeded: false, existing: count };
+  const now = new Date();
+  const next7 = new Date(now.getFullYear(), now.getMonth() + 1, 7).toLocaleDateString('en-CA');
+  const seeds = [
+    { event_type: 'emp201', title: 'SARS EMP201 monthly return (PAYE/UIF/SDL)', due_date: next7 },
+    { event_type: 'uif', title: 'UIF declaration / payment', due_date: next7 },
+    { event_type: 'sdl', title: 'SDL remittance', due_date: next7 },
+    { event_type: 'paye', title: 'PAYE payment to SARS', due_date: next7 },
+    { event_type: 'coida', title: 'COIDA annual return of earnings', due_date: `${now.getFullYear() + (now.getMonth() >= 2 ? 1 : 0)}-03-31` }
+  ];
+  const userId = actor?.id || null;
+  for (const s of seeds) {
+    dbRun(
+      `INSERT INTO hr_compliance_events (event_type, title, due_date, reminder_days, status, notes, created_by)
+       VALUES (?,?,?,?, 'pending', ?, ?)`,
+      [s.event_type, s.title, s.due_date, '14,7,3,1', 'Auto-created statutory deadline — edit as needed', userId]
+    );
+  }
+  return { seeded: true, count: seeds.length };
 }
 
 function getPerformanceHub(filters = {}, actor) {
@@ -883,6 +1367,9 @@ module.exports = {
   getEmployeeProfile,
   getEmployeeTimeline,
   listApprovals,
+  submitHrForApproval,
+  requireAdminFinalize,
+  isFinalizer,
   getComplianceCentre,
   listComplianceEvents,
   saveComplianceEvent,
@@ -921,6 +1408,7 @@ module.exports = {
   listOnboardingProgressAll,
   listPayrollDeductions,
   getStatutorySummary,
+  ensureDefaultStatutoryDeadlines,
   getPerformanceHub,
   listStaffWarnings,
   postPayrollToAccounting

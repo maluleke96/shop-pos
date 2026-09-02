@@ -1,1 +1,1 @@
-deploy-20260902-kiosk-drivethru-verify
+deploy-20260902-staff-hr-parity

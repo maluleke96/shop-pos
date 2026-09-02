@@ -57,6 +57,7 @@ const AdminPage = {
     { id: 'recipe', label: '🍳 Recipe & Production', icon: 'recipe' },
     { id: 'staffhr', label: '👷 Staff & HR', icon: 'staffhr' },
     { id: 'hr-workspace', label: '📋 HR, Payroll & Documents', icon: 'staffhr' },
+    { id: 'hr-approvals', label: '✅ HR Approvals', icon: 'staffhr' },
     { id: 'accounting-workspace', label: '💼 Accounting & Bookkeeping', icon: 'accounting' },
     { id: 'staffportal', label: '👷 Staff Portal', icon: 'staffportal' },
     { id: 'onaccount', label: '📒 On Account', icon: 'onaccount' },
@@ -142,7 +143,7 @@ const AdminPage = {
 
   async renderSection(el) {
     const lazySections = new Set([
-      'hrcontracts', 'recruitment', 'marketing-mgmt', 'employee-of-month', 'staffhr', 'hr-workspace', 'staffportal', 'payroll',
+      'hrcontracts', 'recruitment', 'marketing-mgmt', 'employee-of-month', 'staffhr', 'hr-workspace', 'hr-approvals', 'staffportal', 'payroll',
       'opscompliance', 'combos', 'recipe', 'quotes',
       'salesmgmt', 'saleexplorer', 'soldproducts', 'returnsmgmt', 'activity',
       'exceptions', 'alerts', 'dailyclose', 'discount-report'
@@ -265,13 +266,19 @@ const AdminPage = {
         el.innerHTML = `<div class="admin-section">
           <h2>HR, Payroll &amp; Documents</h2>
           <p class="muted">Human Resources, Payroll, Employee Records, Contracts &amp; Compliance Management — unified workspace connected to your existing employees, attendance, payroll and accounting.</p>
-          <div class="admin-quick-actions" style="margin:16px 0">
+          <div class="admin-quick-actions" style="margin:16px 0;display:flex;gap:8px;flex-wrap:wrap">
             <button type="button" class="btn btn-primary" id="admin-open-hr-workspace">Open HR Workspace</button>
+            <button type="button" class="btn btn-ghost" id="admin-open-hr-approvals">HR Approvals</button>
           </div>
-          <p class="muted" style="font-size:13px">Existing Admin sections (Staff &amp; HR, Contracts, Payroll, Recruitment) remain available — this workspace brings them together without replacing them.</p>
+          <p class="muted" style="font-size:13px">HR can prepare the same Staff/Payroll work as Admin. Finalizing (pay salary, approve claims, apply employee/salary changes) happens here under <strong>HR Approvals</strong>.</p>
         </div>`;
         el.querySelector('#admin-open-hr-workspace')?.addEventListener('click', () => this.app?.openHr?.({ fromApp: true }));
+        el.querySelector('#admin-open-hr-approvals')?.addEventListener('click', () => {
+          this.section = 'hr-approvals';
+          this.renderSection(document.getElementById('admin-content'));
+        });
       },
+      'hr-approvals': () => this.renderHrApprovals(el),
       'accounting-workspace': () => {
         el.innerHTML = `<div class="admin-section">
           <h2>Accounting &amp; Bookkeeping</h2>
@@ -3338,6 +3345,113 @@ const AdminPage = {
       this.renderSection(el);
     });
     document.getElementById('bm-open-tab')?.addEventListener('click', () => window.open(url, '_blank', 'noopener,noreferrer'));
+  },
+
+  async renderHrApprovals(el) {
+    el.innerHTML = `<div class="admin-section"><h3>HR Approvals</h3><p class="muted">Loading…</p></div>`;
+    const actor = this.app?.user;
+    const res = await API.hrApprovals?.({}, actor);
+    const items = res?.success === false ? [] : (Array.isArray(res?.data) ? res.data : (Array.isArray(res) ? res : (res?.data || [])));
+    if (res?.success === false) {
+      el.innerHTML = `<div class="admin-section"><h3>HR Approvals</h3><p class="muted" style="color:var(--danger)">${Utils.escHtml(res.error || 'Failed to load')}</p></div>`;
+      return;
+    }
+    const currency = this.settings?.currency || this.app?.settings?.currency || 'R';
+    el.innerHTML = `<div class="admin-section">
+      <div class="page-toolbar" style="margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <div>
+          <h3 style="margin:0">HR Approvals</h3>
+          <p class="muted" style="margin:4px 0 0">Approve what HR submitted. Also review staff salary claims before payment.</p>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button type="button" class="btn btn-ghost btn-sm" id="hra-refresh">Refresh</button>
+          <button type="button" class="btn btn-ghost btn-sm" id="hra-open-hr">Open HR Workspace</button>
+          <button type="button" class="btn btn-ghost btn-sm" id="hra-open-payroll">Payroll Claims</button>
+        </div>
+      </div>
+      <div class="table-wrap"><table><thead><tr><th>Type</th><th>Title</th><th>Employee</th><th>Date</th><th>Status</th><th>Amount</th><th></th></tr></thead>
+      <tbody>${(items || []).map((a) => {
+        let actions = '';
+        if (a.type === 'leave' && a.status === 'pending') {
+          actions = `<button class="btn btn-sm btn-primary hra-leave-ok" data-id="${a.id}">Approve</button>
+            <button class="btn btn-sm btn-ghost hra-leave-no" data-id="${a.id}">Reject</button>`;
+        } else if (a.type === 'hr_action' || a.type === 'request') {
+          actions = `<button class="btn btn-sm btn-primary hra-req-ok" data-id="${a.id}">Approve &amp; apply</button>
+            <button class="btn btn-sm btn-ghost hra-req-no" data-id="${a.id}">Reject</button>`;
+        } else if (a.type === 'payroll' && a.status === 'pending') {
+          actions = `<button class="btn btn-sm btn-primary hra-pay" data-id="${a.id}">Mark paid</button>`;
+        } else if (a.type === 'salary_claim') {
+          actions = `<button class="btn btn-sm btn-primary hra-claim-ok" data-id="${a.id}">Approve claim</button>
+            <button class="btn btn-sm btn-ghost hra-claim-no" data-id="${a.id}">Reject</button>`;
+        } else if (a.type === 'recruitment') {
+          actions = `<button class="btn btn-sm btn-primary hra-recruit-ok" data-id="${a.id}">Approve hire</button>
+            <button class="btn btn-sm btn-ghost hra-recruit-no" data-id="${a.id}">Reject</button>`;
+        }
+        return `<tr>
+          <td>${Utils.escHtml(a.type)}${a.request_type ? ` / ${Utils.escHtml(a.request_type)}` : ''}</td>
+          <td>${Utils.escHtml(a.title || '')}</td>
+          <td>${Utils.escHtml(a.employee || '—')}</td>
+          <td>${Utils.escHtml(String(a.date || '').slice(0, 19))}</td>
+          <td><span class="tag">${Utils.escHtml(a.status || '')}</span></td>
+          <td>${a.amount != null ? Utils.formatMoney(a.amount, currency) : '—'}</td>
+          <td class="actions" style="display:flex;gap:4px;flex-wrap:wrap">${actions}</td>
+        </tr>`;
+      }).join('') || '<tr><td colspan="7" class="muted">Nothing waiting for approval</td></tr>'}</tbody></table></div>
+    </div>`;
+
+    const reload = () => this.renderHrApprovals(el);
+    document.getElementById('hra-refresh')?.addEventListener('click', reload);
+    document.getElementById('hra-open-hr')?.addEventListener('click', () => this.app?.openHr?.({ fromApp: true }));
+    document.getElementById('hra-open-payroll')?.addEventListener('click', () => {
+      this.section = 'payroll';
+      this.renderSection(document.getElementById('admin-content'));
+    });
+    el.querySelectorAll('.hra-leave-ok').forEach((b) => b.addEventListener('click', async () => {
+      const r = await API.approveStaffLeave(parseInt(b.dataset.id, 10), actor, true);
+      if (r?.success === false) return Utils.toast(r.error || 'Failed', 'error');
+      Utils.toast('Leave approved', 'success'); reload();
+    }));
+    el.querySelectorAll('.hra-leave-no').forEach((b) => b.addEventListener('click', async () => {
+      const r = await API.approveStaffLeave(parseInt(b.dataset.id, 10), actor, false);
+      if (r?.success === false) return Utils.toast(r.error || 'Failed', 'error');
+      Utils.toast('Leave rejected', 'info'); reload();
+    }));
+    el.querySelectorAll('.hra-req-ok').forEach((b) => b.addEventListener('click', async () => {
+      const r = await API.hrDecideRequest(parseInt(b.dataset.id, 10), 'approved', '', actor);
+      if (r?.success === false) return Utils.toast(r.error || 'Failed', 'error');
+      Utils.toast('Approved and applied', 'success'); reload();
+    }));
+    el.querySelectorAll('.hra-req-no').forEach((b) => b.addEventListener('click', async () => {
+      const r = await API.hrDecideRequest(parseInt(b.dataset.id, 10), 'rejected', 'Rejected by admin', actor);
+      if (r?.success === false) return Utils.toast(r.error || 'Failed', 'error');
+      Utils.toast('Rejected', 'info'); reload();
+    }));
+    el.querySelectorAll('.hra-pay').forEach((b) => b.addEventListener('click', async () => {
+      const r = await API.payStaffSalary(parseInt(b.dataset.id, 10), 'eft', actor);
+      if (r?.success === false) return Utils.toast(r.error || 'Failed', 'error');
+      Utils.toast('Payroll marked paid', 'success'); reload();
+    }));
+    el.querySelectorAll('.hra-claim-ok').forEach((b) => b.addEventListener('click', async () => {
+      const r = await API.approveSalaryClaim(parseInt(b.dataset.id, 10), '', actor);
+      if (r?.success === false) return Utils.toast(r.error || 'Failed', 'error');
+      Utils.toast('Salary claim approved', 'success'); reload();
+    }));
+    el.querySelectorAll('.hra-claim-no').forEach((b) => b.addEventListener('click', async () => {
+      const r = await API.rejectSalaryClaim(parseInt(b.dataset.id, 10), 'Rejected', actor);
+      if (r?.success === false) return Utils.toast(r.error || 'Failed', 'error');
+      Utils.toast('Claim rejected', 'info'); reload();
+    }));
+    el.querySelectorAll('.hra-recruit-ok').forEach((b) => b.addEventListener('click', async () => {
+      const r = await API.decideJobCandidate(parseInt(b.dataset.id, 10), 'approved', '', actor);
+      if (r?.success === false) return Utils.toast(r.error || 'Failed', 'error');
+      Utils.toast('Candidate approved for employment', 'success'); reload();
+    }));
+    el.querySelectorAll('.hra-recruit-no').forEach((b) => b.addEventListener('click', async () => {
+      const notes = prompt('Rejection notes (optional):') || '';
+      const r = await API.decideJobCandidate(parseInt(b.dataset.id, 10), 'rejected', notes, actor);
+      if (r?.success === false) return Utils.toast(r.error || 'Failed', 'error');
+      Utils.toast('Candidate rejected', 'info'); reload();
+    }));
   }
 };
 window.AdminPage = AdminPage;
