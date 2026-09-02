@@ -46,6 +46,8 @@ const AdminPage = {
     { id: 'branches', label: '🏢 Branches', icon: 'branches' },
     { id: 'online-orders', label: '🛒 Online Orders', icon: 'online' },
     { id: 'deliveries', label: '🚚 Deliveries', icon: 'delivery' },
+    { id: 'business-modules', label: '🏢 Business Modules', icon: 'business' },
+    { id: 'digital-signage', label: '📺 Digital Signage', icon: 'signage' },
     { id: 'mobile-app', label: '📱 Mobile App Users', icon: 'mobile' },
     { id: 'business-manager', label: '📊 Business Manager', icon: 'mobile' },
     { id: 'device', label: '💻 Device Settings', icon: 'device' },
@@ -187,6 +189,35 @@ const AdminPage = {
       'online-orders': () => this.renderOnlineOrders(el),
       deliveries: () => this.renderDeliveries(el),
       'mobile-app': () => this.renderMobileAppUsers(el),
+      'business-modules': async () => tryModule(
+        () => window.AdminBusinessModulesPage,
+        () => window.AdminBusinessModulesPage.render(el, this),
+        'Business Modules'
+      ),
+      'digital-signage': () => {
+        el.innerHTML = `<div class="admin-section">
+          <h2>📺 Digital Signage &amp; Shop Media Centre</h2>
+          <p class="muted">Manage shop TVs, menus, playlists, music, and voice announcements. Pair screens via the TV Player app.</p>
+          <div class="card"><div class="card-body">
+            <div class="admin-quick-actions" style="display:flex;flex-wrap:wrap;gap:8px">
+              <a class="btn btn-primary" href="/signage/" target="_blank" rel="noopener">Open Signage Centre</a>
+              <a class="btn btn-ghost" href="/signage-player/" target="_blank" rel="noopener">Open TV Player</a>
+              <button type="button" class="btn btn-ghost" id="admin-signage-embed">Manage in Admin</button>
+            </div>
+            <div id="admin-signage-summary" class="muted" style="margin-top:12px">Loading status…</div>
+          </div></div>
+          <iframe id="admin-signage-frame" class="hidden" style="width:100%;height:80vh;border:1px solid var(--border);border-radius:8px;margin-top:12px" title="Digital Signage"></iframe>
+        </div>`;
+        API.signageSummary(this.app.user).then((r) => {
+          const s = r?.data || r || {};
+          el.querySelector('#admin-signage-summary').innerHTML = `Screens: <strong>${s.online_screens ?? 0}</strong> online / ${s.total_screens ?? 0} total`;
+        }).catch(() => {});
+        el.querySelector('#admin-signage-embed')?.addEventListener('click', () => {
+          const frame = el.querySelector('#admin-signage-frame');
+          frame.classList.remove('hidden');
+          frame.src = '/signage/';
+        });
+      },
       'business-manager': () => this.renderBusinessManager(el),
       device: () => this.renderDevice(el),
       backup: () => this.renderBackup(el),
@@ -287,9 +318,14 @@ const AdminPage = {
       todayRes = await API.getDashboardStats(Utils.today(), Utils.today(), this.app.user).catch(() => ({ success: false }));
     }
     const foodRes = await API.recipeFoodCostAlerts(this.app.user).catch(() => ({ success: false }));
+    const bizRes = await API.bizModulesSummary(this.app.user).catch(() => ({ success: false }));
     const d = dashRes.success ? (dashRes.data || {}) : {};
     const todayStats = todayRes.success ? (todayRes.data || {}) : {};
     const foodAlerts = foodRes.success ? (foodRes.data || []) : [];
+    const biz = bizRes.success ? (bizRes.data || {}) : {};
+    const inv = biz.investor || {};
+    const rel = biz.release || {};
+    const mtg = biz.meeting || {};
     const currency = s.currency || 'R';
     const dashErr = !dashRes.success && !todayRes.success
       ? `<p class="muted" style="color:var(--danger)">Stats unavailable: ${Utils.escHtml(dashRes.error || todayRes.error || 'error')}</p>`
@@ -319,6 +355,28 @@ const AdminPage = {
         <button type="button" class="btn btn-primary" id="admin-open-recipe" style="margin-top:10px">Open Recipe & Production</button>
       </div></div>` : ''}
       <div class="card" style="margin-top:16px"><div class="card-body">
+        <h4>Business Modules</h4>
+        <p class="muted">Investor Management, App Release Centre, and AI Meeting Centre — each with separate login portals.</p>
+        <div class="stats-grid" style="margin-top:12px;display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px">
+          <div class="stat-card" style="cursor:pointer" data-bm-section="business-modules" data-bm-tab="investors">
+            <div class="label">Investors</div>
+            <div class="value">${inv.active_investors ?? 0}</div>
+            <small>${inv.pending_agreements ?? 0} pending agreements</small>
+          </div>
+          <div class="stat-card" style="cursor:pointer" data-bm-section="business-modules">
+            <div class="label">Release Centre</div>
+            <div class="value" style="font-size:16px">${Utils.escHtml(rel.current_version || '—')}</div>
+            <small>Last test: ${Utils.escHtml(rel.last_test_status || 'NOT_TESTED')}</small>
+          </div>
+          <div class="stat-card" style="cursor:pointer" data-bm-section="business-modules">
+            <div class="label">Meetings</div>
+            <div class="value">${mtg.meetings_this_month ?? 0}</div>
+            <small>${mtg.outstanding_action_items ?? 0} action items</small>
+          </div>
+        </div>
+        <button type="button" class="btn btn-primary" id="admin-open-business-modules" style="margin-top:12px">Manage Business Modules</button>
+      </div></div>
+      <div class="card" style="margin-top:16px"><div class="card-body">
         <h4>Business Manager</h4>
         <p class="muted">Monitor sales, orders, and POS status on your phone or here in Admin — no extra login when you open it from Admin.</p>
         <div class="admin-quick-actions" style="margin-top:12px">
@@ -328,6 +386,20 @@ const AdminPage = {
         </div>
       </div></div>
     </div>`;
+    document.getElementById('admin-open-business-modules')?.addEventListener('click', () => {
+      this.section = 'business-modules';
+      document.querySelectorAll('.admin-nav-btn').forEach((b) =>
+        b.classList.toggle('active', b.dataset.section === 'business-modules'));
+      this.renderSection(el);
+    });
+    el.querySelectorAll('[data-bm-section]').forEach((card) => {
+      card.addEventListener('click', () => {
+        this.section = card.dataset.bmSection;
+        document.querySelectorAll('.admin-nav-btn').forEach((b) =>
+          b.classList.toggle('active', b.dataset.section === 'business-modules'));
+        this.renderSection(el);
+      });
+    });
     document.getElementById('admin-open-recipe')?.addEventListener('click', () => {
       this.app.openRecipeProduction({ fromApp: true });
     });
@@ -1440,13 +1512,30 @@ const AdminPage = {
     const currency = this.settings?.currency || 'R';
     const from = this._cashierFrom || Utils.daysAgo(7);
     const to = this._cashierTo || Utils.today();
+    const usersRes = await API.getUsers(this.app?.user);
+    const staffUsers = (usersRes.data || []).filter((u) => ['cashier', 'manager', 'supervisor', 'assistant_manager'].includes(u.role));
     el.innerHTML = `<div class="admin-section"><h3>Cashiers &amp; Managers</h3>
-      <p class="muted">Create multiple managers and cashiers under <strong>Users</strong>. Here you see each cashier’s sales for the period.</p>
+      <p class="muted">Manage cashiers and managers on this page and review each person’s sales for the selected period.</p>
+      <div class="card" style="margin-bottom:16px"><div class="card-header"><h4>Team — add or edit</h4></div>
+      <div class="card-body"><div class="table-wrap"><table>
+        <thead><tr><th>Name</th><th>Username</th><th>Role</th><th>Status</th><th></th></tr></thead>
+        <tbody id="cash-users-tbody">${staffUsers.map((u) => `<tr>
+          <td>${Utils.escHtml(u.full_name || '—')}</td>
+          <td>${Utils.escHtml(u.username || '—')}</td>
+          <td>${Utils.roleTag?.(u.role) || u.role}</td>
+          <td>${u.is_active ? '<span class="tag tag-ok">Active</span>' : '<span class="tag tag-out">Inactive</span>'}</td>
+          <td style="white-space:nowrap">
+            <button class="btn btn-sm btn-ghost cash-edit-user" data-id="${u.id}">Edit</button>
+            ${u.id !== this.app?.user?.id && u.is_active ? `<button class="btn btn-sm btn-warning cash-deact-user" data-id="${u.id}">Deactivate</button>` : ''}
+            ${u.id !== this.app?.user?.id && !u.is_active ? `<button class="btn btn-sm btn-primary cash-restore-user" data-id="${u.id}">Restore</button>` : ''}
+          </td></tr>`).join('') || '<tr><td colspan="5" class="muted">No cashiers or managers yet</td></tr>'}
+        </tbody></table></div>
+        <button class="btn btn-primary" id="cash-add-user" style="margin-top:12px">+ Add cashier / manager</button>
+      </div></div>
       <div class="page-toolbar" style="gap:8px;flex-wrap:wrap">
         <input type="date" id="cash-from" value="${from}">
         <input type="date" id="cash-to" value="${to}">
-        <button class="btn btn-ghost" id="cash-refresh">Refresh</button>
-        <button class="btn btn-primary" id="cash-goto-users">Manage users</button>
+        <button class="btn btn-ghost" id="cash-refresh">Refresh sales</button>
       </div>
       <div class="card"><div class="table-wrap"><table>
         <thead><tr><th>Name</th><th>Username</th><th>Role</th><th>Sales</th><th>Subtotal</th><th>Tax</th><th>Total</th><th></th></tr></thead>
@@ -1454,6 +1543,56 @@ const AdminPage = {
       </table></div></div>
       <div id="cash-detail" style="margin-top:16px"></div>
     </div>`;
+
+    const showUserForm = async (user = null) => {
+      const roles = ['cashier', 'supervisor', 'assistant_manager', 'manager'];
+      Utils.showModal(user ? `Edit ${user.full_name}` : 'Add cashier / manager', `
+        <div class="form-grid">
+          <div class="field"><label>Full name *</label><input id="cu-name" value="${Utils.escHtml(user?.full_name || '')}"></div>
+          <div class="field"><label>Username *</label><input id="cu-user" value="${Utils.escHtml(user?.username || '')}" ${user ? 'readonly' : ''}></div>
+          <div class="field"><label>Role</label><select id="cu-role">${roles.map((r) => `<option value="${r}" ${user?.role === r ? 'selected' : ''}>${r.replace(/_/g, ' ')}</option>`).join('')}</select></div>
+          <div class="field"><label>${user ? 'New password (optional)' : 'Password *'}</label><input type="password" id="cu-pass"></div>
+        </div>`,
+        '<button class="btn btn-primary" id="cu-save">Save</button>');
+      document.getElementById('cu-save')?.addEventListener('click', async () => {
+        const full_name = document.getElementById('cu-name').value.trim();
+        const username = document.getElementById('cu-user').value.trim();
+        const role = document.getElementById('cu-role').value;
+        const password = document.getElementById('cu-pass').value;
+        if (!full_name || !username) return Utils.toast('Name and username required', 'error');
+        if (!user && (!password || password.length < 6)) return Utils.toast('Password must be at least 6 characters', 'error');
+        const payload = { full_name, username, role, is_active: true };
+        if (password) payload.password = password;
+        const r = user
+          ? await API.updateUser(user.id, payload, this.app?.user)
+          : await API.createUser({ ...payload, password }, this.app?.user);
+        if (!r.success) return Utils.toast(r.error, 'error');
+        Utils.hideModal();
+        Utils.toast(user ? 'User updated' : 'User created', 'success');
+        this.renderCashiersPanel(el);
+      });
+    };
+
+    document.getElementById('cash-add-user')?.addEventListener('click', () => showUserForm());
+    el.querySelectorAll('.cash-edit-user').forEach((btn) => btn.addEventListener('click', () => {
+      const u = staffUsers.find((x) => String(x.id) === btn.dataset.id);
+      if (u) showUserForm(u);
+    }));
+    el.querySelectorAll('.cash-deact-user').forEach((btn) => btn.addEventListener('click', async () => {
+      const id = parseInt(btn.dataset.id, 10);
+      if (!confirm('Deactivate this user?')) return;
+      const r = await API.updateUser(id, { is_active: false }, this.app?.user);
+      if (!r.success) return Utils.toast(r.error, 'error');
+      Utils.toast('User deactivated', 'success');
+      this.renderCashiersPanel(el);
+    }));
+    el.querySelectorAll('.cash-restore-user').forEach((btn) => btn.addEventListener('click', async () => {
+      const id = parseInt(btn.dataset.id, 10);
+      const r = await API.updateUser(id, { is_active: true }, this.app?.user);
+      if (!r.success) return Utils.toast(r.error, 'error');
+      Utils.toast('User restored', 'success');
+      this.renderCashiersPanel(el);
+    }));
 
     const load = async () => {
       this._cashierFrom = document.getElementById('cash-from').value;
@@ -1493,7 +1632,6 @@ const AdminPage = {
     };
 
     document.getElementById('cash-refresh')?.addEventListener('click', load);
-    document.getElementById('cash-goto-users')?.addEventListener('click', () => this.app?.navigate?.('users'));
     await load();
   },
 

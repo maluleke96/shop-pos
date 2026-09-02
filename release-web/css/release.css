@@ -1,0 +1,4 @@
+.release-test-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid var(--border); }
+.release-test-row.pass .status { color: #86efac; }
+.release-test-row.fail .status { color: #fca5a5; }
+.release-test-row.warn .status { color: #fde047; }

@@ -1,0 +1,7 @@
+.signage-nav { display:flex; gap:6px; flex-wrap:wrap; margin:12px 0; }
+.signage-nav button { padding:8px 12px; border-radius:8px; border:1px solid var(--border); background:var(--card); color:var(--text); cursor:pointer; }
+.signage-nav button.active { background:var(--accent); border-color:var(--accent); }
+.screen-card { border:1px solid var(--border); border-radius:8px; padding:12px; margin-bottom:8px; }
+.screen-card.online { border-color:#22c55e; }
+.screen-card.offline { border-color:#ef4444; opacity:0.85; }
+.grid-2 { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:12px; }

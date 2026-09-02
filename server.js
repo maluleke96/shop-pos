@@ -19,6 +19,11 @@ const CUSTOMER_WEB = path.join(ROOT, 'customer-web');
 const MANAGER_WEB = path.join(ROOT, 'manager-web');
 const REFERRAL_WEB = path.join(ROOT, 'referral-web');
 const DRIVER_WEB = path.join(ROOT, 'driver-web');
+const INVESTOR_WEB = path.join(ROOT, 'investor-web');
+const RELEASE_WEB = path.join(ROOT, 'release-web');
+const MEETING_WEB = path.join(ROOT, 'meeting-web');
+const SIGNAGE_WEB = path.join(ROOT, 'signage-web');
+const SIGNAGE_PLAYER = path.join(ROOT, 'signage-player');
 
 const { loadProjectEnv } = require('./lib/load-env');
 loadProjectEnv(ROOT);
@@ -181,6 +186,86 @@ function syncDriverWebConfig() {
   } catch (e) {
     console.warn('[driver-web] config write failed:', e.message);
   }
+}
+
+function portalConfig(windowName, portalPath) {
+  const railwayDomain = process.env.RAILWAY_PUBLIC_DOMAIN || '';
+  const apiBase = (
+    process.env.SHOP_POS_PUBLIC_URL ||
+    process.env.SHOP_POS_SYNC_URL ||
+    (railwayDomain ? `https://${railwayDomain}` : '') ||
+    'https://peaceful-motivation-production-7dd2.up.railway.app'
+  ).replace(/\/$/, '');
+  const rpc = (
+    process.env.SHOP_POS_PUBLIC_RPC_URL ||
+    process.env.SHOP_POS_RPC_URL ||
+    `${apiBase}/rpc`
+  ).replace(/\/$/, '');
+  return `window.${windowName} = {
+  rpcUrl: ${JSON.stringify(rpc)},
+  apiBase: ${JSON.stringify(apiBase)},
+  portalPath: ${JSON.stringify(portalPath)}
+};
+`;
+}
+
+function syncInvestorWebConfig() {
+  try {
+    fs.mkdirSync(path.join(INVESTOR_WEB, 'js'), { recursive: true });
+    fs.writeFileSync(path.join(INVESTOR_WEB, 'js', 'config.js'), portalConfig('__INVESTOR_CONFIG__', '/investor/'), 'utf8');
+  } catch (e) { console.warn('[investor-web] config write failed:', e.message); }
+}
+
+function syncReleaseWebConfig() {
+  try {
+    fs.mkdirSync(path.join(RELEASE_WEB, 'js'), { recursive: true });
+    fs.writeFileSync(path.join(RELEASE_WEB, 'js', 'config.js'), portalConfig('__RELEASE_CONFIG__', '/release/'), 'utf8');
+  } catch (e) { console.warn('[release-web] config write failed:', e.message); }
+}
+
+function syncMeetingWebConfig() {
+  try {
+    fs.mkdirSync(path.join(MEETING_WEB, 'js'), { recursive: true });
+    fs.writeFileSync(path.join(MEETING_WEB, 'js', 'config.js'), portalConfig('__MEETING_CONFIG__', '/meeting/'), 'utf8');
+  } catch (e) { console.warn('[meeting-web] config write failed:', e.message); }
+}
+
+function syncSignageWebConfig() {
+  try {
+    fs.mkdirSync(path.join(SIGNAGE_WEB, 'js'), { recursive: true });
+    fs.writeFileSync(path.join(SIGNAGE_WEB, 'js', 'config.js'), portalConfig('__SIGNAGE_CONFIG__', '/signage/'), 'utf8');
+    fs.mkdirSync(path.join(SIGNAGE_PLAYER, 'js'), { recursive: true });
+    fs.writeFileSync(path.join(SIGNAGE_PLAYER, 'js', 'config.js'), portalConfig('__SIGNAGE_PLAYER_CONFIG__', '/signage-player/'), 'utf8');
+  } catch (e) { console.warn('[signage-web] config write failed:', e.message); }
+}
+
+function servePortalWeb(req, res, baseDir, mount) {
+  let urlPath = (req.url || '/').split('?')[0];
+  if (urlPath === mount) urlPath = '/';
+  else if (urlPath.startsWith(mount + '/')) urlPath = urlPath.slice(mount.length);
+  if (urlPath === '/') urlPath = '/index.html';
+  const filePath = safeJoin(baseDir, urlPath);
+  if (!filePath) {
+    res.writeHead(403);
+    return res.end('Forbidden');
+  }
+  fs.stat(filePath, (err, st) => {
+    if (err || !st.isFile()) {
+      const index = path.join(baseDir, 'index.html');
+      return fs.readFile(index, (e2, buf) => {
+        if (e2) { res.writeHead(404); return res.end('Not found'); }
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...corsHeaders() });
+        res.end(buf);
+      });
+    }
+    const ext = path.extname(filePath).toLowerCase();
+    const type = MIME[ext] || 'application/octet-stream';
+    fs.readFile(filePath, (e2, buf) => {
+      if (e2) { res.writeHead(500); return res.end('Read error'); }
+      res.writeHead(200, { 'Content-Type': type, 'Cache-Control': ext === '.html' ? 'no-cache' : 'public, max-age=3600', ...corsHeaders() });
+      res.end(buf);
+    });
+  });
 }
 
 function serveDriverWeb(req, res) {
@@ -401,6 +486,10 @@ async function main() {
   syncManagerWebConfig();
   syncReferralWebConfig();
   syncDriverWebConfig();
+  syncInvestorWebConfig();
+  syncReleaseWebConfig();
+  syncMeetingWebConfig();
+  syncSignageWebConfig();
   syncPublicEnvJs();
 
   console.log('Connecting to Supabase Postgres…');
@@ -436,6 +525,24 @@ async function main() {
         handlers: Object.keys(rpc.handlers).length,
         customer_ordering: base ? `${base.replace(/\/$/, '')}/order/` : '/order/'
       });
+    }
+
+    if (urlPath.startsWith('/signage-media/')) {
+      const mediaId = urlPath.replace('/signage-media/', '').split('?')[0];
+      const q = (req.url || '').split('?')[1] || '';
+      const token = new URLSearchParams(q).get('token');
+      try {
+        const signage = require('./electron/services/signage-platform');
+        const file = signage.getMediaFile(Number(mediaId), token, true);
+        return fs.readFile(file.path, (err, buf) => {
+          if (err) { res.writeHead(404); return res.end('Not found'); }
+          res.writeHead(200, { 'Content-Type': file.mime, 'Cache-Control': 'private, max-age=3600', ...corsHeaders() });
+          res.end(buf);
+        });
+      } catch (e) {
+        res.writeHead(403);
+        return res.end(String(e.message || 'Forbidden'));
+      }
     }
 
     if (urlPath === '/rpc') {
@@ -491,6 +598,26 @@ async function main() {
       return serveDriverWeb(req, res);
     }
 
+    if (urlPath === '/investor' || urlPath.startsWith('/investor/')) {
+      return servePortalWeb(req, res, INVESTOR_WEB, '/investor');
+    }
+
+    if (urlPath === '/release' || urlPath.startsWith('/release/')) {
+      return servePortalWeb(req, res, RELEASE_WEB, '/release');
+    }
+
+    if (urlPath === '/meeting' || urlPath.startsWith('/meeting/')) {
+      return servePortalWeb(req, res, MEETING_WEB, '/meeting');
+    }
+
+    if (urlPath === '/signage' || urlPath.startsWith('/signage/')) {
+      return servePortalWeb(req, res, SIGNAGE_WEB, '/signage');
+    }
+
+    if (urlPath === '/signage-player' || urlPath.startsWith('/signage-player/')) {
+      return servePortalWeb(req, res, SIGNAGE_PLAYER, '/signage-player');
+    }
+
     if (urlPath === '/track' || urlPath.startsWith('/track/')) {
       return serveTrackingWeb(req, res);
     }
@@ -508,6 +635,11 @@ async function main() {
     console.log(`  Manager: http://localhost:${PORT}/manager/`);
     console.log(`  Referral: http://localhost:${PORT}/r/CODE`);
     console.log(`  Driver:   http://localhost:${PORT}/driver/`);
+    console.log(`  Investor: http://localhost:${PORT}/investor/`);
+    console.log(`  Release:  http://localhost:${PORT}/release/`);
+    console.log(`  Meeting:  http://localhost:${PORT}/meeting/`);
+    console.log(`  Signage:  http://localhost:${PORT}/signage/`);
+    console.log(`  Player:   http://localhost:${PORT}/signage-player/`);
     console.log(`  Track:    http://localhost:${PORT}/track/TOKEN`);
     console.log('');
   });

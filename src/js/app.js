@@ -76,6 +76,7 @@ const App = {
       'js/pages/admin-recruitment.js',
       'js/pages/admin-marketing.js',
       'js/pages/admin-delivery.js',
+      'js/pages/admin-business-modules.js',
       'js/pages/users.js'
     ]
   },
@@ -1857,7 +1858,7 @@ const App = {
       SoundService?.stopAlert();
       return;
     }
-    if (!this.user || !['owner', 'manager'].includes(this.user.role)) {
+    if (!this.user || !['owner', 'manager', 'supervisor', 'assistant_manager'].includes(this.user.role)) {
       SoundService?.stopAlert();
       return;
     }
@@ -1893,7 +1894,7 @@ const App = {
           badge.classList.add('hidden');
         }
       }
-      if (this.user?.role === 'owner' || this.user?.role === 'manager') {
+      if (this.user?.role === 'owner' || this.user?.role === 'manager' || this.user?.role === 'supervisor' || this.user?.role === 'assistant_manager') {
         await this.checkNotificationSounds(true);
       }
     } catch { /* offline */ }
@@ -2069,7 +2070,7 @@ const App = {
         'salary_claim', 'recruitment', 'document_share'].some(x => t === x || t.startsWith(x))) return false;
       if (t.startsWith('recruitment') || t.startsWith('owner_salary') || t.startsWith('probation_')) return false;
       return page === 'pos' || page === 'staff' || page === ''
-        || ['checklist_reminder', 'checklist_overdue', 'compliance', 'pos_alert', 'held_order', 'kitchen', 'order_ready', 'test'].includes(t);
+        || ['checklist_reminder', 'checklist_overdue', 'compliance', 'pos_alert', 'held_order', 'kitchen', 'order_ready', 'online_order', 'test'].includes(t);
     }
     if (page.startsWith('operations:') && !Utils.canAccess(this.user, 'operations')) {
       return false;

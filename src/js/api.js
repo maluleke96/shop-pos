@@ -1323,7 +1323,30 @@ const API = {
   mobileAdminSaveUser: (data, actor) => invokeCloudFirst('mobile:adminSaveUser', [data, actor], () => invoke('mobile:adminSaveUser', data, actor)),
   mobileAdminSetActive: (id, active, actor) => invokeCloudFirst('mobile:adminSetActive', [id, active, actor], () => invoke('mobile:adminSetActive', id, active, actor)),
   mobileAdminListDevices: (userId, actor) => invokeCloudFirst('mobile:adminListDevices', [userId, actor], () => invoke('mobile:adminListDevices', userId, actor)),
-  mobileAdminRevokeDevice: (deviceId, actor) => invokeCloudFirst('mobile:adminRevokeDevice', [deviceId, actor], () => invoke('mobile:adminRevokeDevice', deviceId, actor))
+  mobileAdminRevokeDevice: (deviceId, actor) => invokeCloudFirst('mobile:adminRevokeDevice', [deviceId, actor], () => invoke('mobile:adminRevokeDevice', deviceId, actor)),
+
+  getBizModuleSettings: (actor) => invoke('bizModules:settings', actor),
+  saveBizModuleSettings: (data, actor) => invoke('bizModules:saveSettings', data, actor),
+  bizModulesSummary: (actor) => invoke('bizModules:summary', actor),
+  listInvestors: (filters, actor) => invoke('investor:list', filters || {}, actor),
+  getInvestor: (id, actor) => invoke('investor:get', id, actor),
+  saveInvestor: (data, actor) => invoke('investor:save', data, actor),
+  createInvestorPortalUser: (investorId, data, actor) => invoke('investor:createPortalUser', investorId, data, actor),
+  saveInvestmentProposal: (data, actor) => invoke('investor:saveProposal', data, actor),
+  listInvestmentProposals: (filters, actor) => invoke('investor:listProposals', filters || {}, actor),
+  investmentProposalPdf: (id, actor) => invoke('investor:proposalPdf', id, actor),
+  saveInvestmentAgreement: (data, actor) => invoke('investor:saveAgreement', data, actor),
+  uploadInvestorDocument: (data, actor) => invoke('investor:uploadDocument', data, actor),
+  recordInvestorPayment: (data, actor) => invoke('investor:recordPayment', data, actor),
+  recordInvestorDistribution: (data, actor) => invoke('investor:recordDistribution', data, actor),
+  investorSummary: (actor) => invoke('investor:summary', actor),
+  listReleaseUsers: (actor) => invoke('release:listUsers', actor),
+  saveReleaseUser: (data, actor) => invoke('release:saveUser', data, actor),
+  releaseSummary: (actor) => invoke('release:summary', actor),
+  listMeetingUsers: (actor) => invoke('meeting:listUsers', actor),
+  saveMeetingUser: (data, actor) => invoke('meeting:saveUser', data, actor),
+  meetingSummary: (actor) => invoke('meeting:summary', actor),
+  signageSummary: (actor) => invoke('signage:summary', actor)
 };
 
 window.API = API;

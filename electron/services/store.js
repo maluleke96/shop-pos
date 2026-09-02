@@ -912,6 +912,10 @@ function getSettingsParsed() {
   }
   return {
     ...s,
+    tax_enabled: !!Number(s.tax_enabled),
+    tax_rate: Number(s.tax_rate) || 0,
+    tax_inclusive: s.tax_inclusive !== 0 && s.tax_inclusive !== '0' && s.tax_inclusive !== false,
+    tax_show_on_pos: s.tax_show_on_pos !== 0 && s.tax_show_on_pos !== '0' && s.tax_show_on_pos !== false,
     printer_settings: parseJsonField(s.printer_settings),
     receipt_design: parseJsonField(s.receipt_design),
     security_settings: security,
@@ -999,11 +1003,16 @@ function getSettings() {
 
 function saveSettings(data, actorId, actorName) {
   getSettingsParsed._onlineCache = null;
-  const fields = Object.keys(data).filter(k => k !== 'id' && SHOP_SETTING_FIELDS.includes(k));
+  const normalized = { ...data };
+  if ('tax_enabled' in normalized) normalized.tax_enabled = normalized.tax_enabled ? 1 : 0;
+  if ('tax_inclusive' in normalized) normalized.tax_inclusive = normalized.tax_inclusive ? 1 : 0;
+  if ('tax_show_on_pos' in normalized) normalized.tax_show_on_pos = normalized.tax_show_on_pos ? 1 : 0;
+  if ('tax_rate' in normalized) normalized.tax_rate = Number(normalized.tax_rate) || 0;
+  const fields = Object.keys(normalized).filter(k => k !== 'id' && SHOP_SETTING_FIELDS.includes(k));
   if (!fields.length) return;
   const sets = fields.map(f => `${f} = ?`).join(', ');
-  getDb().prepare(`UPDATE shop_settings SET ${sets}, updated_at = datetime('now') WHERE id = 1`).run(...fields.map(f => data[f]));
-  audit(actorId, actorName, 'update_settings', 'shop_settings', 1, data);
+  getDb().prepare(`UPDATE shop_settings SET ${sets}, updated_at = datetime('now') WHERE id = 1`).run(...fields.map(f => normalized[f]));
+  audit(actorId, actorName, 'update_settings', 'shop_settings', 1, normalized);
 }
 
 function completeSetup(data) {
@@ -1709,17 +1718,38 @@ function deleteProduct(id, actorId, actorName) {
   audit(actorId, actorName, 'delete_product', 'product', id, null);
 }
 
-function checkLowStock(productId) {
+function checkLowStock(productId, prevStock = null) {
   const p = getDb().prepare('SELECT * FROM products WHERE id = ?').get(productId);
   if (!p || p.alert_out_of_stock === 0) return;
+  const qty = Number(p.stock_quantity) || 0;
+  const prev = prevStock != null ? Number(prevStock) : qty;
+  const minStock = Number(p.min_stock) || 0;
+  const reorderLevel = p.reorder_level != null ? Number(p.reorder_level) : null;
   const unit = p.stock_unit || p.unit || 'each';
-  if (p.stock_quantity <= 0) {
-    addNotification('out_of_stock', 'Out of Stock', `${p.name} is out of stock`);
-  } else if (p.reorder_level != null && p.stock_quantity <= p.reorder_level) {
-    addNotification('reorder', 'Reorder Level', `${p.name}: ${p.stock_quantity} ${unit} — reorder needed`);
-  } else if (p.stock_quantity <= p.min_stock) {
-    addNotification('low_stock', 'Low Stock', `${p.name}: ${p.stock_quantity} ${unit} remaining`);
+  if (qty <= 0 && prev > 0) {
+    addNotification('out_of_stock', 'Out of Stock', `${p.name} is out of stock`, {
+      entity_type: 'product', entity_id: productId, action_page: 'stock:inventory'
+    });
+  } else if (reorderLevel != null && qty <= reorderLevel && prev > reorderLevel) {
+    addNotification('reorder', 'Reorder Level', `${p.name}: ${qty} ${unit} — reorder needed`, {
+      entity_type: 'product', entity_id: productId, action_page: 'stock:inventory'
+    });
+  } else if (minStock > 0 && qty < minStock && prev >= minStock) {
+    addNotification('low_stock', 'Low Stock', `${p.name}: ${qty} ${unit} (below minimum ${minStock})`, {
+      entity_type: 'product', entity_id: productId, action_page: 'stock:inventory'
+    });
   }
+}
+
+function notifyPosOnlineOrder(order) {
+  if (!order) return;
+  const total = Number(order.total) || 0;
+  addNotification(
+    'online_order',
+    'New Online Order',
+    `${order.order_number || 'Online order'} — ${order.customer_name || 'Customer'} — ${fmtMoney(total)}`,
+    { entity_type: 'online_order', entity_id: order.id, action_page: 'pos' }
+  );
 }
 
 /** Default audience roles for a notification type / action page (who should see it). */
@@ -1903,8 +1933,10 @@ function adjustStock(productId, quantity, type, notes, userId, refType, refId, b
   try {
     // Prefer per-branch stock when table exists
     getDb().prepare('SELECT 1 FROM branch_stock LIMIT 1').get();
+    const productBefore = getDb().prepare('SELECT stock_quantity FROM products WHERE id = ?').get(productId);
+    const prevStock = productBefore?.stock_quantity;
     const newStock = branchesSvc.adjustBranchStock(productId, quantity, type, notes, userId, refType, refId, bid);
-    checkLowStock(productId);
+    checkLowStock(productId, prevStock);
     try {
       require('./production-availability').refreshAffectedByIngredient(productId);
     } catch (_) { /* ignore */ }
@@ -1930,11 +1962,11 @@ function adjustStock(productId, quantity, type, notes, userId, refType, refId, b
     newStock = prev + quantity;
   }
   db.prepare('UPDATE products SET stock_quantity = ?, updated_at = datetime(\'now\') WHERE id = ?').run(newStock, productId);
+  checkLowStock(productId, prev);
   db.prepare(`
     INSERT INTO stock_movements (product_id, movement_type, quantity, previous_stock, new_stock, reference_type, reference_id, notes, user_id)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(productId, type === 'set' ? 'adjust' : type, quantity, prev, newStock, refType, refId, notes, userId);
-  checkLowStock(productId);
   try {
     require('./production-availability').refreshAffectedByIngredient(productId);
   } catch (_) { /* ignore */ }
@@ -2424,7 +2456,9 @@ function completeSale(saleData, actorId, actorName, actorRole) {
       }
       if (pType === 'giftcard') {
         if (!payment.gift_card_code) throw new Error('Gift card code required for gift card payment');
-        features.redeemGiftCard(payment.gift_card_code, payment.amount, saleId, actorId);
+        if (!payment.gift_card_pre_redeemed) {
+          features.redeemGiftCard(payment.gift_card_code, payment.amount, saleId, actorId);
+        }
       }
     }
 
@@ -4204,6 +4238,22 @@ async function acceptOnlineOrderAsSale(localId, actor, opts = {}) {
 
   const saleItems = [];
   for (const line of lines) {
+    if (line.combo_id) {
+      const combosSvc = require('./combos');
+      const combo = combosSvc.getCombo(Number(line.combo_id));
+      if (!combo) throw new Error(`Cannot match combo on this POS: ${line.name || line.combo_id}`);
+      const unitPrice = line.unit_price != null ? Number(line.unit_price) : (Number(combo.final_price) || 0);
+      saleItems.push({
+        combo_id: combo.id,
+        product_name: line.name || combo.name,
+        quantity: Number(line.quantity) || 1,
+        unit_price: unitPrice,
+        buying_price: (combo.items || []).reduce((s, ci) => s + (Number(ci.buying_price) || 0) * (Number(ci.quantity) || 1), 0),
+        modifiers: [],
+        modifiers_text: line.modifiers_text || null
+      });
+      continue;
+    }
     let product = null;
     const remoteId = line.remote_id != null ? Number(line.remote_id) : (line.product_id != null ? Number(line.product_id) : null);
     if (remoteId) product = db.prepare('SELECT * FROM products WHERE id = ? AND is_active = 1').get(remoteId);
@@ -4236,38 +4286,67 @@ async function acceptOnlineOrderAsSale(localId, actor, opts = {}) {
   const orderTax = Number(order.tax_amount) || 0;
   const orderTotal = Number(order.total) || 0;
   const loyaltyPts = Number(order.loyalty_points_used) || 0;
+  const giftCardAmt = Number(order.gift_card_amount) || 0;
+  const giftCardCode = order.gift_card_code || null;
+  const saleDiscount = orderDiscount;
   const discountParts = [];
   if (order.coupon_code) discountParts.push(`Coupon ${order.coupon_code}`);
   if (loyaltyPts > 0) discountParts.push(`Loyalty ${loyaltyPts} pts`);
-  if (orderDiscount > 0 && !discountParts.length) discountParts.push('Order discount');
+  if (giftCardAmt > 0 && giftCardCode) discountParts.push(`Gift card ${giftCardCode} (-${giftCardAmt.toFixed(2)})`);
   const notes = [
     `Online order ${order.order_number}`,
     order.order_source ? `Source: ${order.order_source}` : 'Source: ONLINE',
     order.customer_name ? `Customer: ${order.customer_name}` : null,
     order.customer_phone ? `Phone: ${order.customer_phone}` : null,
     fulfillment ? `Fulfillment: ${fulfillment}` : null,
-    discountParts.length ? `Discounts: ${discountParts.join(' · ')} (-${orderDiscount.toFixed(2)})` : null,
+    discountParts.length ? `Discounts: ${discountParts.join(' · ')}` : null,
     order.notes || null
   ].filter(Boolean).join(' · ');
 
-  const tender = orderTotal > 0 ? orderTotal : Math.max(1, saleItems.reduce((s, i) => s + (Number(i.unit_price) || 0) * (Number(i.quantity) || 0), 0) - orderDiscount + deliveryFee + orderTax);
+  const payments = [];
+  if (giftCardAmt > 0 && giftCardCode) {
+    payments.push({
+      type: 'giftcard',
+      amount: giftCardAmt,
+      gift_card_code: giftCardCode,
+      gift_card_pre_redeemed: true
+    });
+  }
+  const remainder = money(orderTotal);
+  if (remainder > 0.009) {
+    payments.push({ type: order.payment_method || 'online', amount: remainder });
+  } else if (!payments.length) {
+    payments.push({ type: order.payment_method || 'online', amount: orderTotal || 0 });
+  }
+  const tender = payments.reduce((s, p) => s + (Number(p.amount) || 0), 0);
+
   const saleData = {
     items: saleItems,
-    discount: orderDiscount,
+    discount: saleDiscount,
     tax_amount: orderTax,
-    amount_paid: tender,
-    payments: [{ type: order.payment_method || 'online', amount: tender }],
+    amount_paid: tender > 0 ? tender : orderTotal,
+    payments,
     order_type: 'online',
     order_source: order.order_source || 'ONLINE',
     customer_id: order.customer_id || null,
     delivery_address: fulfillment === 'delivery' ? (opts.delivery_address || order.delivery_address || null) : null,
     notes,
-    discount_authorized: true
+    discount_authorized: true,
+    gift_card_code: giftCardCode,
+    gift_card_amount: giftCardAmt
   };
 
   const actorId = actor?.id;
   if (!actorId) throw new Error('Login required to accept online orders');
-  const sale = completeSale(saleData, actorId, actor.full_name || actor.username, actor.role);
+
+  const actorRole = actor.role || db.prepare('SELECT role FROM users WHERE id = ?').get(actorId)?.role;
+  if (roleRequiresShift(actorRole) && !getOpenShift(actorId)) {
+    try { openShift(actorId, 0); } catch (err) {
+      throw new Error(err.message || 'You must open a shift before accepting online orders');
+    }
+  }
+
+  const sale = completeSale(saleData, actorId, actor.full_name || actor.username, actorRole);
   const saleId = sale.saleId || sale.sale?.id;
   if (!saleId) throw new Error('Sale was created but id is missing');
 
@@ -4354,7 +4433,7 @@ module.exports = {
   recordCashDrop, getCashDrops, confirmCashDrop,
   getShiftSettings, saveShiftSettings, roleRequiresShift, enforceShiftCashoutDeadlines, createCashUp,
   normalizePhone, phonesMatch, importProducts,
-  getAuditLog, getNotifications, markNotificationRead, markAllNotificationsRead, createTestNotification, refreshPaymentDueNotifications,
+  getAuditLog, getNotifications, markNotificationRead, markAllNotificationsRead, createTestNotification, notifyPosOnlineOrder, refreshPaymentDueNotifications,
   globalSearch,
   convertQuoteToSale: (quoteId, actorId, actorName, paymentOpts) =>
     features.convertQuoteToSale(quoteId, completeSale, actorId, actorName, paymentOpts),
@@ -4390,7 +4469,11 @@ module.exports = {
   importCloudOrders: (orders) => syncSvc.importCloudOrders(orders),
   updateOnlineOrderStatus: (id, status, opts) => syncSvc.updateOnlineOrderStatus(id, status, opts),
   rejectOnlineOrder: (id, reason, actor) => syncSvc.rejectOnlineOrder(id, reason, actor),
-  ...require('./delivery-platform'),
+  ...(() => {
+    const dp = require('./delivery-platform');
+    const { getSettings: getDeliverySettings, saveSettings: saveDeliverySettings, ...dpRest } = dp;
+    return { ...dpRest, getDeliverySettings, saveDeliverySettings };
+  })(),
   acceptOnlineOrderAsSale,
   ...staffExports,
   getEmployeeDocuments,
@@ -4429,6 +4512,28 @@ module.exports = {
       getHrSettings: getSettings,
       saveHrSettings: saveSettings,
       hrGlobalSearch: globalSearch
+    };
+  })(),
+  ...(() => {
+    const biz = require('./biz-modules-common');
+    const inv = require('./investor-platform');
+    const rel = require('./release-platform');
+    const mtg = require('./meeting-platform');
+    const sig = require('./signage-platform');
+    return {
+      ...inv,
+      ...rel,
+      ...mtg,
+      ...sig,
+      getBizModuleSettings: biz.getModuleSettings,
+      saveBizModuleSettings: biz.saveModuleSettings,
+      bizModulesSummary: () => ({
+        settings: biz.getModuleSettings(),
+        investor: inv.investorSummary(),
+        release: rel.releaseSummary(),
+        meeting: mtg.meetingSummary(),
+        signage: sig.signageSummary()
+      })
     };
   })(),
   ...whatsappExports,

@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#000000">
+  <title>Signage Player</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #000; color: #fff; font-family: system-ui, sans-serif; }
+    #stage { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
+    #stage img, #stage video { max-width: 100%; max-height: 100%; object-fit: contain; }
+    #menu-slide { padding: 4vw; width: 100%; height: 100%; background: linear-gradient(135deg,#1a1a2e,#16213e); }
+    #menu-slide h1 { font-size: 4vw; margin-bottom: 2vh; text-align: center; }
+    .menu-item { display: flex; justify-content: space-between; font-size: 2.5vw; padding: 1vh 0; border-bottom: 1px solid rgba(255,255,255,0.15); }
+    #pair { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: #111; z-index: 10; }
+    #pair .box { text-align: center; padding: 40px; }
+    #pair .code { font-size: 64px; letter-spacing: 8px; font-weight: bold; color: #3b82f6; }
+    #rec-banner { position: fixed; top: 0; left: 0; right: 0; background: #7f1d1d; text-align: center; padding: 8px; display: none; z-index: 5; }
+    #status { position: fixed; bottom: 8px; right: 8px; font-size: 12px; opacity: 0.5; }
+  </style>
+</head>
+<body>
+  <div id="pair"><div class="box"><h2>CONNECT THIS SCREEN</h2><p>Pairing Code:</p><div class="code" id="pair-code">------</div><p id="pair-msg">Waiting for approval…</p></div></div>
+  <div id="rec-banner">🔴 Recording consent acknowledged</div>
+  <div id="stage"></div>
+  <audio id="music" loop></audio>
+  <audio id="announce"></audio>
+  <div id="status"></div>
+  <script src="js/config.js"></script>
+  <script src="js/player.js"></script>
+</body>
+</html>

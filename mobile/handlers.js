@@ -2497,6 +2497,8 @@ function buildHandlers(store) {
   add('web:getOrder', wrapSync((orderId, token) => web.getOrder(orderId, token)));
   add('web:listOrders', wrapSync((token, limit) => web.listCustomerOrders(token, limit)));
   add('web:toggleFavorite', wrapSync((token, productId, branchId) => web.toggleFavorite(token, productId, branchId)));
+  add('web:checkGiftCard', wrapSync((code) => web.checkGiftCardForWeb(code)));
+  add('web:deleteAccount', wrapSync((token) => web.deleteWebCustomerAccount(token)));
   add('web:adminOrders', wrapSync((filters, actor) => {
     requireUserSession(['owner', 'manager', 'supervisor']);
     return web.listAdminOrders(filters || {});
@@ -2541,6 +2543,7 @@ function buildHandlers(store) {
   add('mobile:profile', wrapSync((token) => mm.getProfile(token)));
   add('mobile:dashboard', wrapSync((token, filters) => mm.getDashboard(token, filters || {})));
   add('mobile:orders', wrapSync((token, filters) => mm.listOrders(token, filters || {})));
+  add('mobile:onlineOrders', wrapSync((token, filters) => mm.listOnlineOrders(token, filters || {})));
   add('mobile:order', wrapSync((token, orderId) => mm.getOrder(token, orderId)));
   add('mobile:searchOrders', wrapSync((token, query) => mm.searchOrders(token, query || {})));
   add('mobile:staffActivity', wrapSync((token, filters) => mm.getStaffActivity(token, filters || {})));
@@ -2576,6 +2579,120 @@ function buildHandlers(store) {
     requireUserSession(['owner', 'manager']);
     return mm.revokeMobileDevice(deviceId);
   }));
+
+  // ─── Business Modules ───────────────────────────────────────────────────────
+  const bizActor = (a) => a || requireSession();
+
+  add('bizModules:settings', wrapSync((a) => {
+    requireUserSession(['owner', 'manager']);
+    return s.getBizModuleSettings?.();
+  }));
+  add('bizModules:saveSettings', wrapSync((d, a) => {
+    requireUserSession(['owner']);
+    return s.saveBizModuleSettings?.(d || {}, bizActor(a));
+  }));
+  add('bizModules:summary', wrapSync((a) => {
+    requireUserSession(['owner', 'manager']);
+    return s.bizModulesSummary?.();
+  }));
+
+  add('investor:login', wrapSync((u, p) => s.investorLogin(u, p)));
+  add('investor:logout', wrapSync((tok) => s.investorLogout(tok)));
+  add('investor:dashboard', wrapSync((tok) => s.investorDashboard(tok)));
+  add('investor:list', wrapSync((f, a) => s.listInvestors(bizActor(a), f || {})));
+  add('investor:get', wrapSync((id, a) => s.getInvestor(id, bizActor(a))));
+  add('investor:save', wrapSync((d, a) => s.saveInvestor(d || {}, bizActor(a))));
+  add('investor:createPortalUser', wrapSync((invId, d, a) => s.createInvestorPortalUser(invId, d || {}, bizActor(a))));
+  add('investor:saveProposal', wrapSync((d, a) => s.saveProposal(d || {}, bizActor(a))));
+  add('investor:listProposals', wrapSync((f, a) => s.listProposals(bizActor(a), f || {})));
+  add('investor:proposalPdf', wrapSync((id, a) => s.buildProposalPdf(id, bizActor(a))));
+  add('investor:saveAgreement', wrapSync((d, a) => s.saveAgreement(d || {}, bizActor(a))));
+  add('investor:uploadDocument', wrapSync((d, a) => s.uploadInvestorDocument(d || {}, bizActor(a))));
+  add('investor:recordPayment', wrapSync((d, a) => s.recordPayment(d || {}, bizActor(a))));
+  add('investor:recordDistribution', wrapSync((d, a) => s.recordDistribution(d || {}, bizActor(a))));
+  add('investor:summary', wrapSync((a) => {
+    requireUserSession(['owner', 'manager']);
+    return s.investorSummary?.();
+  }));
+
+  add('release:login', wrapSync((u, p) => s.releaseLogin(u, p)));
+  add('release:logout', wrapSync((tok) => s.releaseLogout(tok)));
+  add('release:dashboard', wrapSync((tok) => s.releaseDashboard(tok)));
+  add('release:runTests', wrapAsync((tok, verId) => s.runFullSystemTest(tok, verId || null)));
+  add('release:createVersion', wrapSync((tok, d) => s.createReleaseVersion(d || {}, tok)));
+  add('release:approve', wrapAsync((tok, verId, confirm) => s.approveRelease(verId, tok, !!confirm)));
+  add('release:publish', wrapAsync((tok, verId, confirm) => s.publishRelease(verId, tok, !!confirm)));
+  add('release:listUsers', wrapSync((a) => s.listReleaseUsers(bizActor(a))));
+  add('release:saveUser', wrapSync((d, a) => s.saveReleaseUser(d || {}, bizActor(a))));
+  add('release:summary', wrapSync((a) => {
+    requireUserSession(['owner', 'manager']);
+    return s.releaseSummary?.();
+  }));
+
+  add('meeting:login', wrapSync((u, p) => s.meetingLogin(u, p)));
+  add('meeting:logout', wrapSync((tok) => s.meetingLogout(tok)));
+  add('meeting:list', wrapSync((tok, f) => s.listMeetings(tok, f || {})));
+  add('meeting:get', wrapSync((tok, id) => s.getMeeting(id, tok)));
+  add('meeting:save', wrapSync((tok, d) => s.saveMeeting(d || {}, tok)));
+  add('meeting:start', wrapSync((tok, id) => s.startMeeting(id, tok)));
+  add('meeting:stop', wrapSync((tok, id) => s.stopMeeting(id, tok)));
+  add('meeting:saveRecording', wrapSync((tok, id, d) => s.saveRecording(id, tok, d || {})));
+  add('meeting:saveTranscript', wrapSync((tok, id, segs) => s.saveTranscript(id, tok, segs)));
+  add('meeting:processAi', wrapAsync((tok, id) => s.processMeetingAi(id, tok)));
+  add('meeting:finalizeMinutes', wrapSync((tok, id) => s.finalizeMinutes(id, tok)));
+  add('meeting:search', wrapSync((tok, q) => s.searchMeetings(tok, q)));
+  add('meeting:ask', wrapAsync((tok, id, q) => s.askMeetingAi(id, tok, q)));
+  add('meeting:listUsers', wrapSync((a) => s.listMeetingUsers(bizActor(a))));
+  add('meeting:saveUser', wrapSync((d, a) => s.saveMeetingUser(d || {}, bizActor(a))));
+  add('meeting:summary', wrapSync((a) => {
+    requireUserSession(['owner', 'manager']);
+    return s.meetingSummary?.();
+  }));
+
+  // ─── Digital Signage ────────────────────────────────────────────────────────
+  add('signage:login', wrapSync((u, p) => s.signageLogin(u, p)));
+  add('signage:logout', wrapSync((tok) => s.signageLogout(tok)));
+  add('signage:dashboard', wrapSync((tok) => s.signageDashboard(tok)));
+  add('signage:summary', wrapSync((a) => {
+    requireUserSession(['owner', 'manager']);
+    return s.signageSummary?.();
+  }));
+  add('signage:requestPairing', wrapSync((meta) => s.requestPairing(meta || {})));
+  add('signage:pairingStatus', wrapSync((code) => s.pairingStatus(code)));
+  add('signage:pendingPairings', wrapSync((tok) => s.listPendingPairings(tok)));
+  add('signage:approvePairing', wrapSync((code, data, tok) => s.approvePairing(code, data || {}, tok)));
+  add('signage:rejectPairing', wrapSync((code, tok) => s.rejectPairing(code, tok)));
+  add('signage:revokeDevice', wrapSync((id, tok) => s.revokeDevice(id, tok)));
+  add('signage:listDevices', wrapSync((tok) => s.listDevices(tok)));
+  add('signage:saveDevice', wrapSync((tok, d) => s.saveDevice(d || {}, tok)));
+  add('signage:listMedia', wrapSync((tok, f) => s.listMedia(tok, f || {})));
+  add('signage:uploadMedia', wrapSync((tok, d) => s.uploadMedia(d || {}, tok)));
+  add('signage:deleteMedia', wrapSync((tok, id) => s.deleteMedia(id, tok)));
+  add('signage:listPlaylists', wrapSync((tok) => s.listPlaylists(tok)));
+  add('signage:getPlaylist', wrapSync((tok, id) => s.getPlaylist(id)));
+  add('signage:savePlaylist', wrapSync((tok, d) => s.savePlaylist(d || {}, tok)));
+  add('signage:listMenus', wrapSync((tok) => s.listMenus(tok)));
+  add('signage:getMenu', wrapSync((tok, id) => s.getMenu(id)));
+  add('signage:saveMenu', wrapSync((tok, d) => s.saveMenu(d || {}, tok)));
+  add('signage:syncMenuFromProducts', wrapSync((tok, menuId) => s.syncMenuFromProducts(menuId, tok)));
+  add('signage:saveAudioPlaylist', wrapSync((tok, d) => s.saveAudioPlaylist(d || {}, tok)));
+  add('signage:listAudioPlaylists', wrapSync((tok) => s.listAudioPlaylists(tok)));
+  add('signage:saveScreenGroup', wrapSync((tok, d) => s.saveScreenGroup(d || {}, tok)));
+  add('signage:publish', wrapSync((tok, d) => s.publishToScreens(d || {}, tok)));
+  add('signage:publicationStatus', wrapSync((tok, id) => s.getPublicationStatus(id, tok)));
+  add('signage:remoteCommand', wrapSync((tok, deviceId, cmd, payload) => s.remoteCommand(deviceId, cmd, payload || {}, tok)));
+  add('signage:saveAnnouncement', wrapSync((tok, d) => s.saveAnnouncement(d || {}, tok)));
+  add('signage:playNowAnnouncement', wrapSync((tok, id) => s.playNowAnnouncement(id, tok)));
+  add('signage:generateAiVoice', wrapAsync((tok, text) => s.generateAiVoice(text, tok)));
+  add('signage:settings', wrapSync((tok) => s.getSignageSettings(tok)));
+  add('signage:saveSettings', wrapSync((tok, d) => s.saveSignageSettings(d || {}, tok)));
+  add('signage:listUsers', wrapSync((a) => s.listSignageUsers(bizActor(a))));
+  add('signage:saveUser', wrapSync((d, a) => s.saveSignageUser(d || {}, bizActor(a))));
+  add('signage:heartbeat', wrapSync((deviceTok, payload) => s.deviceHeartbeat(deviceTok, payload || {})));
+  add('signage:getCommands', wrapSync((deviceTok) => s.getDeviceCommands(deviceTok)));
+  add('signage:ackCommand', wrapSync((deviceTok, cmdId, result) => s.ackCommand(deviceTok, cmdId, result)));
+  add('signage:reportSync', wrapSync((deviceTok, pubDevId, status, err) => s.reportSync(deviceTok, pubDevId, status, err)));
+  add('signage:manifest', wrapSync((deviceTok) => s.buildPlayerManifest(deviceTok)));
 
   scheduleDailyBackup(store);
   return H;
