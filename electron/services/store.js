@@ -290,7 +290,9 @@ function login(username, password, pin) {
   const shiftBlock = checkCashierShiftAccess(user);
   if (!shiftBlock.ok) return { success: false, error: shiftBlock.error };
 
-  const branchBlock = branchesSvc.assertUserTillBranch(user);
+  const branchBlock = ['cashier', 'supervisor', 'assistant_manager'].includes(user.role)
+    ? branchesSvc.assertUserTillBranch(user)
+    : { ok: true };
   if (!branchBlock.ok) return { success: false, error: branchBlock.error };
 
   const { password_hash, pin: _pin, ...safe } = user;

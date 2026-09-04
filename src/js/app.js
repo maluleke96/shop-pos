@@ -965,9 +965,14 @@ const App = {
     if (sideNameEl) sideNameEl.textContent = shopName;
     document.title = appName;
 
+    const useCloudLogo = !!(window.__SHOP_POS_CLOUD__ || /^https?:/i.test(String(location.protocol || '')));
     const applyLogo = async (elId, fallback = '🏪') => {
       const el = document.getElementById(elId);
       if (!el) return;
+      if (useCloudLogo) {
+        el.innerHTML = `<img src="/api/logo" alt="${appName}" class="brand-logo-img" onerror="this.parentElement.textContent='${fallback}'">`;
+        return;
+      }
       if (logo) {
         const img = await API.getImageDataUrl(logo);
         if (img?.success && (img.dataUrl || img.data)) {
@@ -981,16 +986,18 @@ const App = {
     };
     applyLogo('sidebar-logo');
     applyLogo('login-logo');
-    if (logo) {
+    applyLogo('welcome-logo');
+    let link = document.querySelector('link[rel="icon"]');
+    if (!link) {
+      link = document.createElement('link');
+      link.rel = 'icon';
+      document.head.appendChild(link);
+    }
+    if (useCloudLogo) {
+      link.href = '/api/logo';
+    } else if (logo) {
       API.getImageDataUrl(logo).then((img) => {
-        const href = img?.success && (img.dataUrl || img.data) ? (img.dataUrl || img.data) : Utils.fileUrl(logo);
-        let link = document.querySelector('link[rel="icon"]');
-        if (!link) {
-          link = document.createElement('link');
-          link.rel = 'icon';
-          document.head.appendChild(link);
-        }
-        link.href = href;
+        link.href = img?.success && (img.dataUrl || img.data) ? (img.dataUrl || img.data) : Utils.fileUrl(logo);
       }).catch(() => {});
     }
   },

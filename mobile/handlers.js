@@ -2371,7 +2371,11 @@ function buildHandlers(store) {
   add('driver:logout', wrapSync((token) => dp.driverLogout(token)));
   add('driver:dashboard', wrapSync((token) => dp.driverDashboard(token)));
   add('driver:orders', wrapSync((token, f) => dp.driverListOrders(token, f || {})));
-  add('driver:history', wrapSync((token, limit) => dp.driverHistory(token, limit)));
+  add('driver:history', wrapSync((token, f) => dp.driverHistory(token, f || {})));
+  add('driver:earnings', wrapSync((token, f) => dp.driverEarnings(token, f || {})));
+  add('driver:payments', wrapSync((token) => dp.driverPayments(token)));
+  add('delivery:driverPaymentSummary', wrapSync((actor) => dp.listDriverPaymentSummary(actor)));
+  add('delivery:recordDriverPayout', wrapSync((driverId, data, actor) => dp.recordDriverPayout(driverId, data || {}, actor)));
   add('driver:accept', wrapSync((token, id) => dp.driverAcceptDelivery(token, id)));
   add('driver:reject', wrapSync((token, id, reason) => dp.driverRejectDelivery(token, id, reason)));
   add('driver:updateStatus', wrapSync((token, id, status, notes) => dp.driverUpdateStatus(token, id, status, { notes })));

@@ -1304,6 +1304,8 @@ const API = {
   suspendDeliveryDriver: (id, actor) => invoke('delivery:suspendDriver', id, actor),
   deleteDeliveryDriver: (id, actor) => invoke('delivery:deleteDriver', id, actor),
   deliveryDriverEarnings: (driverId, filters, actor) => invoke('delivery:driverEarnings', driverId, filters || {}, actor),
+  deliveryDriverPaymentSummary: (actor) => invoke('delivery:driverPaymentSummary', actor),
+  recordDriverPayout: (driverId, data, actor) => invoke('delivery:recordDriverPayout', driverId, data || {}, actor),
   acceptOnlineOrderAsSale: (id, opts, actor) => invoke('sync:acceptOnlineOrder', id, opts, actor),
 
   webGetSettings: () => invoke('web:getSettings'),

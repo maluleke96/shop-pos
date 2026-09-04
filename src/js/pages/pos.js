@@ -3029,6 +3029,9 @@ const POSPage = {
         }
         if (!res.success) throw new Error(res.error || 'Sale failed');
         const sale = res.data?.sale || res.data;
+        if (sale && !sale.receipt_number && res.data?.receiptNumber) {
+          sale.receipt_number = res.data.receiptNumber;
+        }
         const saleId = res.data?.saleId || sale?.id;
         const loyaltyPointsEarned = res.data?.loyaltyPointsEarned || 0;
         const loyaltyPointsRedeemed = res.data?.loyaltyPointsRedeemed || loyaltyRedeem || 0;

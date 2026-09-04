@@ -13,7 +13,7 @@ function parseJson(v, fb) { try { return v ? JSON.parse(v) : fb; } catch (_) { r
 function ensureSchema() {
   const fs = require('fs');
   const path = require('path');
-  for (const f of ['migrations-v83.sql', 'migrations-v84.sql', 'migrations-v88-delivery.sql']) {
+  for (const f of ['migrations-v83.sql', 'migrations-v84.sql', 'migrations-v88-delivery.sql', 'migrations-v89-driver-payouts.sql']) {
     const mig = path.join(__dirname, '../database', f);
     if (fs.existsSync(mig)) {
       try { getDb().exec(fs.readFileSync(mig, 'utf8')); } catch (_) { /* columns may exist */ }
@@ -58,6 +58,10 @@ function formatRow(row, opts = {}) {
     out.delivery_number = row.confirmation_code;
     out.items = items.map((i) => ({ name: i.name || i.product_name, quantity: i.quantity || 1 }));
     delete out.order_number;
+    if (opts.maskCustomer || (opts.history && ['delivered', 'failed', 'cancelled'].includes(row.status))) {
+      delete out.customer_phone;
+      out.customer_name = out.customer_name ? 'Customer' : '';
+    }
   } else {
     out.items = items.map((i) => ({ name: i.name || i.product_name, quantity: i.quantity || 1 }));
   }
@@ -233,9 +237,15 @@ function saveDriver(data, actor) {
   const branches = Array.isArray(data.branches) ? data.branches : [];
   if (data.id) {
     const status = data.status || undefined;
-    dbRun(`UPDATE delivery_drivers SET full_name=?, phone=?, email=?, vehicle_info=?, notes=?, all_branches=?, status=COALESCE(?, status), updated_at=? WHERE id=?`, [
+    dbRun(`UPDATE delivery_drivers SET full_name=?, phone=?, email=?, vehicle_info=?, notes=?, all_branches=?,
+      bank_name=COALESCE(?, bank_name), bank_account=COALESCE(?, bank_account), bank_branch_code=COALESCE(?, bank_branch_code),
+      status=COALESCE(?, status), updated_at=? WHERE id=?`, [
       data.full_name, data.phone, data.email || null, data.vehicle_info || null, data.notes || null,
-      data.all_branches ? 1 : 0, status || null, nowIso(), data.id
+      data.all_branches ? 1 : 0,
+      data.bank_name != null ? data.bank_name : null,
+      data.bank_account != null ? data.bank_account : null,
+      data.bank_branch_code != null ? data.bank_branch_code : null,
+      status || null, nowIso(), data.id
     ]);
     dbRun('DELETE FROM delivery_driver_branches WHERE driver_id=?', [data.id]);
     branches.forEach((bid) => dbRun('INSERT OR IGNORE INTO delivery_driver_branches (driver_id, branch_id) VALUES (?,?)', [data.id, bid]));
@@ -243,8 +253,12 @@ function saveDriver(data, actor) {
   }
   const code = data.driver_code || `DRV${Date.now().toString(36).toUpperCase()}`;
   const hash = data.password ? bcrypt.hashSync(data.password, 10) : null;
-  const r = dbRun(`INSERT INTO delivery_drivers (driver_code, full_name, phone, email, password_hash, vehicle_info, status, all_branches)
-    VALUES (?,?,?,?,?,?, 'active', ?)`, [code, data.full_name, data.phone, data.email || null, hash, data.vehicle_info || null, data.all_branches ? 1 : 0]);
+  const r = dbRun(`INSERT INTO delivery_drivers (driver_code, full_name, phone, email, password_hash, vehicle_info, bank_name, bank_account, bank_branch_code, status, all_branches)
+    VALUES (?,?,?,?,?,?,?,?,?, 'active', ?)`, [
+    code, data.full_name, data.phone, data.email || null, hash, data.vehicle_info || null,
+    data.bank_name || null, data.bank_account || null, data.bank_branch_code || null,
+    data.all_branches ? 1 : 0
+  ]);
   const id = r.lastInsertRowid;
   branches.forEach((bid) => dbRun('INSERT OR IGNORE INTO delivery_driver_branches (driver_id, branch_id) VALUES (?,?)', [id, bid]));
   return getDriver(id);
@@ -349,8 +363,12 @@ function getSettings() {
 
 function saveSettings(data, actor) {
   assertUserActor(actor, ['owner', 'manager']);
-  dbRun(`UPDATE delivery_settings SET department_mode=?, default_assignment_mode=?, auto_assign_radius_km=?, updated_at=? WHERE id=1`, [
-    data.department_mode || 'per_branch', data.default_assignment_mode || 'manual', Number(data.auto_assign_radius_km) || 15, nowIso()
+  dbRun(`UPDATE delivery_settings SET department_mode=?, default_assignment_mode=?, auto_assign_radius_km=?,
+    payout_cycle_days=COALESCE(?, payout_cycle_days), payout_day_of_week=COALESCE(?, payout_day_of_week), updated_at=? WHERE id=1`, [
+    data.department_mode || 'per_branch', data.default_assignment_mode || 'manual', Number(data.auto_assign_radius_km) || 15,
+    data.payout_cycle_days != null ? Number(data.payout_cycle_days) : null,
+    data.payout_day_of_week != null ? Number(data.payout_day_of_week) : null,
+    nowIso()
   ]);
   return getSettings();
 }
@@ -537,20 +555,98 @@ function driverDashboard(token) {
   const completed_today = dbGet(`SELECT COUNT(*) AS c FROM delivery_assignments WHERE driver_id=? AND status='delivered' AND date(delivered_at)=date('now')`, [driver.id])?.c || 0;
   const fees_today = dbGet(`SELECT COALESCE(SUM(delivery_fee),0) AS s FROM delivery_assignments WHERE driver_id=? AND status='delivered' AND date(delivered_at)=date('now')`, [driver.id])?.s || 0;
   const earnings_total = dbGet(`SELECT COALESCE(SUM(delivery_fee),0) AS s FROM delivery_assignments WHERE driver_id=? AND status='delivered'`, [driver.id])?.s || 0;
+  const owed = driverOwedAmount(driver.id);
+  const shop = dbGet('SELECT shop_name, logo_path FROM shop_settings WHERE id=1') || {};
   return {
-    driver: { id: driver.id, full_name: driver.full_name, availability: driver.availability, phone: driver.phone },
+    driver: {
+      id: driver.id, full_name: driver.full_name, availability: driver.availability, phone: driver.phone,
+      bank_name: driver.bank_name, bank_account: driver.bank_account, bank_branch_code: driver.bank_branch_code
+    },
+    shop_name: shop.shop_name,
+    shop_logo: shop.logo_path ? '/api/logo' : null,
     assigned_count: assigned.length,
     assigned: assigned.map((r) => formatRow(r, { driver: true })),
-    available,
-    completed_today, fees_today, earnings_total
+    available: available.map((r) => formatRow(r, { driver: true })),
+    completed_today, fees_today, earnings_total,
+    owed_amount: owed.amount,
+    owed_from: owed.from,
+    owed_to: owed.to
   };
 }
 
-function driverHistory(token, limit = 50) {
+function lastPayoutForDriver(driverId) {
+  return dbGet(`SELECT * FROM delivery_driver_payouts WHERE driver_id=? ORDER BY id DESC LIMIT 1`, [driverId]);
+}
+
+function driverOwedAmount(driverId) {
+  const last = lastPayoutForDriver(driverId);
+  const from = last?.period_to || last?.paid_at?.slice(0, 10) || '1970-01-01';
+  const to = nowIso().slice(0, 10);
+  const row = dbGet(`SELECT COALESCE(SUM(delivery_fee),0) AS s, COUNT(*) AS c FROM delivery_assignments
+    WHERE driver_id=? AND status='delivered' AND date(COALESCE(delivered_at, updated_at)) > date(?)`, [driverId, from]);
+  return { amount: Number(row?.s) || 0, count: row?.c || 0, from, to };
+}
+
+function driverHistory(token, filters = {}) {
   const driver = driverFromToken(token);
-  const rows = dbAll(`SELECT da.* FROM delivery_assignments da WHERE da.driver_id=? AND da.status IN ('delivered','failed','cancelled')
-    ORDER BY da.id DESC LIMIT ?`, [driver.id, Math.min(Number(limit) || 50, 200)]);
-  return rows.map((r) => formatRow(r, { driver: true }));
+  const limit = Math.min(Number(filters.limit) || 80, 300);
+  let sql = `SELECT da.* FROM delivery_assignments da WHERE da.driver_id=? AND da.status IN ('delivered','failed','cancelled')`;
+  const params = [driver.id];
+  if (filters.from) { sql += ` AND date(COALESCE(da.delivered_at, da.updated_at)) >= date(?)`; params.push(filters.from); }
+  if (filters.to) { sql += ` AND date(COALESCE(da.delivered_at, da.updated_at)) <= date(?)`; params.push(filters.to); }
+  sql += ` ORDER BY da.id DESC LIMIT ${limit}`;
+  const rows = dbAll(sql, params);
+  return rows.map((r) => formatRow(r, { driver: true, history: true }));
+}
+
+function driverEarnings(token, filters = {}) {
+  const driver = driverFromToken(token);
+  const from = filters.from || new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
+  const to = filters.to || new Date().toISOString().slice(0, 10);
+  const rows = dbAll(`SELECT da.* FROM delivery_assignments da WHERE da.driver_id=? AND da.status='delivered'
+    AND date(COALESCE(da.delivered_at, da.updated_at)) BETWEEN date(?) AND date(?) ORDER BY da.delivered_at DESC`, [driver.id, from, to]);
+  const total = rows.reduce((s, r) => s + (Number(r.delivery_fee) || 0), 0);
+  const owed = driverOwedAmount(driver.id);
+  return {
+    from, to, total, count: rows.length, rows: rows.map((r) => formatRow(r, { driver: true, history: true })),
+    owed_amount: owed.amount, owed_from: owed.from, owed_to: owed.to
+  };
+}
+
+function driverPayments(token) {
+  const driver = driverFromToken(token);
+  const rows = dbAll(`SELECT * FROM delivery_driver_payouts WHERE driver_id=? ORDER BY id DESC LIMIT 100`, [driver.id]);
+  const owed = driverOwedAmount(driver.id);
+  return { payouts: rows, owed_amount: owed.amount, owed_from: owed.from, owed_to: owed.to };
+}
+
+function listDriverPaymentSummary(actor) {
+  assertUserActor(actor, ['owner', 'manager', 'supervisor', 'delivery_manager']);
+  const drivers = listDrivers({ status: 'active' });
+  return drivers.map((d) => {
+    const owed = driverOwedAmount(d.id);
+    return {
+      id: d.id, full_name: d.full_name, phone: d.phone,
+      bank_name: d.bank_name, bank_account: d.bank_account, bank_branch_code: d.bank_branch_code,
+      owed_amount: owed.amount, owed_from: owed.from, owed_to: owed.to, delivered_count: owed.count
+    };
+  });
+}
+
+function recordDriverPayout(driverId, data, actor) {
+  assertUserActor(actor, ['owner', 'manager', 'supervisor']);
+  const driver = getDriver(driverId);
+  if (!driver) throw new Error('Driver not found');
+  const owed = driverOwedAmount(driverId);
+  const amount = data.amount != null ? Number(data.amount) : owed.amount;
+  if (amount <= 0) throw new Error('Nothing to pay — no delivered fees in this period');
+  const from = data.period_from || owed.from;
+  const to = data.period_to || owed.to;
+  const r = dbRun(`INSERT INTO delivery_driver_payouts (driver_id, amount, period_from, period_to, paid_at, paid_by, paid_by_name, notes)
+    VALUES (?,?,?,?,?,?,?,?)`, [
+    driverId, amount, from, to, nowIso(), actor?.id || null, actor?.full_name || actor?.username || 'Admin', data.notes || null
+  ]);
+  return dbGet('SELECT * FROM delivery_driver_payouts WHERE id=?', [r.lastInsertRowid]);
 }
 
 function driverListOrders(token, filters = {}) {
@@ -610,6 +706,7 @@ module.exports = {
   listDrivers, getDriver, saveDriver, registerDriver, approveDriver, rejectDriver, suspendDriver, deleteDriver,
   assignDriver, assignMultipleOrders, autoAssignDriver, releaseToDriverPool, updateDeliveryStatus, getSettings, saveSettings,
   getBranchSettings, saveBranchSettings, listAllBranchSettings, deleteBranchSettings, deliveryReports, driverEarningsReport,
-  getDeliveryByTracking, driverLogin, driverLogout, driverDashboard, driverListOrders, driverHistory, driverAcceptDelivery,
+  getDeliveryByTracking, driverLogin, driverLogout, driverDashboard, driverListOrders, driverHistory, driverEarnings, driverPayments,
+  listDriverPaymentSummary, recordDriverPayout, driverAcceptDelivery,
   driverRejectDelivery, driverUpdateStatus, setDriverAvailability
 };

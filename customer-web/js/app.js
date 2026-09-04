@@ -15,6 +15,7 @@ const OrderApp = {
   selectedOrder: null,
   quote: null,
   loyaltyAccount: null,
+  giftWallet: [],
   editingCartKey: null,
   _closedTimer: null,
 
@@ -133,12 +134,13 @@ const OrderApp = {
   },
 
   async refreshLoyaltyAccount() {
-    if (!this.token) { this.loyaltyAccount = null; return; }
+    if (!this.token) { this.loyaltyAccount = null; this.giftWallet = []; return; }
     try {
       const acct = await OrderAPI.account(this.token);
       this.loyaltyAccount = acct.loyalty || null;
+      this.giftWallet = acct.wallet || [];
       this.customer = acct.profile || this.customer;
-    } catch (_) { this.loyaltyAccount = null; }
+    } catch (_) { this.loyaltyAccount = null; this.giftWallet = []; }
   },
 
   loyaltySettings() {
@@ -182,13 +184,34 @@ const OrderApp = {
   },
 
   contactHeaderHtml() {
-    const phone = this.settings?.phone || this.branch?.phone;
-    const wa = this.settings?.whatsapp_number || phone;
-    if (!phone && !wa) return '';
+    const phone = this.branch?.phone || this.settings?.phone;
+    const wa = this.branch?.whatsapp || this.settings?.whatsapp_number || phone;
+    const address = this.branch?.address || this.settings?.address;
+    if (!phone && !wa && !address) return '';
     return `<div class="shop-contact-bar">
-      ${phone ? `<a href="${this.phoneLink(phone)}" class="contact-icon" aria-label="Call shop">📞</a>` : ''}
-      ${wa ? `<a href="${this.whatsappLink(wa)}" target="_blank" rel="noopener" class="contact-icon" aria-label="WhatsApp shop">💬</a>` : ''}
-      ${phone ? `<span class="contact-phone">${this.esc(phone)}</span>` : ''}
+      <img src="/api/logo" alt="" class="shop-contact-logo" onerror="this.style.display='none'">
+      <div class="shop-contact-details">
+        ${this.branch ? `<strong>${this.esc(this.branch.name)}</strong>` : ''}
+        ${address ? `<span class="contact-addr">${this.esc(address)}</span>` : ''}
+        ${phone ? `<span class="contact-phone">${this.esc(phone)}</span>` : ''}
+      </div>
+      <div class="shop-contact-actions">
+        ${phone ? `<a href="${this.phoneLink(phone)}" class="contact-icon" aria-label="Call">📞</a>` : ''}
+        ${wa ? `<a href="${this.whatsappLink(wa)}" target="_blank" rel="noopener" class="contact-icon" aria-label="WhatsApp">💬</a>` : ''}
+      </div>
+    </div>`;
+  },
+
+  giftWalletHtml() {
+    if (!this.token || !this.giftWallet?.length) return '';
+    return `<div class="loyalty-card gift-wallet-card">
+      <h3>🎁 Your gift cards</h3>
+      ${this.giftWallet.map((g) => `<div class="gift-wallet-row">
+        <div><code class="gift-code" data-gift-code="${this.esc(g.code)}">${this.esc(g.code)}</code>
+        <button type="button" class="btn-sm" data-act="copy-gift" data-code="${this.esc(g.code)}">Copy</button></div>
+        <strong>${this.money(g.balance)}</strong>
+        ${g.expires_at ? `<div class="muted" style="font-size:12px">Expires ${this.esc(String(g.expires_at).slice(0, 10))}</div>` : ''}
+      </div>`).join('')}
     </div>`;
   },
 
@@ -538,6 +561,17 @@ const OrderApp = {
         this.render();
         return;
       }
+      if (act === 'copy-gift') {
+        const code = btn.dataset.code || '';
+        if (!code) return;
+        try {
+          await navigator.clipboard.writeText(code);
+          this.toast('Gift card code copied', 'success');
+        } catch (_) {
+          this.toast(code, 'info');
+        }
+        return;
+      }
       if (act === 'apply-gift-card') {
         const code = document.getElementById('gift-card-code')?.value.trim().toUpperCase() || '';
         if (!code) {
@@ -718,12 +752,12 @@ const OrderApp = {
     const showBack = ['product', 'cart', 'checkout'].includes(this.view);
     const branchChip = this.branch ? `<div class="branch-banner">
       <span>📍 Ordering from <strong>${this.esc(this.branch.name)}</strong></span>
-      <button type="button" data-act="nav" data-view="branches" class="link-btn">Change branch</button>
+      <button type="button" data-act="nav" data-view="branches" class="link-btn branch-change-btn">Change branch</button>
     </div>` : '';
     const cartBtn = `<button type="button" class="cart-fab" data-act="nav" data-view="cart">${this.cartCount() ? `<span class="cart-badge">${this.cartCount()}</span>` : ''}🛒</button>`;
     return `<div class="order-app">
       <header class="topbar">${showBack ? `<button type="button" class="back-btn" data-act="back" aria-label="Back">←</button>` : ''}
-        <div class="brand">${this.esc(this.settings?.shop_name || 'Order Online')}</div>
+        <div class="brand"><img src="/api/logo" alt="" class="brand-logo" onerror="this.style.display='none'">${this.esc(this.settings?.shop_name || 'Order Online')}</div>
         <div class="top-actions">
           ${this.customer
             ? `<button type="button" class="ghost-btn" data-act="nav" data-view="account">${this.esc(this.customer.first_name)}</button>`
@@ -798,6 +832,7 @@ const OrderApp = {
           <div class="muted">Worth ${this.money(this.loyaltyAccount.value)} at checkout</div>
         </div>` : (!this.token ? `<div class="checkout-card"><p class="muted" style="margin:0 0 10px">Register to earn points on every order.</p>
           <button type="button" class="btn-primary btn-sm" data-act="nav" data-view="register">Register now</button></div>` : '')}
+        ${this.giftWalletHtml()}
         ${specials.length ? `<h2>Today's specials</h2><div class="product-grid">${specials.slice(0, 6).map((p) => this.productCard(p)).join('')}</div>` : ''}
       </section>`);
       this.bind();
@@ -920,6 +955,7 @@ const OrderApp = {
           ${earnPts ? `<div class="loyalty-earn">You'll earn <strong>${earnPts} points</strong> on this order</div>` : ''}
           <button type="button" class="btn-outline btn-block" data-act="apply-loyalty" style="margin-top:10px">Apply points</button>
         </div>` : ''}
+        ${this.giftWalletHtml()}
         <div class="checkout-card">
           <h3>Coupon code</h3>
           <div style="display:flex;gap:8px"><input id="coupon-code" value="${this.esc(this.checkout.coupon_code)}" placeholder="Enter code"><button type="button" class="btn-sm" data-act="apply-coupon">Apply</button></div>

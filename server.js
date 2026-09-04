@@ -36,6 +36,7 @@ const { bootRpc, handleRpcPost } = require('./lib/rpc-app');
 
 const PORT = Number(process.env.PORT || process.env.SHOP_POS_PORT || 3000);
 const SRC = path.join(ROOT, 'src');
+const SHARED = path.join(ROOT, 'shared');
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -406,6 +407,30 @@ function serveCustomerWeb(req, res) {
   });
 }
 
+function serveShared(req, res) {
+  let urlPath = (req.url || '/').split('?')[0];
+  if (urlPath.startsWith('/shared/')) urlPath = urlPath.slice('/shared'.length);
+  if (urlPath === '/' || !urlPath) urlPath = '/panel-brand.js';
+  const filePath = safeJoin(SHARED, urlPath);
+  if (!filePath) {
+    res.writeHead(403);
+    return res.end('Forbidden');
+  }
+  fs.stat(filePath, (err, st) => {
+    if (err || !st.isFile()) {
+      res.writeHead(404);
+      return res.end('Not found');
+    }
+    const ext = path.extname(filePath).toLowerCase();
+    const type = MIME[ext] || 'application/javascript; charset=utf-8';
+    fs.readFile(filePath, (e2, buf) => {
+      if (e2) { res.writeHead(500); return res.end('Read error'); }
+      res.writeHead(200, { 'Content-Type': type, 'Cache-Control': 'no-cache', ...corsHeaders() });
+      res.end(buf);
+    });
+  });
+}
+
 function serveStatic(req, res) {
   let urlPath = (req.url || '/').split('?')[0];
   if (urlPath === '/') urlPath = '/index.html';
@@ -566,6 +591,10 @@ async function main() {
         customer_ordering: `${base}/order/`,
         portals: `${base}/portals.html`
       });
+    }
+
+    if (urlPath.startsWith('/shared/')) {
+      return serveShared(req, res);
     }
 
     if (urlPath === '/api/logo') {

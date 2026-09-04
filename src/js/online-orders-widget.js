@@ -333,6 +333,8 @@ const OnlineOrdersWidget = {
       this.openPanel('pending');
     });
     document.getElementById('oo-popup-accept')?.addEventListener('click', async () => {
+      this.markHandled(order.id);
+      this.stopAlertSound();
       this._popupOpen = false;
       Utils.hideModal();
       await this.accept(order);
@@ -462,6 +464,7 @@ const OnlineOrdersWidget = {
       if (r?.success === false) throw new Error(r.error || 'Accept failed');
       if (r?.error) throw new Error(r.error);
       this.markHandled(order.id);
+      this.stopAlertSound();
       Utils.toast(`Online order ${order.order_number} accepted on POS`, 'success');
       try { await API.refreshKitchenDisplay?.(); } catch (_) { /* optional */ }
       try { await API.refreshCustomerDisplay?.(); } catch (_) { /* optional */ }

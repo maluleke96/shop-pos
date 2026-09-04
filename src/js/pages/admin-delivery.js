@@ -20,7 +20,7 @@ window.AdminDeliveryPage = {
         <h2>🚚 Delivery Department</h2>
       </div>
       <div class="admin-tabs" id="del-tabs">
-        ${['dashboard','orders','drivers','pending','settings','reports'].map((t) =>
+        ${['dashboard','orders','drivers','pending','payments','settings','reports'].map((t) =>
           `<button class="admin-tab ${this.tab === t ? 'active' : ''}" data-tab="${t}">${t.charAt(0).toUpperCase() + t.slice(1)}</button>`).join('')}
       </div>
       <div id="del-body"><p class="muted">Loading…</p></div>
@@ -69,6 +69,9 @@ window.AdminDeliveryPage = {
         this.branches = branchesRes?.data || branchesRes || [];
         this.branchFees = Array.isArray(fees) ? fees : (fees?.data || []);
       }
+      if (tab === 'payments') {
+        this.paymentSummary = await API.deliveryDriverPaymentSummary(this.actor).catch(() => []);
+      }
       this._loadedTabs[tab] = true;
     } catch (e) {
       Utils.toast(e.message || 'Failed to load delivery data', 'error');
@@ -102,6 +105,7 @@ window.AdminDeliveryPage = {
       if (this.tab === 'orders') return this.renderOrders(body);
       if (this.tab === 'drivers') return this.renderDrivers(body);
       if (this.tab === 'pending') return this.renderPending(body);
+      if (this.tab === 'payments') return this.renderPayments(body);
       if (this.tab === 'settings') return this.renderSettings(body);
       if (this.tab === 'reports') return this.renderReports(body);
     });
@@ -351,6 +355,15 @@ window.AdminDeliveryPage = {
         <select name="default_assignment_mode"><option value="manual" ${s.default_assignment_mode === 'manual' ? 'selected' : ''}>Manual — admin assigns driver</option>
         <option value="auto" ${s.default_assignment_mode === 'auto' ? 'selected' : ''}>Automatic — drivers accept (first accept wins)</option></select>
       </label>
+      <label class="field full">Driver payout cycle (days)
+        <input name="payout_cycle_days" type="number" min="1" max="90" value="${s.payout_cycle_days ?? 7}" placeholder="7">
+        <span class="muted" style="font-size:12px">How often drivers are typically paid (e.g. 7 = weekly)</span></label>
+      <label class="field full">Payout day of week (optional)
+        <select name="payout_day_of_week">
+          <option value="">Any day</option>
+          ${['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'].map((d, i) =>
+            `<option value="${i}" ${Number(s.payout_day_of_week) === i ? 'selected' : ''}>${d}</option>`).join('')}
+        </select></label>
       <button type="submit" class="btn btn-primary">Save settings</button>
     </form>
     <hr style="margin:24px 0">
@@ -430,6 +443,44 @@ window.AdminDeliveryPage = {
       await this.load(true);
       this.renderTab();
     };
+  },
+
+  renderPayments(body) {
+    const rows = this.paymentSummary?.data || this.paymentSummary || [];
+    body.innerHTML = `<p class="muted">Pay drivers for completed deliveries. Amount owed is calculated from the last payout to today.</p>
+    <table class="data-table"><thead><tr>
+      <th>Driver</th><th>Phone</th><th>Bank</th><th>Account</th><th>Deliveries</th><th>Owed</th><th>Period</th><th></th>
+    </tr></thead><tbody>
+      ${rows.length ? rows.map((d) => `<tr>
+        <td>${this.esc(d.full_name)}</td>
+        <td>${this.esc(d.phone)}</td>
+        <td>${this.esc(d.bank_name || '—')}</td>
+        <td>${this.esc(d.bank_account || '—')}${d.bank_branch_code ? `<br><small>${this.esc(d.bank_branch_code)}</small>` : ''}</td>
+        <td>${d.delivered_count || 0}</td>
+        <td><strong>${this.money(d.owed_amount)}</strong></td>
+        <td><small>${this.esc(d.owed_from || '—')} → ${this.esc(d.owed_to || '—')}</small></td>
+        <td><button class="btn btn-primary btn-sm" data-pay-driver="${d.id}" data-amount="${d.owed_amount || 0}"
+          data-from="${this.esc(d.owed_from || '')}" data-to="${this.esc(d.owed_to || '')}">Mark paid</button></td>
+      </tr>`).join('') : '<tr><td colspan="8" class="muted">No active drivers or nothing owed.</td></tr>'}
+    </tbody></table>`;
+    body.querySelectorAll('[data-pay-driver]').forEach((btn) => {
+      btn.onclick = async () => {
+        const driverId = Number(btn.dataset.payDriver);
+        const amount = Number(btn.dataset.amount);
+        const from = btn.dataset.from;
+        const to = btn.dataset.to;
+        if (!amount || amount <= 0) return Utils.toast('Nothing to pay for this driver', 'error');
+        const notes = prompt(`Pay ${this.money(amount)} (${from} → ${to})?\nOptional note:`) ?? '';
+        if (notes === null) return;
+        try {
+          await API.recordDriverPayout(driverId, { amount, period_from: from, period_to: to, notes: notes || null }, this.actor);
+          Utils.toast('Payment recorded', 'success');
+          this._loadedTabs.payments = false;
+          await this.load(true);
+          this.renderTab();
+        } catch (e) { Utils.toast(e.message || 'Payment failed', 'error'); }
+      };
+    });
   },
 
   async renderReports(body) {
@@ -528,6 +579,9 @@ window.AdminDeliveryPage = {
         <label class="field full">Phone<input id="drv-phone" value="${this.esc(d?.phone || '')}"></label>
         <label class="field full">Email<input id="drv-email" value="${this.esc(d?.email || '')}"></label>
         <label class="field full">Vehicle<input id="drv-vehicle" value="${this.esc(d?.vehicle_info || '')}"></label>
+        <label class="field full">Bank name<input id="drv-bank" value="${this.esc(d?.bank_name || '')}"></label>
+        <label class="field full">Account number<input id="drv-account" value="${this.esc(d?.bank_account || '')}"></label>
+        <label class="field full">Branch code<input id="drv-branch-code" value="${this.esc(d?.bank_branch_code || '')}"></label>
         <label class="field full"><input type="checkbox" id="drv-all-branches" ${d?.all_branches ? 'checked' : ''}> All branches</label>
         <div class="field full"><span class="muted">Branches</span>${branchChecks || '<p class="muted">No branches</p>'}</div>
         <label class="field full">Password ${id ? '(leave blank to keep)' : ''}<input id="drv-pass" type="password"></label>
@@ -542,6 +596,9 @@ window.AdminDeliveryPage = {
         phone: document.getElementById('drv-phone').value.trim(),
         email: document.getElementById('drv-email').value.trim(),
         vehicle_info: document.getElementById('drv-vehicle').value.trim(),
+        bank_name: document.getElementById('drv-bank').value.trim(),
+        bank_account: document.getElementById('drv-account').value.trim(),
+        bank_branch_code: document.getElementById('drv-branch-code').value.trim(),
         all_branches: document.getElementById('drv-all-branches').checked,
         branches,
         status: 'active',
