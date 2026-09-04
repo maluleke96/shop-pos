@@ -2635,7 +2635,7 @@ const AdminPage = {
       </div></div></div>`;
 
     const cloudBase = (window.__SHOP_POS_ENV__?.RPC_URL || window.__SHOP_POS_ENV__?.SHOP_POS_RPC_URL || '')
-      .replace(/\/rpc\/?$/i, '') || 'https://peaceful-motivation-production-7dd2.up.railway.app';
+      .replace(/\/rpc\/?$/i, '') || 'https://chisafood.up.railway.app';
     const orderUrl = `${cloudBase.replace(/\/$/, '')}/order/`;
     const orderLink = `<div class="card" style="margin-top:16px"><div class="card-body">
       <h4 style="margin-top:0">Customer ordering website</h4>
@@ -3024,7 +3024,7 @@ const AdminPage = {
     const stats = analyticsRes?.data || analyticsRes || {};
     const global = settingsRes?.data || settingsRes || {};
     const cloudBase = (window.__SHOP_POS_ENV__?.RPC_URL || window.__SHOP_POS_ENV__?.SHOP_POS_RPC_URL || '')
-      .replace(/\/rpc\/?$/i, '') || 'https://peaceful-motivation-production-7dd2.up.railway.app';
+      .replace(/\/rpc\/?$/i, '') || 'https://chisafood.up.railway.app';
     const orderUrl = `${cloudBase.replace(/\/$/, '')}/order/`;
 
     el.innerHTML = `<div class="admin-section"><h3>Online Orders</h3>
@@ -3200,7 +3200,7 @@ const AdminPage = {
     const list = Array.isArray(users) ? users : [];
     const branches = branchesRes?.data || branchesRes || [];
     const cloudBase = (window.__SHOP_POS_ENV__?.RPC_URL || window.__SHOP_POS_ENV__?.SHOP_POS_RPC_URL || '')
-      .replace(/\/rpc\/?$/i, '') || 'https://peaceful-motivation-production-7dd2.up.railway.app';
+      .replace(/\/rpc\/?$/i, '') || 'https://chisafood.up.railway.app';
     const managerUrl = `${cloudBase.replace(/\/$/, '')}/manager/`;
 
     el.innerHTML = `<div class="admin-section"><h3>Mobile App Users</h3>

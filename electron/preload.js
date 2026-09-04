@@ -5,7 +5,7 @@ const isLocalInstaller = process.env.SHOP_POS_LOCAL_INSTALLER === '1';
 const supabaseUrl = process.env.SHOP_POS_SUPABASE_URL || process.env.SUPABASE_URL || '';
 const supabaseAnon = process.env.SHOP_POS_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || '';
 const rpcUrl = isLocalInstaller ? '' : (process.env.SHOP_POS_RPC_URL || process.env.RPC_URL || '');
-const syncUrl = process.env.SHOP_POS_SYNC_URL || 'https://peaceful-motivation-production-7dd2.up.railway.app';
+const syncUrl = process.env.SHOP_POS_SYNC_URL || 'https://chisafood.up.railway.app';
 contextBridge.exposeInMainWorld('__SHOP_POS_LOCAL_INSTALLER__', isLocalInstaller);
 contextBridge.exposeInMainWorld('__SHOP_POS_ENV__', {
   SUPABASE_URL: supabaseUrl,
@@ -235,7 +235,7 @@ const channels = [
   'hr:attendanceHub', 'hr:schedules', 'hr:leaveBalances', 'hr:employeeDocuments', 'hr:offboardingList',
   'hr:onboardingList', 'hr:payrollDeductions', 'hr:statutorySummary', 'hr:performanceHub', 'hr:staffWarnings',
   'hr:employeeProfile',
-  'hr:employeeTimeline', 'hr:approvals', 'hr:complianceCentre', 'hr:complianceEvents', 'hr:saveComplianceEvent',
+  'hr:employeeTimeline', 'hr:approvals', 'hr:submitForApproval', 'hr:complianceCentre', 'hr:complianceEvents', 'hr:saveComplianceEvent',
   'hr:policies', 'hr:savePolicy', 'hr:acknowledgePolicy', 'hr:businessRules', 'hr:saveBusinessRule',
   'hr:incidents', 'hr:saveIncident', 'hr:disciplinaryCases', 'hr:saveDisciplinaryCase', 'hr:onboardingTemplates',
   'hr:onboardingProgress', 'hr:saveOnboardingProgress', 'hr:forms', 'hr:saveForm', 'hr:createExternalLink',
@@ -254,7 +254,7 @@ const channels = [
   'sync:branchesToHub', 'sync:getOnlineOrders', 'sync:importCloudOrders', 'sync:updateOnlineOrder', 'sync:rejectOnlineOrder', 'sync:acceptOnlineOrder',
   'web:getSettings', 'web:getBranches', 'web:getMenu', 'web:getProduct', 'web:register', 'web:login',
   'web:account', 'web:validateCart', 'web:validateCoupon', 'web:submitOrder', 'web:getOrder', 'web:listOrders',
-  'web:toggleFavorite', 'web:adminOrders', 'web:adminAnalytics', 'web:saveGlobalSettings', 'web:saveBranchSettings',
+  'web:toggleFavorite', 'web:checkGiftCard', 'web:deleteAccount', 'web:adminOrders', 'web:adminAnalytics', 'web:saveGlobalSettings', 'web:saveBranchSettings',
   'web:getBranchSettings', 'web:rejectOrder', 'web:updateOrderStatus',
   'mobile:login', 'mobile:bootstrapAdmin', 'mobile:logout', 'mobile:profile', 'mobile:dashboard',
   'mobile:orders', 'mobile:order', 'mobile:searchOrders', 'mobile:staffActivity', 'mobile:posStatus',

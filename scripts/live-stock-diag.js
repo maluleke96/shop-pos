@@ -1,4 +1,4 @@
-const B = 'https://peaceful-motivation-production-7dd2.up.railway.app';
+const B = 'https://chisafood.up.railway.app';
 
 async function readStdin() {
   return new Promise((resolve) => {

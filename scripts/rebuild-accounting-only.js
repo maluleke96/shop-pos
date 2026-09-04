@@ -8,7 +8,7 @@ const mode = 'accounting';
 const name = 'Business Accounting';
 const appId = 'com.shoppos.accounting';
 const artifact = 'ShopPOS-Accounting';
-const cloudUrl = 'https://peaceful-motivation-production-7dd2.up.railway.app';
+const cloudUrl = 'https://chisafood.up.railway.app';
 
 fs.writeFileSync(
   path.join(root, 'electron', 'cloud-shell-config-accounting.js'),

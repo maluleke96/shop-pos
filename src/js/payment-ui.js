@@ -194,7 +194,7 @@ const PaymentUI = {
             return;
           }
           gcBalancesRef[code] = r.data.balance;
-          balEl.innerHTML = `✓ Balance: <strong>${Utils.formatMoney(r.data.balance, currency)}</strong> · ${status}`;
+          balEl.innerHTML = `✓ Code <strong>${Utils.escHtml(code)}</strong> · Balance: <strong>${Utils.formatMoney(r.data.balance, currency)}</strong> · ${status}`;
           setGiftCardAmount(code);
         };
         document.getElementById('pay-gc-check')?.addEventListener('click', runGiftCardCheck);

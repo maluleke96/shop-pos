@@ -1,7 +1,7 @@
 /**
  * Accurate live wiring audit — uses real RPC names from api.js
  */
-const BASE = (process.env.SMOKE_URL || 'https://peaceful-motivation-production-7dd2.up.railway.app').replace(/\/$/, '');
+const BASE = (process.env.SMOKE_URL || 'https://chisafood.up.railway.app').replace(/\/$/, '');
 
 async function rpc(method, args = [], token = null, headers = {}) {
   const h = { 'Content-Type': 'application/json', ...headers };

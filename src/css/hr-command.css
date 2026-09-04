@@ -996,6 +996,8 @@ body.capacitor-android .hr-shell.hr-nav-open .hr-sidebar {
 .hr-pre { font-size: 12px; overflow: auto; max-height: 300px; background: var(--hr-shell); padding: 12px; border-radius: 8px; }
 .hr-compliance-strip { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 16px; }
 .hr-compliance-item { background: var(--hr-panel); border: 1px solid var(--hr-line); padding: 10px 14px; border-radius: 8px; font-size: 13px; }
+.hr-check { display: inline-flex; align-items: center; gap: 8px; margin-bottom: 10px; font-size: 13px; font-weight: 600; }
+.hr-check input { width: auto; }
 .hr-timeline-item { padding: 6px 0; border-bottom: 1px solid var(--hr-line); font-size: 13px; }
 .hr-search-item { display: block; width: 100%; text-align: left; padding: 10px; border: none; background: transparent; cursor: pointer; }
 .hr-code { font-family: ui-monospace, monospace; font-size: 12px; color: var(--hr-accent); }

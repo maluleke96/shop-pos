@@ -2,7 +2,7 @@
  * Test online orders + shift gating on live Railway.
  * Usage: echo password | node scripts/live-online-orders-test.js
  */
-const BASE = 'https://peaceful-motivation-production-7dd2.up.railway.app';
+const BASE = 'https://chisafood.up.railway.app';
 
 async function readStdin() {
   return new Promise((resolve) => {

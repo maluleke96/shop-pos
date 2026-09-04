@@ -19,11 +19,24 @@ const POSPage = {
   loadedQuoteId: null,
   selectedTable: null,
   orderType: null,
+  deliveryAddress: null,
+  deliveryFee: 0,
 
   activeDailyTargetAmount() {
     const d = this.salesTargets?.daily;
     if (d != null && typeof d === 'object') return d.active !== false ? (Number(d.amount) || 0) : 0;
     return Number(d) || 0;
+  },
+
+  async loadDeliveryFee() {
+    try {
+      const branchId = this.app?.user?.branch_id || this.app?.settings?.branch_id || 1;
+      const settings = await API.getDeliveryBranchSettings(branchId, this.app?.user);
+      this.deliveryFee = Number(settings?.delivery_fee) || 0;
+      this.renderCart?.();
+    } catch (_) {
+      this.deliveryFee = 0;
+    }
   },
 
   topSellerPeriod: 'today',
@@ -521,6 +534,7 @@ const POSPage = {
               <div class="summary-row"><span>Subtotal</span><span id="cart-subtotal">${currency}0.00</span></div>
               <div class="summary-row"><span>Discount</span><span id="cart-discount">${currency}0.00</span></div>
               <div class="summary-row hidden" id="cart-tax-row"><span id="cart-tax-label">Tax</span><span id="cart-tax">${currency}0.00</span></div>
+              <div class="summary-row hidden" id="cart-delivery-fee-row"><span>Delivery fee</span><span id="cart-delivery-fee">${currency}0.00</span></div>
               <div class="summary-row hidden" id="pos-loyalty-row"><span id="pos-loyalty-label">Customer points</span><span id="pos-loyalty-value">0</span></div>
               <div class="summary-row total"><span>Total</span><span id="cart-total">${currency}0.00</span></div>
               <div class="cart-actions">
@@ -1379,10 +1393,18 @@ const POSPage = {
     }
 
     document.getElementById('cart-discount').textContent = Utils.formatMoney(this.discount, currency);
-    document.getElementById('cart-total').textContent = Utils.formatMoney(totals.total, currency);
-    this.totals = { subtotal: totals.subtotalExcl, grossSubtotal, discount: this.discount, tax_amount: totals.tax, total: totals.total };
-    this.broadcastCartToDisplays(totals.total, currency);
-    this.updateLoyaltyDisplay(totals.total);
+    const deliveryFee = this.orderType === 'delivery' ? (Number(this.deliveryFee) || 0) : 0;
+    const deliveryRow = document.getElementById('cart-delivery-fee-row');
+    const deliveryEl = document.getElementById('cart-delivery-fee');
+    if (deliveryRow && deliveryEl) {
+      deliveryRow.classList.toggle('hidden', deliveryFee <= 0);
+      deliveryEl.textContent = Utils.formatMoney(deliveryFee, currency);
+    }
+    const grandTotal = totals.total + deliveryFee;
+    document.getElementById('cart-total').textContent = Utils.formatMoney(grandTotal, currency);
+    this.totals = { subtotal: totals.subtotalExcl, grossSubtotal, discount: this.discount, tax_amount: totals.tax, delivery_fee: deliveryFee, total: grandTotal };
+    this.broadcastCartToDisplays(grandTotal, currency);
+    this.updateLoyaltyDisplay(grandTotal);
     this.updateProductStockDisplay();
   },
 
@@ -2759,8 +2781,10 @@ const POSPage = {
           return Utils.toast('Enter the delivery address', 'error');
         }
         this.deliveryAddress = addr;
+        this.loadDeliveryFee?.();
       } else {
         this.deliveryAddress = null;
+        this.deliveryFee = 0;
       }
       this.orderType = picked;
       Utils.hideModal();
@@ -2927,6 +2951,9 @@ const POSPage = {
           table_id: this.selectedTable?.id || null,
           table_name: this.selectedTable?.name || null,
           delivery_address: this.orderType === 'delivery' ? (this.deliveryAddress || null) : null,
+          delivery_fee: this.orderType === 'delivery' ? (Number(this.deliveryFee) || 0) : 0,
+          customer_name: this.selectedCustomer?.name || this.selectedCustomer?.full_name || null,
+          customer_phone: this.selectedCustomer?.phone || null,
           referral_code: (document.getElementById('pos-referral-code')?.value || '').trim() || null,
           mkt_coupon_code: (document.getElementById('pos-coupon-code')?.value || '').trim() || null,
           notes: [
@@ -3007,6 +3034,7 @@ const POSPage = {
         this.lastSaleCustomer = this.selectedCustomer ? { ...this.selectedCustomer } : null;
         const giftCardPayment = (payments || []).find(p => (p.type || p.payment_type) === 'giftcard' && p.gift_card_code);
         this.lastSaleGiftCardCode = giftCardPayment?.gift_card_code || null;
+        this.lastSaleGiftCardAmount = Number(giftCardPayment?.amount) || 0;
 
         // Optimistic local stock patch so cart/grid stay accurate without blocking on getProducts
         this.applyLocalSaleStockDeduction(this.cart);
@@ -3075,6 +3103,9 @@ const POSPage = {
           }
         };
         postSaleWork();
+        } catch (err) {
+          Utils.toast(err?.message || 'Sale failed', 'error');
+          throw err;
         } finally {
           releaseCheckout();
         }
@@ -3138,13 +3169,15 @@ const POSPage = {
         parts.push(`Balance ${balance} pts (= ${balanceWorth.formatted})`);
       }
       if (this.lastSaleGiftCardCode) {
-        parts.push(`Gift card: ${this.lastSaleGiftCardCode}`);
+        parts.push(`Gift card ${this.lastSaleGiftCardCode}: −${Utils.formatMoney(this.lastSaleGiftCardAmount || 0, currency)}`);
       }
       loyaltyEl.textContent = parts.length ? `⭐ ${parts.join(' · ')}` : '';
     }
-    document.getElementById('pos-success-payments').innerHTML = (payments || sale.payments || []).map(p =>
-      `${labels[p.type || p.payment_type] || p.type || p.payment_type}: ${Utils.formatMoney(p.amount, currency)}`
-    ).join(' · ');
+    document.getElementById('pos-success-payments').innerHTML = (payments || sale.payments || []).map(p => {
+      const type = p.type || p.payment_type;
+      const code = p.gift_card_code ? ` · code ${p.gift_card_code}` : '';
+      return `${labels[type] || type}${code}: ${Utils.formatMoney(p.amount, currency)}`;
+    }).join(' · ');
 
     const waRecipient = this.resolveWhatsAppCustomer(sale, customer);
     const waBtn = document.getElementById('pos-success-wa');
@@ -3163,7 +3196,9 @@ const POSPage = {
       const balance = Math.floor(recipient.loyalty_points || loyaltyPointsEarned || 0);
       const balanceWorth = Utils.loyaltyPointsValue(balance, this.app.settings, currency);
       const receiptLines = Receipt.buildWhatsAppLines(sale, this.app.settings);
-      const giftLine = this.lastSaleGiftCardCode ? `🎁 Gift card: ${this.lastSaleGiftCardCode}` : '';
+      const giftLine = this.lastSaleGiftCardCode
+        ? `🎁 Gift card ${this.lastSaleGiftCardCode}: −${Utils.formatMoney(this.lastSaleGiftCardAmount || 0, currency)}`
+        : '';
       const earnedWorth = Utils.loyaltyPointsValue(loyaltyPointsEarned, this.app.settings, currency);
       const deliveryAddr = sale.delivery_address || this.deliveryAddress || '';
       const r = await API.sendWhatsAppMessage({

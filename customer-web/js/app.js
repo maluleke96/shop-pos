@@ -166,6 +166,17 @@ const OrderApp = {
     return Math.min(bal, maxByTotal);
   },
 
+  saveCart() {
+    try { localStorage.setItem('order_cart', JSON.stringify(this.cart)); } catch (_) { /* ignore */ }
+  },
+
+  loadCart() {
+    try {
+      const raw = localStorage.getItem('order_cart');
+      if (raw) this.cart = JSON.parse(raw) || [];
+    } catch (_) { this.cart = []; }
+  },
+
   async init() {
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('sw.js').catch(() => {});
@@ -184,6 +195,7 @@ const OrderApp = {
         const branches = await OrderAPI.getBranches();
         this.branch = branches.find((b) => String(b.id) === savedBranch) || null;
       }
+      if (this.branch) this.loadCart();
       // Flow: login first → pick branch → menu
       if (!this.token) {
         this.view = 'login';
@@ -212,10 +224,13 @@ const OrderApp = {
   cartCount() { return this.cart.reduce((s, i) => s + i.quantity, 0); },
 
   addToCart(item) {
-    const key = `${item.product_id}:${JSON.stringify(item.modifiers || [])}`;
+    const key = item.combo_id
+      ? `combo:${item.combo_id}`
+      : `${item.product_id}:${JSON.stringify(item.modifiers || [])}`;
     const existing = this.cart.find((c) => c._key === key);
     if (existing) existing.quantity += item.quantity || 1;
     else this.cart.push({ ...item, _key: key });
+    this.saveCart();
     this.toast('Added to cart', 'success');
     this.render();
   },
@@ -225,16 +240,23 @@ const OrderApp = {
     if (!item) return;
     item.quantity += delta;
     if (item.quantity <= 0) this.cart = this.cart.filter((c) => c._key !== key);
+    this.saveCart();
     this.render();
   },
 
   async validateCurrentCart() {
     if (!this.branch || !this.cart.length) return null;
     return OrderAPI.validateCart(this.branch.id, {
-      items: this.cart.map((c) => ({ product_id: c.product_id, quantity: c.quantity, modifiers: c.modifiers })),
+      items: this.cart.map((c) => ({
+        product_id: c.combo_id ? `combo-${c.combo_id}` : c.product_id,
+        combo_id: c.combo_id || undefined,
+        quantity: c.quantity,
+        modifiers: c.modifiers
+      })),
       fulfillment_type: this.checkout.fulfillment_type,
       coupon_code: this.checkout.coupon_code || undefined,
       loyalty_points_used: this.checkout.loyalty_points_used || 0,
+      gift_card_code: this.checkout.gift_card_code || undefined,
       web_customer_id: this.customer?.id
     });
   },
@@ -259,6 +281,13 @@ const OrderApp = {
   bind() {
     const app = document.getElementById('app');
     app.onclick = async (e) => {
+      const catChip = e.target.closest('[data-cat-id]');
+      if (catChip) {
+        this.categoryId = catChip.dataset.catId || null;
+        document.querySelectorAll('[data-cat-id]').forEach((el) => el.classList.toggle('active', el === catChip));
+        await this.loadMenu();
+        return;
+      }
       const btn = e.target.closest('[data-act]');
       if (!btn) return;
       const act = btn.dataset.act;
@@ -280,7 +309,8 @@ const OrderApp = {
         const line = this.cart.find((c) => c._key === key);
         if (!line) return;
         this.editingCartKey = key;
-        this.product = await OrderAPI.getProduct(this.branch.id, line.product_id);
+        const ref = line.combo_id ? `combo-${line.combo_id}` : line.product_id;
+        this.product = await OrderAPI.getProduct(this.branch.id, ref);
         this.view = 'product';
         this.render();
         return;
@@ -302,8 +332,33 @@ const OrderApp = {
       if (act === 'open-product') {
         const pid = btn.dataset.id;
         this.product = await OrderAPI.getProduct(this.branch.id, pid);
+        this.editingCartKey = null;
         this.view = 'product';
         this.render();
+        return;
+      }
+      if (act === 'quick-add') {
+        const pid = btn.dataset.id;
+        const isCombo = btn.dataset.combo === '1';
+        const p = isCombo
+          ? await OrderAPI.getProduct(this.branch.id, pid)
+          : (this.menu?.products || []).find((x) => String(x.id) === String(pid));
+        if (!p?.available) return;
+        if (p.has_modifiers && !p.is_combo) {
+          this.product = p.is_combo ? p : await OrderAPI.getProduct(this.branch.id, pid);
+          this.view = 'product';
+          this.render();
+          return;
+        }
+        const price = p.sale_price ?? p.price;
+        this.addToCart({
+          product_id: p.is_combo ? null : p.id,
+          combo_id: p.is_combo ? p.combo_id : null,
+          name: p.name,
+          quantity: 1,
+          modifiers: [],
+          unit_price: price
+        });
         return;
       }
       if (act === 'add-cart') {
@@ -327,22 +382,63 @@ const OrderApp = {
             this.cart = this.cart.filter((c) => c._key !== this.editingCartKey);
             this.editingCartKey = null;
           }
-          this.addToCart({ product_id: pid, name: this.product.name, quantity: qty, modifiers: mods, unit_price: this.product.sale_price ?? this.product.price });
+          this.addToCart({
+            product_id: this.product.is_combo ? null : pid,
+            combo_id: this.product.is_combo ? this.product.combo_id : null,
+            name: this.product.name,
+            quantity: qty,
+            modifiers: mods,
+            unit_price: this.product.sale_price ?? this.product.price
+          });
           this.view = 'cart';
           this.render();
         } catch (err) { this.toast(err.message, 'error'); }
         return;
       }
-      if (act === 'cart-inc') { this.updateCartQty(btn.dataset.key, 1); return; }
-      if (act === 'cart-dec') { this.updateCartQty(btn.dataset.key, -1); return; }
-      if (act === 'cart-remove') { this.cart = this.cart.filter((c) => c._key !== btn.dataset.key); this.render(); return; }
+      if (act === 'cart-inc') { e.preventDefault(); this.updateCartQty(btn.dataset.key, 1); return; }
+      if (act === 'cart-dec') { e.preventDefault(); this.updateCartQty(btn.dataset.key, -1); return; }
+      if (act === 'cart-remove') { e.preventDefault(); this.cart = this.cart.filter((c) => c._key !== btn.dataset.key); this.saveCart(); this.render(); return; }
       if (act === 'checkout') {
         if (!this.isShopOpenNow()) { this.toast('We are closed for online orders right now', 'error'); this.render(); return; }
         if (!this.token) { this.view = 'register'; this.authReturn = 'checkout'; this.render(); return; }
         this.quote = await this.validateCurrentCart();
+        if (this.quote && !this.quote.valid) {
+          const gcIssue = (this.quote.errors || []).some((msg) => /gift card/i.test(msg));
+          if (gcIssue && this.checkout.gift_card_code) {
+            this.checkout.gift_card_code = '';
+            this.toast('Gift card removed — no balance remaining on that code', 'warning');
+            this.quote = await this.validateCurrentCart();
+          }
+        }
         if (this.quote && !this.quote.valid) { this.toast(this.quote.errors.join('; '), 'error'); return; }
         await this.refreshLoyaltyAccount();
         this.view = 'checkout';
+        this.render();
+        return;
+      }
+      if (act === 'apply-gift-card') {
+        const code = document.getElementById('gift-card-code')?.value.trim().toUpperCase() || '';
+        if (!code) {
+          this.checkout.gift_card_code = '';
+          this.quote = await this.validateCurrentCart();
+          this.render();
+          return;
+        }
+        try {
+          const card = await OrderAPI.checkGiftCard(code);
+          this.checkout.gift_card_code = card.code || code;
+          this.quote = await this.validateCurrentCart();
+          if (this.quote?.errors?.length) {
+            this.toast(this.quote.errors.join('; '), 'error');
+            this.checkout.gift_card_code = '';
+            this.quote = await this.validateCurrentCart();
+          } else {
+            this.toast(`Gift card ${card.code} — ${this.money(card.balance)} available`, 'success');
+          }
+        } catch (err) {
+          this.checkout.gift_card_code = '';
+          this.toast(err.message || 'Invalid gift card', 'error');
+        }
         this.render();
         return;
       }
@@ -378,16 +474,19 @@ const OrderApp = {
           this.checkout.payment_method = document.querySelector('input[name=payment_method]:checked')?.value || 'card';
           this.checkout.delivery_address = document.getElementById('delivery-address')?.value || '';
           this.checkout.notes = document.getElementById('order-notes')?.value || '';
+          this.checkout.gift_card_code = document.getElementById('gift-card-code')?.value.trim().toUpperCase() || this.checkout.gift_card_code || '';
           const orderPayload = {
             ...this.checkout,
             items: this.cart.map((c) => ({
-              product_id: c.product_id,
+              product_id: c.combo_id ? `combo-${c.combo_id}` : c.product_id,
+              combo_id: c.combo_id || undefined,
               quantity: c.quantity,
               modifiers: c.modifiers || []
             }))
           };
           this.lastOrder = await OrderAPI.submitOrder(this.branch.id, orderPayload, this.token, idem);
           this.cart = [];
+          this.saveCart();
           this.view = 'confirmed';
           this.render();
         } catch (err) { this.toast(err.message, 'error'); }
@@ -443,6 +542,19 @@ const OrderApp = {
         finally { btn.disabled = false; btn.textContent = prev; }
         return;
       }
+      if (act === 'delete-account') {
+        if (!confirm('Delete your online account? Your in-store profile and purchase history stay linked to your phone number.')) return;
+        try {
+          await OrderAPI.deleteAccount(this.token);
+          this.token = '';
+          this.customer = null;
+          localStorage.removeItem('order_token');
+          this.toast('Account deleted', 'success');
+          this.view = 'login';
+          this.render();
+        } catch (err) { this.toast(err.message, 'error'); }
+        return;
+      }
       if (act === 'logout') {
         this.token = '';
         this.customer = null;
@@ -465,7 +577,6 @@ const OrderApp = {
     };
     app.onchange = async (e) => {
       if (e.target.id === 'menu-search') { this.search = e.target.value; await this.loadMenu(); }
-      if (e.target.dataset.cat != null) { this.categoryId = e.target.value || null; await this.loadMenu(); }
       if (e.target.name === 'fulfillment') {
         this.checkout.fulfillment_type = e.target.value;
         const firstPay = (this.settings?.online?.payment_methods || []).find((m) => m.enabled !== false && (!m.fulfillment || m.fulfillment === 'any' || m.fulfillment === e.target.value));
@@ -571,9 +682,13 @@ const OrderApp = {
     if (this.view === 'menu') {
       const cats = this.menu?.categories || [];
       const products = this.menu?.products || [];
+      const activeCat = this.categoryId != null ? String(this.categoryId) : '';
       app.innerHTML = this.shell(`<section class="page">
-        <div class="toolbar"><input type="search" id="menu-search" placeholder="Search menu…" value="${this.esc(this.search)}">
-        <select data-cat><option value="">All</option>${cats.map((c) => `<option value="${c.id}" ${String(this.categoryId) === String(c.id) ? 'selected' : ''}>${this.esc(c.name)}</option>`).join('')}</select></div>
+        <div class="menu-search-wrap"><input type="search" id="menu-search" placeholder="Search menu…" value="${this.esc(this.search)}"></div>
+        <div class="category-scroll" role="tablist" aria-label="Categories">
+          <button type="button" class="cat-chip ${!activeCat ? 'active' : ''}" data-cat-id="">All</button>
+          ${cats.map((c) => `<button type="button" class="cat-chip ${activeCat === String(c.id) ? 'active' : ''}" data-cat-id="${this.esc(c.id)}">${this.esc(c.name)}</button>`).join('')}
+        </div>
         <div class="product-grid">${products.map((p) => this.productCard(p)).join('') || '<p class="muted">No products found.</p>'}</div>
       </section>`);
       this.bind();
@@ -586,10 +701,14 @@ const OrderApp = {
       const selectedModIds = new Set((editLine?.modifiers || []).map((m) => String(m.id)));
       const isChecked = (id) => selectedModIds.has(String(id)) ? 'checked' : '';
       const qtyVal = editLine?.quantity || 1;
+      const comboList = p.is_combo && (p.combo_items || []).length
+        ? `<div class="checkout-card"><h3>Includes</h3><ul class="combo-includes">${p.combo_items.map((ci) => `<li>${this.esc(ci.product_name || 'Item')} × ${ci.quantity || 1}</li>`).join('')}</ul></div>`
+        : '';
       app.innerHTML = this.shell(`<section class="page product-detail">
         ${p.image ? `<img class="prod-img" src="${this.esc(p.image)}" alt="">` : '<div class="prod-img placeholder">🍽️</div>'}
-        <h1>${this.esc(p.name)}</h1>
+        <h1>${p.is_combo ? '🎁 ' : ''}${this.esc(p.name)}</h1>
         <p class="muted">${this.esc(p.description)}</p>
+        ${comboList}
         <div class="price-row">${p.on_sale ? `<s>${this.money(p.price)}</s> <strong class="sale">${this.money(p.sale_price)}</strong>` : `<strong>${this.money(p.price)}</strong>`}
         <span class="stock ${p.available ? 'ok' : 'out'}">${p.available ? '● Available' : 'Out of stock'}</span></div>
         ${groups.map((g) => {
@@ -608,7 +727,7 @@ const OrderApp = {
         </fieldset>`;
         }).join('')}
         <div class="qty-row"><label>Qty</label><input type="number" id="prod-qty" min="1" value="${qtyVal}" class="qty-input"></div>
-        <button type="button" class="btn-primary btn-block" data-act="add-cart" data-id="${p.id}" ${p.available && this.isShopOpenNow() ? '' : 'disabled'}>${editLine ? 'Update item' : 'Add to cart'}</button>
+        <button type="button" class="btn-primary btn-block" data-act="add-cart" data-id="${p.is_combo ? p.id : p.id}" ${p.available && this.isShopOpenNow() ? '' : 'disabled'}>${editLine ? 'Update item' : 'Add to cart'}</button>
       </section>`);
       this.bind();
       this.bindModifierInputs();
@@ -679,14 +798,20 @@ const OrderApp = {
           <div style="display:flex;gap:8px"><input id="coupon-code" value="${this.esc(this.checkout.coupon_code)}" placeholder="Enter code"><button type="button" class="btn-sm" data-act="apply-coupon">Apply</button></div>
         </div>
         <div class="checkout-card">
+          <h3>🎁 Gift card</h3>
+          <div style="display:flex;gap:8px"><input id="gift-card-code" value="${this.esc(this.checkout.gift_card_code || '')}" placeholder="Enter gift card code"><button type="button" class="btn-sm" data-act="apply-gift-card">Apply</button></div>
+          ${q.gift_card_amount ? `<p class="muted" style="margin:8px 0 0">Gift card applied: -${this.money(q.gift_card_amount)}</p>` : ''}
+        </div>
+        <div class="checkout-card">
           <h3>Special instructions</h3>
           <textarea id="order-notes" rows="2" placeholder="Allergies, gate code, etc.">${this.esc(this.checkout.notes)}</textarea>
         </div>
         <div class="totals">
           <div>Subtotal <span>${this.money(q.subtotal)}</span></div>
           ${q.discount ? `<div>Discount${q.coupon?.code ? ` (${this.esc(q.coupon.code)}${q.coupon.discount_type ? ` · ${this.esc(q.coupon.discount_type)}` : ''})` : ''}${q.loyalty_discount ? ` · Loyalty ${ptsUsed} pts` : ''} <span>-${this.money(q.discount)}</span></div>` : ''}
+          ${q.gift_card_amount ? `<div>Gift card <span>-${this.money(q.gift_card_amount)}</span></div>` : ''}
           ${q.delivery_fee ? `<div>Delivery <span>${this.money(q.delivery_fee)}</span></div>` : ''}
-          ${q.tax_amount ? `<div>Tax${this.settings?.tax_enabled && this.settings?.tax_rate ? ` (${this.settings.tax_rate}%)` : ''} <span>${this.money(q.tax_amount)}</span></div>` : (this.settings?.tax_enabled ? `<div class="muted" style="font-size:13px">Prices ${this.settings?.tax_inclusive ? 'include' : 'exclude'} tax where applicable</div>` : '')}
+          ${q.tax_amount ? `<div>Tax${this.settings?.tax_enabled && this.settings?.tax_rate ? ` (${this.settings.tax_rate}%)` : ''} <span>${this.money(q.tax_amount)}</span></div>` : (this.settings?.tax_enabled && this.settings?.tax_rate ? `<div class="muted" style="font-size:13px">Tax (${this.settings.tax_rate}%) calculated at checkout</div>` : '')}
           <div class="total-line">Total <strong>${this.money(q.total)}</strong></div>
         </div>
         <button type="button" class="btn-primary btn-block" data-act="place-order">Place order · ${this.money(q.total)}</button>
@@ -765,8 +890,14 @@ const OrderApp = {
       app.innerHTML = this.shell(`<section class="page"><h1>My account</h1>
         <p><strong>${this.esc(acct.profile.first_name)} ${this.esc(acct.profile.last_name || '')}</strong></p>
         <p class="muted">${this.esc(acct.profile.email || acct.profile.phone)}</p>
+        ${acct.pos_profile ? `<div class="checkout-card"><h3>Unified profile</h3>
+          <p class="muted" style="margin:0">Linked to in-store customer <strong>${this.esc(acct.pos_profile.name || '')}</strong>${acct.pos_profile.phone ? ` · ${this.esc(acct.pos_profile.phone)}` : ''}</p></div>` : ''}
         <div class="loyalty-card"><h3>Loyalty</h3><strong>${acct.loyalty.balance} points</strong> · ${this.money(acct.loyalty.value)} value</div>
+        ${acct.wallet?.length ? `<div class="checkout-card"><h3>🎁 Gift card wallet</h3>
+          ${acct.wallet.map((g) => `<div class="wallet-line"><strong>${this.esc(g.code)}</strong> · ${this.money(g.balance)}${g.expires_at ? ` <span class="muted">expires ${this.esc(g.expires_at.slice(0, 10))}</span>` : ''}</div>`).join('')}
+        </div>` : ''}
         <button type="button" class="link-btn" data-act="logout">Logout</button>
+        <button type="button" class="link-btn danger" data-act="delete-account" style="margin-top:12px;display:block">Delete online account</button>
       </section>`);
       this.bind();
       return;
@@ -775,13 +906,15 @@ const OrderApp = {
   },
 
   productCard(p) {
-    return `<article class="product-card ${p.available ? '' : 'unavailable'}">
-      ${p.image ? `<img src="${this.esc(p.image)}" alt="" loading="lazy">` : '<div class="thumb">🍽️</div>'}
+    const btnLabel = p.is_combo ? 'View combo' : (p.has_modifiers ? 'Choose options' : 'Add');
+    const btnAct = p.has_modifiers && !p.is_combo ? 'open-product' : (p.is_combo ? 'open-product' : 'quick-add');
+    return `<article class="product-card ${p.available ? '' : 'unavailable'} ${p.is_combo ? 'combo-card' : ''}">
+      ${p.image ? `<img src="${this.esc(p.image)}" alt="" loading="lazy">` : `<div class="thumb">${p.is_combo ? '🎁' : '🍽️'}</div>`}
       <div class="pc-body">
-        <h3>${this.esc(p.name)}</h3>
+        <h3>${p.is_combo ? '🎁 ' : ''}${this.esc(p.name)}</h3>
         <div class="pc-price">${p.on_sale ? `<s>${this.money(p.price)}</s> <span class="sale">${this.money(p.sale_price)}</span>` : this.money(p.price)}</div>
         <span class="stock ${p.available ? 'ok' : 'out'}">${p.available ? 'Available' : 'Out of stock'}</span>
-        <button type="button" class="btn-sm" data-act="open-product" data-id="${p.id}" ${p.available ? '' : 'disabled'}>${p.has_modifiers ? 'Choose options' : 'Add'}</button>
+        <button type="button" class="btn-sm" data-act="${btnAct}" data-id="${p.id}" data-combo="${p.is_combo ? '1' : '0'}" ${p.available ? '' : 'disabled'}>${btnLabel}</button>
       </div></article>`;
   }
 };

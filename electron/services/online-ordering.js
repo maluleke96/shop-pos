@@ -148,7 +148,7 @@ function getGlobalSettings() {
   ensureSchema();
   let shop;
   try {
-    shop = dbGet('SELECT shop_name, logo_path, address, phone, currency, tax_rate, tax_enabled, tax_inclusive, online_settings_json, operating_hours_settings, payment_settings, whatsapp_settings_json FROM shop_settings WHERE id = 1') || {};
+    shop = dbGet('SELECT shop_name, logo_path, address, phone, currency, tax_rate, tax_enabled, tax_inclusive, tax_show_on_pos, online_settings_json, operating_hours_settings, payment_settings, whatsapp_settings_json FROM shop_settings WHERE id = 1') || {};
   } catch (_) {
     try { dbRun('ALTER TABLE shop_settings ADD COLUMN online_settings_json TEXT'); } catch (__) { /* */ }
     shop = dbGet('SELECT shop_name, logo_path, address, phone, currency, tax_rate, tax_enabled, tax_inclusive FROM shop_settings WHERE id = 1') || {};
@@ -178,8 +178,9 @@ function getGlobalSettings() {
     whatsapp_number: whatsapp.business_number || whatsapp.phone || shop.phone || null,
     currency: shop.currency || 'R',
     tax_rate: Number(shop.tax_rate) || 0,
-    tax_enabled: !!shop.tax_enabled,
+    tax_enabled: !!Number(shop.tax_enabled),
     tax_inclusive: shop.tax_inclusive !== 0 && shop.tax_inclusive !== '0' && shop.tax_inclusive !== false,
+    tax_show_on_pos: shop.tax_show_on_pos !== 0 && shop.tax_show_on_pos !== '0' && shop.tax_show_on_pos !== false,
     operating_hours: operatingHours,
     online: {
       enabled: online?.enabled !== false,
@@ -428,8 +429,65 @@ function mapProductForWeb(p, branchId, promos = []) {
     on_sale: !!salePrice && salePrice < price,
     available,
     stock_qty: qty,
-    has_modifiers: !!dbGet('SELECT 1 FROM product_modifiers WHERE product_id = ? LIMIT 1', [p.id])
+    has_modifiers: !!dbGet('SELECT 1 FROM product_modifiers WHERE product_id = ? LIMIT 1', [p.id]),
+    is_combo: false
   };
+}
+
+function comboAvailableAtBranch(combo, branchId) {
+  if (!combo) return false;
+  const combosSvc = require('./combos');
+  if (!combosSvc.isComboActive(combo)) return false;
+  for (const ci of combo.items || []) {
+    const qty = branchStockQty(ci.product_id, branchId);
+    if (qty < (Number(ci.quantity) || 1)) return false;
+  }
+  return (combo.items || []).length > 0;
+}
+
+function mapComboForWeb(combo, branchId) {
+  const available = comboAvailableAtBranch(combo, branchId);
+  const normal = Number(combo.normal_price) || 0;
+  const finalPrice = Number(combo.final_price) || normal;
+  return {
+    id: `combo-${combo.id}`,
+    combo_id: combo.id,
+    is_combo: true,
+    name: combo.name,
+    description: combo.description || '',
+    category_id: 'combos',
+    image: combo.image_path || null,
+    price: normal,
+    sale_price: finalPrice < normal ? finalPrice : null,
+    on_sale: finalPrice < normal,
+    available,
+    stock_qty: available ? 99 : 0,
+    has_modifiers: false,
+    combo_items: (combo.items || []).map((ci) => ({
+      product_id: ci.product_id,
+      product_name: ci.product_name,
+      quantity: ci.quantity
+    }))
+  };
+}
+
+function getActiveCombos(branchId) {
+  try {
+    const combosSvc = require('./combos');
+    return combosSvc.getCombos({ active_only: true, branch_id: branchId, approval_status: 'approved' }, null) || [];
+  } catch (_) { return []; }
+}
+
+function parseComboRef(productId) {
+  const raw = String(productId || '');
+  if (raw.startsWith('combo-')) return Number(raw.slice(6)) || null;
+  return null;
+}
+
+function ensureOrderGiftColumns() {
+  for (const col of ['gift_card_code TEXT', 'gift_card_amount REAL DEFAULT 0']) {
+    try { dbRun(`ALTER TABLE online_orders_local ADD COLUMN ${col}`); } catch (_) { /* exists */ }
+  }
 }
 
 function getActivePromotions(branchId) {
@@ -461,15 +519,36 @@ function getBranchMenu(branchId, filters = {}) {
     products = products.filter((p) => promoIds.has(String(p.id)));
   }
   const mapped = products.map((p) => mapProductForWeb(p, branchId, promos));
+  const combos = getActiveCombos(branchId);
+  const comboMapped = combos.map((c) => mapComboForWeb(c, branchId));
+  let allProducts = [...mapped, ...comboMapped];
+  if (filters.category_id) {
+    if (String(filters.category_id) === 'combos') allProducts = comboMapped;
+    else allProducts = allProducts.filter((p) => String(p.category_id) === String(filters.category_id));
+  }
+  const catList = categories.map((c) => ({ id: c.id, name: c.name, color: c.color, image: c.image }));
+  if (comboMapped.length) catList.unshift({ id: 'combos', name: 'Combos & Deals', color: '#f59e0b', image: null });
   return {
     branch: settings,
-    categories: categories.map((c) => ({ id: c.id, name: c.name, color: c.color, image: c.image })),
-    products: mapped,
-    specials: mapped.filter((p) => p.on_sale)
+    categories: catList,
+    products: allProducts,
+    combos: comboMapped,
+    specials: allProducts.filter((p) => p.on_sale)
   };
 }
 
 function getProductDetail(branchId, productId) {
+  const comboId = parseComboRef(productId);
+  if (comboId) {
+    const combosSvc = require('./combos');
+    const combo = combosSvc.getCombo(comboId);
+    if (!combo) throw new Error('Combo not found');
+    return {
+      ...mapComboForWeb(combo, branchId),
+      modifier_groups: [],
+      combo_items: combo.items || []
+    };
+  }
   const p = dbGet('SELECT * FROM products WHERE id = ? AND is_active = 1', [productId]);
   if (!p) throw new Error('Product not found');
   const promos = getActivePromotions(branchId);
@@ -556,8 +635,33 @@ function validateCart(branchId, cart = {}) {
   }
 
   for (const item of items) {
-    const productId = Number(item.product_id);
+    const comboId = Number(item.combo_id) || parseComboRef(item.product_id);
     const qty = Math.max(1, Number(item.quantity) || 1);
+    if (comboId) {
+      const combosSvc = require('./combos');
+      const combo = combosSvc.getCombo(comboId);
+      if (!combo) { errors.push(`Combo #${comboId} not found`); continue; }
+      if (!comboAvailableAtBranch(combo, branchId)) {
+        errors.push(`${combo.name} is not available at this branch`);
+        continue;
+      }
+      const unitPrice = round2(Number(combo.final_price) || 0);
+      const lineTotal = round2(unitPrice * qty);
+      subtotal = round2(subtotal + lineTotal);
+      lines.push({
+        combo_id: comboId,
+        product_id: null,
+        remote_id: null,
+        name: combo.name,
+        quantity: qty,
+        unit_price: unitPrice,
+        line_total: lineTotal,
+        modifiers: [],
+        modifiers_text: (combo.items || []).map((ci) => ci.product_name).join(', ')
+      });
+      continue;
+    }
+    const productId = Number(item.product_id);
     const product = dbGet('SELECT * FROM products WHERE id = ?', [productId]);
     if (!product) { errors.push(`Product #${productId} not found`); continue; }
     if (!productAvailableAtBranch(product, branchId)) {
@@ -667,7 +771,21 @@ function validateCart(branchId, cart = {}) {
     shop.tax_enabled,
     shop.tax_inclusive
   );
-  const total = round2(Math.max(0, taxTotals.total + deliveryFee));
+  const totalBeforeGift = round2(Math.max(0, taxTotals.total + deliveryFee));
+  let giftCardAmount = 0;
+  let giftCardCode = null;
+  if (cart.gift_card_code) {
+    try {
+      const features = require('./features');
+      const card = features.checkGiftCardBalance(String(cart.gift_card_code).trim().toUpperCase());
+      giftCardAmount = round2(Math.min(Number(card.balance) || 0, totalBeforeGift));
+      giftCardCode = card.code;
+      if (!giftCardAmount) errors.push('Gift card has no balance to apply');
+    } catch (err) {
+      errors.push(err.message || 'Invalid gift card');
+    }
+  }
+  const total = round2(Math.max(0, totalBeforeGift - giftCardAmount));
 
   return {
     valid: errors.length === 0,
@@ -678,9 +796,12 @@ function validateCart(branchId, cart = {}) {
     coupon: couponApplied,
     loyalty_points_used: pointsUsed,
     loyalty_discount: loyaltyDiscount,
+    gift_card_code: giftCardCode,
+    gift_card_amount: giftCardAmount,
     delivery_fee: deliveryFee,
     tax_amount: taxTotals.tax_amount,
     total,
+    total_before_gift: totalBeforeGift,
     branch_id: branchId,
     fulfillment_type: fulfillment
   };
@@ -760,11 +881,13 @@ function submitOrder(branchId, payload = {}, webToken = null, idempotencyKey = n
     web_customer_id: customer.id,
     fulfillment_type: payload.fulfillment_type || 'collection',
     coupon_code: payload.coupon_code,
-    loyalty_points_used: payload.loyalty_points_used
+    loyalty_points_used: payload.loyalty_points_used,
+    gift_card_code: payload.gift_card_code
   });
   if (!cart.valid) throw new Error(cart.errors.join('; '));
   if (!cart.lines.length) throw new Error('Your cart is empty — add at least one item');
 
+  ensureOrderGiftColumns();
   const orderNumber = nextOnlineOrderNumber();
   const fulfillment = payload.fulfillment_type || 'collection';
   const payment = resolvePaymentForOrder(payload, fulfillment);
@@ -772,13 +895,15 @@ function submitOrder(branchId, payload = {}, webToken = null, idempotencyKey = n
   const r = dbRun(`INSERT INTO online_orders_local (
     order_number, branch_id, order_source, web_customer_id, customer_id, customer_name, customer_phone, customer_email,
     items_json, subtotal, discount, delivery_fee, tax_amount, total, coupon_code, loyalty_points_used,
+    gift_card_code, gift_card_amount,
     payment_method, payment_status, fulfillment_type, fulfillment, delivery_address, scheduled_for, notes, status, idempotency_key
-  ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [
+  ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [
     orderNumber, branchId, 'ONLINE', customer.id, customer.customer_id,
     `${customer.first_name} ${customer.last_name || ''}`.trim(),
     customer.phone, customer.email, itemsJson,
     cart.subtotal, cart.discount, cart.delivery_fee, cart.tax_amount, cart.total,
     payload.coupon_code || null, cart.loyalty_points_used || 0,
+    cart.gift_card_code || null, cart.gift_card_amount || 0,
     payment.payment_method, payment.payment_status,
     fulfillment, fulfillment,
     payload.delivery_address || null, payload.scheduled_for || null,
@@ -813,7 +938,33 @@ function submitOrder(branchId, payload = {}, webToken = null, idempotencyKey = n
     }
   }
 
+  if (cart.gift_card_amount > 0 && cart.gift_card_code) {
+    try {
+      const features = require('./features');
+      features.redeemGiftCard(cart.gift_card_code, cart.gift_card_amount, null, null);
+    } catch (err) {
+      if (cart.loyalty_points_used > 0 && customer.customer_id) {
+        try {
+          const features = require('./features');
+          const db = getDb();
+          db.prepare('UPDATE customers SET loyalty_points = COALESCE(loyalty_points, 0) + ? WHERE id = ?').run(cart.loyalty_points_used, customer.customer_id);
+        } catch (_) { /* */ }
+      }
+      dbRun('DELETE FROM online_orders_local WHERE id = ?', [orderId]);
+      throw new Error(err.message || 'Could not redeem gift card');
+    }
+  }
+
   const order = dbGet('SELECT * FROM online_orders_local WHERE id = ?', [orderId]);
+  if (fulfillment === 'delivery') {
+    try {
+      const delivery = require('./delivery-platform');
+      delivery.upsertFromOnlineOrder(order);
+    } catch (err) {
+      console.warn('[delivery] online order upsert:', err.message || err);
+    }
+  }
+  try { require('./store').notifyPosOnlineOrder(order); } catch (_) { /* */ }
   try { require('./mobile-manager').notifyOnlineOrder(orderId); } catch (_) { /* */ }
   return formatOrder(order);
 }
@@ -883,6 +1034,22 @@ function updateOrderStatus(orderId, status, actor, opts = {}) {
   return formatOrder(dbGet('SELECT * FROM online_orders_local WHERE id = ?', [localId]));
 }
 
+function restoreOrderGiftCard(order) {
+  const code = order?.gift_card_code;
+  const amount = Math.max(0, Number(order?.gift_card_amount) || 0);
+  if (!code || !amount) return;
+  try {
+    const db = getDb();
+    const card = db.prepare('SELECT * FROM gift_cards WHERE code = ?').get(code);
+    if (!card) return;
+    const newBal = round2((Number(card.balance) || 0) + amount);
+    db.prepare('UPDATE gift_cards SET balance = ?, status = ? WHERE id = ?')
+      .run(newBal, newBal > 0 ? 'active' : card.status, card.id);
+    db.prepare('INSERT INTO gift_card_transactions (gift_card_id, amount, type, notes) VALUES (?,?,?,?)')
+      .run(card.id, amount, 'reload', `Online order ${order.order_number} cancelled — balance restored`);
+  } catch (_) { /* */ }
+}
+
 function restoreOrderLoyaltyPoints(order) {
   const pts = Math.max(0, Number(order?.loyalty_points_used) || 0);
   if (!pts || !order?.customer_id) return;
@@ -899,7 +1066,52 @@ function rejectOrder(orderId, reason, actor) {
   const order = resolveOrderRef(orderId);
   const result = updateOrderStatus(orderId, 'rejected', actor, { reject_reason: reason, note: reason });
   restoreOrderLoyaltyPoints(order);
+  restoreOrderGiftCard(order);
   return result;
+}
+
+function getCustomerGiftCards(customer) {
+  const rows = [];
+  if (customer.customer_id) {
+    rows.push(...dbAll(`SELECT code, balance, status, expires_at FROM gift_cards
+      WHERE customer_id = ? AND COALESCE(balance, 0) > 0 ORDER BY expires_at ASC NULLS LAST`, [customer.customer_id]));
+  }
+  if (customer.phone) {
+    rows.push(...dbAll(`SELECT code, balance, status, expires_at FROM gift_cards
+      WHERE customer_phone = ? AND COALESCE(balance, 0) > 0 ORDER BY expires_at ASC NULLS LAST`, [customer.phone]));
+  }
+  const seen = new Set();
+  return rows.filter((c) => {
+    if (seen.has(c.code)) return false;
+    seen.add(c.code);
+    if (c.status === 'cancelled') return false;
+    if (c.expires_at && String(c.expires_at).slice(0, 10) < new Date().toISOString().slice(0, 10)) return false;
+    return Number(c.balance) > 0;
+  }).map((c) => ({
+    code: c.code,
+    balance: round2(c.balance),
+    expires_at: c.expires_at || null,
+    status: c.status
+  }));
+}
+
+function checkGiftCardForWeb(code) {
+  const features = require('./features');
+  const card = features.checkGiftCardBalance(String(code || '').trim().toUpperCase());
+  return {
+    code: card.code,
+    balance: round2(card.balance),
+    expires_at: card.expires_at || null,
+    display_status: card.display_status
+  };
+}
+
+function deleteWebCustomerAccount(webToken) {
+  const customer = resolveWebCustomer(webToken);
+  if (!customer) throw new Error('Not signed in');
+  dbRun('UPDATE web_customer_sessions SET expires_at = ? WHERE web_customer_id = ?', [nowIso(), customer.id]);
+  dbRun('UPDATE web_customers SET is_active = 0, updated_at = ? WHERE id = ?', [nowIso(), customer.id]);
+  return { success: true, message: 'Your online account has been deleted. In-store purchase history remains linked to your phone number.' };
 }
 
 function getCustomerAccount(webToken) {
@@ -908,13 +1120,18 @@ function getCustomerAccount(webToken) {
   const addresses = dbAll('SELECT * FROM web_customer_addresses WHERE web_customer_id = ? ORDER BY is_default DESC, id DESC', [customer.id]);
   const favorites = dbAll(`SELECT f.*, p.name AS product_name FROM web_customer_favorites f JOIN products p ON p.id = f.product_id WHERE f.web_customer_id = ?`, [customer.id]);
   let loyaltyBalance = Number(customer.loyalty_points) || 0;
+  let posProfile = null;
   if (customer.customer_id) {
-    const c = dbGet('SELECT loyalty_points FROM customers WHERE id = ?', [customer.customer_id]);
-    loyaltyBalance = Math.max(loyaltyBalance, Number(c?.loyalty_points) || 0);
+    const c = dbGet('SELECT id, name, phone, email, loyalty_points, address FROM customers WHERE id = ?', [customer.customer_id]);
+    if (c) {
+      loyaltyBalance = Math.max(loyaltyBalance, Number(c.loyalty_points) || 0);
+      posProfile = { id: c.id, name: c.name, phone: c.phone, email: c.email, address: c.address };
+    }
   }
   const settings = getGlobalSettings();
   const pointValue = Number(settings.loyalty?.point_value) || 1;
   const pointsValue = round2(loyaltyBalance * pointValue);
+  const wallet = getCustomerGiftCards(customer);
   return {
     profile: {
       id: customer.id,
@@ -922,9 +1139,12 @@ function getCustomerAccount(webToken) {
       last_name: customer.last_name,
       email: customer.email,
       phone: customer.phone,
-      referral_code: customer.referral_code
+      referral_code: customer.referral_code,
+      customer_id: customer.customer_id || null
     },
+    pos_profile: posProfile,
     loyalty: { balance: loyaltyBalance, value: pointsValue },
+    wallet,
     addresses,
     favorites
   };
@@ -980,6 +1200,8 @@ module.exports = {
   updateOrderStatus,
   rejectOrder,
   getCustomerAccount,
+  checkGiftCardForWeb,
+  deleteWebCustomerAccount,
   toggleFavorite,
   getOnlineAnalytics,
   formatOrder,

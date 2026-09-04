@@ -2,7 +2,7 @@
  * Full HR / Payroll / Documents / SARS / Workers live sweep on Railway.
  * Usage: node scripts/live-hr-full-sweep.js
  */
-const BASE = (process.env.SMOKE_URL || 'https://peaceful-motivation-production-7dd2.up.railway.app').replace(/\/$/, '');
+const BASE = (process.env.SMOKE_URL || 'https://chisafood.up.railway.app').replace(/\/$/, '');
 const USER = process.env.SMOKE_USER || 'chisa96';
 const PASS = process.env.SMOKE_PASS || '123456';
 

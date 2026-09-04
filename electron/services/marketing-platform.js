@@ -600,7 +600,8 @@ function referralBaseUrl() {
       return custom.endsWith('/') ? custom : `${custom}/`;
     }
     const pub = process.env.SHOP_POS_PUBLIC_URL || process.env.SHOP_POS_SYNC_URL ||
-      (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : '');
+      (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : '') ||
+      'https://chisafood.up.railway.app';
     if (pub) return `${String(pub).replace(/\/$/, '')}/r/`;
     return custom || '/r/';
   } catch (_) {
@@ -2907,15 +2908,22 @@ function approveReferralAgent(id, data = {}, actor) {
   platformAudit(admin, 'approve_referral_agent', 'mkt_referral_agent', updated.id, existing, updated);
 
   // Ensure agent can open the Marketing Agent app (create/link a login user).
+  let loginCreds = null;
   try {
     if (!updated.user_id) {
-      ensureAgentLoginUser(updated, admin);
+      loginCreds = ensureAgentLoginUser(updated, admin);
     }
   } catch (err) {
     console.warn('[mktp] ensureAgentLoginUser:', err.message || err);
   }
 
-  return hydrateAgent(dbGet('SELECT * FROM mkt_referral_agents WHERE id = ?', [existing.id]));
+  const hydrated = hydrateAgent(dbGet('SELECT * FROM mkt_referral_agents WHERE id = ?', [existing.id]));
+  if (loginCreds?._temp_username) {
+    hydrated.temp_username = loginCreds._temp_username;
+    hydrated.temp_password = loginCreds._temp_password;
+    hydrated.login_created = true;
+  }
+  return hydrated;
 }
 
 function linkAgentUser(agentId, userId, actor) {
@@ -2980,6 +2988,39 @@ function ensureAgentLoginUser(agent, actor) {
     `${agent.full_name}: username ${username} (temp password shared to agent notifications)`,
     'agent_status', 'referral_agent', agent.id);
   return { ...linked, _temp_username: username, _temp_password: password };
+}
+
+/** Admin action: create or recreate login credentials for an agent by id. */
+function ensureAgentLoginById(agentId, actor) {
+  const admin = requireMktAdmin(actor);
+  const agent = dbGet('SELECT * FROM mkt_referral_agents WHERE id = ?', [intOrNull(agentId)]);
+  if (!agent) throw new Error('Referral agent not found');
+  if (String(agent.status || '').toLowerCase() !== 'active') {
+    throw new Error('Approve the agent before creating a portal login');
+  }
+  if (agent.user_id) {
+    // Reset password for existing linked user
+    const bcrypt = require('bcryptjs');
+    const user = dbGet('SELECT id, username FROM users WHERE id = ?', [agent.user_id]);
+    if (!user) {
+      dbRun(`UPDATE mkt_referral_agents SET user_id = NULL WHERE id = ?`, [agent.id]);
+      return ensureAgentLoginUser({ ...agent, user_id: null }, admin);
+    }
+    const tempPin = String(1000 + Math.floor(Math.random() * 9000));
+    const password = `Agent@${tempPin}`;
+    const hash = bcrypt.hashSync(password, 10);
+    dbRun(`UPDATE users SET password_hash = ?, updated_at = datetime('now') WHERE id = ?`, [hash, user.id]);
+    notifyAgent(agent, 'Password reset',
+      `Username: ${user.username}. New temporary password: ${password}`,
+      'agent_status', 'referral_agent', agent.id);
+    return {
+      ...hydrateAgent(dbGet('SELECT * FROM mkt_referral_agents WHERE id = ?', [agent.id])),
+      _temp_username: user.username,
+      _temp_password: password,
+      password_reset: true
+    };
+  }
+  return ensureAgentLoginUser(agent, admin);
 }
 
 function reverseCommissionsForSale(saleId, actor, notes) {
@@ -5309,6 +5350,7 @@ module.exports = {
   setReferralAgentStatus,
   linkAgentUser,
   ensureAgentLoginUser,
+  ensureAgentLoginById,
   generateUniqueReferralCode,
   generateAgentCode,
   getAgentPublicProfile,

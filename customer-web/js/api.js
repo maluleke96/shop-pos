@@ -6,7 +6,7 @@ const OrderAPI = {
     if (location.origin && !location.origin.startsWith('file:')) {
       return `${location.origin.replace(/\/$/, '')}/rpc`;
     }
-    return 'https://peaceful-motivation-production-7dd2.up.railway.app/rpc';
+    return 'https://chisafood.up.railway.app/rpc';
   })(),
 
   async call(method, args = []) {
@@ -45,7 +45,9 @@ const OrderAPI = {
   submitOrder: (branchId, payload, token, idem) => OrderAPI.call('web:submitOrder', [branchId, payload, token, idem]),
   getOrder: (orderId, token) => OrderAPI.call('web:getOrder', [orderId, token]),
   listOrders: (token, limit) => OrderAPI.call('web:listOrders', [token, limit || 50]),
-  toggleFavorite: (token, productId, branchId) => OrderAPI.call('web:toggleFavorite', [token, productId, branchId])
+  toggleFavorite: (token, productId, branchId) => OrderAPI.call('web:toggleFavorite', [token, productId, branchId]),
+  checkGiftCard: (code) => OrderAPI.call('web:checkGiftCard', [code]),
+  deleteAccount: (token) => OrderAPI.call('web:deleteAccount', [token])
 };
 
 window.OrderAPI = OrderAPI;

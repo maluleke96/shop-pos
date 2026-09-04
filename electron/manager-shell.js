@@ -1,6 +1,6 @@
 'use strict';
 const { app, BrowserWindow } = require('electron');
-const url = (process.env.SHOP_POS_SYNC_URL || "https://peaceful-motivation-production-7dd2.up.railway.app").replace(/\/$/, '') + '/manager/';
+const url = (process.env.SHOP_POS_SYNC_URL || "https://chisafood.up.railway.app").replace(/\/$/, '') + '/manager/';
 
 function createWindow() {
   const win = new BrowserWindow({

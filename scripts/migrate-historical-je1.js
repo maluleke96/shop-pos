@@ -9,7 +9,7 @@ const initSqlJs = require('sql.js/dist/sql-asm.js');
 
 const ROOT = path.join(__dirname, '..');
 require('../lib/load-env').loadProjectEnv(ROOT);
-const BASE = (process.env.SMOKE_URL || 'https://peaceful-motivation-production-7dd2.up.railway.app').replace(/\/$/, '');
+const BASE = (process.env.SMOKE_URL || 'https://chisafood.up.railway.app').replace(/\/$/, '');
 const SHARED = path.join(os.homedir(), 'AppData', 'Roaming', 'ShopPOS', 'Shared');
 const RECEIPT = 'RCP-20260826-00002';
 const SKIP_RECEIPT = 'RCP-20260826-00001';

@@ -512,9 +512,9 @@ function giftCardEffectiveStatus(card) {
   if (approval === 'pending') return 'pending';
   if (approval === 'rejected') return 'rejected';
   if (card.status === 'cancelled') return 'cancelled';
-  if (card.status === 'redeemed' || Number(card.balance) <= 0) return 'used';
   if (card.expires_at && String(card.expires_at).slice(0, 10) < new Date().toISOString().slice(0, 10)) return 'expired';
-  return card.status === 'active' ? 'active' : (card.status || 'active');
+  if (Number(card.balance) <= 0) return 'used';
+  return 'active';
 }
 
 function assertGiftCardRedeemable(card) {
@@ -524,9 +524,9 @@ function assertGiftCardRedeemable(card) {
   if (approval === 'rejected') throw new Error('Gift card was rejected');
   const status = giftCardEffectiveStatus(card);
   if (status === 'expired') throw new Error('This gift card has expired and cannot be used');
-  if (status === 'used' || status === 'redeemed') throw new Error('This gift card has already been fully used');
+  if (status === 'used') throw new Error('This gift card has no balance remaining');
   if (status === 'cancelled') throw new Error('This gift card has been cancelled');
-  if (card.status !== 'active') throw new Error('Gift card is not active');
+  if (Number(card.balance) <= 0) throw new Error('This gift card has no balance remaining');
 }
 
 function getGiftCards(searchOrFilters) {
@@ -680,13 +680,15 @@ function redeemGiftCard(code, amount, saleId, actorId) {
 }
 
 function checkGiftCardBalance(code) {
-  const card = getDb().prepare('SELECT code, balance, status, expires_at FROM gift_cards WHERE code = ?').get(code);
+  const card = getDb().prepare('SELECT code, balance, status, expires_at, approval_status FROM gift_cards WHERE code = ?').get(code);
   if (!card) throw new Error('Gift card not found');
   const displayStatus = giftCardEffectiveStatus(card);
   if (displayStatus === 'expired') throw new Error('This gift card has expired');
-  if (displayStatus === 'used') throw new Error('This gift card has already been fully used');
   if (displayStatus === 'cancelled') throw new Error('This gift card has been cancelled');
-  return { ...card, display_status: displayStatus };
+  if (displayStatus === 'pending') throw new Error('This gift card is pending approval');
+  if (displayStatus === 'rejected') throw new Error('This gift card was rejected');
+  if (Number(card.balance) <= 0) throw new Error('This gift card has no balance remaining');
+  return { ...card, balance: Number(card.balance) || 0, display_status: displayStatus };
 }
 
 // ─── Loyalty ────────────────────────────────────────────────────────────────
@@ -1547,9 +1549,55 @@ function getEmployeePerformanceReport(from, to) {
 }
 
 function getDiscountReport(from, to) {
-  return getDb().prepare(`
-    SELECT receipt_number, discount, total, created_at FROM sales
-    WHERE discount > 0 AND date(created_at) BETWEEN date(?) AND date(?) ORDER BY created_at DESC`).all(from, to);
+  const db = getDb();
+  const rows = db.prepare(`
+    SELECT s.id, s.receipt_number, s.discount, s.total, s.subtotal, s.created_at, s.notes,
+      s.order_type, s.order_source, u.full_name AS cashier_name,
+      CASE WHEN s.order_type = 'online' OR UPPER(COALESCE(s.order_source, '')) = 'ONLINE' THEN 'Online'
+           ELSE 'POS' END AS channel,
+      (SELECT COALESCE(SUM(sp.amount), 0) FROM sale_payments sp
+        WHERE sp.sale_id = s.id AND sp.payment_type = 'giftcard') AS gift_card_amount
+    FROM sales s
+    LEFT JOIN users u ON u.id = s.user_id
+    WHERE s.status = 'completed'
+      AND date(s.created_at) BETWEEN date(?) AND date(?)
+      AND (
+        COALESCE(s.discount, 0) > 0
+        OR s.notes LIKE '%Coupon%'
+        OR s.notes LIKE '%Loyalty%'
+        OR s.notes LIKE '%Gift card%'
+        OR EXISTS (SELECT 1 FROM sale_payments sp WHERE sp.sale_id = s.id AND sp.payment_type = 'giftcard' AND sp.amount > 0)
+      )
+    ORDER BY s.created_at DESC`).all(from, to);
+  return rows.map((row) => {
+    const giftAmt = Number(row.gift_card_amount) || 0;
+    const notes = String(row.notes || '');
+    let discountType = 'Cart discount';
+    let authorizedBy = row.cashier_name || '—';
+    let reportDiscount = Number(row.discount) || 0;
+    if (row.channel === 'Online') {
+      if (notes.includes('Coupon')) discountType = 'Online coupon';
+      else if (notes.includes('Loyalty')) discountType = 'Online loyalty';
+      else if (giftAmt > 0 || notes.includes('Gift card')) discountType = 'Online gift card';
+      else discountType = 'Online order discount';
+      authorizedBy = 'Online customer';
+    } else if (giftAmt > 0 && reportDiscount <= giftAmt + 0.01) {
+      discountType = 'Gift card (POS)';
+      reportDiscount = giftAmt;
+    } else if (notes.includes('Loyalty')) {
+      discountType = 'Loyalty redemption';
+    } else if (notes.includes('Coupon')) {
+      discountType = 'Coupon';
+    }
+    if (giftAmt > 0 && row.channel === 'Online') reportDiscount = Math.max(reportDiscount, giftAmt);
+    return {
+      ...row,
+      report_discount: Math.round(reportDiscount * 100) / 100,
+      discount_type: discountType,
+      authorized_by: authorizedBy,
+      channel: row.channel || 'POS'
+    };
+  });
 }
 
 function getVoidReport(from, to) {

@@ -2,7 +2,7 @@
 const path = require('path');
 require('../lib/load-env').loadProjectEnv(path.join(__dirname, '..'));
 
-const BASE = (process.env.SMOKE_URL || 'https://peaceful-motivation-production-7dd2.up.railway.app').replace(/\/$/, '');
+const BASE = (process.env.SMOKE_URL || 'https://chisafood.up.railway.app').replace(/\/$/, '');
 const ACTOR = { id: 2, username: 'chisa96', role: 'owner', full_name: 'chisa96' };
 
 async function rpc(method, args, token, ms = 20000) {

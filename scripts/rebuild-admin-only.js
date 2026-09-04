@@ -8,7 +8,7 @@ const mode = 'admin';
 const name = 'Shop POS Admin';
 const appId = 'com.shoppos.admin';
 const artifact = 'ShopPOS-Admin';
-const cloudUrl = 'https://peaceful-motivation-production-7dd2.up.railway.app';
+const cloudUrl = 'https://chisafood.up.railway.app';
 
 fs.writeFileSync(
   path.join(root, 'electron', 'cloud-shell-config-admin.js'),

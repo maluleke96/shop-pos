@@ -1620,12 +1620,12 @@ const AccountingApp = {
   async renderIntegrations(el) {
     const rows = await this.listApi('accIntegrations', this.filterScope());
     el.innerHTML = `
-      ${this.sectionHead(this.btn('Refresh', 'refresh'))}
+      ${this.sectionHead(this.btn('Refresh', 'refresh') + this.btn('Sync missing', 'sync-missing'))}
       ${this.panel('', this.table(['When', 'Integration', 'Error', ''],
         rows.map((r) => `<tr>
           <td>${this.esc(String(r.created_at || '').slice(0, 19).replace('T', ' '))}</td>
-          <td>${this.esc(r.integration || r.source || '—')}</td>
-          <td class="acc-truncate">${this.esc(r.error || r.message)}</td>
+          <td>${this.esc(r.integration || r.source || r.source_system || r.source_type || '—')}</td>
+          <td class="acc-truncate">${this.esc(r.error || r.message || r.error_message || '—')}</td>
           <td>${this.rowBtns(this.btn('Retry', 'retry-integration', { id: r.id }))}</td>
         </tr>`).join(''), 'No integration errors'), '', true)}`;
   },

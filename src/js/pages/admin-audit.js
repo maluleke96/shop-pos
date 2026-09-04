@@ -731,7 +731,7 @@
         API.getDiscountReport(Utils.daysAgo(7), Utils.today()),
         API.getDiscountReport(Utils.monthStart(), Utils.today())
       ]);
-      const sum = (rows) => (rows?.data || rows || []).reduce((s, r) => s + (r.discount || 0), 0);
+      const sum = (rows) => (rows?.data || rows || []).reduce((s, r) => s + (Number(r.report_discount ?? r.discount) || 0), 0);
       document.getElementById('disc-totals').innerHTML = `<div class="stats-grid">
         <div class="stat-card"><div class="label">Today</div><div class="value">${Utils.formatMoney(sum(today), currency)}</div></div>
         <div class="stat-card"><div class="label">This Week</div><div class="value">${Utils.formatMoney(sum(week), currency)}</div></div>
@@ -746,27 +746,33 @@
       const rows = res.data || [];
       lastRows = rows;
       document.getElementById('disc-content').innerHTML = `<div class="card"><div class="table-wrap"><table>
-        <thead><tr><th>Receipt</th><th>Date</th><th>Discount</th><th>Sale Total</th></tr></thead>
-        <tbody>${rows.map(r => `<tr><td>${r.receipt_number}</td><td>${Utils.formatDateTime(r.created_at)}</td>
-          <td>${Utils.formatMoney(r.discount, currency)}</td><td>${Utils.formatMoney(r.total, currency)}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">No discounts</td></tr>'}
+        <thead><tr><th>Receipt</th><th>Date</th><th>Source</th><th>Type</th><th>Authorized by</th><th>Discount</th><th>Sale Total</th></tr></thead>
+        <tbody>${rows.map(r => `<tr><td>${Utils.escHtml(r.receipt_number || '—')}</td><td>${Utils.formatDateTime(r.created_at)}</td>
+          <td>${Utils.escHtml(r.channel || 'POS')}</td><td>${Utils.escHtml(r.discount_type || 'Discount')}</td>
+          <td>${Utils.escHtml(r.authorized_by || '—')}</td>
+          <td>${Utils.formatMoney(r.report_discount ?? r.discount, currency)}</td><td>${Utils.formatMoney(r.total, currency)}</td></tr>`).join('') || '<tr><td colspan="7" class="muted">No discounts</td></tr>'}
         </tbody></table></div></div>`;
     };
 
     document.getElementById('disc-export-pdf')?.addEventListener('click', async () => {
-      const headers = ['Receipt', 'Date', 'Discount', 'Sale Total'];
+      const headers = ['Receipt', 'Date', 'Source', 'Type', 'Authorized by', 'Discount', 'Sale Total'];
       const rows = lastRows.map(r => [
         r.receipt_number,
         Utils.formatDateTime(r.created_at),
-        Utils.formatMoney(r.discount, currency),
+        r.channel || 'POS',
+        r.discount_type || 'Discount',
+        r.authorized_by || '—',
+        Utils.formatMoney(r.report_discount ?? r.discount, currency),
         Utils.formatMoney(r.total, currency)
       ]);
       await Export.toPDF(`discount-report-${lastFrom}.pdf`, `Discount Report ${lastFrom} – ${lastTo}`,
         headers, rows, Utils.companyInfo(this.settings));
     });
     document.getElementById('disc-print')?.addEventListener('click', () => {
-      Export.print(`Discount Report ${lastFrom} – ${lastTo}`, ['Receipt', 'Date', 'Discount', 'Sale Total'],
-        lastRows.map(r => [r.receipt_number, Utils.formatDateTime(r.created_at),
-          Utils.formatMoney(r.discount, currency), Utils.formatMoney(r.total, currency)]),
+      Export.print(`Discount Report ${lastFrom} – ${lastTo}`, ['Receipt', 'Date', 'Source', 'Type', 'Authorized by', 'Discount', 'Sale Total'],
+        lastRows.map(r => [r.receipt_number, Utils.formatDateTime(r.created_at), r.channel || 'POS',
+          r.discount_type || 'Discount', r.authorized_by || '—',
+          Utils.formatMoney(r.report_discount ?? r.discount, currency), Utils.formatMoney(r.total, currency)]),
         Utils.companyInfo(this.settings));
     });
 

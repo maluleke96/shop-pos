@@ -1,5 +1,5 @@
 /**
- * Digital Signage Player — pairing, offline cache, playlist, music ducking, heartbeat.
+ * Digital Signage Player — pairing, offline cache, SSE + polling, music ducking with resume.
  */
 const Player = {
   rpcUrl: () => (window.__SIGNAGE_PLAYER_CONFIG__?.rpcUrl || '/rpc').replace(/\/$/, ''),
@@ -12,6 +12,11 @@ const Player = {
   duckFadeMs: 800,
   timer: null,
   db: null,
+  eventSource: null,
+  playing: false,
+  musicPlaylistId: null,
+  lastOnline: Date.now(),
+  announceBusy: false,
 
   async rpc(method, args = []) {
     const res = await fetch(this.rpcUrl(), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ method, args }) });
@@ -22,13 +27,37 @@ const Player = {
 
   async init() {
     await this.openDb();
+    const saved = JSON.parse(localStorage.getItem('signage_playback') || '{}');
+    this.itemIndex = saved.itemIndex || 0;
+    this.musicIndex = saved.musicIndex || 0;
     if (this.deviceToken) {
-      try { await this.sync(); this.hidePair(); this.startPlayback(); this.startLoops(); return; } catch (_) {
+      try {
+        await this.sync();
+        this.hidePair();
+        this.startPlayback();
+        this.startLoops();
+        return;
+      } catch (_) {
         const cached = await this.loadCachedManifest();
-        if (cached) { this.manifest = cached; this.hidePair(); this.startPlayback(); this.toastStatus('Offline — cached content'); return; }
+        if (cached) {
+          this.manifest = cached;
+          this.hidePair();
+          this.startPlayback();
+          this.toastStatus('Offline — cached content');
+          this.startLoops();
+          return;
+        }
       }
     }
     await this.startPairing();
+  },
+
+  savePlaybackState() {
+    localStorage.setItem('signage_playback', JSON.stringify({
+      itemIndex: this.itemIndex,
+      musicIndex: this.musicIndex,
+      musicTime: document.getElementById('music')?.currentTime || 0
+    }));
   },
 
   openDb() {
@@ -56,9 +85,7 @@ const Player = {
     tx.objectStore('meta').put(val, key);
   },
 
-  async loadCachedManifest() {
-    return this.idbGet('manifest');
-  },
+  async loadCachedManifest() { return this.idbGet('manifest'); },
 
   hidePair() { document.getElementById('pair').style.display = 'none'; },
 
@@ -87,14 +114,40 @@ const Player = {
     }, 3000);
   },
 
+  manifestChanged(prev, next) {
+    if (!prev) return true;
+    return prev.command_version !== next.command_version
+      || prev.playlist?.id !== next.playlist?.id
+      || prev.content_source !== next.content_source
+      || prev.audio_playlist?.id !== next.audio_playlist?.id;
+  },
+
   async sync() {
+    const prev = this.manifest;
     this.manifest = await this.rpc('signage:manifest', [this.deviceToken]);
     this.idbSet('manifest', this.manifest);
     const s = this.manifest.settings || {};
     this.duckVolume = (Number(s.ducking_volume) || 25) / 100;
     this.duckFadeMs = Number(s.duck_fade_ms) || 800;
     this.musicVolume = (Number(this.manifest.device?.music_volume) || 80) / 100;
+    this.updateEmergencyBanner();
     await this.cacheMedia();
+    if (this.manifestChanged(prev, this.manifest)) {
+      this.itemIndex = 0;
+      this.startPlayback();
+      this.refreshMusic();
+    }
+    this.lastOnline = Date.now();
+    this.toastStatus(`${this.manifest.content_source || 'assigned'} · online`);
+  },
+
+  updateEmergencyBanner() {
+    const el = document.getElementById('emergency-banner');
+    if (!el) return;
+    if (this.manifest?.content_source === 'emergency') {
+      el.style.display = 'block';
+      el.textContent = '⚠ EMERGENCY CONTENT ACTIVE';
+    } else el.style.display = 'none';
   },
 
   async cacheMedia() {
@@ -104,12 +157,10 @@ const Player = {
     for (const url of urls) {
       try {
         const res = await fetch(url);
-        if (res.ok) {
+        if (res.ok && this.db) {
           const blob = await res.blob();
-          if (this.db) {
-            const tx = this.db.transaction('media', 'readwrite');
-            tx.objectStore('media').put(blob, url);
-          }
+          const tx = this.db.transaction('media', 'readwrite');
+          tx.objectStore('media').put(blob, url);
         }
       } catch (_) { /* offline skip */ }
     }
@@ -125,111 +176,185 @@ const Player = {
     });
   },
 
+  connectSSE() {
+    if (!this.deviceToken || typeof EventSource === 'undefined') return;
+    try { this.eventSource?.close(); } catch (_) { /* */ }
+    const url = `/signage-sse/${encodeURIComponent(this.deviceToken)}`;
+    this.eventSource = new EventSource(url);
+    this.eventSource.addEventListener('command', () => this.pollCommands().catch(() => {}));
+    this.eventSource.addEventListener('update', () => this.sync().catch(() => {}));
+    this.eventSource.onerror = () => {
+      try { this.eventSource?.close(); } catch (_) { /* */ }
+      setTimeout(() => this.connectSSE(), 15000);
+    };
+  },
+
   startLoops() {
     const interval = (this.manifest?.settings?.heartbeat_interval_sec || 30) * 1000;
     setInterval(() => this.heartbeat().catch(() => {}), interval);
     setInterval(() => this.pollCommands().catch(() => {}), 5000);
     setInterval(() => this.sync().catch(async () => {
+      const staleMin = this.manifest?.settings?.offline_stale_minutes || 5;
+      const stale = Date.now() - this.lastOnline > staleMin * 60000;
+      this.toastStatus(stale ? 'Offline (stale)' : 'Reconnecting…');
       const cached = await this.loadCachedManifest();
       if (cached) this.manifest = cached;
     }), 60000);
-    this.startMusic();
+    this.connectSSE();
+    this.refreshMusic();
   },
 
   async heartbeat() {
     const music = document.getElementById('music');
     await this.rpc('signage:heartbeat', [this.deviceToken, {
-      player_version: 'web-1.0',
-      current_music_track: music.src ? 'playing' : '',
+      player_version: 'web-2.0',
+      current_music_track: music.src ? `${this.musicIndex}:${Math.floor(music.currentTime)}` : '',
       storage: { cached: !!this.db },
-      network: { online: navigator.onLine }
+      network: { online: navigator.onLine },
+      content_source: this.manifest?.content_source
     }]);
-    this.toastStatus(navigator.onLine ? 'Online' : 'Offline');
+    this.lastOnline = Date.now();
+    this.toastStatus(navigator.onLine ? `Online · ${this.manifest?.content_source || ''}` : 'Offline');
   },
 
   async pollCommands() {
     const cmds = await this.rpc('signage:getCommands', [this.deviceToken]);
     for (const c of cmds || []) {
-      if (c.command === 'sync') await this.sync().catch(() => {});
-      if (c.command === 'play_announcement') await this.playAnnouncement(c.payload);
-      if (c.command === 'pause') document.querySelector('#stage video')?.pause();
-      if (c.command === 'play') this.startPlayback();
-      await this.rpc('signage:ackCommand', [this.deviceToken, c.id, 'ok']);
+      try {
+        if (c.command === 'sync') await this.sync();
+        else if (c.command === 'play_announcement') await this.playAnnouncement(c.payload);
+        else if (c.command === 'pause') { clearTimeout(this.timer); document.querySelector('#stage video')?.pause(); }
+        else if (c.command === 'play') this.startPlayback();
+        else if (c.command === 'reload') location.reload();
+        await this.rpc('signage:ackCommand', [this.deviceToken, c.id, 'ok']);
+      } catch (err) {
+        await this.rpc('signage:ackCommand', [this.deviceToken, c.id, 'fail']).catch(() => {});
+      }
     }
+  },
+
+  refreshMusic() {
+    const ap = this.manifest?.audio_playlist;
+    if (!ap?.tracks?.length) return;
+    if (this.musicPlaylistId === ap.id && !document.getElementById('music').paused) return;
+    this.musicPlaylistId = ap.id;
+    this.startMusic();
   },
 
   startMusic() {
     const tracks = this.manifest?.audio_playlist?.tracks || [];
     if (!tracks.length) return;
-    const playTrack = async (idx) => {
-      this.musicIndex = idx % tracks.length;
-      const t = tracks[this.musicIndex];
-      const music = document.getElementById('music');
-      music.src = await this.mediaUrl(t.url);
-      music.volume = this.musicVolume;
-      music.play().catch(() => {});
-      music.onended = () => playTrack(this.musicIndex + 1);
-    };
-    playTrack(0);
+    const saved = JSON.parse(localStorage.getItem('signage_playback') || '{}');
+    const startIdx = saved.musicIndex || 0;
+    const startTime = saved.musicTime || 0;
+    this.playMusicTrack(startIdx, startTime);
   },
 
-  fadeVolume(el, from, to, ms) {
-    const steps = 20; const step = (to - from) / steps; let v = from; let i = 0;
-    const t = setInterval(() => {
-      v += step; el.volume = Math.max(0, Math.min(1, v));
-      if (++i >= steps) { clearInterval(t); el.volume = to; }
-    }, ms / steps);
+  async playMusicTrack(idx, seekTo = 0) {
+    const tracks = this.manifest?.audio_playlist?.tracks || [];
+    if (!tracks.length) return;
+    this.musicIndex = ((idx % tracks.length) + tracks.length) % tracks.length;
+    const t = tracks[this.musicIndex];
+    const music = document.getElementById('music');
+    music.loop = false;
+    music.src = await this.mediaUrl(t.url);
+    music.volume = this.musicVolume;
+    music.onloadedmetadata = () => {
+      if (seekTo > 0 && seekTo < music.duration) music.currentTime = seekTo;
+    };
+    music.onended = () => {
+      if (!this.announceBusy) this.playMusicTrack(this.musicIndex + 1, 0);
+    };
+    if (!this.announceBusy) music.play().catch(() => {});
+    this.savePlaybackState();
+  },
+
+  fadeVolumePromise(el, from, to, ms) {
+    return new Promise((resolve) => {
+      const steps = 20;
+      const step = (to - from) / steps;
+      let v = from;
+      let i = 0;
+      const t = setInterval(() => {
+        v += step;
+        el.volume = Math.max(0, Math.min(1, v));
+        if (++i >= steps) { clearInterval(t); el.volume = to; resolve(); }
+      }, ms / steps);
+    });
   },
 
   async playAnnouncement(payload) {
+    if (!payload?.audio_media_id || this.announceBusy) return;
+    this.announceBusy = true;
     const music = document.getElementById('music');
     const ann = document.getElementById('announce');
-    if (!payload?.audio_media_id) return;
+    const savedTime = music.currentTime || 0;
+    const wasPlaying = !music.paused && !!music.src;
+    const savedIdx = this.musicIndex;
+
+    await this.fadeVolumePromise(music, music.volume, this.duckVolume, this.duckFadeMs);
+    if (wasPlaying) music.pause();
+
     const url = `/signage-media/${payload.audio_media_id}?token=${encodeURIComponent(this.deviceToken)}`;
     const src = await this.mediaUrl(url);
-    this.fadeVolume(music, music.volume, this.duckVolume, this.duckFadeMs);
     ann.src = src;
     ann.volume = (Number(payload.volume) || 100) / 100;
-    ann.onended = () => this.fadeVolume(music, music.volume, this.musicVolume, this.duckFadeMs);
-    ann.play().catch(() => {});
+
+    await new Promise((resolve) => {
+      ann.onended = resolve;
+      ann.onerror = resolve;
+      ann.play().catch(resolve);
+    });
+
+    music.currentTime = savedTime;
+    this.musicIndex = savedIdx;
+    await this.fadeVolumePromise(music, music.volume, this.musicVolume, this.duckFadeMs);
+    if (wasPlaying) music.play().catch(() => {});
+    this.announceBusy = false;
+    this.savePlaybackState();
   },
 
   startPlayback() {
     clearTimeout(this.timer);
+    this.playing = true;
     const items = this.manifest?.playlist?.items || [];
     if (!items.length) {
-      document.getElementById('stage').innerHTML = '<p style="padding:40px">No playlist assigned</p>';
+      document.getElementById('stage').innerHTML = '<p style="padding:40px;color:#aaa">No playlist assigned</p>';
       return;
     }
-    this.showItem(items[this.itemIndex % items.length]);
+    if (this.itemIndex >= items.length) this.itemIndex = 0;
+    this.showItem(items[this.itemIndex]);
   },
 
   async showItem(item) {
     const stage = document.getElementById('stage');
-    const dur = (Number(item.duration_seconds) || 8) * 1000;
-    if (item.item_type === 'menu' && item.menu) {
-      const m = item.menu;
-      stage.innerHTML = `<div id="menu-slide"><h1>${m.title_text || m.name}</h1>
-        ${(m.items || []).map((i) => `<div class="menu-item"><span>${i.name}</span><span>R${Number(i.price).toFixed(0)}</span></div>`).join('')}</div>`;
-    } else if (item.media) {
-      const url = await this.mediaUrl(item.media.url);
-      if (item.media.media_type === 'video') {
-        stage.innerHTML = `<video id="vid" src="${url}" autoplay ${item.use_video_audio ? '' : 'muted'} style="max-width:100%;max-height:100%"></video>`;
-        const v = document.getElementById('vid');
-        if (item.use_video_audio) v.volume = (Number(item.video_volume) || 100) / 100;
-        v.onended = () => this.nextItem();
-        return;
+    const ctx = {
+      defaultTransition: this.manifest?.settings?.default_transition || 'fade',
+      orientation: this.manifest?.device?.orientation || 'landscape',
+      resolveUrl: (url) => this.mediaUrl(url)
+    };
+    try {
+      const result = await SignageRenderer.showItem(stage, item, ctx);
+      this.savePlaybackState();
+      if (result.type === 'video' && result.element) {
+        result.element.onended = () => this.nextItem();
+        result.element.onerror = () => this.nextItem();
+      } else if (result.type === 'timed') {
+        this.timer = setTimeout(() => this.nextItem(), result.duration_ms);
       }
-      stage.innerHTML = `<img src="${url}" alt="">`;
+    } catch (_) {
+      stage.innerHTML = '<p style="padding:40px;color:#f88">Playback error — skipping</p>';
+      this.timer = setTimeout(() => this.nextItem(), 3000);
     }
-    this.timer = setTimeout(() => this.nextItem(), dur);
   },
 
   nextItem() {
     const items = this.manifest?.playlist?.items || [];
     if (!items.length) return;
     this.itemIndex = (this.itemIndex + 1) % items.length;
-    if (this.manifest.playlist?.shuffle && this.itemIndex === 0) this.itemIndex = Math.floor(Math.random() * items.length);
+    if (this.manifest.playlist?.shuffle && this.itemIndex === 0) {
+      this.itemIndex = Math.floor(Math.random() * items.length);
+    }
     this.showItem(items[this.itemIndex]);
   },
 

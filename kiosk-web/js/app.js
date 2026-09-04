@@ -13,9 +13,9 @@ const KioskApp = {
 
   productMediaHtml(p, cls = 'product-img') {
     const src = this.productImageUrl(p);
-    if (!src) return '<div class="product-img-fallback" aria-hidden="true">🍽️</div>';
-    return `<img class="${cls}" src="${this.esc(src)}" alt="" loading="lazy" decoding="async" onerror="this.classList.add('img-fail')">` +
-      '<div class="product-img-fallback" aria-hidden="true">🍽️</div>';
+    const fallback = '<div class="product-img-fallback" aria-hidden="true"><span>No photo</span></div>';
+    if (!src) return fallback;
+    return `<img class="${cls}" src="${this.esc(src)}" alt="" loading="lazy" decoding="async" onerror="this.classList.add('img-fail')">` + fallback;
   },
 
   async init() {
@@ -149,6 +149,7 @@ const KioskApp = {
   },
 
   openProduct(pid) {
+    this.resetIdle();
     this.selectedProduct = (this.catalog.products || []).find((p) => p.id === pid);
     if (!this.selectedProduct?.available) return;
     this.selectedMods = []; this.qty = 1;
@@ -157,9 +158,11 @@ const KioskApp = {
     const mods = (p.modifiers && p.modifiers.length)
       ? p.modifiers
       : [...(p.options || []), ...(p.extras || []), ...(p.removals || [])];
+    this.closeModals();
     const modal = document.createElement('div');
     modal.className = 'modal';
-    modal.innerHTML = `<div class="modal-inner">${this.productMediaHtml(p, 'modal-product-img')}
+    modal.innerHTML = `<div class="modal-inner">
+      <div class="modal-media">${this.productMediaHtml(p, 'modal-product-img')}</div>
       <h2>${this.esc(p.name)}</h2><p class="price">${this.money(p.selling_price)}</p>
       ${mods.length ? `<div class="mod-group">${mods.map((m, i) =>
         `<label class="mod-opt" data-mod="${i}"><input type="checkbox" style="margin-right:8px">${this.esc(m.name)} ${m.extra_price ? `(+${this.money(m.extra_price)})` : ''}</label>`).join('')}</div>` : ''}

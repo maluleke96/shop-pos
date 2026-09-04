@@ -1,4 +1,4 @@
-/** Business Modules — Admin Panel (Investor, Release, Meeting) */
+/** Business Modules — Admin Panel (Investor, Release, Meeting, Kiosk, Drive-Thru) */
 window.AdminBusinessModulesPage = {
   tab: 'overview',
   summary: null,
@@ -71,6 +71,51 @@ window.AdminBusinessModulesPage = {
     if (this.tab === 'meeting-users') return this.renderMeetingUsers(body);
     if (this.tab === 'kiosk') return this.renderKiosk(body);
     if (this.tab === 'drive-thru') return this.renderDriveThru(body);
+  },
+
+  /** Professional in-app form (no browser prompt/alert). */
+  openForm(title, bodyHtml, { submitLabel = 'Save', onSubmit } = {}) {
+    Utils.showModal(title, bodyHtml, `
+      <button type="button" class="btn btn-ghost" id="bm-form-cancel">Cancel</button>
+      <button type="button" class="btn btn-primary" id="bm-form-submit">${this.esc(submitLabel)}</button>`);
+    document.getElementById('bm-form-cancel')?.addEventListener('click', () => Utils.hideModal());
+    document.getElementById('bm-form-submit')?.addEventListener('click', async () => {
+      const btn = document.getElementById('bm-form-submit');
+      if (btn) btn.disabled = true;
+      try {
+        await onSubmit();
+      } catch (e) {
+        Utils.toast(e.message || 'Failed', 'error');
+        if (btn) btn.disabled = false;
+      }
+    });
+  },
+
+  showTokenPanel({ title, token, hint }) {
+    const safe = this.esc(token || '');
+    Utils.showModal(title, `
+      <p class="muted">${this.esc(hint || '')}</p>
+      <div class="field" style="margin-top:12px">
+        <label>Station token (shown once — copy and keep it)</label>
+        <textarea id="bm-token-value" readonly rows="3" style="font-family:ui-monospace,monospace;word-break:break-all">${safe}</textarea>
+      </div>
+      <ol class="muted" style="margin:12px 0 0 18px;line-height:1.5">
+        <li>On the Drive-Thru PC open <a href="/drive-thru/" target="_blank" rel="noopener">/drive-thru/</a></li>
+        <li>Sign in with portal user <code>drivethru</code></li>
+        <li>Paste this station token and connect</li>
+      </ol>`, `
+      <button type="button" class="btn btn-ghost" id="bm-token-copy">Copy token</button>
+      <button type="button" class="btn btn-primary" id="bm-token-done">Done</button>`);
+    document.getElementById('bm-token-copy')?.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(token || '');
+        Utils.toast('Token copied', 'success');
+      } catch (_) {
+        document.getElementById('bm-token-value')?.select();
+        Utils.toast('Select and copy the token manually', 'info');
+      }
+    });
+    document.getElementById('bm-token-done')?.addEventListener('click', () => Utils.hideModal());
   },
 
   renderOverview(body) {
@@ -181,18 +226,30 @@ window.AdminBusinessModulesPage = {
     });
   },
 
-  async promptInvestor(existing) {
-    const name = prompt('Investor name:', existing?.name || '');
-    if (!name) return;
-    const company = prompt('Company:', existing?.company || '') || '';
-    const amount = Number(prompt('Investment amount (R):', existing?.investment_amount || 0) || 0);
-    const equity = Number(prompt('Equity %:', existing?.equity_percent || 0) || 0);
-    try {
-      await API.saveInvestor({ id: existing?.id, name, company, investment_amount: amount, equity_percent: equity, status: existing?.status || 'active' }, this.actor);
-      Utils.toast('Investor saved', 'success');
-      await this.load();
-      this.renderTab();
-    } catch (e) { Utils.toast(e.message, 'error'); }
+  promptInvestor(existing) {
+    this.openForm(existing ? 'Edit investor' : 'Add investor', `
+      <div class="field"><label>Name *</label><input id="bm-inv-name" value="${this.esc(existing?.name || '')}"></div>
+      <div class="field"><label>Company</label><input id="bm-inv-company" value="${this.esc(existing?.company || '')}"></div>
+      <div class="field"><label>Investment amount (R)</label><input type="number" step="0.01" id="bm-inv-amount" value="${Number(existing?.investment_amount || 0)}"></div>
+      <div class="field"><label>Equity %</label><input type="number" step="0.01" id="bm-inv-equity" value="${Number(existing?.equity_percent || 0)}"></div>`, {
+      submitLabel: 'Save investor',
+      onSubmit: async () => {
+        const name = document.getElementById('bm-inv-name')?.value?.trim();
+        if (!name) throw new Error('Name is required');
+        await API.saveInvestor({
+          id: existing?.id,
+          name,
+          company: document.getElementById('bm-inv-company')?.value || '',
+          investment_amount: Number(document.getElementById('bm-inv-amount')?.value || 0),
+          equity_percent: Number(document.getElementById('bm-inv-equity')?.value || 0),
+          status: existing?.status || 'active'
+        }, this.actor);
+        Utils.hideModal();
+        Utils.toast('Investor saved', 'success');
+        await this.load();
+        this.renderTab();
+      }
+    });
   },
 
   async showInvestor(id) {
@@ -216,43 +273,68 @@ window.AdminBusinessModulesPage = {
         <ul>${(i.portal_users || []).map((u) => `<li>${this.esc(u.username)} ${u.is_active ? '' : '(disabled)'}</li>`).join('') || '<li class="muted">None — create one for investor login</li>'}</ul>
       </div></div>`;
       detail.querySelector('#bm-inv-edit')?.addEventListener('click', () => this.promptInvestor(i));
-      detail.querySelector('#bm-inv-portal')?.addEventListener('click', async () => {
-        const username = prompt('Portal username:');
-        const password = prompt('Password (min 6 chars):');
-        if (!username || !password) return;
-        try {
-          await API.createInvestorPortalUser(id, { username, password }, this.actor);
-          Utils.toast('Portal user created', 'success');
-          this.showInvestor(id);
-        } catch (e) { Utils.toast(e.message, 'error'); }
-      });
-      detail.querySelector('#bm-inv-payment')?.addEventListener('click', async () => {
-        const amount = Number(prompt('Payment amount (R):') || 0);
-        if (!amount) return;
-        try {
-          await API.recordInvestorPayment({ investor_id: Number(id), amount }, this.actor);
-          Utils.toast('Payment recorded', 'success');
-          this.showInvestor(id);
-        } catch (e) { Utils.toast(e.message, 'error'); }
-      });
-      detail.querySelector('#bm-inv-proposal')?.addEventListener('click', async () => {
-        const title = prompt('Proposal title:', 'Investment Proposal');
-        if (!title) return;
-        try {
-          const r = await API.saveInvestmentProposal({ investor_id: Number(id), title, business_info: prompt('Business info:') || '' }, this.actor);
-          const pid = r?.data?.id || r?.id;
-          if (pid && confirm('Download proposal PDF?')) {
-            const pdf = await API.investmentProposalPdf(pid, this.actor);
-            const data = pdf?.data || pdf;
-            if (data?.pdf_base64) {
-              const a = document.createElement('a');
-              a.href = data.pdf_base64;
-              a.download = data.filename || 'proposal.pdf';
-              a.click();
-            }
+      detail.querySelector('#bm-inv-portal')?.addEventListener('click', () => {
+        this.openForm('Create portal login', `
+          <div class="field"><label>Username *</label><input id="bm-portal-user" autocomplete="off"></div>
+          <div class="field"><label>Password * (min 6)</label><input type="password" id="bm-portal-pass" autocomplete="new-password"></div>`, {
+          submitLabel: 'Create login',
+          onSubmit: async () => {
+            const username = document.getElementById('bm-portal-user')?.value?.trim();
+            const password = document.getElementById('bm-portal-pass')?.value || '';
+            if (!username || !password) throw new Error('Username and password required');
+            await API.createInvestorPortalUser(id, { username, password }, this.actor);
+            Utils.hideModal();
+            Utils.toast('Portal user created', 'success');
+            this.showInvestor(id);
           }
-          Utils.toast('Proposal created', 'success');
-        } catch (e) { Utils.toast(e.message, 'error'); }
+        });
+      });
+      detail.querySelector('#bm-inv-payment')?.addEventListener('click', () => {
+        this.openForm('Record payment', `
+          <div class="field"><label>Amount (R) *</label><input type="number" step="0.01" id="bm-pay-amount"></div>`, {
+          submitLabel: 'Record payment',
+          onSubmit: async () => {
+            const amount = Number(document.getElementById('bm-pay-amount')?.value || 0);
+            if (!amount) throw new Error('Amount is required');
+            await API.recordInvestorPayment({ investor_id: Number(id), amount }, this.actor);
+            Utils.hideModal();
+            Utils.toast('Payment recorded', 'success');
+            this.showInvestor(id);
+          }
+        });
+      });
+      detail.querySelector('#bm-inv-proposal')?.addEventListener('click', () => {
+        this.openForm('New proposal', `
+          <div class="field"><label>Title *</label><input id="bm-prop-title" value="Investment Proposal"></div>
+          <div class="field"><label>Business info</label><textarea id="bm-prop-info" rows="4"></textarea></div>
+          <label style="display:flex;gap:8px;align-items:center;margin-top:8px">
+            <input type="checkbox" id="bm-prop-pdf" checked> Download PDF after save
+          </label>`, {
+          submitLabel: 'Create proposal',
+          onSubmit: async () => {
+            const title = document.getElementById('bm-prop-title')?.value?.trim();
+            if (!title) throw new Error('Title is required');
+            const wantPdf = !!document.getElementById('bm-prop-pdf')?.checked;
+            const r = await API.saveInvestmentProposal({
+              investor_id: Number(id),
+              title,
+              business_info: document.getElementById('bm-prop-info')?.value || ''
+            }, this.actor);
+            const pid = r?.data?.id || r?.id;
+            Utils.hideModal();
+            if (pid && wantPdf) {
+              const pdf = await API.investmentProposalPdf(pid, this.actor);
+              const data = pdf?.data || pdf;
+              if (data?.pdf_base64) {
+                const a = document.createElement('a');
+                a.href = data.pdf_base64;
+                a.download = data.filename || 'proposal.pdf';
+                a.click();
+              }
+            }
+            Utils.toast('Proposal created', 'success');
+          }
+        });
       });
     } catch (e) { Utils.toast(e.message, 'error'); }
   },
@@ -270,18 +352,33 @@ window.AdminBusinessModulesPage = {
           <td>${this.esc(u.role)}</td><td>${u.is_active ? 'Yes' : 'No'}</td>
         </tr>`).join('') || '<tr><td colspan="4" class="muted">No users — add one to access Release Centre</td></tr>'}
       </tbody></table></div>`;
-    body.querySelector('#bm-add-rel-user')?.addEventListener('click', async () => {
-      const username = prompt('Username:');
-      const password = prompt('Password (min 6):');
-      const full_name = prompt('Full name:', username) || username;
-      const role = prompt('Role (owner/developer/tester/release_manager):', 'tester') || 'tester';
-      if (!username || !password) return;
-      try {
-        await API.saveReleaseUser({ username, password, full_name, role }, this.actor);
-        Utils.toast('Release user created', 'success');
-        await this.load();
-        this.renderTab();
-      } catch (e) { Utils.toast(e.message, 'error'); }
+    body.querySelector('#bm-add-rel-user')?.addEventListener('click', () => {
+      this.openForm('Add Release Centre user', `
+        <div class="field"><label>Username *</label><input id="bm-rel-user" autocomplete="off"></div>
+        <div class="field"><label>Password * (min 6)</label><input type="password" id="bm-rel-pass" autocomplete="new-password"></div>
+        <div class="field"><label>Full name</label><input id="bm-rel-name"></div>
+        <div class="field"><label>Role</label>
+          <select id="bm-rel-role">
+            <option value="tester">tester</option>
+            <option value="developer">developer</option>
+            <option value="release_manager">release_manager</option>
+            <option value="owner">owner</option>
+          </select>
+        </div>`, {
+        submitLabel: 'Create user',
+        onSubmit: async () => {
+          const username = document.getElementById('bm-rel-user')?.value?.trim();
+          const password = document.getElementById('bm-rel-pass')?.value || '';
+          if (!username || !password) throw new Error('Username and password required');
+          const full_name = document.getElementById('bm-rel-name')?.value?.trim() || username;
+          const role = document.getElementById('bm-rel-role')?.value || 'tester';
+          await API.saveReleaseUser({ username, password, full_name, role }, this.actor);
+          Utils.hideModal();
+          Utils.toast('Release user created', 'success');
+          await this.load();
+          this.renderTab();
+        }
+      });
     });
   },
 
@@ -299,17 +396,24 @@ window.AdminBusinessModulesPage = {
         </tr>`).join('') || '<tr><td colspan="4" class="muted">No users — add one to access Meeting Centre</td></tr>'}
       </tbody></table></div>
       <p class="muted" style="margin-top:12px">Audio recording works in the Meeting Centre portal. AI transcription requires server API key. Video conferencing: NOT IMPLEMENTED.</p>`;
-    body.querySelector('#bm-add-mtg-user')?.addEventListener('click', async () => {
-      const username = prompt('Username:');
-      const password = prompt('Password (min 6):');
-      const full_name = prompt('Full name:', username) || username;
-      if (!username || !password) return;
-      try {
-        await API.saveMeetingUser({ username, password, full_name, role: 'meeting_user' }, this.actor);
-        Utils.toast('Meeting user created', 'success');
-        await this.load();
-        this.renderTab();
-      } catch (e) { Utils.toast(e.message, 'error'); }
+    body.querySelector('#bm-add-mtg-user')?.addEventListener('click', () => {
+      this.openForm('Add Meeting Centre user', `
+        <div class="field"><label>Username *</label><input id="bm-mtg-user" autocomplete="off"></div>
+        <div class="field"><label>Password * (min 6)</label><input type="password" id="bm-mtg-pass" autocomplete="new-password"></div>
+        <div class="field"><label>Full name</label><input id="bm-mtg-name"></div>`, {
+        submitLabel: 'Create user',
+        onSubmit: async () => {
+          const username = document.getElementById('bm-mtg-user')?.value?.trim();
+          const password = document.getElementById('bm-mtg-pass')?.value || '';
+          if (!username || !password) throw new Error('Username and password required');
+          const full_name = document.getElementById('bm-mtg-name')?.value?.trim() || username;
+          await API.saveMeetingUser({ username, password, full_name, role: 'meeting_user' }, this.actor);
+          Utils.hideModal();
+          Utils.toast('Meeting user created', 'success');
+          await this.load();
+          this.renderTab();
+        }
+      });
     });
   },
 
@@ -323,24 +427,43 @@ window.AdminBusinessModulesPage = {
     const pair = pending?.data || pending || [];
     body.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center;margin:12px 0">
       <h3>Kiosk devices</h3><a href="/kiosk/" target="_blank" class="btn btn-ghost">Open Kiosk UI</a></div>
-      <p class="muted">Portal login: <code>kiosk</code> / <code>kiosk123</code> · Orders use POS via <code>order_source=KIOSK</code></p>
+      <div class="card card-body" style="margin-bottom:16px">
+        <h4 style="margin:0 0 8px">How kiosk pairing works</h4>
+        <ol class="muted" style="margin:0 0 0 18px;line-height:1.55">
+          <li>Open <a href="/kiosk/" target="_blank" rel="noopener">/kiosk/</a> on the kiosk device — it shows a <strong>6-digit pairing code</strong></li>
+          <li>Approve that code here (no station token — that is only for Drive-Thru)</li>
+          <li>The kiosk then loads the menu automatically</li>
+        </ol>
+        <p class="muted" style="margin:10px 0 0">Portal login (if asked): <code>kiosk</code> / <code>kiosk123</code></p>
+      </div>
       <h4>Pending pairing</h4>
-      ${pair.map((p) => `<div class="card card-body" style="margin:8px 0">Code <strong>${this.esc(p.pairing_code)}</strong>
-        <button class="btn btn-primary btn-sm" data-approve-kiosk="${p.pairing_code}">Approve</button></div>`).join('') || '<p class="muted">No pending codes — open /kiosk/ on device</p>'}
+      ${pair.map((p) => `<div class="card card-body" style="margin:8px 0;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+        <span>Code <strong style="font-size:1.25em;letter-spacing:2px">${this.esc(p.pairing_code)}</strong></span>
+        <button class="btn btn-primary btn-sm" data-approve-kiosk="${this.esc(p.pairing_code)}">Approve</button>
+      </div>`).join('') || '<p class="muted">No pending codes — open /kiosk/ on the device first</p>'}
       <h4 style="margin-top:16px">Registered kiosks</h4>
       <table><thead><tr><th>Name</th><th>Status</th><th>Last order</th></tr></thead>
       <tbody>${devs.map((d) => `<tr><td>${this.esc(d.name)}</td><td>${this.esc(d.status)}</td><td>${this.esc(d.last_order_at || '—')}</td></tr>`).join('') || '<tr><td colspan="3" class="muted">None</td></tr>'}</tbody></table>
       <button class="btn btn-ghost" id="kiosk-run-tests" style="margin-top:12px">Run kiosk tests</button>
       <pre id="kiosk-test-out" class="muted" style="margin-top:8px"></pre>`;
     body.querySelectorAll('[data-approve-kiosk]').forEach((btn) => {
-      btn.addEventListener('click', async () => {
-        const name = prompt('Kiosk name:', 'Counter Kiosk');
-        if (!name) return;
-        try {
-          const r = await API.kioskAdminApprovePairing(btn.dataset.approveKiosk, { name, location: prompt('Location:') || '' }, this.actor);
-          Utils.toast(`Approved — save device token: ${(r?.data || r)?.device_token?.slice(0, 12)}…`, 'success');
-          this.renderKiosk(body);
-        } catch (e) { Utils.toast(e.message, 'error'); }
+      btn.addEventListener('click', () => {
+        const code = btn.dataset.approveKiosk;
+        this.openForm(`Approve kiosk ${code}`, `
+          <div class="field"><label>Kiosk name *</label><input id="bm-kiosk-name" value="Counter Kiosk"></div>
+          <div class="field"><label>Location</label><input id="bm-kiosk-loc" placeholder="Front counter"></div>`, {
+          submitLabel: 'Approve pairing',
+          onSubmit: async () => {
+            const name = document.getElementById('bm-kiosk-name')?.value?.trim();
+            if (!name) throw new Error('Name is required');
+            const location = document.getElementById('bm-kiosk-loc')?.value || '';
+            const r = await API.kioskAdminApprovePairing(code, { name, location }, this.actor);
+            Utils.hideModal();
+            const tok = (r?.data || r)?.device_token;
+            Utils.toast(tok ? `Approved — device linked (${String(tok).slice(0, 10)}…)` : 'Approved', 'success');
+            this.renderKiosk(body);
+          }
+        });
       });
     });
     body.querySelector('#kiosk-run-tests')?.addEventListener('click', async () => {
@@ -358,24 +481,69 @@ window.AdminBusinessModulesPage = {
       <h3>Drive-Thru stations</h3>
       <div><a href="/drive-thru/" target="_blank" class="btn btn-ghost">Open Station UI</a>
       <button class="btn btn-primary" id="dt-add-station">Add station</button></div></div>
-      <p class="muted">Portal: <code>drivethru</code> / <code>dt123456</code> · Audio is separate from Signage · Orders use <code>order_source=DRIVE_THRU</code></p>
-      <table><thead><tr><th>Station</th><th>Lane</th><th>Status</th><th>Staff</th><th>Audio</th></tr></thead>
+      <div class="card card-body" style="margin-bottom:16px">
+        <h4 style="margin:0 0 8px">Where do I get the station token?</h4>
+        <ol class="muted" style="margin:0 0 0 18px;line-height:1.55">
+          <li>Click <strong>Add station</strong> below (or regenerate token on an existing station)</li>
+          <li>Copy the token from the panel that appears — it is only shown once</li>
+          <li>On the station PC: open <a href="/drive-thru/" target="_blank" rel="noopener">/drive-thru/</a> → sign in as <code>drivethru</code> / <code>dt123456</code> → paste the token</li>
+        </ol>
+        <p class="muted" style="margin:10px 0 0">Kiosk uses a pairing code, not this token. Lost a token? Use <strong>New token</strong> on that station row.</p>
+      </div>
+      <table><thead><tr><th>Station</th><th>Lane</th><th>Status</th><th>Staff</th><th>Audio</th><th></th></tr></thead>
       <tbody>${list.map((s) => {
         const audio = (() => { try { return JSON.parse(s.audio_status_json || '{}'); } catch (_) { return {}; } })();
-        return `<tr><td>${this.esc(s.name)}</td><td>${this.esc(s.lane_label || '—')}</td><td>${this.esc(s.status)}</td>
-          <td>${this.esc(s.staff_name || '—')}</td><td>${this.esc(audio.mic || '—')}</td></tr>`;
-      }).join('') || '<tr><td colspan="5" class="muted">No stations — add one</td></tr>'}</tbody></table>
+        return `<tr>
+          <td>${this.esc(s.name)}</td><td>${this.esc(s.lane_label || '—')}</td><td>${this.esc(s.status)}</td>
+          <td>${this.esc(s.staff_name || '—')}</td><td>${this.esc(audio.mic || '—')}</td>
+          <td><button type="button" class="btn btn-ghost btn-sm" data-regen-token="${s.id}">New token</button></td>
+        </tr>`;
+      }).join('') || '<tr><td colspan="6" class="muted">No stations — add one to create a station token</td></tr>'}</tbody></table>
       <button class="btn btn-ghost" id="dt-run-tests" style="margin-top:12px">Run drive-thru tests</button>
       <pre id="dt-test-out" class="muted" style="margin-top:8px"></pre>`;
-    body.querySelector('#dt-add-station')?.addEventListener('click', async () => {
-      const name = prompt('Station name:', 'Drive-Thru 1');
-      if (!name) return;
-      try {
-        const r = await API.driveThruAdminSaveStation({ name, lane_label: prompt('Lane:') || 'Lane 1' }, this.actor);
-        const tok = (r?.data || r)?.station_token;
-        alert(`Station created. Save this token for the station PC:\n\n${tok}`);
-        this.renderDriveThru(body);
-      } catch (e) { Utils.toast(e.message, 'error'); }
+    body.querySelector('#dt-add-station')?.addEventListener('click', () => {
+      this.openForm('Add Drive-Thru station', `
+        <div class="field"><label>Station name *</label><input id="bm-dt-name" value="Drive-Thru 1"></div>
+        <div class="field"><label>Lane</label><input id="bm-dt-lane" value="Lane 1"></div>
+        <p class="muted">After saving you will get a station token to paste on the Drive-Thru PC.</p>`, {
+        submitLabel: 'Create station',
+        onSubmit: async () => {
+          const name = document.getElementById('bm-dt-name')?.value?.trim();
+          if (!name) throw new Error('Station name is required');
+          const lane_label = document.getElementById('bm-dt-lane')?.value?.trim() || 'Lane 1';
+          const r = await API.driveThruAdminSaveStation({ name, lane_label }, this.actor);
+          const data = r?.data || r;
+          const tok = data?.station_token;
+          Utils.hideModal();
+          if (!tok) throw new Error('Station created but no token returned');
+          this.showTokenPanel({
+            title: `Token for ${data.name || name}`,
+            token: tok,
+            hint: 'Save this token now. It will not be shown again unless you regenerate it.'
+          });
+          this.renderDriveThru(body);
+        }
+      });
+    });
+    body.querySelectorAll('[data-regen-token]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const stationId = Number(btn.dataset.regenToken);
+        this.openForm('Generate new station token', `
+          <p>This invalidates the previous token. Any station still using the old token will need to reconnect with the new one.</p>`, {
+          submitLabel: 'Generate new token',
+          onSubmit: async () => {
+            const r = await API.driveThruAdminRegenerateStationToken(stationId, this.actor);
+            const data = r?.data || r;
+            Utils.hideModal();
+            this.showTokenPanel({
+              title: `New token — ${data.name || 'station'}`,
+              token: data.station_token,
+              hint: 'Previous token no longer works. Copy this one onto the station PC.'
+            });
+            this.renderDriveThru(body);
+          }
+        });
+      });
     });
     body.querySelector('#dt-run-tests')?.addEventListener('click', async () => {
       const r = await API.driveThruRunTests();

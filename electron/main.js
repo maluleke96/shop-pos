@@ -2697,6 +2697,7 @@ function registerIpc() {
   ipcMain.handle('hr:employeeProfile', hr((id, actor) => store.getEmployeeProfile(id, hrA(actor))));
   ipcMain.handle('hr:employeeTimeline', hr((id, actor) => store.getEmployeeTimeline(id, hrA(actor))));
   ipcMain.handle('hr:approvals', hr((f, actor) => store.listApprovals(f || {}, hrA(actor))));
+  ipcMain.handle('hr:submitForApproval', hr((data, actor) => store.submitHrForApproval(data || {}, hrA(actor))));
   ipcMain.handle('hr:complianceCentre', hr((actor) => store.getComplianceCentre(hrA(actor))));
   ipcMain.handle('hr:complianceEvents', hr((f, actor) => store.listComplianceEvents(f || {}, hrA(actor))));
   ipcMain.handle('hr:saveComplianceEvent', hr((data, actor) => store.saveComplianceEvent(data || {}, hrA(actor))));
@@ -2825,6 +2826,8 @@ function registerIpc() {
   ipcMain.handle('web:getOrder', wrap((orderId, token) => web.getOrder(orderId, token)));
   ipcMain.handle('web:listOrders', wrap((token, limit) => web.listCustomerOrders(token, limit)));
   ipcMain.handle('web:toggleFavorite', wrap((token, productId, branchId) => web.toggleFavorite(token, productId, branchId)));
+  ipcMain.handle('web:checkGiftCard', wrap((code) => web.checkGiftCardForWeb(code)));
+  ipcMain.handle('web:deleteAccount', wrap((token) => web.deleteWebCustomerAccount(token)));
   ipcMain.handle('web:adminOrders', wrap((filters, actor) => {
     requireUserSession(['owner', 'manager', 'supervisor']);
     return web.listAdminOrders(filters || {});

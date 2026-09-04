@@ -12,7 +12,7 @@ process.env.SHOP_POS_LOCAL_INSTALLER = '1';
 const ROOT = path.join(__dirname, '..');
 require('../lib/load-env').loadProjectEnv(ROOT);
 
-const BASE = (process.env.SMOKE_URL || 'https://peaceful-motivation-production-7dd2.up.railway.app').replace(/\/$/, '');
+const BASE = (process.env.SMOKE_URL || 'https://chisafood.up.railway.app').replace(/\/$/, '');
 const SHARED = path.join(os.homedir(), 'AppData', 'Roaming', 'ShopPOS', 'Shared');
 const REPORT = { tests: {}, at: new Date().toISOString() };
 

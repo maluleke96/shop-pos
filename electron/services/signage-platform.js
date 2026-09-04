@@ -20,23 +20,39 @@ const ROLE_PERMS = {
 };
 
 function ensureSignage() {
-  try { dbGet('SELECT 1 FROM signage_settings LIMIT 1'); return; } catch (_) { /* */ }
-  try {
-    const p = path.join(__dirname, '../database/migrations-v86.sql');
-    if (fs.existsSync(p)) {
+  try { dbGet('SELECT 1 FROM signage_settings LIMIT 1'); } catch (_) { /* */ }
+  const files = ['migrations-v86.sql', 'migrations-v87.sql'];
+  for (const file of files) {
+    try {
+      const p = path.join(__dirname, '../database', file);
+      if (!fs.existsSync(p)) continue;
       const sql = fs.readFileSync(p, 'utf8');
       for (const stmt of sql.split(';').map((s) => s.trim()).filter(Boolean)) {
         try { getDb().exec(stmt + ';'); } catch (e) {
-          if (!/duplicate column|already exists/i.test(String(e.message))) throw e;
+          if (!/duplicate column|already exists/i.test(String(e.message))) { /* ignore per-stmt */ }
         }
       }
+    } catch (err) {
+      console.warn(`[signage] ${file} ensure failed:`, err.message || err);
     }
-  } catch (err) {
-    console.warn('[signage] schema ensure failed:', err.message || err);
+  }
+  try { dbGet('SELECT 1 FROM signage_settings LIMIT 1'); } catch (_) {
+    try {
+      const p = path.join(__dirname, '../database/migrations-v86.sql');
+      if (fs.existsSync(p)) getDb().exec(fs.readFileSync(p, 'utf8'));
+    } catch (__) { /* */ }
   }
   try { dbRun('INSERT OR IGNORE INTO signage_settings (id) VALUES (1)'); } catch (_) {
     try { dbRun('INSERT INTO signage_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING'); } catch (__) { /* */ }
   }
+  try {
+    const c = dbGet('SELECT COUNT(*) AS c FROM signage_centre_users')?.c || 0;
+    if (c === 0) {
+      dbRun('INSERT INTO signage_centre_users (username, password_hash, full_name, role) VALUES (?,?,?,?)',
+        ['signage', hashPassword('signage123'), 'Signage Administrator', 'admin']);
+      console.log('[signage] Default admin created: signage / signage123');
+    }
+  } catch (_) { /* */ }
 }
 
 function getDb() { return require('../database/db').getDb(); }
@@ -437,6 +453,11 @@ function resolveTargetDevices(targetType, targetIds) {
     if (!ids.length) return [];
     return dbAll(`SELECT id FROM signage_devices WHERE is_revoked = 0 AND group_id IN (${ids.map(() => '?').join(',')})`, ids);
   }
+  if (targetType === 'devices') {
+    const ids = (Array.isArray(targetIds) ? targetIds : [targetIds]).map(Number).filter(Boolean);
+    if (!ids.length) return [];
+    return dbAll(`SELECT id FROM signage_devices WHERE is_revoked = 0 AND id IN (${ids.map(() => '?').join(',')})`, ids);
+  }
   const ids = Array.isArray(targetIds) ? targetIds : [targetIds];
   return ids.map((id) => ({ id: Number(id) }));
 }
@@ -496,6 +517,11 @@ function getPublicationStatus(pubId, token) {
 function queueCommand(deviceId, command, payload, userId) {
   dbRun('INSERT INTO signage_device_commands (device_id, command, payload_json, created_by) VALUES (?,?,?,?)',
     [deviceId, command, JSON.stringify(payload || {}), userId || null]);
+  try {
+    dbRun('UPDATE signage_devices SET command_version = COALESCE(command_version,0) + 1, updated_at = ? WHERE id = ?', [nowIso(), deviceId]);
+    const { notifyDevice } = require('./signage-sse');
+    notifyDevice(deviceId, 'command', { command, payload: payload || {} });
+  } catch (_) { /* */ }
 }
 
 function remoteCommand(deviceId, command, payload, token) {
@@ -544,28 +570,201 @@ function reportSync(deviceToken, publicationDeviceId, status, errorMessage) {
   return { success: true };
 }
 
-function buildPlayerManifest(deviceToken) {
-  const dev = resolveDevice(deviceToken);
-  const settings = dbGet('SELECT * FROM signage_settings WHERE id = 1') || {};
-  let playlist = null;
-  if (dev.current_playlist_id) playlist = getPlaylist(dev.current_playlist_id);
+function listScreenGroups(token) {
+  resolvePortal(token);
+  const groups = dbAll('SELECT * FROM signage_screen_groups ORDER BY name');
+  return groups.map((g) => ({
+    ...g,
+    device_count: dbGet('SELECT COUNT(*) AS c FROM signage_devices WHERE group_id = ? AND is_revoked = 0', [g.id])?.c || 0
+  }));
+}
+
+function timeToMinutes(t) {
+  if (!t) return null;
+  const [h, m] = String(t).split(':').map(Number);
+  return h * 60 + (m || 0);
+}
+
+function scheduleMatchesNow(sch, now = new Date()) {
+  if (!sch.is_active) return false;
+  const day = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'][now.getDay()];
+  if (sch.day_of_week && !String(sch.day_of_week).toLowerCase().split(',').map((d) => d.trim()).includes(day)) return false;
+  const dateStr = now.toISOString().slice(0, 10);
+  if (sch.start_date && dateStr < sch.start_date) return false;
+  if (sch.end_date && dateStr > sch.end_date) return false;
+  const mins = now.getHours() * 60 + now.getMinutes();
+  const start = timeToMinutes(sch.start_time);
+  const end = timeToMinutes(sch.end_time);
+  if (start != null && mins < start) return false;
+  if (end != null && mins >= end) return false;
+  return true;
+}
+
+const PRIORITY_RANK = { emergency: 4, urgent: 3, high: 2, normal: 1 };
+
+function getActiveScheduleForDevice(dev) {
+  const rows = dbAll(`SELECT * FROM signage_schedules WHERE is_active = 1 AND (
+    target_type = 'all' OR (target_type = 'device' AND target_id = ?) OR (target_type = 'group' AND target_id = ?)
+  )`, [dev.id, dev.group_id || -1]);
+  const active = rows.filter((r) => scheduleMatchesNow(r));
+  active.sort((a, b) => (PRIORITY_RANK[b.priority] || 0) - (PRIORITY_RANK[a.priority] || 0));
+  return active[0] || null;
+}
+
+function listSchedules(token) {
+  resolvePortal(token);
+  return dbAll('SELECT * FROM signage_schedules ORDER BY start_time, name');
+}
+
+function detectScheduleConflicts(data) {
+  const conflicts = [];
+  const rows = dbAll('SELECT * FROM signage_schedules WHERE is_active = 1');
+  for (const other of rows) {
+    if (data.id && other.id === data.id) continue;
+    if (data.target_type !== other.target_type) continue;
+    if (data.target_type !== 'all' && Number(data.target_id) !== Number(other.target_id)) continue;
+    if (data.day_of_week && other.day_of_week && data.day_of_week !== other.day_of_week) continue;
+    const a1 = timeToMinutes(data.start_time); const a2 = timeToMinutes(data.end_time);
+    const b1 = timeToMinutes(other.start_time); const b2 = timeToMinutes(other.end_time);
+    if (a1 == null || a2 == null || b1 == null || b2 == null) continue;
+    if (a1 < b2 && b1 < a2) conflicts.push({ id: other.id, name: other.name });
+  }
+  return conflicts;
+}
+
+function saveSchedule(data, token) {
+  const user = requirePerm(token, 'publish');
+  const name = String(data.name || '').trim();
+  if (!name) throw new Error('Schedule name required');
+  const conflicts = detectScheduleConflicts(data);
+  if (conflicts.length && !data.allow_conflict) {
+    return { success: false, conflicts, message: 'Schedule conflict detected' };
+  }
+  const payload = {
+    name, target_type: data.target_type || 'all', target_id: data.target_id || null,
+    playlist_id: data.playlist_id || null, audio_playlist_id: data.audio_playlist_id || null,
+    priority: data.priority || 'normal', day_of_week: data.day_of_week || null,
+    start_time: data.start_time || null, end_time: data.end_time || null,
+    start_date: data.start_date || null, end_date: data.end_date || null,
+    is_recurring: data.is_recurring !== false ? 1 : 0, is_active: data.is_active !== false ? 1 : 0
+  };
+  if (data.id) {
+    dbRun(`UPDATE signage_schedules SET name=?, target_type=?, target_id=?, playlist_id=?, audio_playlist_id=?, priority=?, day_of_week=?, start_time=?, end_time=?, start_date=?, end_date=?, is_recurring=?, is_active=? WHERE id=?`,
+      [payload.name, payload.target_type, payload.target_id, payload.playlist_id, payload.audio_playlist_id,
+        payload.priority, payload.day_of_week, payload.start_time, payload.end_time, payload.start_date, payload.end_date,
+        payload.is_recurring, payload.is_active, data.id]);
+    audit({ user_id: user.id, user_name: user.full_name || user.username, action: 'schedule_updated', entity_id: data.id });
+    return { success: true, schedule: dbGet('SELECT * FROM signage_schedules WHERE id = ?', [data.id]) };
+  }
+  const r = dbRun(`INSERT INTO signage_schedules (name, target_type, target_id, playlist_id, audio_playlist_id, priority, day_of_week, start_time, end_time, start_date, end_date, is_recurring, is_active)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    [payload.name, payload.target_type, payload.target_id, payload.playlist_id, payload.audio_playlist_id,
+      payload.priority, payload.day_of_week, payload.start_time, payload.end_time, payload.start_date, payload.end_date,
+      payload.is_recurring, payload.is_active]);
+  audit({ user_id: user.id, user_name: user.full_name || user.username, action: 'schedule_created', entity_id: r.lastInsertRowid });
+  return { success: true, schedule: dbGet('SELECT * FROM signage_schedules WHERE id = ?', [r.lastInsertRowid]) };
+}
+
+function deleteSchedule(id, token) {
+  const user = requirePerm(token, 'publish');
+  dbRun('DELETE FROM signage_schedules WHERE id = ?', [id]);
+  audit({ user_id: user.id, user_name: user.full_name || user.username, action: 'schedule_deleted', entity_id: id });
+  return { success: true };
+}
+
+function publishEmergency(data, token) {
+  const user = requirePerm(token, 'publish');
+  const playlistId = data.playlist_id;
+  if (!playlistId) throw new Error('Emergency playlist required');
+  const playlist = getPlaylist(playlistId);
+  if (!playlist?.items?.length) throw new Error('Playlist empty');
+  const targetType = data.target_type || 'all';
+  const targetIds = data.target_ids || [];
+  const devices = resolveTargetDevices(targetType, targetIds);
+  const expiresAt = data.duration_minutes
+    ? new Date(Date.now() + Number(data.duration_minutes) * 60000).toISOString().slice(0, 19).replace('T', ' ')
+    : data.expires_at || null;
+  const log = dbRun(`INSERT INTO signage_emergency_log (playlist_id, target_type, target_ids_json, started_by, expires_at) VALUES (?,?,?,?,?)`,
+    [playlistId, targetType, JSON.stringify(targetIds), user.id, expiresAt]);
+  for (const d of devices) {
+    const dev = dbGet('SELECT * FROM signage_devices WHERE id = ?', [d.id]);
+    dbRun(`UPDATE signage_devices SET saved_playlist_id=?, saved_audio_playlist_id=?, emergency_playlist_id=?, emergency_audio_playlist_id=?, emergency_until=?, updated_at=? WHERE id=?`,
+      [dev.current_playlist_id, dev.current_audio_playlist_id, playlistId, data.audio_playlist_id || null, expiresAt, nowIso(), d.id]);
+    queueCommand(d.id, 'sync', { emergency: true, playlist_id: playlistId }, user.id);
+  }
+  audit({ user_id: user.id, user_name: user.full_name || user.username, action: 'emergency_published', entity_id: log.lastInsertRowid, details: { devices: devices.length } });
+  return { success: true, devices: devices.length, expires_at: expiresAt };
+}
+
+function cancelEmergency(token, targetType = 'all', targetIds = []) {
+  const user = requirePerm(token, 'publish');
+  const devices = resolveTargetDevices(targetType, targetIds);
+  for (const d of devices) {
+    const dev = dbGet('SELECT * FROM signage_devices WHERE id = ?', [d.id]);
+    if (dev.saved_playlist_id) {
+      dbRun(`UPDATE signage_devices SET current_playlist_id=?, current_audio_playlist_id=?, emergency_playlist_id=NULL, emergency_until=NULL, saved_playlist_id=NULL, saved_audio_playlist_id=NULL, updated_at=? WHERE id=?`,
+        [dev.saved_playlist_id, dev.saved_audio_playlist_id, nowIso(), d.id]);
+    } else {
+      dbRun(`UPDATE signage_devices SET emergency_playlist_id=NULL, emergency_until=NULL, updated_at=? WHERE id=?`, [nowIso(), d.id]);
+    }
+    queueCommand(d.id, 'sync', { emergency_cancelled: true }, user.id);
+  }
+  dbRun(`UPDATE signage_emergency_log SET status='cancelled', cancelled_at=? WHERE status='active'`, [nowIso()]);
+  audit({ user_id: user.id, user_name: user.full_name || user.username, action: 'emergency_cancelled' });
+  return { success: true, devices: devices.length };
+}
+
+function clearExpiredEmergencies() {
+  const now = nowIso();
+  const expired = dbAll('SELECT id FROM signage_devices WHERE emergency_until IS NOT NULL AND emergency_until < ? AND is_revoked = 0', [now]);
+  for (const d of expired) {
+    const dev = dbGet('SELECT * FROM signage_devices WHERE id = ?', [d.id]);
+    if (dev.saved_playlist_id) {
+      dbRun(`UPDATE signage_devices SET current_playlist_id=?, current_audio_playlist_id=?, emergency_playlist_id=NULL, emergency_until=NULL, saved_playlist_id=NULL, saved_audio_playlist_id=NULL WHERE id=?`,
+        [dev.saved_playlist_id, dev.saved_audio_playlist_id, d.id]);
+    } else {
+      dbRun('UPDATE signage_devices SET emergency_playlist_id=NULL, emergency_until=NULL WHERE id=?', [d.id]);
+    }
+    queueCommand(d.id, 'sync', {}, null);
+  }
+}
+
+function getDeviceDiagnostics(deviceId, token) {
+  resolvePortal(token);
+  const dev = dbGet('SELECT * FROM signage_devices WHERE id = ?', [deviceId]);
+  if (!dev) throw new Error('Device not found');
+  return {
+    device: dev,
+    heartbeats: dbAll('SELECT * FROM signage_device_heartbeats WHERE device_id = ? ORDER BY id DESC LIMIT 20', [deviceId]),
+    commands: dbAll('SELECT * FROM signage_device_commands WHERE device_id = ? ORDER BY id DESC LIMIT 20', [deviceId]),
+    publications: dbAll(`SELECT pd.*, p.name AS pub_name FROM signage_publication_devices pd JOIN signage_publications p ON p.id = pd.publication_id WHERE pd.device_id = ? ORDER BY pd.id DESC LIMIT 10`, [deviceId])
+  };
+}
+
+function listAuditLogs(token, limit = 100) {
+  resolvePortal(token);
+  const lim = Math.min(500, Math.max(1, Number(limit) || 100));
+  return dbAll('SELECT * FROM signage_audit_logs ORDER BY id DESC LIMIT ?', [lim]);
+}
+
+function buildPlaylistManifest(playlistId, audioPlaylistId, deviceToken, orientation) {
+  let playlist = playlistId ? getPlaylist(playlistId) : null;
   let audioPlaylist = null;
-  if (dev.current_audio_playlist_id) {
-    const ap = dbGet('SELECT * FROM signage_audio_playlists WHERE id = ?', [dev.current_audio_playlist_id]);
+  if (audioPlaylistId) {
+    const ap = dbGet('SELECT * FROM signage_audio_playlists WHERE id = ?', [audioPlaylistId]);
     if (ap) {
-      ap.tracks = dbAll(`SELECT m.* FROM signage_audio_items ai JOIN signage_media m ON m.id = ai.media_id WHERE ai.audio_playlist_id = ? ORDER BY ai.sort_order`, [dev.current_audio_playlist_id]);
+      ap.tracks = dbAll(`SELECT m.* FROM signage_audio_items ai JOIN signage_media m ON m.id = ai.media_id WHERE ai.audio_playlist_id = ? ORDER BY ai.sort_order`, [audioPlaylistId]);
       audioPlaylist = ap;
     }
   }
-  const emergency = dbGet(`SELECT * FROM signage_announcements WHERE is_active = 1 AND priority = 'emergency' ORDER BY id DESC LIMIT 1`);
   const mapMedia = (m) => m ? {
     id: m.id, title: m.title, media_type: m.media_type, mime_type: m.mime_type,
-    url: mediaPublicPath(m.id, deviceToken), duration_seconds: m.duration_seconds
+    url: deviceToken ? mediaPublicPath(m.id, deviceToken) : `/signage-media/${m.id}`,
+    duration_seconds: m.duration_seconds, thumbnail_path: m.thumbnail_path
   } : null;
   const items = (playlist?.items || []).map((it) => {
     if (it.item_type === 'menu' && it.menu_id) {
-      const menu = getMenu(it.menu_id);
-      return { item_type: 'menu', duration_seconds: it.duration_seconds, transition: it.transition, menu };
+      return { item_type: 'menu', duration_seconds: it.duration_seconds, transition: it.transition, menu: getMenu(it.menu_id) };
     }
     return {
       item_type: 'media', duration_seconds: it.duration_seconds, transition: it.transition,
@@ -574,19 +773,137 @@ function buildPlayerManifest(deviceToken) {
     };
   });
   return {
-    device: { id: dev.id, name: dev.name, orientation: dev.orientation, music_volume: dev.music_volume },
-    settings: {
-      default_transition: settings.default_transition,
-      ducking_volume: settings.ducking_volume,
-      duck_fade_ms: settings.duck_fade_ms,
-      heartbeat_interval_sec: settings.heartbeat_interval_sec
-    },
     playlist: playlist ? { id: playlist.id, name: playlist.name, loop: !!playlist.loop_enabled, shuffle: !!playlist.shuffle, items } : null,
     audio_playlist: audioPlaylist ? {
       id: audioPlaylist.id, name: audioPlaylist.name, shuffle: !!audioPlaylist.shuffle,
       tracks: (audioPlaylist.tracks || []).map((t) => mapMedia(t))
     } : null,
-    emergency_announcement: emergency || null
+    orientation: orientation || 'landscape'
+  };
+}
+
+function previewPlaylist(playlistId, token, audioPlaylistId) {
+  requirePerm(token, 'playlist');
+  return buildPlaylistManifest(playlistId, audioPlaylistId, null, 'landscape');
+}
+
+function tryGenerateThumbnail(mediaId, token) {
+  if (token) requirePerm(token, 'upload');
+  let execSync;
+  try {
+    execSync = require('child_process').execSync;
+    execSync('ffmpeg -version', { stdio: 'ignore' });
+  } catch (_) {
+    return { success: false, status: 'NOT_AVAILABLE', message: 'FFmpeg not installed on server' };
+  }
+  const m = dbGet('SELECT * FROM signage_media WHERE id = ?', [mediaId]);
+  if (!m?.file_path || m.media_type !== 'video') return { success: false, message: 'Not a video' };
+  const full = path.join(assetsDir(), '..', m.file_path);
+  const thumbRel = m.file_path.replace(/\.[^.]+$/, '_thumb.jpg');
+  const thumbFull = path.join(assetsDir(), '..', thumbRel);
+  try {
+    execSync(`ffmpeg -y -i "${full}" -ss 00:00:01 -vframes 1 "${thumbFull}"`, { stdio: 'ignore' });
+    dbRun('UPDATE signage_media SET thumbnail_path = ? WHERE id = ?', [thumbRel, mediaId]);
+    return { success: true, thumbnail_path: thumbRel };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+}
+
+async function runSignageTests() {
+  ensureSignage();
+  const results = [];
+  async function add(key, label, fn) {
+    const t0 = Date.now();
+    try {
+      const r = await fn();
+      results.push({ key, label, status: r?.status || 'PASS', message: r?.message || 'OK', duration_ms: Date.now() - t0 });
+    } catch (err) {
+      results.push({ key, label, status: 'FAIL', message: err.message || String(err), duration_ms: Date.now() - t0 });
+    }
+  }
+  await add('schema', 'Database schema', async () => { dbGet('SELECT 1 FROM signage_settings LIMIT 1'); return { status: 'PASS' }; });
+  await add('pairing', 'Pairing code generation', async () => {
+    const p = requestPairing({ test: true });
+    if (!p.pairing_code || p.pairing_code.length !== 6) throw new Error('Invalid code');
+    return { status: 'PASS', message: `Code ${p.pairing_code}` };
+  });
+  await add('media_table', 'Media table', async () => {
+    dbGet('SELECT COUNT(*) AS c FROM signage_media');
+    return { status: 'PASS' };
+  });
+  await add('playlist_table', 'Playlist tables', async () => {
+    dbGet('SELECT 1 FROM signage_playlists LIMIT 1');
+    dbGet('SELECT 1 FROM signage_playlist_items LIMIT 1');
+    return { status: 'PASS' };
+  });
+  await add('schedule_logic', 'Schedule matching', async () => {
+    const ok = scheduleMatchesNow({ is_active: 1, start_time: '00:00', end_time: '23:59', day_of_week: 'sun,mon,tue,wed,thu,fri,sat' });
+    if (!ok) throw new Error('Schedule should match');
+    return { status: 'PASS' };
+  });
+  await add('permissions', 'Role permissions', async () => {
+    if (!perms('screen_operator').remote) throw new Error('screen_operator should have remote');
+    if (perms('content_editor').publish) throw new Error('content_editor should not publish');
+    return { status: 'PASS' };
+  });
+  await add('ffmpeg', 'FFmpeg thumbnail', async () => {
+    const r = tryGenerateThumbnail(-1);
+    return { status: r.status === 'NOT_AVAILABLE' ? 'WARNING' : 'PASS', message: r.message || r.status };
+  });
+  await add('sse', 'SSE module', async () => {
+    const sse = require('./signage-sse');
+    if (typeof sse.notifyDevice !== 'function') throw new Error('SSE missing');
+    return { status: 'PASS' };
+  });
+  const passed = results.filter((r) => r.status === 'PASS').length;
+  const failed = results.filter((r) => r.status === 'FAIL').length;
+  const warnings = results.filter((r) => r.status === 'WARNING').length;
+  return { total: results.length, passed, failed, warnings, critical: failed, results, tested_at: nowIso() };
+}
+
+function resolveDeviceIdFromToken(deviceToken) {
+  return resolveDevice(deviceToken).id;
+}
+
+function buildPlayerManifest(deviceToken) {
+  clearExpiredEmergencies();
+  const dev = resolveDevice(deviceToken);
+  const settings = dbGet('SELECT * FROM signage_settings WHERE id = 1') || {};
+  let playlistId = dev.current_playlist_id;
+  let audioPlaylistId = dev.current_audio_playlist_id;
+  let source = 'assigned';
+
+  if (dev.emergency_playlist_id && (!dev.emergency_until || dev.emergency_until >= nowIso())) {
+    playlistId = dev.emergency_playlist_id;
+    audioPlaylistId = dev.emergency_audio_playlist_id || audioPlaylistId;
+    source = 'emergency';
+  } else {
+    const sch = getActiveScheduleForDevice(dev);
+    if (sch?.playlist_id) {
+      playlistId = sch.playlist_id;
+      audioPlaylistId = sch.audio_playlist_id || audioPlaylistId;
+      source = 'schedule';
+    }
+  }
+
+  const built = buildPlaylistManifest(playlistId, audioPlaylistId, deviceToken, dev.orientation);
+  const emergency = dbGet(`SELECT * FROM signage_announcements WHERE is_active = 1 AND priority = 'emergency' ORDER BY id DESC LIMIT 1`);
+  return {
+    device: { id: dev.id, name: dev.name, orientation: dev.orientation, music_volume: dev.music_volume, status: dev.status },
+    settings: {
+      default_transition: settings.default_transition,
+      ducking_volume: settings.ducking_volume,
+      duck_fade_ms: settings.duck_fade_ms,
+      heartbeat_interval_sec: settings.heartbeat_interval_sec,
+      default_slide_duration: settings.default_slide_duration
+    },
+    playlist: built.playlist,
+    audio_playlist: built.audio_playlist,
+    content_source: source,
+    emergency_announcement: emergency || null,
+    command_version: dev.command_version || 0,
+    server_time: nowIso()
   };
 }
 
@@ -701,8 +1018,10 @@ module.exports = {
   requestPairing, pairingStatus, listPendingPairings, approvePairing, rejectPairing, revokeDevice,
   listDevices, saveDevice, listMedia, uploadMedia, deleteMedia, getMediaFile,
   listPlaylists, getPlaylist, savePlaylist, listMenus, getMenu, saveMenu, syncMenuFromProducts,
-  saveAudioPlaylist, listAudioPlaylists, saveScreenGroup, publishToScreens, getPublicationStatus,
-  deviceHeartbeat, getDeviceCommands, ackCommand, reportSync, buildPlayerManifest,
-  generateAiVoice, saveAnnouncement, playNowAnnouncement, remoteCommand,
+  saveAudioPlaylist, listAudioPlaylists, saveScreenGroup, listScreenGroups, publishToScreens, getPublicationStatus,
+  listSchedules, saveSchedule, deleteSchedule, detectScheduleConflicts,
+  publishEmergency, cancelEmergency, previewPlaylist, getDeviceDiagnostics, listAuditLogs,
+  deviceHeartbeat, getDeviceCommands, ackCommand, reportSync, buildPlayerManifest, resolveDeviceIdFromToken,
+  generateAiVoice, saveAnnouncement, playNowAnnouncement, remoteCommand, tryGenerateThumbnail, runSignageTests,
   saveSignageUser, listSignageUsers, getSignageSettings, saveSignageSettings, mediaPublicPath
 };

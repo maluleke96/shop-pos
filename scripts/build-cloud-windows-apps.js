@@ -68,7 +68,7 @@ const apps = [
 
 const cloudUrl =
   process.env.SHOP_POS_CLOUD_URL ||
-  'https://peaceful-motivation-production-7dd2.up.railway.app';
+  'https://chisafood.up.railway.app';
 
 function sleepMs(ms) {
   spawnSync('powershell', ['-NoProfile', '-Command', `Start-Sleep -Milliseconds ${ms}`], { stdio: 'ignore' });

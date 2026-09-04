@@ -6,7 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-const BASE = process.env.SMOKE_URL || 'https://peaceful-motivation-production-7dd2.up.railway.app';
+const BASE = process.env.SMOKE_URL || 'https://chisafood.up.railway.app';
 const LOCAL_DB = path.join(os.homedir(), 'AppData', 'Roaming', 'ShopPOS', 'Shared', 'shop-pos.db');
 
 async function rpc(method, args, token) {

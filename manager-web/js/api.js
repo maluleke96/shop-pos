@@ -3,7 +3,7 @@ const ManagerAPI = {
     const cfg = window.__MANAGER_CONFIG__ || {};
     if (cfg.rpcUrl) return cfg.rpcUrl;
     if (location.origin && !location.origin.startsWith('file:')) return `${location.origin.replace(/\/$/, '')}/rpc`;
-    return 'https://peaceful-motivation-production-7dd2.up.railway.app/rpc';
+    return 'https://chisafood.up.railway.app/rpc';
   })(),
 
   token() { return localStorage.getItem('manager_token') || ''; },
@@ -35,6 +35,7 @@ const ManagerAPI = {
   profile: () => ManagerAPI.call('mobile:profile', []),
   dashboard: (filters) => ManagerAPI.call('mobile:dashboard', [filters || {}]),
   orders: (filters) => ManagerAPI.call('mobile:orders', [filters || {}]),
+  onlineOrders: (filters) => ManagerAPI.call('mobile:onlineOrders', [filters || {}]),
   order: (id) => ManagerAPI.call('mobile:order', [id]),
   searchOrders: (q) => ManagerAPI.call('mobile:searchOrders', [q || {}]),
   staffActivity: (filters) => ManagerAPI.call('mobile:staffActivity', [filters || {}]),

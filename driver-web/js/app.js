@@ -21,6 +21,18 @@ const DriverApp = {
     return { device_uid: uid, device_name: 'Driver Device', platform: 'web' };
   },
 
+  phoneLink(phone) {
+    const p = String(phone || '').replace(/\D/g, '');
+    return p ? `tel:${p}` : '#';
+  },
+
+  whatsappLink(phone) {
+    const p = String(phone || '').replace(/\D/g, '');
+    if (!p) return '#';
+    const wa = p.startsWith('0') ? `27${p.slice(1)}` : p;
+    return `https://wa.me/${wa}`;
+  },
+
   async init() {
     if (location.pathname.includes('register')) return;
     if (this.token) {
@@ -54,6 +66,18 @@ const DriverApp = {
         <button class="drv-btn" data-act="login">Sign in</button>
         <p class="muted" style="margin-top:12px"><a href="register.html">Register as driver</a></p>
       </div>`;
+    } else if (this.tab === 'earnings') {
+      const d = this.dash?.driver || {};
+      app.innerHTML = `<div class="hdr">
+        <div><strong>${this.esc(d.full_name || 'Driver')}</strong><br><span class="muted">Earnings</span></div>
+        <button class="btn secondary" style="width:auto;padding:8px 12px" data-act="tab" data-tab="home">Back</button>
+      </div>
+      <div class="stat-grid">
+        <div class="stat"><span class="muted">Today</span><b>${this.money(this.dash?.fees_today)}</b></div>
+        <div class="stat"><span class="muted">Delivered today</span><b>${this.dash?.completed_today || 0}</b></div>
+        <div class="stat"><span class="muted">All time</span><b>${this.money(this.dash?.earnings_total)}</b></div>
+      </div>
+      <p class="muted" style="margin-top:12px;font-size:13px">Earnings count only after delivery is marked delivered. You see delivery fees only — not product prices.</p>`;
     } else {
       const d = this.dash?.driver || {};
       const stats = this.dash || {};
@@ -70,6 +94,7 @@ const DriverApp = {
       ${(this.orders || []).length ? this.orders.map((o) => this.orderCard(o)).join('') : '<p class="muted">No active deliveries</p>'}
       <div class="nav">
         <button class="${this.tab === 'home' ? 'active' : ''}" data-act="tab" data-tab="home">Home</button>
+        <button data-act="tab" data-tab="earnings">Earnings</button>
         <button data-act="logout">Logout</button>
       </div>`;
     }
@@ -77,15 +102,21 @@ const DriverApp = {
   },
 
   orderCard(o) {
-    const items = (o.items || []).slice(0, 4).map((i) => `${i.quantity || 1}× ${i.name || i.product_name}`).join(', ');
+    const items = (o.items || []).slice(0, 6).map((i) => `${i.quantity || 1}× ${i.name || i.product_name}`).join(', ');
+    const delNum = o.delivery_number || o.confirmation_code || 'Delivery';
+    const phone = o.customer_phone || '';
     return `<div class="order-card" data-id="${o.id}">
-      <h3>${this.esc(o.order_number)} — ${this.esc(o.status)}</h3>
-      <p class="muted">${this.esc(o.customer_name)} · ${this.esc(o.customer_phone)}</p>
+      <h3>${this.esc(delNum)} — ${this.esc(o.status)}</h3>
+      <p class="muted">${this.esc(o.customer_name)}</p>
       <p>${this.esc(o.delivery_address)}</p>
       <p>${this.esc(items)}</p>
-      <p><strong>${this.money(o.total)}</strong> · Fee ${this.money(o.delivery_fee)} · ${this.esc(o.payment_method || '')}</p>
+      <p><strong>Your fee: ${this.money(o.delivery_fee)}</strong></p>
+      <div class="order-actions" style="display:flex;gap:8px;flex-wrap:wrap;margin:8px 0">
+        ${phone ? `<a class="drv-btn secondary" href="${this.phoneLink(phone)}" style="text-decoration:none;text-align:center">📞 Call</a>` : ''}
+        ${phone ? `<a class="drv-btn secondary" href="${this.whatsappLink(phone)}" target="_blank" rel="noopener" style="text-decoration:none;text-align:center">WhatsApp</a>` : ''}
+      </div>
       <div class="order-actions">
-        ${o.status === 'assigned' ? '<button class="drv-btn" data-act="accept">Accept</button><button class="drv-btn warn secondary" data-act="reject">Reject</button>' : ''}
+        ${o.status === 'assigned' ? '<button class="drv-btn" data-act="accept">Accept</button><button class="drv-btn warn secondary" data-act="reject">Reject (pickup at store)</button>' : ''}
         ${['driver_accepted','assigned','picking_up'].includes(o.status) ? '<button class="drv-btn" data-act="picked_up">Picked up</button>' : ''}
         ${['picked_up','on_way'].includes(o.status) ? '<button class="drv-btn" data-act="on_way">On the way</button>' : ''}
         ${o.status === 'on_way' || o.status === 'picked_up' ? '<button class="drv-btn" data-act="delivered">Delivered</button>' : ''}
@@ -102,6 +133,11 @@ const DriverApp = {
       const id = card?.dataset?.id;
       const act = btn?.dataset?.act;
       if (!act) return;
+      if (act === 'tab') {
+        this.tab = btn.dataset.tab || 'home';
+        this.render();
+        return;
+      }
       if (act === 'login') {
         try {
           const r = await DriverAPI.login(document.getElementById('drv-user').value.trim(), document.getElementById('drv-pass').value, this.deviceInfo());
@@ -109,6 +145,7 @@ const DriverApp = {
           localStorage.setItem('driver_token', r.token);
           await this.refresh();
           this.view = 'main';
+          this.tab = 'home';
           this.render();
         } catch (err) { this.toast(err.message, 'error'); }
       }

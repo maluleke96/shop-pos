@@ -2,7 +2,7 @@
  * Full live E2E audit — Admin, POS, Online Order, Manager panel wiring.
  * Usage: SMOKE_USER=chisa96 SMOKE_PASS=... node scripts/live-full-e2e-audit.js
  */
-const BASE = (process.env.SMOKE_URL || 'https://peaceful-motivation-production-7dd2.up.railway.app').replace(/\/$/, '');
+const BASE = (process.env.SMOKE_URL || 'https://chisafood.up.railway.app').replace(/\/$/, '');
 const SLOW_MS = Number(process.env.SLOW_MS || 3000);
 
 async function rpc(method, args = [], token = null, headers = {}) {

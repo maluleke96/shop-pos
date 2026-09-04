@@ -737,15 +737,20 @@ function getProbationDashboard(filters = {}) {
     const daysLeft = Math.ceil((new Date(p.end_date + 'T12:00:00') - Date.now()) / 86400000);
     return daysLeft >= 0 && daysLeft <= 7;
   });
+  const day = today();
+  // Compare via date(...) on both sides so Postgres (text vs date) does not fail.
   const evalsToday = getDb().prepare(`
     SELECT p.id, p.employee_id, e.full_name, p.end_date FROM employee_probation p
     JOIN employees e ON e.id = p.employee_id
     WHERE p.status = 'active' AND date(?) BETWEEN date(p.start_date) AND date(p.end_date)
-    AND NOT EXISTS (SELECT 1 FROM probation_daily_evaluations ev WHERE ev.probation_id = p.id AND ev.eval_date = date(?))
-  `).all(today(), today());
+    AND NOT EXISTS (
+      SELECT 1 FROM probation_daily_evaluations ev
+      WHERE ev.probation_id = p.id AND date(ev.eval_date) = date(?)
+    )
+  `).all(day, day);
   const trends = getDb().prepare(`
     SELECT date(eval_date) as d, AVG(overall_score) as avg_score, COUNT(*) as cnt
-    FROM probation_daily_evaluations WHERE eval_date >= date('now', '-30 days')
+    FROM probation_daily_evaluations WHERE date(eval_date) >= date('now', '-30 days')
     GROUP BY date(eval_date) ORDER BY d`).all();
   return { active_count: active.length, ending_soon: endingSoon, pending_evals_today: evalsToday, trends, active };
 }

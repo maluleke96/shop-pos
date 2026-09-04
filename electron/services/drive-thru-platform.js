@@ -156,7 +156,18 @@ function saveStationAdmin(data) {
   const code = uid('DT');
   const r = dbRun(`INSERT INTO drive_thru_stations (station_code, name, lane_label, branch_id, token_hash, status)
     VALUES (?,?,?,?,?,?)`, [code, name, data.lane_label || null, data.branch_id || null, hashToken(stationToken), 'offline']);
-  return { ...dbGet('SELECT * FROM drive_thru_stations WHERE id = ?', [r.lastInsertRowid]), station_token: stationToken };
+  return { ...dbGet('SELECT id, station_code, name, lane_label, status, is_active, staff_name, last_heartbeat, error_state FROM drive_thru_stations WHERE id = ?', [r.lastInsertRowid]), station_token: stationToken };
+}
+
+function regenerateStationTokenAdmin(stationId) {
+  ensureDriveThru();
+  const id = Number(stationId);
+  const st = dbGet('SELECT id, name FROM drive_thru_stations WHERE id = ?', [id]);
+  if (!st) throw new Error('Station not found');
+  const stationToken = newToken();
+  dbRun('UPDATE drive_thru_stations SET token_hash = ?, updated_at = ? WHERE id = ?', [hashToken(stationToken), nowIso(), id]);
+  audit({ station_id: id, action: 'station_token_regenerated', entity_id: id });
+  return { id, name: st.name, station_token: stationToken };
 }
 
 function saveStation(data, token) {
@@ -524,7 +535,7 @@ async function runDriveThruTests() {
 
 module.exports = {
   ensureDriveThru, driveThruLogin, driveThruLogout, driveThruDashboard, driveThruSummary,
-  listStations, listStationsAdmin, saveStation, saveStationAdmin, stationHeartbeat, stationLogin,
+  listStations, listStationsAdmin, saveStation, saveStationAdmin, regenerateStationTokenAdmin, stationHeartbeat, stationLogin,
   saveAudioConfig, getAudioConfig, postAudioSignal, pollAudioSignals,
   getDriveThruCatalog, startOrder, updateOrder, confirmOrder, takePayment,
   sendToKitchen, markReady, markCollected, cancelOrder, getOrder, listOrders,

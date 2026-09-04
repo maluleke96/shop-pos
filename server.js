@@ -30,6 +30,8 @@ const DRIVE_THRU_WEB = path.join(ROOT, 'drive-thru-web');
 const { loadProjectEnv } = require('./lib/load-env');
 loadProjectEnv(ROOT);
 
+const { getPublicUrl, getRpcUrl } = require('./lib/public-url');
+
 const { bootRpc, handleRpcPost } = require('./lib/rpc-app');
 
 const PORT = Number(process.env.PORT || process.env.SHOP_POS_PORT || 3000);
@@ -119,7 +121,7 @@ function syncManagerWebConfig() {
     process.env.SHOP_POS_PUBLIC_URL ||
     process.env.SHOP_POS_SYNC_URL ||
     (railwayDomain ? `https://${railwayDomain}` : '') ||
-    'https://peaceful-motivation-production-7dd2.up.railway.app'
+    'https://chisafood.up.railway.app'
   ).replace(/\/$/, '');
   const rpc = (
     process.env.SHOP_POS_PUBLIC_RPC_URL ||
@@ -146,7 +148,7 @@ function syncReferralWebConfig() {
     process.env.SHOP_POS_PUBLIC_URL ||
     process.env.SHOP_POS_SYNC_URL ||
     (railwayDomain ? `https://${railwayDomain}` : '') ||
-    'https://peaceful-motivation-production-7dd2.up.railway.app'
+    'https://chisafood.up.railway.app'
   ).replace(/\/$/, '');
   const rpc = (
     process.env.SHOP_POS_PUBLIC_RPC_URL ||
@@ -173,7 +175,7 @@ function syncDriverWebConfig() {
     process.env.SHOP_POS_PUBLIC_URL ||
     process.env.SHOP_POS_SYNC_URL ||
     (railwayDomain ? `https://${railwayDomain}` : '') ||
-    'https://peaceful-motivation-production-7dd2.up.railway.app'
+    'https://chisafood.up.railway.app'
   ).replace(/\/$/, '');
   const rpc = (
     process.env.SHOP_POS_PUBLIC_RPC_URL ||
@@ -200,7 +202,7 @@ function portalConfig(windowName, portalPath) {
     process.env.SHOP_POS_PUBLIC_URL ||
     process.env.SHOP_POS_SYNC_URL ||
     (railwayDomain ? `https://${railwayDomain}` : '') ||
-    'https://peaceful-motivation-production-7dd2.up.railway.app'
+    'https://chisafood.up.railway.app'
   ).replace(/\/$/, '');
   const rpc = (
     process.env.SHOP_POS_PUBLIC_RPC_URL ||
@@ -454,7 +456,7 @@ function syncOrderWebConfig() {
     process.env.SHOP_POS_PUBLIC_URL ||
     process.env.SHOP_POS_SYNC_URL ||
     (railwayDomain ? `https://${railwayDomain}` : '') ||
-    'https://peaceful-motivation-production-7dd2.up.railway.app'
+    'https://chisafood.up.railway.app'
   ).replace(/\/$/, '');
   const rpc = (
     process.env.SHOP_POS_PUBLIC_RPC_URL ||
@@ -554,14 +556,15 @@ async function main() {
     const urlPath = (req.url || '/').split('?')[0];
 
     if (urlPath === '/health') {
-      const base = process.env.SHOP_POS_PUBLIC_URL || process.env.SHOP_POS_SYNC_URL
-        || (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : '');
+      const base = getPublicUrl();
       return writeJson(res, 200, {
         ok: true,
         service: 'shop-pos-railway',
         backend: 'postgres',
+        public_url: base,
         handlers: Object.keys(rpc.handlers).length,
-        customer_ordering: base ? `${base.replace(/\/$/, '')}/order/` : '/order/'
+        customer_ordering: `${base}/order/`,
+        portals: `${base}/portals.html`
       });
     }
 

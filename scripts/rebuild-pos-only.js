@@ -8,7 +8,7 @@ const mode = 'pos';
 const name = 'Shop POS';
 const appId = 'com.shoppos.pos';
 const artifact = 'ShopPOS-POS';
-const cloudUrl = 'https://peaceful-motivation-production-7dd2.up.railway.app';
+const cloudUrl = 'https://chisafood.up.railway.app';
 
 fs.writeFileSync(
   path.join(root, 'electron', 'cloud-shell-config-pos.js'),

@@ -1339,6 +1339,28 @@ function generatePayroll(periodStart, periodEnd, employeeIds) {
   if (errors.length) {
     console.error('[generatePayroll] partial failures:', errors);
   }
+  // Open salary claim window + notify so Staff Portal can claim / see payslips
+  try {
+    const payroll = require('./payroll-compliance');
+    const settings = payroll.getPayrollSettings?.() || {};
+    const deadlineDays = Number(settings.claim_deadline_days) || 7;
+    const deadline = new Date();
+    deadline.setDate(deadline.getDate() + deadlineDays);
+    const claimDeadline = deadline.toISOString();
+    const claims = require('./salary-claims').createClaimsFromPayroll(
+      periodStart, periodEnd, claimDeadline, periodEnd, null, null, 'payroll-generate'
+    );
+    try {
+      require('./store').addNotification?.('salary_advice', 'Payslips & salary claims ready',
+        `Payroll ${periodStart} – ${periodEnd}: ${results.length} payslip(s), ${claims?.length || 0} claim window(s) opened for Staff Portal.`, {
+          entity_type: 'payroll',
+          action_page: 'admin:payroll',
+          audience_roles: ['owner', 'manager']
+        });
+    } catch (_) { /* */ }
+  } catch (err) {
+    console.warn('[generatePayroll] salary claims auto-open skipped:', err.message || err);
+  }
   return results;
 }
 

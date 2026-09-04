@@ -9,7 +9,7 @@ const { spawnSync } = require('child_process');
 const root = path.join(__dirname, '..');
 const cloudUrl =
   process.env.SHOP_POS_CLOUD_URL ||
-  'https://peaceful-motivation-production-7dd2.up.railway.app';
+  'https://chisafood.up.railway.app';
 
 const apps = [
   { mode: 'admin', config: 'capacitor.admin.json', apkName: 'ShopPOS-Admin.apk', label: 'Shop POS Admin' },

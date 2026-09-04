@@ -18,8 +18,9 @@
       try {
         const t = await DriverAPI.tracking(token);
         const data = t.data || t;
-        el.innerHTML = `<h1>Order ${data.order_number || ''}</h1>
+        el.innerHTML = `<h1>Delivery ${data.confirmation_code ? `#${data.confirmation_code}` : (data.order_number || '')}</h1>
           <p class="status-pill">${data.status_label || data.status}</p>
+          ${data.pickup_at_store ? '<p class="muted">Please collect your order at the store.</p>' : ''}
           <ol class="timeline">${(data.timeline || []).map((s) =>
             `<li class="${s.done ? 'done' : ''} ${s.active ? 'active' : ''}">${s.label}</li>`).join('')}</ol>`;
       } catch (e) {

@@ -2443,8 +2443,21 @@ function expenseReport(from, to, actor) {
 function stockValueReport(actor) {
   requireAccUser(actor);
   try {
-    const row = dbGet(`SELECT COALESCE(SUM(stock_quantity * COALESCE(buying_price,0)),0) AS value,
-      COALESCE(SUM(stock_quantity),0) AS units FROM products WHERE is_active=1`);
+    // Prefer branch_stock when present (cloud multi-branch); fall back to products.stock_quantity.
+    let row = null;
+    try {
+      row = dbGet(`
+        SELECT COALESCE(SUM(COALESCE(bs.quantity, p.stock_quantity, 0) * COALESCE(p.buying_price,0)),0) AS value,
+               COALESCE(SUM(COALESCE(bs.quantity, p.stock_quantity, 0)),0) AS units
+        FROM products p
+        LEFT JOIN (
+          SELECT product_id, SUM(quantity) AS quantity FROM branch_stock GROUP BY product_id
+        ) bs ON bs.product_id = p.id
+        WHERE COALESCE(p.is_active,1) = 1`);
+    } catch (_) {
+      row = dbGet(`SELECT COALESCE(SUM(stock_quantity * COALESCE(buying_price,0)),0) AS value,
+        COALESCE(SUM(stock_quantity),0) AS units FROM products WHERE COALESCE(is_active,1)=1`);
+    }
     return { stock_value: round2(row?.value), units: num(row?.units) };
   } catch (_) {
     return { stock_value: 0, units: 0 };
@@ -2481,11 +2494,26 @@ function drillDown(metric, from, to, actor) {
     let products = [];
     try {
       products = dbAll(
-        `SELECT name, stock_quantity AS qty, COALESCE(buying_price,0) AS unit_cost,
-          (stock_quantity * COALESCE(buying_price,0)) AS value
-         FROM products WHERE is_active=1 AND stock_quantity > 0 ORDER BY value DESC LIMIT 200`
+        `SELECT p.name,
+           COALESCE(bs.quantity, p.stock_quantity, 0) AS qty,
+           COALESCE(p.buying_price,0) AS unit_cost,
+           (COALESCE(bs.quantity, p.stock_quantity, 0) * COALESCE(p.buying_price,0)) AS value
+         FROM products p
+         LEFT JOIN (
+           SELECT product_id, SUM(quantity) AS quantity FROM branch_stock GROUP BY product_id
+         ) bs ON bs.product_id = p.id
+         WHERE COALESCE(p.is_active,1)=1 AND COALESCE(bs.quantity, p.stock_quantity, 0) > 0
+         ORDER BY value DESC LIMIT 200`
       );
-    } catch (_) { /* ignore */ }
+    } catch (_) {
+      try {
+        products = dbAll(
+          `SELECT name, stock_quantity AS qty, COALESCE(buying_price,0) AS unit_cost,
+            (stock_quantity * COALESCE(buying_price,0)) AS value
+           FROM products WHERE COALESCE(is_active,1)=1 AND stock_quantity > 0 ORDER BY value DESC LIMIT 200`
+        );
+      } catch (_) { /* ignore */ }
+    }
     return {
       metric, title: 'Stock Value', total: stock.stock_value, count: products.length,
       rows: products.map((p) => ({ name: p.name, qty: p.qty, unit_cost: p.unit_cost, value: p.value }))

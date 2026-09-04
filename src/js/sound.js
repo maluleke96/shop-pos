@@ -107,6 +107,30 @@ const SoundService = {
     } catch { /* no audio */ }
   },
 
+  async playOnlineOrderAlert(settings) {
+    const ns = settings?.notification_settings || {};
+    if (ns.sound_enabled === false) return;
+    try {
+      const ctx = await this.ensureAudioContext();
+      const beep = (freq, delay) => {
+        setTimeout(() => {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = 'sine';
+          osc.frequency.value = freq;
+          gain.gain.value = 0.18;
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.start();
+          setTimeout(() => { try { osc.stop(); } catch { /* ignore */ } }, 320);
+        }, delay);
+      };
+      beep(880, 0);
+      beep(1100, 380);
+      beep(880, 760);
+    } catch { /* no audio */ }
+  },
+
   async playOnce(settings) {
     if (this.isPosSilent()) return;
     if (!this.isEnabled(settings)) return;

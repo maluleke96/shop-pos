@@ -3,7 +3,7 @@ const path = require('path');
 const os = require('os');
 process.env.SHOP_POS_LOCAL_INSTALLER = '1';
 process.env.SHOP_POS_DATA = path.join(os.homedir(), 'AppData', 'Roaming', 'ShopPOS', 'Shared');
-process.env.SHOP_POS_SYNC_URL = 'https://peaceful-motivation-production-7dd2.up.railway.app';
+process.env.SHOP_POS_SYNC_URL = 'https://chisafood.up.railway.app';
 require('../lib/load-env').loadProjectEnv(path.join(__dirname, '..'));
 
 (async () => {

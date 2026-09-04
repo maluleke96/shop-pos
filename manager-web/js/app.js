@@ -12,6 +12,9 @@ const ManagerApp = {
   alerts: [],
   posStatus: [],
   orderDetail: null,
+  onlineOrders: [],
+  onlineTab: 'pending',
+  branchFilter: localStorage.getItem('manager_branch_filter') || 'all',
   prefs: null,
   lastAlertId: 0,
   lastUpdated: null,
@@ -19,6 +22,86 @@ const ManagerApp = {
 
   money(n) { return `R${(Number(n) || 0).toFixed(2)}`; },
   esc(s) { const d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; },
+  normalizePhone(phone) {
+    const d = String(phone || '').replace(/\D/g, '');
+    if (!d) return '';
+    if (d.startsWith('27')) return d;
+    if (d.startsWith('0')) return '27' + d.slice(1);
+    return d;
+  },
+  contactActionsHtml(phone, email) {
+    const actions = [];
+    const tel = String(phone || '').trim();
+    const em = String(email || '').trim();
+    if (tel) {
+      const wa = this.normalizePhone(tel);
+      actions.push(`<a href="tel:${encodeURIComponent(tel)}" class="contact-btn" title="Call customer" onclick="event.stopPropagation()">📞</a>`);
+      actions.push(`<a href="https://wa.me/${wa}" target="_blank" rel="noopener" class="contact-btn" title="WhatsApp customer" onclick="event.stopPropagation()">💬</a>`);
+    }
+    if (em) {
+      actions.push(`<a href="mailto:${encodeURIComponent(em)}" class="contact-btn" title="Email customer" onclick="event.stopPropagation()">✉️</a>`);
+    }
+    return actions.length ? `<div class="contact-actions">${actions.join('')}</div>` : '';
+  },
+  branchFilters() {
+    const f = { period: this.period };
+    if (this.period === 'custom' && this.customFrom && this.customTo) {
+      f.from = this.customFrom;
+      f.to = this.customTo;
+    }
+    if (this.branchFilter && this.branchFilter !== 'all') f.branch_id = this.branchFilter;
+    return f;
+  },
+  branchSelectorHtml() {
+    const branches = this.user?.branches || [];
+    const canPick = branches.length > 1 || this.user?.permissions?.view_all_branches;
+    if (!canPick) return '';
+    return `<select id="branch-filter" class="filter-select" style="margin-bottom:8px">
+      <option value="all" ${this.branchFilter === 'all' ? 'selected' : ''}>All branches</option>
+      ${branches.map((b) => `<option value="${b.id}" ${String(this.branchFilter) === String(b.id) ? 'selected' : ''}>${this.esc(b.name)}</option>`).join('')}
+    </select>`;
+  },
+  orderFinancialHtml(o) {
+    const rows = [];
+    if (o.subtotal != null) rows.push(`<div class="row"><span>Subtotal</span><span>${this.money(o.subtotal)}</span></div>`);
+    if (Number(o.discount) > 0) {
+      rows.push(`<div class="row"><span>Discount${o.discount_type ? ` (${this.esc(o.discount_type)})` : ''}</span><span>-${this.money(o.discount)}</span></div>`);
+    }
+    if (Number(o.gift_card_amount) > 0 && o.gift_card_code) {
+      rows.push(`<div class="row"><span>Gift card <code>${this.esc(o.gift_card_code)}</code></span><span>-${this.money(o.gift_card_amount)}</span></div>`);
+    }
+    if (Number(o.delivery_fee) > 0) rows.push(`<div class="row"><span>Delivery fee</span><span>${this.money(o.delivery_fee)}</span></div>`);
+    if (Number(o.tax_amount) > 0) rows.push(`<div class="row"><span>Tax (VAT)</span><span>${this.money(o.tax_amount)}</span></div>`);
+    if (o.coupon_code) rows.push(`<div class="row"><span>Coupon</span><span>${this.esc(o.coupon_code)}</span></div>`);
+    if (Number(o.loyalty_points_used) > 0) rows.push(`<div class="row"><span>Loyalty points</span><span>${o.loyalty_points_used} pts</span></div>`);
+    rows.push(`<div class="row" style="font-weight:800;font-size:1.1rem"><span>Total</span><span>${this.money(o.total)}</span></div>`);
+    if (o.payments_detail?.length) {
+      rows.push(`<div class="row" style="flex-direction:column;align-items:flex-start;gap:4px"><span>Payments</span>
+        ${o.payments_detail.map((p) => `<div class="meta">${this.esc(p.type)}${p.gift_card_code ? ` (${this.esc(p.gift_card_code)})` : ''}: ${this.money(p.amount)}</div>`).join('')}</div>`);
+    } else if (o.payment) {
+      rows.push(`<div class="row"><span>Payment</span><span>${this.esc(o.payment)}${o.payment_status ? ` · ${this.esc(o.payment_status)}` : ''}</span></div>`);
+    }
+    if (Number(o.amount_paid) > 0) rows.push(`<div class="row"><span>Amount paid</span><span>${this.money(o.amount_paid)}</span></div>`);
+    if (Number(o.change_amount) > 0) rows.push(`<div class="row"><span>Change</span><span>${this.money(o.change_amount)}</span></div>`);
+    return rows.join('');
+  },
+  playAlertSound() {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const play = (freq, delay) => {
+        setTimeout(() => {
+          const o = ctx.createOscillator();
+          const g = ctx.createGain();
+          o.connect(g); g.connect(ctx.destination);
+          o.frequency.value = freq;
+          g.gain.value = 0.1;
+          o.start();
+          setTimeout(() => { o.stop(); }, 200);
+        }, delay);
+      };
+      play(880, 0); play(1100, 250);
+    } catch (_) { /* no audio */ }
+  },
   toast(msg, type = 'info') {
     const el = document.createElement('div');
     el.className = `toast ${type === 'error' ? 'error' : type === 'success' ? 'success' : ''}`;
@@ -88,6 +171,7 @@ const ManagerApp = {
         this.lastAlertId = Math.max(...fresh.map((a) => a.id));
         const latest = fresh[fresh.length - 1];
         if (latest.type === 'new_order' || latest.type === 'large_order') {
+          this.playAlertSound();
           this.toast(`${latest.title}: ${latest.body?.split('\n')[0] || ''}`, 'success');
           if (Notification.permission === 'granted') {
             new Notification(latest.title, { body: latest.body, tag: `order-${latest.id}` });
@@ -101,11 +185,7 @@ const ManagerApp = {
   async refresh() {
     if (!this.token) return;
     try {
-      const filters = { period: this.period };
-      if (this.period === 'custom' && this.customFrom && this.customTo) {
-        filters.from = this.customFrom;
-        filters.to = this.customTo;
-      }
+      const filters = this.branchFilters();
       const [dash, alerts, pos] = await Promise.all([
         ManagerAPI.dashboard(filters),
         ManagerAPI.alerts(30),
@@ -117,6 +197,7 @@ const ManagerApp = {
       this.lastUpdated = new Date();
       if (alerts.length) this.lastAlertId = Math.max(this.lastAlertId, ...alerts.map((a) => a.id));
       if (this.tab === 'orders') await this.loadOrders();
+      if (this.tab === 'online') await this.loadOnlineOrders();
       if (this.view === 'main') this.render();
     } catch (err) {
       if (/session|revoked|not authenticated/i.test(err.message)) {
@@ -128,12 +209,11 @@ const ManagerApp = {
   },
 
   async loadOrders() {
-    const filters = { period: this.period, limit: 50 };
-    if (this.period === 'custom' && this.customFrom && this.customTo) {
-      filters.from = this.customFrom;
-      filters.to = this.customTo;
-    }
-    this.orders = await ManagerAPI.orders(filters);
+    this.orders = await ManagerAPI.orders({ ...this.branchFilters(), limit: 50 });
+  },
+
+  async loadOnlineOrders() {
+    this.onlineOrders = await ManagerAPI.onlineOrders({ ...this.branchFilters(), status: this.onlineTab, limit: 50 });
   },
 
   orderIdFromAlert(a) {
@@ -144,7 +224,7 @@ const ManagerApp = {
   },
 
   periodToolbarHtml() {
-    return `<div class="toolbar">
+    return `${this.branchSelectorHtml()}<div class="toolbar">
       <select id="period-select" class="filter-select">
         <option value="today" ${this.period === 'today' ? 'selected' : ''}>Today</option>
         <option value="yesterday" ${this.period === 'yesterday' ? 'selected' : ''}>Yesterday</option>
@@ -171,6 +251,7 @@ const ManagerApp = {
     const tabs = [
       { id: 'home', icon: '🏠', label: 'Home' },
       { id: 'orders', icon: '📋', label: 'Orders' },
+      { id: 'online', icon: '🛒', label: 'POS Online' },
       ...(multi ? [{ id: 'branches', icon: '🏢', label: 'Branches' }] : []),
       { id: 'alerts', icon: '🔔', label: 'Alerts' },
       { id: 'more', icon: '⋯', label: 'More' }
@@ -189,6 +270,7 @@ const ManagerApp = {
         this.view = 'main';
         try { localStorage.setItem('manager_tab', this.tab); } catch (_) { /* ignore */ }
         if (this.tab === 'orders') this.orders = [];
+        if (this.tab === 'online') this.onlineOrders = [];
         await this.refresh();
         return;
       }
@@ -247,9 +329,23 @@ const ManagerApp = {
         this.toast('Settings saved', 'success');
         return;
       }
+      if (act === 'online-tab') {
+        this.onlineTab = btn.dataset.status || 'pending';
+        this.onlineOrders = [];
+        await this.loadOnlineOrders();
+        this.render();
+        return;
+      }
       if (act === 'more-nav') { this.tab = 'more'; this.view = btn.dataset.screen || 'more'; this.render(); return; }
     };
     app.onchange = async (e) => {
+      if (e.target.id === 'branch-filter') {
+        this.branchFilter = e.target.value || 'all';
+        try { localStorage.setItem('manager_branch_filter', this.branchFilter); } catch (_) { /* */ }
+        this.orders = [];
+        this.onlineOrders = [];
+        await this.refresh();
+      }
       if (e.target.id === 'order-search') {
         const q = e.target.value.trim();
         if (q.length >= 2) {
@@ -294,6 +390,7 @@ const ManagerApp = {
     }
     if (this.view === 'order' && this.orderDetail) {
       const o = this.orderDetail;
+      const hasCustomer = o.customer_name || o.customer_phone || o.customer_email;
       app.innerHTML = this.shell(`<div class="mgr-main">
         <button type="button" class="back-btn" data-act="back">← Back</button>
         <div class="order-detail">
@@ -303,20 +400,24 @@ const ManagerApp = {
           <div class="row"><span>Cashier</span><span>${this.esc(o.cashier || '—')}</span></div>
           <div class="row"><span>Status</span><span>${this.esc(o.status)}</span></div>
           ${o.order_source ? `<div class="row"><span>Source</span><span>${this.esc(o.order_source)}${o.is_online_pending ? ' (web — not on POS yet)' : ''}</span></div>` : ''}
-          ${o.customer_name ? `<div class="row"><span>Customer</span><span>${this.esc(o.customer_name)}${o.customer_phone ? ` · ${this.esc(o.customer_phone)}` : ''}</span></div>` : ''}
-          ${o.customer_email ? `<div class="row"><span>Email</span><span>${this.esc(o.customer_email)}</span></div>` : ''}
+          ${hasCustomer ? `<div class="customer-card">
+            <div class="row" style="align-items:flex-start"><span>Customer</span>
+              <div style="text-align:right">
+                <strong>${this.esc(o.customer_name || '—')}</strong>
+                ${o.customer_phone ? `<div class="meta">${this.esc(o.customer_phone)}</div>` : ''}
+                ${o.customer_email ? `<div class="meta">${this.esc(o.customer_email)}</div>` : ''}
+                ${this.contactActionsHtml(o.customer_phone, o.customer_email)}
+              </div>
+            </div>
+          </div>` : ''}
           ${o.fulfillment_type ? `<div class="row"><span>Fulfillment</span><span>${this.esc(o.fulfillment_type)}</span></div>` : ''}
           ${o.delivery_address ? `<div class="row"><span>Delivery</span><span>${this.esc(o.delivery_address)}</span></div>` : ''}
           ${o.notes ? `<div class="row"><span>Notes</span><span>${this.esc(o.notes)}</span></div>` : ''}
+          <h3 style="margin:16px 0 8px;font-size:13px;color:var(--muted);text-transform:uppercase">Items</h3>
           <ul class="order-items">${(o.items || []).map((i) =>
             `<li>${this.esc(i.name)} × ${i.quantity}${i.modifiers_text ? ` <small>(${this.esc(i.modifiers_text)})</small>` : ''} <span style="float:right">${this.money(i.total || i.unit_price * i.quantity)}</span></li>`).join('')}</ul>
-          <div class="row"><span>Subtotal</span><span>${this.money(o.subtotal)}</span></div>
-          ${o.discount ? `<div class="row"><span>Discount</span><span>-${this.money(o.discount)}</span></div>` : ''}
-          ${o.delivery_fee ? `<div class="row"><span>Delivery fee</span><span>${this.money(o.delivery_fee)}</span></div>` : ''}
-          ${o.coupon_code ? `<div class="row"><span>Coupon</span><span>${this.esc(o.coupon_code)}</span></div>` : ''}
-          ${o.loyalty_points_used ? `<div class="row"><span>Loyalty</span><span>${o.loyalty_points_used} pts</span></div>` : ''}
-          <div class="row" style="font-weight:800;font-size:1.1rem"><span>Total</span><span>${this.money(o.total)}</span></div>
-          <div class="row"><span>Payment</span><span>${this.esc(o.payment)}</span></div>
+          <h3 style="margin:16px 0 8px;font-size:13px;color:var(--muted);text-transform:uppercase">Financial summary</h3>
+          ${this.orderFinancialHtml(o)}
         </div></div>`);
       this.bind();
       return;
@@ -357,10 +458,15 @@ const ManagerApp = {
           <input type="search" id="order-search" class="search-bar" placeholder="Search order number…" style="width:100%;margin-bottom:12px;padding:12px;border-radius:10px;border:1px solid var(--border);background:var(--bg);color:var(--text)">
           <div class="list-card">${this.orders.map((o) =>
             `<div class="list-row" data-act="order" data-id="${o.id}">
-              <div><strong>#${this.esc(o.order_number || o.receipt_number)}</strong>
+              <div style="min-width:0;flex:1"><strong>#${this.esc(o.order_number || o.receipt_number)}</strong>
                 ${o.order_source && String(o.order_source).toUpperCase() !== 'POS' ? `<small> (${this.esc(o.order_source)})</small>` : ''}
-                <div class="meta">${this.esc(o.branch_name)} · ${this.esc(String(o.time).slice(11, 16))} · ${this.esc(o.payment)} · ${this.esc(o.status || '')}</div></div>
-              <strong>${this.money(o.total)}</strong></div>`).join('') || '<div class="empty">No orders for this period</div>'}
+                <div class="meta">${this.esc(o.branch_name)} · ${this.esc(String(o.time).slice(11, 16))} · ${this.esc(o.payment)} · ${this.esc(o.status || '')}</div>
+                ${o.customer_name ? `<div class="meta">${this.esc(o.customer_name)}${o.customer_phone ? ` · ${this.esc(o.customer_phone)}` : ''}</div>` : ''}
+              </div>
+              <div style="display:flex;align-items:center;gap:8px">
+                ${this.contactActionsHtml(o.customer_phone, o.customer_email)}
+                <strong>${this.money(o.total)}</strong>
+              </div></div>`).join('') || '<div class="empty">No orders for this period</div>'}
           </div></div>`);
         this.bind();
       };
@@ -372,6 +478,46 @@ const ManagerApp = {
         });
       } else {
         renderOrders();
+      }
+      return;
+    }
+    if (this.tab === 'online') {
+      const renderOnline = () => {
+        const pending = this.onlineOrders.filter((o) => String(o.status).toLowerCase() === 'pending').length;
+        app.innerHTML = this.shell(`<div class="mgr-header"><h1>POS Online</h1>
+          <div class="sub">Live online orders · ${pending} pending</div></div><div class="mgr-main">
+          ${this.branchSelectorHtml()}
+          <div class="toolbar" style="margin-bottom:12px">
+            <button type="button" class="btn-sm ${this.onlineTab === 'pending' ? 'btn-primary' : 'btn-ghost'}" data-act="online-tab" data-status="pending">Pending</button>
+            <button type="button" class="btn-sm ${this.onlineTab === 'accepted' ? 'btn-primary' : 'btn-ghost'}" data-act="online-tab" data-status="accepted">Accepted</button>
+            <button type="button" class="btn-sm ${this.onlineTab === 'all' ? 'btn-primary' : 'btn-ghost'}" data-act="online-tab" data-status="all">All</button>
+          </div>
+          <div class="list-card">${this.onlineOrders.map((o) =>
+            `<div class="list-row" data-act="order" data-id="${o.id}">
+              <div style="min-width:0;flex:1">
+                <strong>#${this.esc(o.order_number)}</strong>
+                <span class="pill ${String(o.status).toLowerCase() === 'pending' ? 'unread' : 'ok'}" style="margin-left:6px">${this.esc(o.status)}</span>
+                ${o.is_online_pending ? '<span class="pill off" style="margin-left:4px">NOT ON POS</span>' : ''}
+                <div class="meta">${this.esc(o.branch_name)} · ${this.esc(String(o.time).slice(11, 16))} · ${this.esc(o.fulfillment_type || 'collection')}</div>
+                <div class="meta"><strong>${this.esc(o.customer_name || 'Customer')}</strong>${o.customer_phone ? ` · ${this.esc(o.customer_phone)}` : ''}</div>
+              </div>
+              <div style="display:flex;align-items:center;gap:8px">
+                ${this.contactActionsHtml(o.customer_phone, o.customer_email)}
+                <strong>${this.money(o.total)}</strong>
+              </div></div>`).join('') || '<div class="empty">No online orders for this filter</div>'}
+          </div>
+          <p class="meta" style="margin-top:12px">Accept/reject orders on the POS till (🛒 Online button).</p>
+        </div>`);
+        this.bind();
+      };
+      if (!this.onlineOrders.length) {
+        app.innerHTML = this.shell(`<div class="mgr-header"><h1>POS Online</h1></div><div class="mgr-main"><p class="muted">Loading online orders…</p></div>`);
+        this.loadOnlineOrders().then(renderOnline).catch((err) => {
+          this.toast(err.message, 'error');
+          renderOnline();
+        });
+      } else {
+        renderOnline();
       }
       return;
     }

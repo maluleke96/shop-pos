@@ -1,4 +1,4 @@
-const B = 'https://peaceful-motivation-production-7dd2.up.railway.app';
+const B = 'https://chisafood.up.railway.app';
 async function rpc(m,a,t){const h={'Content-Type':'application/json'};if(t)h['X-Session-Token']=t;const r=await fetch(B+'/rpc',{method:'POST',headers:h,body:JSON.stringify({method:m,args:a})});const j=await r.json();return{j,t:r.headers.get('X-Session-Token')||j.sessionToken||t};}
 (async()=>{
   const pass=require('fs').readFileSync(0,'utf8').trim();

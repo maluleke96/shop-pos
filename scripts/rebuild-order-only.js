@@ -7,7 +7,7 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 
 const root = path.join(__dirname, '..');
-const cloudUrl = process.env.SHOP_POS_CLOUD_URL || 'https://peaceful-motivation-production-7dd2.up.railway.app';
+const cloudUrl = process.env.SHOP_POS_CLOUD_URL || 'https://chisafood.up.railway.app';
 const artifact = 'ShopPOS-OnlineOrdering';
 const name = 'Online Ordering';
 

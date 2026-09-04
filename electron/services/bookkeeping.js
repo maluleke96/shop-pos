@@ -570,8 +570,8 @@ function getTaxSummary(from, to, branchId) {
 
   const salesList = db.prepare(`
     SELECT s.id, s.receipt_number, s.created_at, s.subtotal, s.tax_amount, s.total, s.branch_id,
-      s.order_type, s.order_source, s.cashier_name,
-      u.full_name as cashier_name_user, b.name as branch_name
+      s.order_type, s.order_source,
+      COALESCE(u.full_name, '—') AS cashier_name, b.name as branch_name
     FROM sales s
     LEFT JOIN users u ON s.user_id = u.id
     LEFT JOIN branches b ON s.branch_id = b.id
@@ -580,7 +580,6 @@ function getTaxSummary(from, to, branchId) {
     LIMIT 2000
   `).all(...params).map((s) => ({
     ...s,
-    cashier_name: s.cashier_name || s.cashier_name_user || '—',
     channel: s.order_type === 'online' || String(s.order_source || '').toUpperCase() === 'ONLINE' ? 'Online' : 'POS'
   }));
 

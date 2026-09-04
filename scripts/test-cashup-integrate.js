@@ -2,7 +2,7 @@ const path = require('path');
 const os = require('os');
 const ROOT = path.join(__dirname, '..');
 require('../lib/load-env').loadProjectEnv(ROOT);
-const BASE = (process.env.SMOKE_URL || 'https://peaceful-motivation-production-7dd2.up.railway.app').replace(/\/$/, '');
+const BASE = (process.env.SMOKE_URL || 'https://chisafood.up.railway.app').replace(/\/$/, '');
 const SHARED = path.join(os.homedir(), 'AppData', 'Roaming', 'ShopPOS', 'Shared');
 
 (async () => {

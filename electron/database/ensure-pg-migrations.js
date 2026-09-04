@@ -44,6 +44,21 @@ function ensurePgMigrations(db) {
       }
     }
 
+    if (file.includes('hr_platform') && done) {
+      let hasHr = false;
+      try {
+        hasHr = !!db.prepare(`
+          SELECT 1 AS ok FROM information_schema.tables
+          WHERE table_schema = 'public' AND table_name = 'hr_policies' LIMIT 1
+        `).get()?.ok;
+      } catch (_) { /* */ }
+      if (!hasHr) {
+        console.warn(`[DB] ${file} marked applied but hr_policies missing — re-applying`);
+        try { db.prepare('DELETE FROM pg_schema_migrations WHERE name = ?').run(file); } catch (_) { /* */ }
+        done = false;
+      }
+    }
+
     if (done) continue;
 
     const sql = fs.readFileSync(path.join(dir, file), 'utf8');

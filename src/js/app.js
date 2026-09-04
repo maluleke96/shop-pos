@@ -821,7 +821,7 @@ const App = {
     if (typeof location !== 'undefined' && location.origin && !location.origin.startsWith('file:')) {
       return location.origin.replace(/\/$/, '');
     }
-    return 'https://peaceful-motivation-production-7dd2.up.railway.app';
+    return 'https://chisafood.up.railway.app';
   },
 
   async getBusinessManagerUrl() {

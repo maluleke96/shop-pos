@@ -38,7 +38,7 @@ async function main() {
 
   // 2. Referral link
   try {
-    process.env.RAILWAY_PUBLIC_DOMAIN = 'peaceful-motivation-production-7dd2.up.railway.app';
+    process.env.RAILWAY_PUBLIC_DOMAIN = 'chisafood.up.railway.app';
     const link = mkt.buildReferralLink('TEST');
     ok('referral_link', /^https:\/\//.test(link), { link });
     delete process.env.RAILWAY_PUBLIC_DOMAIN;

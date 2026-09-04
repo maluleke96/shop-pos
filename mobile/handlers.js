@@ -103,7 +103,7 @@ function buildHandlers(store) {
   const CLOUD_SYNC =
     (typeof window !== 'undefined' &&
       (window.__SHOP_POS_ENV__?.SHOP_POS_SYNC_URL || window.__SHOP_POS_ENV__?.SHOP_POS_CLOUD_URL)) ||
-    'https://peaceful-motivation-production-7dd2.up.railway.app';
+    'https://chisafood.up.railway.app';
 
   async function mobileCloudRpc(method, args) {
     if (isServerCloudRpc()) {
@@ -1484,6 +1484,7 @@ function buildHandlers(store) {
   add('hr:employeeProfile', wrapSync((id, a) => s.getEmployeeProfile(id, hrPlatA(a))));
   add('hr:employeeTimeline', wrapSync((id, a) => s.getEmployeeTimeline(id, hrPlatA(a))));
   add('hr:approvals', wrapSync((f, a) => s.listApprovals(f || {}, hrPlatA(a))));
+  add('hr:submitForApproval', wrapSync((d, a) => s.submitHrForApproval(d || {}, hrPlatA(a))));
   add('hr:complianceCentre', wrapSync((a) => s.getComplianceCentre(hrPlatA(a))));
   add('hr:complianceEvents', wrapSync((f, a) => s.listComplianceEvents(f || {}, hrPlatA(a))));
   add('hr:saveComplianceEvent', wrapSync((d, a) => s.saveComplianceEvent(d || {}, hrPlatA(a))));
@@ -2068,6 +2069,7 @@ function buildHandlers(store) {
   add('mktp:applyAgent', wrapSync((data) => s.applyAsReferralAgent(data || {})));
   add('mktp:approveAgent', wrapSync((id, data, a) => s.approveReferralAgent(id, data || {}, mktA(a))));
   add('mktp:setAgentStatus', wrapSync((id, status, reason, a) => s.setReferralAgentStatus(id, status, reason, mktA(a))));
+  add('mktp:ensureAgentLogin', wrapSync((agentId, a) => s.ensureAgentLoginById(agentId, mktA(a))));
   add('mktp:linkAgentUser', wrapSync((agentId, userId, a) => s.linkAgentUser?.(agentId, userId, mktA(a))));
   add('mktp:recordClick', wrapSync((code, meta) => s.recordReferralClick(code, meta || {})));
   add('mktp:attribute', wrapSync((data, a) => s.attributeReferral(data || {}, mktA(a))));
@@ -2307,9 +2309,9 @@ function buildHandlers(store) {
     return dp.rejectDriver(id, reason, user);
   }));
   add('delivery:registerDriver', wrapSync((d) => dp.registerDriver(d || {})));
-  add('delivery:assign', wrapSync((id, driverId, a) => {
+  add('delivery:assign', wrapSync((id, driverId, a, opts) => {
     const user = requireUserSession(['owner', 'manager', 'supervisor', 'assistant_manager', 'delivery_manager']);
-    return dp.assignDriver(id, driverId, user);
+    return dp.assignDriver(id, driverId, user, opts || {});
   }));
   add('delivery:autoAssign', wrapSync((id, a) => {
     const user = requireUserSession(['owner', 'manager', 'supervisor', 'assistant_manager', 'delivery_manager']);
@@ -2764,6 +2766,7 @@ function buildHandlers(store) {
   add('driveThru:runTests', wrapAsync(() => driveThruSvc.runDriveThruTests()));
   add('driveThru:adminListStations', wrapSync((a) => { requireUserSession(['owner', 'manager']); return driveThruSvc.listStationsAdmin(); }));
   add('driveThru:adminSaveStation', wrapSync((data, a) => { requireUserSession(['owner', 'manager']); return driveThruSvc.saveStationAdmin(data || {}); }));
+  add('driveThru:adminRegenerateStationToken', wrapSync((stationId, a) => { requireUserSession(['owner', 'manager']); return driveThruSvc.regenerateStationTokenAdmin(stationId); }));
 
   scheduleDailyBackup(store);
   return H;

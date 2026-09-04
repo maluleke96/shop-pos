@@ -71,7 +71,7 @@ async function main() {
 
   // 5. Referral link builds full URL on cloud env
   try {
-    process.env.RAILWAY_PUBLIC_DOMAIN = 'peaceful-motivation-production-7dd2.up.railway.app';
+    process.env.RAILWAY_PUBLIC_DOMAIN = 'chisafood.up.railway.app';
     const link = mkt.buildReferralLink('TESTCODE');
     ok('referral_link_full_url', /^https:\/\//.test(link) && link.includes('/r/TESTCODE'), { link });
     delete process.env.RAILWAY_PUBLIC_DOMAIN;

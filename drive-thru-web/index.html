@@ -14,7 +14,9 @@
     <button id="dt-login-btn">Sign In</button>
     <p id="login-err" class="err"></p></div></div>
   <div id="station-setup" class="screen hidden"><div class="login-box">
-    <h2>Select Station</h2><input id="station-token" placeholder="Station token (from admin)">
+    <h2>Connect Station</h2>
+    <p class="muted" style="margin:0 0 12px;max-width:320px;line-height:1.45">Paste the <strong>station token</strong> from Main Admin → Business Modules → Drive-Thru → Add station (or New token). This is not the kiosk pairing code.</p>
+    <input id="station-token" placeholder="Paste station token here" autocomplete="off">
     <button id="station-connect-btn">Connect Station</button></div></div>
   <div id="app" class="screen hidden"></div>
   <script src="js/config.js"></script>

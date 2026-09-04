@@ -1,7 +1,7 @@
 /**
  * Reproduce staff:saveEmployee operator error against live Railway RPC.
  */
-const BASE = process.env.SHOP_POS_URL || 'https://peaceful-motivation-production-7dd2.up.railway.app';
+const BASE = process.env.SHOP_POS_URL || 'https://chisafood.up.railway.app';
 
 async function rpc(method, args, token) {
   const headers = { 'Content-Type': 'application/json' };

@@ -22,12 +22,14 @@
 </head>
 <body>
   <div id="pair"><div class="box"><h2>CONNECT THIS SCREEN</h2><p>Pairing Code:</p><div class="code" id="pair-code">------</div><p id="pair-msg">Waiting for approval…</p></div></div>
+  <div id="emergency-banner" style="position:fixed;top:0;left:0;right:0;background:#b91c1c;text-align:center;padding:10px;display:none;z-index:6;font-weight:bold"></div>
   <div id="rec-banner">🔴 Recording consent acknowledged</div>
   <div id="stage"></div>
-  <audio id="music" loop></audio>
+  <audio id="music"></audio>
   <audio id="announce"></audio>
   <div id="status"></div>
   <script src="js/config.js"></script>
+  <script src="js/renderer.js"></script>
   <script src="js/player.js"></script>
 </body>
 </html>

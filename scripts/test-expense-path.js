@@ -1,6 +1,6 @@
 process.env.SHOP_POS_LOCAL_INSTALLER = '1';
 process.env.SHOP_POS_DATA = require('path').join(require('os').homedir(), 'AppData', 'Roaming', 'ShopPOS', 'Shared');
-process.env.SHOP_POS_SYNC_URL = 'https://peaceful-motivation-production-7dd2.up.railway.app';
+process.env.SHOP_POS_SYNC_URL = 'https://chisafood.up.railway.app';
 require('../lib/load-env').loadProjectEnv(require('path').join(__dirname, '..'));
 (async () => {
   const dbMod = require('../electron/database/db');

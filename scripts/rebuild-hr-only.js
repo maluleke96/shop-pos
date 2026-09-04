@@ -8,7 +8,7 @@ const mode = 'hr';
 const name = 'HR, Payroll & Documents';
 const appId = 'com.shoppos.hr';
 const artifact = 'ShopPOS-HR';
-const cloudUrl = 'https://peaceful-motivation-production-7dd2.up.railway.app';
+const cloudUrl = 'https://chisafood.up.railway.app';
 
 fs.writeFileSync(
   path.join(root, 'electron', 'cloud-shell-config-hr.js'),

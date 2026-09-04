@@ -1593,6 +1593,7 @@ const AdminMarketingPage = {
             ${this.btn('View', 'agent-view', { id: a.id })}
             ${a.status === 'pending' ? this.btn('Approve', 'agent-approve', { id: a.id }, 'btn-success') : ''}
             ${a.status === 'active' ? this.btn('Suspend', 'agent-status', { id: a.id, status: 'suspended' }, 'btn-warning') : ''}
+            ${a.status === 'active' ? this.btn(a.user_id ? 'Reset login' : 'Create login', 'agent-create-login', { id: a.id, name: a.full_name }) : ''}
             ${['suspended', 'inactive'].includes(a.status) ? this.btn('Reactivate', 'agent-status', { id: a.id, status: 'active' }, 'btn-success') : ''}
             ${!['terminated', 'rejected'].includes(a.status) ? this.btn('Terminate', 'agent-status', { id: a.id, status: 'terminated' }, 'btn-danger') : ''}
             ${this.btn('Link user', 'agent-link-user', { id: a.id, name: a.full_name })}
@@ -1707,7 +1708,18 @@ const AdminMarketingPage = {
           reason: this.val('mktp-apv-reason') || 'Approved'
         }, this.actor()), 'Approval failed');
         if (!saved) return false;
-        this.toast(`Approved — referral code ${saved.referral_code || ''}`, 'success');
+        if (saved.temp_username && saved.temp_password) {
+          this.toast(`Approved. Portal login: ${saved.temp_username} / ${saved.temp_password}`, 'success');
+          Utils.showModal?.('Agent portal login', `
+            <p>Share these credentials with the agent (shown once):</p>
+            <div class="field"><label>Username</label><input readonly value="${this.esc(saved.temp_username)}"></div>
+            <div class="field"><label>Temporary password</label><input readonly value="${this.esc(saved.temp_password)}"></div>
+            <p class="muted">They sign in on the main app Welcome screen → Register as Referral Agent / Marketing Agent mode, or use username/password on the marketing agent portal.</p>`,
+            '<button type="button" class="btn btn-primary" id="mktp-login-done">Done</button>');
+          document.getElementById('mktp-login-done')?.addEventListener('click', () => Utils.hideModal());
+        } else {
+          this.toast(`Approved — referral code ${saved.referral_code || ''}`, 'success');
+        }
         await this.refreshCounts();
         return true;
       }, 'Approve agent');
@@ -3003,6 +3015,25 @@ const AdminMarketingPage = {
     },
     async 'agent-link-user'(ds) {
       await this.agentLinkUserForm(ds.id, ds.name);
+    },
+    async 'agent-create-login'(ds) {
+      const saved = await this.apiOk(API.mktpEnsureAgentLogin(parseInt(ds.id, 10), this.actor()), 'Could not create login');
+      if (!saved) return;
+      const user = saved._temp_username || saved.temp_username;
+      const pass = saved._temp_password || saved.temp_password;
+      if (user && pass) {
+        Utils.showModal('Agent portal login', `
+          <p><strong>${this.esc(ds.name || 'Agent')}</strong></p>
+          <div class="field"><label>Username</label><input readonly value="${this.esc(user)}"></div>
+          <div class="field"><label>Temporary password</label><input readonly value="${this.esc(pass)}"></div>
+          <p class="muted">Share once. Agent signs in with these credentials on the Marketing Agent portal.</p>`,
+          '<button type="button" class="btn btn-primary" id="mktp-login-done">Done</button>');
+        document.getElementById('mktp-login-done')?.addEventListener('click', () => Utils.hideModal());
+        this.toast(`Login ready: ${user}`, 'success');
+      } else {
+        this.toast('Login linked (no new password returned)', 'success');
+      }
+      await this.refresh();
     },
     async 'agent-filter'() {
       this.ui.agentStatus = this.val('mktp-ag-status');

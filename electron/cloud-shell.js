@@ -5,6 +5,6 @@
  */
 process.env.SHOP_POS_LOCAL_INSTALLER = '1';
 if (!process.env.SHOP_POS_SYNC_URL) {
-  process.env.SHOP_POS_SYNC_URL = 'https://peaceful-motivation-production-7dd2.up.railway.app';
+  process.env.SHOP_POS_SYNC_URL = 'https://chisafood.up.railway.app';
 }
 require('./main.js');

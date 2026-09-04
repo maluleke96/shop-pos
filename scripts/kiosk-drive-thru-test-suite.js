@@ -2,7 +2,7 @@
 /** Kiosk + Drive-Thru automated + E2E tests */
 const http = require('http');
 const https = require('https');
-const BASE = process.env.TEST_URL || 'https://peaceful-motivation-production-7dd2.up.railway.app';
+const BASE = process.env.TEST_URL || 'https://chisafood.up.railway.app';
 const ADMIN_USER = process.env.ADMIN_USER || 'chisa96';
 const ADMIN_PASS = process.env.ADMIN_PASS || '123456';
 const results = [];

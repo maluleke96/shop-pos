@@ -2,7 +2,7 @@
  * Live Railway probe — no POS password required.
  * Does not write business data. Does not factory-reset.
  */
-const BASE = process.env.SHOP_POS_LIVE_URL || 'https://peaceful-motivation-production-7dd2.up.railway.app';
+const BASE = process.env.SHOP_POS_LIVE_URL || 'https://chisafood.up.railway.app';
 
 async function rpc(method, args = [], headers = {}) {
   const t0 = Date.now();

@@ -8,7 +8,7 @@ const path = require('path');
 const root = path.join(__dirname, '..');
 const cloudUrl =
   process.env.SHOP_POS_CLOUD_URL ||
-  'https://peaceful-motivation-production-7dd2.up.railway.app';
+  'https://chisafood.up.railway.app';
 
 const apps = [
   { mode: 'admin', appId: 'com.shoppos.admin', appName: 'Shop POS Admin', entry: 'admin-app.html' },

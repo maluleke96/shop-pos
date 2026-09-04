@@ -1178,19 +1178,19 @@
           </div>`;
         }).join('')}
       </div></div>` : ''}
-      ${salaryClaims.length ? `<div class="card" style="margin-top:16px;border-color:var(--success)"><div class="card-body"><h4>Salary Claims</h4>
-        <p class="muted" style="font-size:13px">Claim your salary before the deadline. Admin must approve (with their signature) before payment.</p>
+      ${salaryClaims.length ? `<div class="card" style="margin-top:16px;border-color:var(--success)"><div class="card-body"><h4>Salary Claims &amp; Payslip Advice</h4>
+        <p class="muted" style="font-size:13px">When payday opens, your payslip appears above and you can claim salary here. Admin (and HR can view) must approve the claim before payment. Download the claim PDF as your salary advice.</p>
         ${salaryClaims.map(cl => {
           const canClaim = ['open', 'rejected'].includes(cl.status)
             && (!cl.claim_opens_at || new Date() >= new Date(cl.claim_opens_at))
             && (!cl.claim_deadline || new Date() <= new Date(cl.claim_deadline));
-          return `<div style="padding:10px 0;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px"><span><strong>${cl.period_start} " ${cl.period_end}</strong><br>
+          return `<div style="padding:10px 0;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px"><span><strong>${cl.period_start} — ${cl.period_end}</strong><br>
               <small>Net ${Utils.formatMoney(cl.amount || cl.net_amount, currency)} · <span class="tag">${cl.status}</span></small>
               <br><small class="muted">Claim by: ${Utils.formatDateTime(cl.claim_deadline)}${cl.payment_date ? ' · Pay date: ' + cl.payment_date : ''}</small>
             </span>
             <span style="display:flex;gap:4px;flex-wrap:wrap">
               ${canClaim ? `<button class="btn btn-sm btn-primary sc-claim" data-id="${cl.id}">Claim salary</button>` : ''}
-              ${['approved','paid','claimed'].includes(cl.status) ? `<button class="btn btn-sm btn-ghost sc-pdf" data-id="${cl.id}">PDF</button>` : ''}
+              ${['approved','paid','claimed','open'].includes(cl.status) ? `<button class="btn btn-sm btn-ghost sc-pdf" data-id="${cl.id}">Advice PDF</button>` : ''}
             </span>
           </div>`;
         }).join('')}

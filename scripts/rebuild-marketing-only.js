@@ -8,7 +8,7 @@ const mode = 'marketing';
 const name = 'Marketing Agent';
 const appId = 'com.shoppos.marketing';
 const artifact = 'ShopPOS-Marketing-Agent';
-const cloudUrl = 'https://peaceful-motivation-production-7dd2.up.railway.app';
+const cloudUrl = 'https://chisafood.up.railway.app';
 
 fs.writeFileSync(
   path.join(root, 'electron', 'cloud-shell-config-marketing.js'),

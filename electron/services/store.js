@@ -2267,10 +2267,13 @@ function completeSale(saleData, actorId, actorName, actorRole) {
     : { points: 0, discount: 0 };
   const saleDiscount = money(cartDiscount + (loyaltyRedemption.discount || 0));
   const taxTotals = calcSaleTaxTotals(grossSubtotal, saleDiscount, taxRate, taxInclusive);
+  const deliveryFee = (saleData.order_type === 'delivery' || (saleData.delivery_address && String(saleData.delivery_address).trim()))
+    ? money(Number(saleData.delivery_fee) || 0) : 0;
+  saleData.delivery_fee = deliveryFee;
   saleData.subtotal = taxTotals.subtotal;
   saleData.tax_amount = taxTotals.tax_amount;
-  saleData.total = taxTotals.total;
-  const saleTotal = taxTotals.total;
+  saleData.total = money(taxTotals.total + deliveryFee);
+  const saleTotal = saleData.total;
   const amountPaid = money(saleData.amount_paid);
   if (amountPaid < saleTotal - 0.01) {
     throw new Error('Payment incomplete — amount paid is less than total after loyalty redemption');
@@ -2371,17 +2374,18 @@ function completeSale(saleData, actorId, actorName, actorRole) {
     try { db.exec('ALTER TABLE sales ADD COLUMN client_request_id TEXT'); } catch (_) { /* exists */ }
   }
   try { db.exec('ALTER TABLE sales ADD COLUMN order_source TEXT'); } catch (_) { /* exists */ }
+  try { db.exec('ALTER TABLE sales ADD COLUMN delivery_fee REAL DEFAULT 0'); } catch (_) { /* exists */ }
   const txn = db.transaction(() => {
     let saleResult;
     try {
       saleResult = db.prepare(`
-      INSERT INTO sales (receipt_number, order_number, user_id, customer_id, subtotal, discount, tax_amount, total, amount_paid, change_amount, notes, branch_id, device_id, status, order_type, table_id, table_name, delivery_address, client_request_id, order_source)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?, ?, ?, ?)
+      INSERT INTO sales (receipt_number, order_number, user_id, customer_id, subtotal, discount, tax_amount, total, amount_paid, change_amount, notes, branch_id, device_id, status, order_type, table_id, table_name, delivery_address, delivery_fee, client_request_id, order_source)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?, ?, ?, ?, ?)
     `).run(receiptNumber, orderNumber, actorId, saleData.customer_id || null,
         saleData.subtotal, saleDiscount, saleData.tax_amount || 0,
         saleTotal, amountPaid, changeAmount, saleData.notes || null, branchId, deviceId,
         saleData.order_type || null, saleData.table_id || null, saleData.table_name || null,
-        saleData.delivery_address || null,
+        saleData.delivery_address || null, deliveryFee,
         clientRequestId || null, saleData.order_source || null);
     } catch (_) {
       saleResult = db.prepare(`
@@ -4324,9 +4328,10 @@ async function acceptOnlineOrderAsSale(localId, actor, opts = {}) {
     items: saleItems,
     discount: saleDiscount,
     tax_amount: orderTax,
+    delivery_fee: fulfillment === 'delivery' ? deliveryFee : 0,
     amount_paid: tender > 0 ? tender : orderTotal,
     payments,
-    order_type: 'online',
+    order_type: fulfillment === 'delivery' ? 'delivery' : 'online',
     order_source: order.order_source || 'ONLINE',
     customer_id: order.customer_id || null,
     delivery_address: fulfillment === 'delivery' ? (opts.delivery_address || order.delivery_address || null) : null,
@@ -4484,6 +4489,7 @@ module.exports = {
   ...bookkeeping,
   ...donationsExports,
   getDonationDocument,
+  ...require('./salary-claims'),
   ...opsComplianceSvc,
   ...promoRequestsSvc,
   getNonSellingProducts: (filters) => promoRequestsSvc.enrichNonSellingProducts(opsComplianceSvc.getNonSellingProducts(filters)),

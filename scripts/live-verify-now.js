@@ -2,7 +2,7 @@
  * End-to-end live Railway verification (owner login required via env).
  * Usage: SMOKE_USER=chisa96 SMOKE_PASS=... node scripts/live-verify-now.js
  */
-const BASE = (process.env.SMOKE_URL || 'https://peaceful-motivation-production-7dd2.up.railway.app').replace(/\/$/, '');
+const BASE = (process.env.SMOKE_URL || 'https://chisafood.up.railway.app').replace(/\/$/, '');
 
 async function rpc(method, args = [], token = null) {
   const headers = { 'Content-Type': 'application/json' };

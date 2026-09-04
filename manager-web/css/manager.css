@@ -42,7 +42,7 @@ body {
 }
 .list-card h3 { margin: 0; padding: 12px 14px; font-size: 13px; color: var(--muted); text-transform: uppercase; border-bottom: 1px solid var(--border); }
 .list-row {
-  display: flex; justify-content: space-between; align-items: center;
+  display: flex; justify-content: space-between; align-items: center; gap: 8px;
   padding: 12px 14px; border-bottom: 1px solid var(--border); cursor: pointer;
 }
 .list-row:last-child { border-bottom: 0; }
@@ -102,3 +102,14 @@ body {
 .toggle-row { display: flex; justify-content: space-between; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--border); }
 .empty { text-align: center; color: var(--muted); padding: 32px 16px; }
 .back-btn { background: none; border: 0; color: var(--primary); font-weight: 600; cursor: pointer; padding: 0; margin-bottom: 12px; }
+.contact-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px; }
+.contact-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 36px; height: 36px; border-radius: 50%; background: var(--card2);
+  border: 1px solid var(--border); text-decoration: none; font-size: 16px;
+}
+.contact-btn:active { background: var(--primary); }
+.customer-card { background: var(--bg); border-radius: 10px; padding: 10px; margin: 10px 0; border: 1px solid var(--border); }
+.btn-sm { border: 0; padding: 8px 12px; border-radius: 8px; font-weight: 600; cursor: pointer; font-size: 13px; }
+.btn-sm.btn-primary { background: var(--primary); color: #0f172a; width: auto; margin: 0; }
+.btn-sm.btn-ghost { background: var(--card2); color: var(--text); }

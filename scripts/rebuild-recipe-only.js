@@ -8,7 +8,7 @@ const mode = 'recipe';
 const name = 'Recipe & Production';
 const appId = 'com.shoppos.recipe';
 const artifact = 'ShopPOS-Recipe';
-const cloudUrl = 'https://peaceful-motivation-production-7dd2.up.railway.app';
+const cloudUrl = 'https://chisafood.up.railway.app';
 
 fs.writeFileSync(
   path.join(root, 'electron', 'cloud-shell-config-recipe.js'),

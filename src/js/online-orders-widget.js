@@ -89,6 +89,10 @@ const OnlineOrdersWidget = {
     try {
       const ns = this._app?.settings?.notification_settings || {};
       if (ns.sound_enabled === false) return;
+      if (typeof SoundService !== 'undefined' && SoundService.playOnlineOrderAlert) {
+        SoundService.playOnlineOrderAlert(this._app?.settings || {});
+        return;
+      }
       const ctx = new (window.AudioContext || window.webkitAudioContext)();
       const o = ctx.createOscillator();
       const g = ctx.createGain();
@@ -213,6 +217,10 @@ const OnlineOrdersWidget = {
     if (tax > 0) rows.push(`<div class="row"><span>Tax</span><span>${Utils.formatMoney(tax, this.currency())}</span></div>`);
     if (order.coupon_code) rows.push(`<div class="row"><span>Coupon</span><span>${this.esc(order.coupon_code)}</span></div>`);
     if (loyalty > 0) rows.push(`<div class="row"><span>Loyalty points</span><span>${loyalty} pts</span></div>`);
+    const giftAmt = Number(order.gift_card_amount) || 0;
+    if (giftAmt > 0 && order.gift_card_code) {
+      rows.push(`<div class="row"><span>Gift card <code>${this.esc(order.gift_card_code)}</code></span><span>-${Utils.formatMoney(giftAmt, this.currency())}</span></div>`);
+    }
     rows.push(`<div class="row" style="font-weight:700"><span>Total</span><span>${Utils.formatMoney(order.total, this.currency())}</span></div>`);
     return rows.join('');
   },
