@@ -2337,6 +2337,30 @@ function buildHandlers(store) {
     const user = requireUserSession(['owner', 'manager', 'supervisor']);
     return dp.saveBranchSettings(branchId, d || {}, user);
   }));
+  add('delivery:listBranchSettings', wrapSync((a) => {
+    requireUserSession(['owner', 'manager', 'supervisor', 'delivery_manager']);
+    return dp.listAllBranchSettings();
+  }));
+  add('delivery:deleteBranchSettings', wrapSync((branchId, a) => {
+    const user = requireUserSession(['owner', 'manager']);
+    return dp.deleteBranchSettings(branchId, user);
+  }));
+  add('delivery:assignMultiple', wrapSync((orderIds, driverId, a, opts) => {
+    const user = requireUserSession(['owner', 'manager', 'supervisor', 'assistant_manager', 'delivery_manager']);
+    return dp.assignMultipleOrders(orderIds, driverId, user, opts || {});
+  }));
+  add('delivery:suspendDriver', wrapSync((id, a) => {
+    const user = requireUserSession(['owner', 'manager', 'supervisor']);
+    return dp.suspendDriver(id, user);
+  }));
+  add('delivery:deleteDriver', wrapSync((id, a) => {
+    const user = requireUserSession(['owner', 'manager']);
+    return dp.deleteDriver(id, user);
+  }));
+  add('delivery:driverEarnings', wrapSync((driverId, f, a) => {
+    requireUserSession(['owner', 'manager', 'delivery_manager']);
+    return dp.driverEarningsReport(driverId, f || {});
+  }));
   add('delivery:reports', wrapSync((f, a) => {
     const user = requireUserSession(['owner', 'manager', 'delivery_manager']);
     return dp.deliveryReports(f || {}, user);
@@ -2347,6 +2371,7 @@ function buildHandlers(store) {
   add('driver:logout', wrapSync((token) => dp.driverLogout(token)));
   add('driver:dashboard', wrapSync((token) => dp.driverDashboard(token)));
   add('driver:orders', wrapSync((token, f) => dp.driverListOrders(token, f || {})));
+  add('driver:history', wrapSync((token, limit) => dp.driverHistory(token, limit)));
   add('driver:accept', wrapSync((token, id) => dp.driverAcceptDelivery(token, id)));
   add('driver:reject', wrapSync((token, id, reason) => dp.driverRejectDelivery(token, id, reason)));
   add('driver:updateStatus', wrapSync((token, id, status, notes) => dp.driverUpdateStatus(token, id, status, { notes })));

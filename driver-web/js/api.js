@@ -38,6 +38,7 @@ const DriverAPI = {
   updateStatus: (id, status, notes) => DriverAPI.call('driver:updateStatus', [id, status, notes || '']),
   availability: (a) => DriverAPI.call('driver:availability', [a]),
   register: (d) => DriverAPI.call('delivery:registerDriver', [d]),
+  history: (limit) => DriverAPI.call('driver:history', [limit || 50]),
   tracking: (token) => DriverAPI.call('delivery:tracking', [token])
 };
 window.DriverAPI = DriverAPI;

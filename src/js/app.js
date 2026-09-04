@@ -293,9 +293,26 @@ const App = {
         this.applyPosKioskChrome();
         this.hideMobileLoading();
         if (await this.tryRestoreSession()) return;
+        await this.populateLoginBranchPicker();
         this.showScreen('login');
         this.startLoginOperatingTimer?.();
         this.prefetchLoginScripts();
+        this.ensureSettingsLoaded().then(() => {
+          this.applyTheme?.();
+          this.updateBranding?.();
+        }).catch(() => {});
+        return;
+      }
+
+      // Admin portal: sign in first, then Dashboard (not POS)
+      if (mode === 'admin') {
+        this.applyLoginChrome();
+        this.hideMobileLoading();
+        const adminSess = sessionStorage.getItem('admin_portal_session');
+        if (adminSess && await this.tryRestoreSession()) return;
+        this.showScreen('login');
+        this.startLoginOperatingTimer?.();
+        this.prefetchLoginScripts(['pos', 'dashboard']);
         this.ensureSettingsLoaded().then(() => {
           this.applyTheme?.();
           this.updateBranding?.();
@@ -541,6 +558,9 @@ const App = {
     ['welcome', 'login', 'setup', 'app', 'staff-portal', 'recipe-production', 'marketing-agent', 'accounting', 'hr', 'display'].forEach(s =>
       document.getElementById(`screen-${s}`)?.classList.toggle('hidden', s !== name));
     if (name === 'login' || name === 'welcome') this.applyLoginChrome();
+    if (name === 'login' && this.isPosKiosk()) this.populateLoginBranchPicker().catch(() => {});
+    const branchWrap = document.getElementById('login-branch-wrap');
+    if (branchWrap) branchWrap.classList.toggle('hidden', !this.isPosKiosk());
   },
 
   /** Hide cross-app links on dedicated installers (Admin, POS, HR, etc.) */
@@ -924,6 +944,18 @@ const App = {
     };
     applyLogo('sidebar-logo');
     applyLogo('login-logo');
+    if (logo) {
+      API.getImageDataUrl(logo).then((img) => {
+        const href = img?.success && (img.dataUrl || img.data) ? (img.dataUrl || img.data) : Utils.fileUrl(logo);
+        let link = document.querySelector('link[rel="icon"]');
+        if (!link) {
+          link = document.createElement('link');
+          link.rel = 'icon';
+          document.head.appendChild(link);
+        }
+        link.href = href;
+      }).catch(() => {});
+    }
   },
 
   applyTheme() {
@@ -1037,6 +1069,18 @@ const App = {
       errEl.classList.add('hidden');
       this.user = user;
       this.user.is_active = 1;
+      if (this.appMode() === 'admin') {
+        try { sessionStorage.setItem('admin_portal_session', '1'); } catch (_) { /* ignore */ }
+      }
+      if (this.isPosKiosk()) {
+        const branchSel = document.getElementById('login-branch');
+        const branchId = branchSel?.value;
+        if (branchId) {
+          try {
+            await API.setActiveBranch(Number(branchId), this.user);
+          } catch (_) { /* optional */ }
+        }
+      }
       // Keep existing settings — do NOT clear (was forcing a slow reload after every login)
       try { window.DataCache?.invalidate?.(); } catch (_) { /* ignore */ }
       this.applyPosKioskChrome();
@@ -1344,12 +1388,16 @@ const App = {
     const preferredCustom = this.settings?.customization?.default_home_page;
     const preferred = this.isPosKiosk()
       ? 'pos'
-      : (preferredCustom === 'recipe'
+      : (this.appMode() === 'admin'
         ? 'dashboard'
-        : (preferredCustom
-          || (['cashier', 'supervisor', 'assistant_manager'].includes(this.user.role) ? 'pos' : 'dashboard')));
+        : (preferredCustom === 'recipe'
+          ? 'dashboard'
+          : (preferredCustom
+            || (['cashier', 'supervisor', 'assistant_manager'].includes(this.user.role) ? 'pos' : 'dashboard'))));
     let startPage = preferred;
-    if (savedNav?.page && Utils.canAccess(this.user, savedNav.page)) {
+    if (this.appMode() === 'admin') {
+      startPage = 'dashboard';
+    } else if (savedNav?.page && Utils.canAccess(this.user, savedNav.page)) {
       startPage = savedNav.page;
     } else {
       startPage = Utils.canAccess(this.user, preferred)
@@ -1643,8 +1691,32 @@ const App = {
   },
 
   logout() {
-    if (!confirm('Logout and return to sign in?')) return;
-    this.doLogout();
+    Utils.showModal('Sign out', `
+      <p>You will return to the sign-in screen. Any unsaved work on this page may be lost.</p>`,
+      `<button class="btn btn-ghost" id="logout-cancel">Stay signed in</button>
+       <button class="btn btn-danger" id="logout-confirm">Sign out</button>`);
+    document.getElementById('logout-cancel')?.addEventListener('click', () => Utils.hideModal());
+    document.getElementById('logout-confirm')?.addEventListener('click', () => {
+      Utils.hideModal();
+      this.doLogout();
+    });
+  },
+
+  async populateLoginBranchPicker() {
+    const wrap = document.getElementById('login-branch-wrap');
+    const sel = document.getElementById('login-branch');
+    if (!wrap || !sel) return;
+    wrap.classList.remove('hidden');
+    try {
+      const res = await API.getBranches();
+      const branches = res?.data || res || [];
+      sel.innerHTML = branches.map((b) => `<option value="${b.id}">${Utils.escHtml(b.name)}</option>`).join('');
+      const active = await API.getActiveBranch().catch(() => null);
+      const activeId = active?.data?.id || active?.id;
+      if (activeId) sel.value = String(activeId);
+    } catch (_) {
+      sel.innerHTML = '<option value="">Main branch</option>';
+    }
   },
 
   async doLogout() {
@@ -1669,6 +1741,9 @@ const App = {
     this.clearPageHosts();
     this._clearNavState();
     this.user = null;
+    try {
+      if (this.appMode() === 'admin') sessionStorage.removeItem('admin_portal_session');
+    } catch (_) { /* ignore */ }
     document.getElementById('login-username').value = '';
     document.getElementById('login-password').value = '';
     document.getElementById('login-pin').value = '';

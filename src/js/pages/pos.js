@@ -383,6 +383,23 @@ const POSPage = {
   async updateShiftBar() {
     const bar = document.getElementById('pos-shift-bar');
     const main = document.getElementById('pos-shift-bar-main');
+    const branchLabel = document.getElementById('pos-branch-label');
+    if (branchLabel) {
+      const bname = this.activeBranch?.name || this.app?.activeBranch?.name || this.app?.settings?.branch_name || '';
+      if (bname) {
+        branchLabel.textContent = `📍 ${bname}`;
+        branchLabel.style.display = '';
+      } else {
+        try {
+          const br = await API.getActiveBranch();
+          if (br?.success && br.data?.name) {
+            this.activeBranch = br.data;
+            branchLabel.textContent = `📍 ${br.data.name}`;
+            branchLabel.style.display = '';
+          } else branchLabel.style.display = 'none';
+        } catch (_) { branchLabel.style.display = 'none'; }
+      }
+    }
     const targetBanner = document.getElementById('pos-target-banner');
     if (!bar || !main) return;
     const currency = this.app.settings?.currency || 'R';
@@ -504,6 +521,7 @@ const POSPage = {
           <div id="pos-scan-banner" class="pos-scan-banner hidden">📷 Scanner ready — scan barcode or type code and press Enter</div>
           <div id="pos-target-banner" class="pos-target-banner hidden" style="display:none;padding:10px 14px;margin:0;background:linear-gradient(90deg,rgba(16,185,129,0.18),rgba(59,130,246,0.12));border-bottom:2px solid var(--primary);font-size:15px;font-weight:600"></div>
           <div id="pos-shift-bar" class="muted" style="padding:4px 12px;font-size:12px;background:var(--bg-secondary);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+            <span id="pos-branch-label" class="tag tag-info" style="font-size:11px"></span>
             <span id="pos-conn-badge" class="pos-conn-badge" role="status" aria-live="polite"></span>
             <span id="pos-shift-bar-main"></span>
             <div id="pos-top-seller-bar" style="display:flex;align-items:center;gap:6px;font-size:11px">

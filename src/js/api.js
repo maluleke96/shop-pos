@@ -1298,6 +1298,12 @@ const API = {
   getDeliveryTracking: (token) => invoke('delivery:tracking', token),
   getDeliveryBranchSettings: (branchId, actor) => invoke('delivery:branchSettings', branchId, actor),
   saveDeliveryBranchSettings: (branchId, data, actor) => invoke('delivery:saveBranchSettings', branchId, data, actor),
+  listDeliveryBranchSettings: (actor) => invoke('delivery:listBranchSettings', actor),
+  deleteDeliveryBranchSettings: (branchId, actor) => invoke('delivery:deleteBranchSettings', branchId, actor),
+  assignMultipleDeliveries: (orderIds, driverId, actor, opts) => invoke('delivery:assignMultiple', orderIds, driverId, actor, opts || {}),
+  suspendDeliveryDriver: (id, actor) => invoke('delivery:suspendDriver', id, actor),
+  deleteDeliveryDriver: (id, actor) => invoke('delivery:deleteDriver', id, actor),
+  deliveryDriverEarnings: (driverId, filters, actor) => invoke('delivery:driverEarnings', driverId, filters || {}, actor),
   acceptOnlineOrderAsSale: (id, opts, actor) => invoke('sync:acceptOnlineOrder', id, opts, actor),
 
   webGetSettings: () => invoke('web:getSettings'),

@@ -120,7 +120,22 @@ function upsertDelivery(data) {
     data.source_label || data.source_type, nowIso(), nowIso()
   ]);
   recordHistory(r.lastInsertRowid, null, 'pending', { type: 'system' });
+  releaseToDriverPoolIfAuto(r.lastInsertRowid);
   return getDelivery(r.lastInsertRowid);
+}
+
+function releaseToDriverPoolIfAuto(deliveryId) {
+  const settings = getSettings();
+  if (settings.default_assignment_mode !== 'auto') return;
+  dbRun("UPDATE delivery_assignments SET status='awaiting_driver', driver_id=NULL, driver_name=NULL, updated_at=? WHERE id=? AND driver_id IS NULL", [nowIso(), deliveryId]);
+}
+
+function releaseToDriverPool(id, actor) {
+  const row = dbGet('SELECT * FROM delivery_assignments WHERE id=?', [id]);
+  if (!row) throw new Error('Delivery not found');
+  dbRun("UPDATE delivery_assignments SET status='awaiting_driver', driver_id=NULL, driver_name=NULL, updated_at=? WHERE id=?", [nowIso(), id]);
+  recordHistory(id, row.status, 'awaiting_driver', actor, 'Released to driver pool');
+  return getDelivery(id);
 }
 
 function upsertFromSale(sale) {
@@ -214,9 +229,10 @@ function saveDriver(data, actor) {
   assertUserActor(actor, ['owner', 'manager', 'supervisor', 'delivery_manager']);
   const branches = Array.isArray(data.branches) ? data.branches : [];
   if (data.id) {
-    dbRun(`UPDATE delivery_drivers SET full_name=?, phone=?, email=?, vehicle_info=?, notes=?, all_branches=?, updated_at=? WHERE id=?`, [
+    const status = data.status || undefined;
+    dbRun(`UPDATE delivery_drivers SET full_name=?, phone=?, email=?, vehicle_info=?, notes=?, all_branches=?, status=COALESCE(?, status), updated_at=? WHERE id=?`, [
       data.full_name, data.phone, data.email || null, data.vehicle_info || null, data.notes || null,
-      data.all_branches ? 1 : 0, nowIso(), data.id
+      data.all_branches ? 1 : 0, status || null, nowIso(), data.id
     ]);
     dbRun('DELETE FROM delivery_driver_branches WHERE driver_id=?', [data.id]);
     branches.forEach((bid) => dbRun('INSERT OR IGNORE INTO delivery_driver_branches (driver_id, branch_id) VALUES (?,?)', [data.id, bid]));
@@ -276,11 +292,21 @@ function assignDriver(id, driverId, actor, opts = {}) {
 }
 
 function autoAssignDriver(id, actor) {
+  const settings = getSettings();
+  if (settings.default_assignment_mode === 'auto') {
+    return releaseToDriverPool(id, actor);
+  }
   const row = dbGet('SELECT * FROM delivery_assignments WHERE id=?', [id]);
   if (!row) throw new Error('Delivery not found');
   const candidates = driversForBranch(row.branch_id);
   if (!candidates.length) throw new Error('No online drivers for this branch');
   return assignDriver(id, candidates[0].id, actor);
+}
+
+function assignMultipleOrders(orderIds, driverId, actor, opts = {}) {
+  const ids = (Array.isArray(orderIds) ? orderIds : []).map(Number).filter(Boolean);
+  if (!ids.length) throw new Error('Select at least one order');
+  return ids.map((id) => assignDriver(id, driverId, actor, opts));
 }
 
 function updateDeliveryStatus(id, status, actor, opts = {}) {
@@ -321,29 +347,97 @@ function getBranchSettings(branchId) {
   return dbGet('SELECT * FROM delivery_branch_settings WHERE branch_id=?', [branchId]) || { branch_id: branchId, delivery_fee: 0 };
 }
 
+function syncBranchFeesToOnline(branchId, data) {
+  try {
+    const web = require('./online-ordering');
+    web.ensureSchema?.();
+    const fee = Number(data.delivery_fee) || 0;
+    const freeAbove = Number(data.free_delivery_above) || 0;
+    const minOrder = Number(data.min_order) || 0;
+    const existing = dbGet('SELECT branch_id FROM branch_online_settings WHERE branch_id=?', [branchId]);
+    if (existing) {
+      dbRun(`UPDATE branch_online_settings SET delivery_fee=?, free_delivery_above=?, min_delivery_order=?, delivery_enabled=1, updated_at=datetime('now') WHERE branch_id=?`,
+        [fee, freeAbove, minOrder, branchId]);
+    } else {
+      dbRun(`INSERT INTO branch_online_settings (branch_id, online_enabled, delivery_enabled, collection_enabled, status, min_delivery_order, delivery_fee, free_delivery_above, prep_minutes)
+        VALUES (?,?,1,1,'open',?,?,?,25)`, [branchId, 1, minOrder, fee, freeAbove]);
+    }
+  } catch (_) { /* optional */ }
+}
+
+function listAllBranchSettings() {
+  ensureSchema();
+  return dbAll(`SELECT dbs.*, b.name AS branch_name FROM delivery_branch_settings dbs
+    LEFT JOIN branches b ON b.id = dbs.branch_id ORDER BY b.name`);
+}
+
+function deleteBranchSettings(branchId, actor) {
+  assertUserActor(actor, ['owner', 'manager']);
+  dbRun('DELETE FROM delivery_branch_settings WHERE branch_id=?', [branchId]);
+  return { deleted: true, branch_id: branchId };
+}
+
 function saveBranchSettings(branchId, data, actor) {
+  assertUserActor(actor, ['owner', 'manager', 'supervisor']);
   dbRun(`INSERT INTO delivery_branch_settings (branch_id, delivery_enabled, assignment_mode, delivery_fee, free_delivery_above, min_order, updated_at)
     VALUES (?,?,?,?,?,?,?) ON CONFLICT(branch_id) DO UPDATE SET delivery_enabled=excluded.delivery_enabled, assignment_mode=excluded.assignment_mode,
     delivery_fee=excluded.delivery_fee, free_delivery_above=excluded.free_delivery_above, min_order=excluded.min_order, updated_at=excluded.updated_at`, [
     branchId, data.delivery_enabled != null ? (data.delivery_enabled ? 1 : 0) : 1, data.assignment_mode || 'manual',
     Number(data.delivery_fee) || 0, Number(data.free_delivery_above) || 0, Number(data.min_order) || 0, nowIso()
   ]);
+  syncBranchFeesToOnline(branchId, data);
   return getBranchSettings(branchId);
+}
+
+function suspendDriver(id, actor) {
+  assertUserActor(actor, ['owner', 'manager', 'supervisor']);
+  dbRun("UPDATE delivery_drivers SET status='suspended', updated_at=? WHERE id=?", [nowIso(), id]);
+  dbRun('DELETE FROM delivery_driver_sessions WHERE driver_id=?', [id]);
+  return getDriver(id);
+}
+
+function deleteDriver(id, actor) {
+  assertUserActor(actor, ['owner', 'manager']);
+  dbRun("UPDATE delivery_drivers SET status='deleted', updated_at=? WHERE id=?", [nowIso(), id]);
+  dbRun('DELETE FROM delivery_driver_sessions WHERE driver_id=?', [id]);
+  return { deleted: true, id };
 }
 
 function deliveryReports(filters = {}, actor) {
   const from = filters.from || new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
   const to = filters.to || new Date().toISOString().slice(0, 10);
-  const rows = dbAll(`SELECT da.id, da.order_number, da.confirmation_code, da.customer_name, da.driver_name, da.status,
+  const params = [from, to];
+  let driverSql = '';
+  if (filters.driver_id) {
+    driverSql = ' AND da.driver_id=?';
+    params.push(Number(filters.driver_id));
+  }
+  const rows = dbAll(`SELECT da.id, da.order_number, da.confirmation_code, da.customer_name, da.driver_name, da.driver_id, da.status,
     da.delivery_fee, da.delivered_at, da.branch_id, b.name AS branch_name
     FROM delivery_assignments da LEFT JOIN branches b ON b.id=da.branch_id
-    WHERE date(da.created_at) BETWEEN date(?) AND date(?) ORDER BY da.id DESC`, [from, to]);
+    WHERE date(da.created_at) BETWEEN date(?) AND date(?)${driverSql} ORDER BY da.id DESC`, params);
   const summary = {
     total: rows.length,
     delivered: rows.filter((r) => r.status === 'delivered').length,
     fees: rows.filter((r) => r.status === 'delivered').reduce((s, r) => s + (Number(r.delivery_fee) || 0), 0)
   };
-  return { from, to, summary, rows };
+  const shop = dbGet('SELECT shop_name, address, phone, logo_path FROM shop_settings WHERE id=1') || {};
+  return { from, to, summary, rows, shop };
+}
+
+function driverEarningsReport(driverId, filters = {}) {
+  const driver = getDriver(driverId);
+  if (!driver) throw new Error('Driver not found');
+  const from = filters.from || new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+  const to = filters.to || new Date().toISOString().slice(0, 10);
+  const rows = dbAll(`SELECT da.confirmation_code, da.order_number, da.customer_name, da.delivery_address, da.delivery_fee,
+    da.delivered_at, da.status, b.name AS branch_name FROM delivery_assignments da
+    LEFT JOIN branches b ON b.id=da.branch_id
+    WHERE da.driver_id=? AND da.status='delivered' AND date(da.delivered_at) BETWEEN date(?) AND date(?)
+    ORDER BY da.delivered_at DESC`, [driverId, from, to]);
+  const total = rows.reduce((s, r) => s + (Number(r.delivery_fee) || 0), 0);
+  const shop = dbGet('SELECT shop_name, address, phone FROM shop_settings WHERE id=1') || {};
+  return { driver, from, to, rows, total, shop };
 }
 
 function getDeliveryByTracking(token) {
@@ -387,8 +481,11 @@ function driverFromToken(token) {
 
 function driverLogin(username, password, device = {}) {
   ensureSchema();
-  const driver = dbGet(`SELECT * FROM delivery_drivers WHERE status='active' AND (phone=? OR email=? OR driver_code=?)`, [username, username, username]);
-  if (!driver || !driver.password_hash || !bcrypt.compareSync(password, driver.password_hash)) throw new Error('Invalid credentials');
+  const driver = dbGet(`SELECT * FROM delivery_drivers WHERE (phone=? OR email=? OR driver_code=?)`, [username, username, username]);
+  if (!driver) throw new Error('Invalid credentials');
+  if (driver.status === 'suspended') throw new Error('Your driver account is suspended. Contact the shop administrator.');
+  if (driver.status !== 'active') throw new Error('Your driver account is not active yet.');
+  if (!driver.password_hash || !bcrypt.compareSync(password, driver.password_hash)) throw new Error('Invalid credentials');
   const token = crypto.randomBytes(24).toString('hex');
   const exp = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 19).replace('T', ' ');
   dbRun('INSERT INTO delivery_driver_sessions (driver_id, token_hash, device_uid, device_name, platform, expires_at) VALUES (?,?,?,?,?,?)', [
@@ -403,18 +500,44 @@ function driverLogout(token) {
   return true;
 }
 
+function driverBranchIds(driver) {
+  if (driver.all_branches) {
+    return dbAll('SELECT id FROM branches WHERE is_active=1').map((r) => r.id);
+  }
+  return dbAll('SELECT branch_id FROM delivery_driver_branches WHERE driver_id=?', [driver.id]).map((r) => r.branch_id);
+}
+
+function driverAvailableOrders(driver) {
+  const branchIds = driverBranchIds(driver);
+  if (!branchIds.length) return [];
+  const placeholders = branchIds.map(() => '?').join(',');
+  const rows = dbAll(`SELECT da.* FROM delivery_assignments da
+    WHERE da.status='awaiting_driver' AND da.driver_id IS NULL AND da.branch_id IN (${placeholders})
+    ORDER BY da.id ASC`, branchIds);
+  return rows.map((r) => formatRow(r, { driver: true }));
+}
+
 function driverDashboard(token) {
   const driver = driverFromToken(token);
   const assigned = dbAll(`SELECT da.* FROM delivery_assignments da WHERE da.driver_id=? AND da.status NOT IN ('delivered','failed','cancelled') ORDER BY da.id DESC`, [driver.id]);
+  const available = driver.availability === 'online' ? driverAvailableOrders(driver) : [];
   const completed_today = dbGet(`SELECT COUNT(*) AS c FROM delivery_assignments WHERE driver_id=? AND status='delivered' AND date(delivered_at)=date('now')`, [driver.id])?.c || 0;
   const fees_today = dbGet(`SELECT COALESCE(SUM(delivery_fee),0) AS s FROM delivery_assignments WHERE driver_id=? AND status='delivered' AND date(delivered_at)=date('now')`, [driver.id])?.s || 0;
   const earnings_total = dbGet(`SELECT COALESCE(SUM(delivery_fee),0) AS s FROM delivery_assignments WHERE driver_id=? AND status='delivered'`, [driver.id])?.s || 0;
   return {
-    driver: { id: driver.id, full_name: driver.full_name, availability: driver.availability },
+    driver: { id: driver.id, full_name: driver.full_name, availability: driver.availability, phone: driver.phone },
     assigned_count: assigned.length,
     assigned: assigned.map((r) => formatRow(r, { driver: true })),
+    available,
     completed_today, fees_today, earnings_total
   };
+}
+
+function driverHistory(token, limit = 50) {
+  const driver = driverFromToken(token);
+  const rows = dbAll(`SELECT da.* FROM delivery_assignments da WHERE da.driver_id=? AND da.status IN ('delivered','failed','cancelled')
+    ORDER BY da.id DESC LIMIT ?`, [driver.id, Math.min(Number(limit) || 50, 200)]);
+  return rows.map((r) => formatRow(r, { driver: true }));
 }
 
 function driverListOrders(token, filters = {}) {
@@ -424,8 +547,20 @@ function driverListOrders(token, filters = {}) {
 
 function driverAcceptDelivery(token, id) {
   const driver = driverFromToken(token);
-  const row = dbGet('SELECT * FROM delivery_assignments WHERE id=? AND driver_id=?', [id, driver.id]);
-  if (!row) throw new Error('Delivery not found');
+  if (driver.availability !== 'online') throw new Error('Go online to accept deliveries');
+  let row = dbGet('SELECT * FROM delivery_assignments WHERE id=? AND driver_id=?', [id, driver.id]);
+  if (!row) {
+    const branchIds = driverBranchIds(driver);
+    if (!branchIds.includes(Number(dbGet('SELECT branch_id FROM delivery_assignments WHERE id=?', [id])?.branch_id))) {
+      throw new Error('Delivery not available for your branches');
+    }
+    const claim = dbRun(`UPDATE delivery_assignments SET driver_id=?, driver_name=?, status='assigned', assigned_at=?, updated_at=?
+      WHERE id=? AND driver_id IS NULL AND status='awaiting_driver'`, [driver.id, driver.full_name, nowIso(), nowIso(), id]);
+    if (!claim.changes) throw new Error('Another driver already accepted this delivery');
+    row = dbGet('SELECT * FROM delivery_assignments WHERE id=?', [id]);
+    recordHistory(id, 'awaiting_driver', 'assigned', { type: 'driver', id: driver.id, full_name: driver.full_name }, 'Driver claimed from pool');
+    notifyCustomer(row, 'assigned');
+  }
   dbRun("UPDATE delivery_assignments SET status='driver_accepted', driver_accepted_at=?, updated_at=? WHERE id=?", [nowIso(), nowIso(), id]);
   recordHistory(id, row.status, 'driver_accepted', { type: 'driver', id: driver.id, full_name: driver.full_name });
   notifyCustomer(row, 'driver_accepted');
@@ -459,9 +594,9 @@ function setDriverAvailability(token, availability) {
 
 module.exports = {
   ensureSchema, upsertFromSale, upsertFromOnlineOrder, getDelivery, listDeliveries, deliveryDashboard,
-  listDrivers, getDriver, saveDriver, registerDriver, approveDriver, rejectDriver,
-  assignDriver, autoAssignDriver, updateDeliveryStatus, getSettings, saveSettings,
-  getBranchSettings, saveBranchSettings, deliveryReports, getDeliveryByTracking,
-  driverLogin, driverLogout, driverDashboard, driverListOrders, driverAcceptDelivery,
+  listDrivers, getDriver, saveDriver, registerDriver, approveDriver, rejectDriver, suspendDriver, deleteDriver,
+  assignDriver, assignMultipleOrders, autoAssignDriver, releaseToDriverPool, updateDeliveryStatus, getSettings, saveSettings,
+  getBranchSettings, saveBranchSettings, listAllBranchSettings, deleteBranchSettings, deliveryReports, driverEarningsReport,
+  getDeliveryByTracking, driverLogin, driverLogout, driverDashboard, driverListOrders, driverHistory, driverAcceptDelivery,
   driverRejectDelivery, driverUpdateStatus, setDriverAvailability
 };

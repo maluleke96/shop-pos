@@ -236,6 +236,7 @@ function getBranchOnlineSettings(branchId) {
   ensureSchema();
   const global = getGlobalSettings();
   const row = dbGet('SELECT * FROM branch_online_settings WHERE branch_id = ?', [branchId]);
+  const delRow = dbGet('SELECT delivery_fee, free_delivery_above, min_order, delivery_enabled FROM delivery_branch_settings WHERE branch_id = ?', [branchId]);
   let branch = dbGet('SELECT * FROM branches WHERE id = ?', [branchId]);
   if (!branch) {
     branch = {
@@ -247,7 +248,7 @@ function getBranchOnlineSettings(branchId) {
       is_active: 1
     };
   }
-  return {
+  const base = {
     branch_id: branchId,
     branch_name: branch.name,
     branch_code: branch.code,
@@ -261,6 +262,13 @@ function getBranchOnlineSettings(branchId) {
     delivery_zones: parseJson(row?.delivery_zones_json, []),
     extra: parseJson(row?.settings_json, {})
   };
+  if (delRow) {
+    if (delRow.delivery_fee != null) base.delivery_fee = Number(delRow.delivery_fee) || 0;
+    if (delRow.free_delivery_above != null) base.free_delivery_above = Number(delRow.free_delivery_above) || 0;
+    if (delRow.min_order != null) base.min_delivery_order = Number(delRow.min_order) || 0;
+    if (delRow.delivery_enabled != null) base.delivery_enabled = delRow.delivery_enabled ? 1 : 0;
+  }
+  return base;
 }
 
 function saveBranchOnlineSettings(branchId, data = {}, actor) {
