@@ -5,7 +5,8 @@ const OnlineOrdersWidget = {
   _orders: [],
   _panelTab: 'pending',
   _knownIds: new Set(),
-  _remindedIds: new Set(),
+  _quietUntil: {},
+  _handledIds: new Set(),
   _popupOpen: false,
   _panelOpen: false,
   _pollMs: 8000,
@@ -85,6 +86,28 @@ const OnlineOrdersWidget = {
     } catch (_) { /* ignore */ }
   },
 
+  stopAlertSound() {
+    try {
+      if (typeof SoundService !== 'undefined' && SoundService.stopAlert) SoundService.stopAlert();
+    } catch (_) { /* */ }
+  },
+
+  snoozeOrder(orderId, minutes) {
+    const mins = minutes != null ? minutes : this.reminderMinutes();
+    this._quietUntil[String(orderId)] = Date.now() + mins * 60 * 1000;
+  },
+
+  isQuiet(orderId) {
+    const until = this._quietUntil[String(orderId)];
+    return until && Date.now() < until;
+  },
+
+  markHandled(orderId) {
+    const id = String(orderId);
+    this._handledIds.add(id);
+    delete this._quietUntil[id];
+    this.stopAlertSound();
+  },
   playAlert() {
     try {
       const ns = this._app?.settings?.notification_settings || {};
@@ -109,9 +132,10 @@ const OnlineOrdersWidget = {
     const limitMs = this.reminderMinutes() * 60 * 1000;
     for (const order of pending) {
       const id = String(order.id);
-      if (this._remindedIds.has(id)) continue;
+      if (this._handledIds.has(id)) continue;
+      if (this.isQuiet(id)) continue;
       if (this.orderAgeMs(order) >= limitMs) {
-        this._remindedIds.add(id);
+        this.snoozeOrder(id, this.reminderMinutes());
         Utils.toast(`⏰ Reminder: ${order.order_number || 'Online order'} not attended (${this.reminderMinutes()} min)`, 'error');
         this.playAlert();
         if (!this._popupOpen) this.showNewOrderPopup(order, true);
@@ -276,6 +300,8 @@ const OnlineOrdersWidget = {
       { noDismiss: true });
 
     document.getElementById('oo-popup-later')?.addEventListener('click', () => {
+      this.snoozeOrder(order.id, this.reminderMinutes());
+      this.stopAlertSound();
       this._popupOpen = false;
       Utils.forceHideModal?.() || Utils.hideModal();
     });
@@ -403,32 +429,60 @@ const OnlineOrdersWidget = {
 
   async accept(order) {
     const btn = document.getElementById('oo-accept') || document.getElementById('oo-popup-accept');
+    const prevText = btn?.textContent || 'Accept on POS';
     if (btn) { btn.disabled = true; btn.textContent = 'Accepting…'; }
     try {
-      const r = await API.acceptOnlineOrderAsSale(order.id, { fulfillment: order.fulfillment_type || order.fulfillment }, this._app?.user);
+      const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error('Accept timed out — try again')), 45000));
+      const r = await Promise.race([
+        API.acceptOnlineOrderAsSale(order.id, { fulfillment: order.fulfillment_type || order.fulfillment }, this._app?.user),
+        timeout
+      ]);
       if (r?.success === false) throw new Error(r.error || 'Accept failed');
       if (r?.error) throw new Error(r.error);
-      this._remindedIds.delete(String(order.id));
+      this.markHandled(order.id);
       Utils.toast(`Online order ${order.order_number} accepted on POS`, 'success');
       try { await API.refreshKitchenDisplay?.(); } catch (_) { /* optional */ }
       try { await API.refreshCustomerDisplay?.(); } catch (_) { /* optional */ }
       await this.refreshOrders();
       this._panelTab = 'accepted';
+      this._popupOpen = false;
+      Utils.forceHideModal?.() || Utils.hideModal();
       this.renderPanel();
     } catch (err) {
-      if (btn) { btn.disabled = false; btn.textContent = 'Accept on POS'; }
+      if (btn) { btn.disabled = false; btn.textContent = prevText; }
       Utils.toast(err?.message || 'Accept failed', 'error');
     }
   },
 
-  async reject(order) {
-    if (!confirm(`Reject order ${order.order_number || order.id}?`)) return;
-    const r = await API.rejectOnlineOrder?.(order.id, 'Item unavailable', this._app?.user);
-    if (r?.success === false) return Utils.toast(r.error || 'Reject failed', 'error');
-    Utils.toast('Order rejected', 'info');
-    await this.refreshOrders();
-    this._panelTab = 'history';
-    this.renderPanel();
+  reject(order) {
+    Utils.showModal(`Reject order ${this.esc(order.order_number || order.id)}`, `
+      <p class="muted">The customer will be notified. Please give a clear reason.</p>
+      <label class="field full">Reason for rejection
+        <textarea id="oo-reject-reason" rows="4" placeholder="e.g. Item out of stock, kitchen closed, cannot deliver to this area…"></textarea>
+      </label>`,
+      `<button type="button" class="btn btn-ghost" id="oo-reject-cancel">Cancel</button>
+       <button type="button" class="btn btn-danger" id="oo-reject-confirm">Reject order</button>`);
+    document.getElementById('oo-reject-cancel')?.addEventListener('click', () => this.showOrderDetail(order));
+    document.getElementById('oo-reject-confirm')?.addEventListener('click', async () => {
+      const reason = document.getElementById('oo-reject-reason')?.value.trim();
+      if (!reason) return Utils.toast('Please enter a rejection reason', 'error');
+      const btn = document.getElementById('oo-reject-confirm');
+      btn.disabled = true;
+      btn.textContent = 'Rejecting…';
+      try {
+        const r = await API.rejectOnlineOrder?.(order.id, reason, this._app?.user);
+        if (r?.success === false) throw new Error(r.error || 'Reject failed');
+        this.markHandled(order.id);
+        Utils.toast('Order rejected — customer will be notified', 'info');
+        await this.refreshOrders();
+        this._panelTab = 'history';
+        this.renderPanel();
+      } catch (e) {
+        Utils.toast(e.message || 'Reject failed', 'error');
+        btn.disabled = false;
+        btn.textContent = 'Reject order';
+      }
+    });
   }
 };
 

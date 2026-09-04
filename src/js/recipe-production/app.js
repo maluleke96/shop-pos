@@ -1701,14 +1701,31 @@ const RecipeProductionApp = {
         const names = (saved.data?.saved_items || saved.data?.items || [])
           .map(i => `${i.ingredient_name} ${i.quantity} ${i.unit}`).join(' · ');
         Utils.toast(`Saved ${count} ingredient(s) for ${product.name}`, 'success');
-        this._ingredients = [];
-        this._editingMealProductId = productId;
-        // Reload from database so re-edit shows exactly what was saved
-        await this.renderMealRecipeEditor(el, productId);
-        if (names) {
-          const sum = document.getElementById('rr-saved-summary');
-          if (sum) sum.innerHTML = `Currently saved: <strong>${count}</strong> ingredient(s) — ${names}`;
+        const savedItems = saved.data?.items || saved.data?.saved_items || [];
+        if (savedItems.length) {
+          items.length = 0;
+          savedItems.forEach((i) => items.push({
+            ingredient_product_id: i.ingredient_product_id || null,
+            ingredient_name: i.ingredient_name || '',
+            quantity: Number(i.quantity) > 0 ? Number(i.quantity) : 1,
+            unit: i.unit || 'g',
+            waste_pct: i.waste_pct || 0,
+            include_rule: i.include_rule || 'always',
+            option_name: i.option_name || '',
+            is_primary: !!Number(i.is_primary),
+            cost_used: i.cost_used,
+            current_stock: i.current_stock
+          }));
+          drawItems();
+          baseQtys = items.map((i) => Number(i.quantity) || 0);
+          const scaleEl = document.getElementById('rr-scale');
+          if (scaleEl) scaleEl.value = '1';
         }
+        setDirty(false);
+        saving = false;
+        scheduleRecalc();
+        const sum = document.getElementById('rr-saved-summary');
+        if (sum) sum.innerHTML = `Currently saved: <strong>${count}</strong> ingredient(s)${names ? ` — ${names}` : ''}`;
       } catch (err) {
         saving = false;
         setDirty(true);

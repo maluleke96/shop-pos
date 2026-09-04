@@ -37,12 +37,19 @@ async function hubFetch(path, options = {}) {
   if (!base) throw new Error('Sync server URL not configured');
   const url = `${base}${path}`;
   const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
-  const res = await fetch(url, { ...options, headers });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok || data.success === false) {
-    throw new Error(data.error || `Hub error ${res.status}`);
+  const timeoutMs = options.timeoutMs != null ? options.timeoutMs : 4000;
+  const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timer = ctrl ? setTimeout(() => ctrl.abort(), timeoutMs) : null;
+  try {
+    const res = await fetch(url, { ...options, headers, signal: ctrl?.signal });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.success === false) {
+      throw new Error(data.error || `Hub error ${res.status}`);
+    }
+    return data;
+  } finally {
+    if (timer) clearTimeout(timer);
   }
-  return data;
 }
 
 function enqueueOutbox(entityType, entityId, payload) {

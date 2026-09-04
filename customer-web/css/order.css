@@ -336,6 +336,42 @@ body {
   gap: 12px;
   align-items: center;
 }
+.order-card-btn {
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+.order-card-btn:hover { border-color: var(--primary); }
+.order-card-main {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-start;
+  min-width: 0;
+}
+.order-card-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  white-space: nowrap;
+}
+.order-status {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--primary);
+}
+.order-preview { font-size: 12px; }
+.checkout-card .row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+}
 .cart-actions { display: flex; align-items: center; gap: 8px; }
 .cart-actions button {
   width: 32px; height: 32px;

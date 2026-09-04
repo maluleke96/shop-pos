@@ -1,9 +1,10 @@
 const ManagerAPI = {
   rpcUrl: (() => {
+    if (typeof location !== 'undefined' && location.origin && !location.origin.startsWith('file:')) {
+      return `${location.origin.replace(/\/$/, '')}/rpc`;
+    }
     const cfg = window.__MANAGER_CONFIG__ || {};
-    if (cfg.rpcUrl) return cfg.rpcUrl;
-    if (location.origin && !location.origin.startsWith('file:')) return `${location.origin.replace(/\/$/, '')}/rpc`;
-    return 'https://chisafood.up.railway.app/rpc';
+    return cfg.rpcUrl || 'https://chisafood.up.railway.app/rpc';
   })(),
 
   token() { return localStorage.getItem('manager_token') || ''; },

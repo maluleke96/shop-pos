@@ -7,11 +7,12 @@ const OrderApp = {
   categoryId: null,
   search: '',
   cart: [],
-  token: localStorage.getItem('order_token') || '',
+  token: sessionStorage.getItem('order_token') || '',
   customer: null,
   product: null,
   checkout: { fulfillment_type: 'collection', payment_method: 'card', coupon_code: '', loyalty_points_used: 0, notes: '', delivery_address: '' },
   lastOrder: null,
+  selectedOrder: null,
   quote: null,
   loyaltyAccount: null,
   editingCartKey: null,
@@ -104,7 +105,8 @@ const OrderApp = {
   },
 
   goBack() {
-    if (this.view === 'product') { this.view = 'menu'; this.editingCartKey = null; }
+    if (this.view === 'order-detail') { this.view = 'orders'; this.selectedOrder = null; }
+    else if (this.view === 'product') { this.view = 'menu'; this.editingCartKey = null; }
     else if (this.view === 'cart') { this.view = 'menu'; }
     else if (this.view === 'checkout') { this.view = 'cart'; }
     else if (this.view === 'menu') { this.view = 'home'; }
@@ -181,6 +183,16 @@ const OrderApp = {
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('sw.js').catch(() => {});
     }
+    // New tab / new visit → login first (sessionStorage, not localStorage)
+    try {
+      localStorage.removeItem('order_token');
+      localStorage.removeItem('order_branch');
+      localStorage.removeItem('order_view');
+    } catch (_) { /* ignore */ }
+    if (!sessionStorage.getItem('order_token') && localStorage.getItem('order_token')) {
+      sessionStorage.removeItem('order_token');
+    }
+    this.token = sessionStorage.getItem('order_token') || '';
     try {
       this.settings = await OrderAPI.getSettings();
       if (this.token) {
@@ -188,21 +200,21 @@ const OrderApp = {
           const acct = await OrderAPI.account(this.token);
           this.customer = acct.profile;
           this.loyaltyAccount = acct.loyalty || null;
-        } catch (_) { this.token = ''; localStorage.removeItem('order_token'); }
+        } catch (_) { this.token = ''; sessionStorage.removeItem('order_token'); }
       }
-      const savedBranch = localStorage.getItem('order_branch');
+      const savedBranch = sessionStorage.getItem('order_branch');
       if (savedBranch) {
         const branches = await OrderAPI.getBranches();
         this.branch = branches.find((b) => String(b.id) === savedBranch) || null;
+        if (!this.branch) sessionStorage.removeItem('order_branch');
       }
       if (this.branch) this.loadCart();
-      // Flow: login first → pick branch → menu
       if (!this.token) {
         this.view = 'login';
       } else if (!this.branch) {
         this.view = 'branches';
       } else {
-        const savedView = localStorage.getItem('order_view');
+        const savedView = sessionStorage.getItem('order_view');
         const safeViews = ['home', 'menu', 'account', 'orders'];
         this.view = savedView && safeViews.includes(savedView) ? savedView : 'home';
       }
@@ -304,6 +316,21 @@ const OrderApp = {
         return;
       }
       if (act === 'back') { this.goBack(); return; }
+      if (act === 'view-order') {
+        const orderId = btn.dataset.id;
+        if (!orderId || !this.token) return;
+        btn.disabled = true;
+        try {
+          this.selectedOrder = await OrderAPI.getOrder(orderId, this.token);
+          this.view = 'order-detail';
+          this.render();
+        } catch (err) {
+          this.toast(err.message, 'error');
+        } finally {
+          btn.disabled = false;
+        }
+        return;
+      }
       if (act === 'cart-edit') {
         const key = btn.dataset.key;
         const line = this.cart.find((c) => c._key === key);
@@ -323,7 +350,7 @@ const OrderApp = {
         }
         const branches = await OrderAPI.getBranches();
         this.branch = branches.find((b) => String(b.id) === id);
-        localStorage.setItem('order_branch', id);
+        sessionStorage.setItem('order_branch', id);
         this.view = 'home';
         await this.loadMenu();
         this.render();
@@ -504,12 +531,13 @@ const OrderApp = {
         try {
           const r = await OrderAPI.login(loginId, loginPass);
           this.token = r.token;
-          localStorage.setItem('order_token', this.token);
+          sessionStorage.setItem('order_token', this.token);
           this.customer = r.customer;
           await this.refreshLoyaltyAccount();
-          const dest = this.authReturn || 'branches';
+          this.branch = null;
+          sessionStorage.removeItem('order_branch');
           this.authReturn = null;
-          this.view = dest;
+          this.view = 'branches';
           this.toast('Welcome back!', 'success');
           this.render();
         } catch (err) { this.toast(err.message, 'error'); }
@@ -531,7 +559,7 @@ const OrderApp = {
         try {
           const r = await OrderAPI.register({ first_name: first, last_name: last, email, phone, password: pass });
           this.token = r.token;
-          localStorage.setItem('order_token', this.token);
+          sessionStorage.setItem('order_token', this.token);
           this.customer = r.customer;
           await this.refreshLoyaltyAccount();
           this.authReturn = null;
@@ -548,7 +576,7 @@ const OrderApp = {
           await OrderAPI.deleteAccount(this.token);
           this.token = '';
           this.customer = null;
-          localStorage.removeItem('order_token');
+          sessionStorage.removeItem('order_token');
           this.toast('Account deleted', 'success');
           this.view = 'login';
           this.render();
@@ -558,7 +586,7 @@ const OrderApp = {
       if (act === 'logout') {
         this.token = '';
         this.customer = null;
-        localStorage.removeItem('order_token');
+        sessionStorage.removeItem('order_token');
         this.view = 'login';
         this.render();
         return;
@@ -620,7 +648,7 @@ const OrderApp = {
   },
 
   async render() {
-    try { localStorage.setItem('order_view', this.view); } catch (_) { /* ignore */ }
+    try { sessionStorage.setItem('order_view', this.view); } catch (_) { /* ignore */ }
     const app = document.getElementById('app');
     if (this.view === 'branches') {
       if (!this.token) { this.view = 'login'; return this.render(); }
@@ -837,15 +865,74 @@ const OrderApp = {
       let orders = [];
       try { orders = await OrderAPI.listOrders(this.token); } catch (err) {
         if (/invalid|expired|session/i.test(err.message)) {
-          this.token = ''; localStorage.removeItem('order_token'); this.customer = null;
+          this.token = ''; sessionStorage.removeItem('order_token'); this.customer = null;
           this.view = 'login'; this.authReturn = 'orders'; this.toast('Please sign in again', 'error'); return this.render();
         }
         this.toast(err.message, 'error');
       }
       app.innerHTML = this.shell(`<section class="page"><h1>My orders</h1>
-        ${orders.length ? orders.map((o) => `<div class="order-card"><strong>${this.esc(o.order_number)}</strong>
-          <span>${this.money(o.total)} · ${this.esc(o.status)}</span>
-          <span class="muted">${this.esc(String(o.created_at).slice(0, 16))}</span></div>`).join('') : '<p class="muted">No orders yet.</p>'}
+        ${orders.length ? orders.map((o) => {
+          const items = Array.isArray(o.items) ? o.items : [];
+          const preview = items.slice(0, 2).map((i) => `${i.name} ×${i.quantity}`).join(', ');
+          const more = items.length > 2 ? ` +${items.length - 2} more` : '';
+          return `<button type="button" class="order-card order-card-btn" data-act="view-order" data-id="${o.id}">
+            <div class="order-card-main">
+              <strong>${this.esc(o.order_number)}</strong>
+              <span class="order-status">${this.esc(String(o.status || 'pending').toUpperCase())}</span>
+              <span class="muted order-preview">${this.esc(preview)}${more}</span>
+              <span class="muted">${this.esc(String(o.created_at).slice(0, 16))}</span>
+            </div>
+            <div class="order-card-side">
+              <strong>${this.money(o.total)}</strong>
+              <span class="muted">View details →</span>
+            </div>
+          </button>`;
+        }).join('') : '<p class="muted">No orders yet.</p>'}
+      </section>`);
+      this.bind();
+      return;
+    }
+    if (this.view === 'order-detail') {
+      if (!this.token) { this.view = 'login'; this.authReturn = 'orders'; return this.render(); }
+      const o = this.selectedOrder;
+      if (!o) { this.view = 'orders'; return this.render(); }
+      const items = Array.isArray(o.items) ? o.items : [];
+      const fulfillment = o.fulfillment_type || o.fulfillment || 'collection';
+      const events = Array.isArray(o.events) ? o.events : [];
+      app.innerHTML = this.shell(`<section class="page">
+        <button type="button" class="link-btn" data-act="nav" data-view="orders">← Back to orders</button>
+        <h1>${this.esc(o.order_number || 'Order')}</h1>
+        <p><span class="order-status">${this.esc(String(o.status || 'pending').toUpperCase())}</span>
+          · ${this.esc(String(o.created_at).slice(0, 16))}</p>
+        <div class="checkout-card">
+          <h3>Items</h3>
+          ${items.length ? items.map((i) => {
+            const mods = i.modifiers_text || (Array.isArray(i.modifiers) ? i.modifiers.map((m) => m.name || m).join(', ') : '');
+            return `<div class="cart-line" style="margin-bottom:8px">
+              <div><strong>${this.esc(i.name)}</strong> × ${i.quantity}
+              ${mods ? `<br><span class="muted">${this.esc(mods)}</span>` : ''}</div>
+              <div>${this.money((Number(i.unit_price) || 0) * (Number(i.quantity) || 1))}</div>
+            </div>`;
+          }).join('') : '<p class="muted">No line items</p>'}
+          <div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px">
+            ${Number(o.subtotal) > 0 ? `<div class="row"><span>Subtotal</span><span>${this.money(o.subtotal)}</span></div>` : ''}
+            ${Number(o.discount) > 0 ? `<div class="row"><span>Discount</span><span>-${this.money(o.discount)}</span></div>` : ''}
+            ${Number(o.delivery_fee) > 0 ? `<div class="row"><span>Delivery</span><span>${this.money(o.delivery_fee)}</span></div>` : ''}
+            ${Number(o.tax_amount) > 0 ? `<div class="row"><span>Tax</span><span>${this.money(o.tax_amount)}</span></div>` : ''}
+            <div class="row" style="font-weight:700"><span>Total</span><span>${this.money(o.total)}</span></div>
+          </div>
+        </div>
+        <div class="checkout-card">
+          <h3>Details</h3>
+          <p><strong>Fulfillment:</strong> ${this.esc(fulfillment)}</p>
+          ${fulfillment === 'delivery' && o.delivery_address ? `<p><strong>Address:</strong> ${this.esc(o.delivery_address)}</p>` : ''}
+          <p><strong>Payment:</strong> ${this.esc(o.payment_method || 'online')} · ${this.esc(o.payment_status || '—')}</p>
+          ${o.notes ? `<p><strong>Note:</strong> ${this.esc(o.notes)}</p>` : ''}
+          ${o.reject_reason ? `<p><strong>Rejection reason:</strong> ${this.esc(o.reject_reason)}</p>` : ''}
+        </div>
+        ${events.length ? `<div class="checkout-card"><h3>Updates</h3>
+          ${events.map((ev) => `<p class="muted">${this.esc(String(ev.created_at || '').slice(0, 16))} — ${this.esc(ev.event_type || ev.status || 'update')}${ev.note ? `: ${this.esc(ev.note)}` : ''}</p>`).join('')}
+        </div>` : ''}
       </section>`);
       this.bind();
       return;
@@ -883,7 +970,7 @@ const OrderApp = {
       if (!this.token) { this.view = 'login'; this.authReturn = 'account'; return this.render(); }
       let acct = null;
       try { acct = await OrderAPI.account(this.token); } catch (err) {
-        this.token = ''; localStorage.removeItem('order_token'); this.customer = null;
+        this.token = ''; sessionStorage.removeItem('order_token'); this.customer = null;
         this.toast(err.message || 'Session expired — please sign in again', 'error');
         this.view = 'login'; this.authReturn = 'account'; return this.render();
       }

@@ -1,12 +1,10 @@
 const OrderAPI = {
   rpcUrl: (() => {
-    const cfg = window.__ORDER_CONFIG__ || {};
-    if (cfg.rpcUrl) return cfg.rpcUrl;
-    // Same Railway host when served from /order/
-    if (location.origin && !location.origin.startsWith('file:')) {
+    if (typeof location !== 'undefined' && location.origin && !location.origin.startsWith('file:')) {
       return `${location.origin.replace(/\/$/, '')}/rpc`;
     }
-    return 'https://chisafood.up.railway.app/rpc';
+    const cfg = window.__ORDER_CONFIG__ || {};
+    return cfg.rpcUrl || 'https://chisafood.up.railway.app/rpc';
   })(),
 
   async call(method, args = []) {

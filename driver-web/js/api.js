@@ -1,7 +1,10 @@
 const DriverAPI = {
   rpcUrl() {
+    if (typeof location !== 'undefined' && location.origin && !location.origin.startsWith('file:')) {
+      return `${location.origin.replace(/\/$/, '')}/rpc`;
+    }
     const c = window.__DRIVER_CONFIG__ || {};
-    return (c.rpcUrl || '/rpc').replace(/\/$/, '');
+    return (c.rpcUrl || 'https://chisafood.up.railway.app/rpc').replace(/\/$/, '');
   },
   token() { return localStorage.getItem('driver_token') || ''; },
   async call(method, args = []) {
@@ -10,7 +13,12 @@ const DriverAPI = {
     if (tok && !method.startsWith('driver:login') && method !== 'delivery:registerDriver') {
       args = [tok, ...args];
     }
-    const res = await fetch(this.rpcUrl(), { method: 'POST', headers, body: JSON.stringify({ method, args }) });
+    let res;
+    try {
+      res = await fetch(this.rpcUrl(), { method: 'POST', headers, body: JSON.stringify({ method, args }) });
+    } catch (_) {
+      throw new Error('Cannot reach server. Check your connection and try again.');
+    }
     const json = await res.json().catch(() => ({}));
     if (!res.ok || json.success === false) {
       const msg = json.error || `Request failed (${res.status})`;

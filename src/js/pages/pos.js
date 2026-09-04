@@ -317,25 +317,13 @@ const POSPage = {
   async promptResumeShift() {
     if (!this.openShift || !this.requiresShift()) return;
     const currency = this.app.settings?.currency || 'R';
-    let shiftSales = 0;
-    let saleCount = 0;
-    try {
-      const preview = await API.getShiftClosePreview(this.openShift.id, this.app.user);
-      if (preview.success) {
-        shiftSales = preview.data?.shiftSales ?? preview.data?.totalSales ?? 0;
-        saleCount = preview.data?.saleCount ?? 0;
-      }
-    } catch { /* optional */ }
-    const salesLine = saleCount > 0
-      ? `${Utils.formatMoney(shiftSales, currency)} (${saleCount} sale${saleCount === 1 ? '' : 's'})`
-      : Utils.formatMoney(shiftSales, currency);
 
     const choice = await new Promise((resolve) => {
       Utils.showModal('Continue Your Shift?', `
         <p>You have an open shift from a previous session.</p>
         <p><strong>Opened:</strong> ${Utils.formatDateTime(this.openShift.opened_at)}</p>
         <p><strong>Opening float:</strong> ${Utils.formatMoney(this.openShift.opening_float, currency)}</p>
-        <p><strong>Sales this shift:</strong> ${salesLine}</p>
+        <p id="pos-resume-sales-line"><strong>Sales this shift:</strong> <span class="muted">Loading…</span></p>
         <p class="muted">Continue working this shift, or close it now if you are done for the day.</p>`,
         `<button class="btn btn-secondary" id="pos-close-resume-shift">Close Shift</button>
          <button class="btn btn-success" id="pos-continue-shift">Continue Shift</button>`,
@@ -355,6 +343,23 @@ const POSPage = {
         if (closeBtn) closeBtn.style.display = '';
         Utils.hideModal();
         resolve('close');
+      });
+      API.getShiftClosePreview(this.openShift.id, this.app.user).then((preview) => {
+        const line = document.getElementById('pos-resume-sales-line');
+        if (!line) return;
+        let shiftSales = 0;
+        let saleCount = 0;
+        if (preview?.success) {
+          shiftSales = preview.data?.shiftSales ?? preview.data?.totalSales ?? 0;
+          saleCount = preview.data?.saleCount ?? 0;
+        }
+        const salesLine = saleCount > 0
+          ? `${Utils.formatMoney(shiftSales, currency)} (${saleCount} sale${saleCount === 1 ? '' : 's'})`
+          : Utils.formatMoney(shiftSales, currency);
+        line.innerHTML = `<strong>Sales this shift:</strong> ${salesLine}`;
+      }).catch(() => {
+        const line = document.getElementById('pos-resume-sales-line');
+        if (line) line.innerHTML = '<strong>Sales this shift:</strong> <span class="muted">—</span>';
       });
     });
 

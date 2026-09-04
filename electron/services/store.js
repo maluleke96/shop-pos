@@ -4355,21 +4355,23 @@ async function acceptOnlineOrderAsSale(localId, actor, opts = {}) {
   const saleId = sale.saleId || sale.sale?.id;
   if (!saleId) throw new Error('Sale was created but id is missing');
 
-  await syncSvc.updateOnlineOrderStatus(localId, opts.mark_completed ? 'completed' : 'accepted');
+  // Update local order status immediately — do not block on slow/unreachable hub sync
   try {
-    db.prepare(`UPDATE web_stock_reservations SET status = 'fulfilled' WHERE order_id = ? AND status = 'reserved'`).run(localId);
-  } catch (_) { /* optional table */ }
-  try {
-    db.prepare(`UPDATE online_orders_local SET sale_id = ?, fulfillment = COALESCE(?, fulfillment), updated_at = datetime('now') WHERE id = ?`)
-      .run(saleId, fulfillment, localId);
+    getDb().prepare(`UPDATE online_orders_local SET status = ?, sale_id = ?, fulfillment = COALESCE(?, fulfillment), updated_at = datetime('now') WHERE id = ?`)
+      .run(opts.mark_completed ? 'completed' : 'accepted', saleId, fulfillment, localId);
   } catch (_) {
     try {
       db.exec('ALTER TABLE online_orders_local ADD COLUMN sale_id INTEGER');
       db.exec('ALTER TABLE online_orders_local ADD COLUMN fulfillment TEXT');
-      db.prepare('UPDATE online_orders_local SET sale_id = ?, fulfillment = ? WHERE id = ?')
-        .run(saleId, fulfillment, localId);
+      db.prepare('UPDATE online_orders_local SET status = ?, sale_id = ?, fulfillment = ? WHERE id = ?')
+        .run(opts.mark_completed ? 'completed' : 'accepted', saleId, fulfillment, localId);
     } catch (__) { /* ignore */ }
   }
+  try {
+    db.prepare(`UPDATE web_stock_reservations SET status = 'fulfilled' WHERE order_id = ? AND status = 'reserved'`).run(localId);
+  } catch (_) { /* optional */ }
+
+  syncSvc.updateOnlineOrderStatus(localId, opts.mark_completed ? 'completed' : 'accepted').catch(() => {});
 
   try {
     const delivery = require('./delivery-platform');

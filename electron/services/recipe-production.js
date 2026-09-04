@@ -2851,12 +2851,15 @@ function saveProductMealRecipe(data, actor) {
     recipe_cost: costing.recipe_cost
   });
 
-  try {
-    require('./production-availability').refreshProductCapacity(productId);
-    for (const it of items) {
-      require('./production-availability').refreshAffectedByIngredient(it.ingredient_product_id);
-    }
-  } catch (_) { /* ignore */ }
+  setImmediate(() => {
+    try {
+      const pa = require('./production-availability');
+      pa.refreshProductCapacity(productId);
+      for (const it of items) {
+        pa.refreshAffectedByIngredient(it.ingredient_product_id);
+      }
+    } catch (_) { /* ignore */ }
+  });
 
   const meal = getProductMealRecipe(productId, actor);
   return {
