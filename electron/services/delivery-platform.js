@@ -108,8 +108,8 @@ function upsertDelivery(data) {
     ]);
     return getDelivery(existing.id);
   }
-  const confirm = nextConfirmationCode();
-  const token = trackingToken();
+  const confirm = data.confirmation_code || nextConfirmationCode();
+  const token = data.tracking_token || trackingToken();
   const r = dbRun(`INSERT INTO delivery_assignments (source_type, source_id, order_number, branch_id, sale_id, status,
     delivery_address, customer_name, customer_phone, total, delivery_fee, payment_method, special_instructions,
     items_json, tracking_token, confirmation_code, source_label, created_at, updated_at)
@@ -155,14 +155,17 @@ function upsertFromSale(sale) {
 }
 
 function upsertFromOnlineOrder(order) {
-  if (!order || (order.fulfilment !== 'delivery' && order.order_type !== 'delivery')) return null;
-  const items = parseJson(order.items_json, []);
+  const fulfillment = order.fulfillment_type || order.fulfillment || order.fulfilment || order.order_type;
+  if (!order || fulfillment !== 'delivery') return null;
+  const items = parseJson(order.items_json, order.items || []);
   return upsertDelivery({
     source_type: 'online_order', source_id: order.id, order_number: order.order_number,
     branch_id: order.branch_id, delivery_address: order.delivery_address,
     customer_name: order.customer_name, customer_phone: order.customer_phone,
     total: order.total, delivery_fee: order.delivery_fee ?? branchFee(order.branch_id),
-    payment_method: order.payment_method, special_instructions: order.notes, items, source_label: 'online'
+    payment_method: order.payment_method, special_instructions: order.notes, items,
+    source_label: 'online', confirmation_code: order.confirmation_code || null,
+    tracking_token: order.tracking_token || null
   });
 }
 
@@ -288,6 +291,16 @@ function assignDriver(id, driverId, actor, opts = {}) {
   ]);
   recordHistory(id, row.status, 'assigned', actor);
   notifyCustomer({ ...row, confirmation_code: row.confirmation_code }, 'assigned');
+  try {
+    if (driver.phone && row.confirmation_code) {
+      const whatsapp = require('./whatsapp');
+      const body = `New delivery assigned: ${row.confirmation_code}\nCustomer handoff code: *${row.confirmation_code}*\n${row.delivery_address || ''}`;
+      dbRun(`INSERT INTO whatsapp_messages (recipient_type, phone, message_type, body, status, sender_name, metadata_json)
+        VALUES ('driver',?,?,?,'pending','delivery',?)`, [
+        driver.phone.trim(), 'delivery_assigned', body, JSON.stringify({ url: whatsapp.buildWaUrl(driver.phone, body), via: 'wa.me' })
+      ]);
+    }
+  } catch (_) { /* optional */ }
   return getDelivery(id);
 }
 
@@ -593,7 +606,7 @@ function setDriverAvailability(token, availability) {
 }
 
 module.exports = {
-  ensureSchema, upsertFromSale, upsertFromOnlineOrder, getDelivery, listDeliveries, deliveryDashboard,
+  ensureSchema, nextConfirmationCode, upsertFromSale, upsertFromOnlineOrder, getDelivery, listDeliveries, deliveryDashboard,
   listDrivers, getDriver, saveDriver, registerDriver, approveDriver, rejectDriver, suspendDriver, deleteDriver,
   assignDriver, assignMultipleOrders, autoAssignDriver, releaseToDriverPool, updateDeliveryStatus, getSettings, saveSettings,
   getBranchSettings, saveBranchSettings, listAllBranchSettings, deleteBranchSettings, deliveryReports, driverEarningsReport,

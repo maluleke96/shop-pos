@@ -18,6 +18,14 @@
         <div class="login-logo" id="welcome-logo">🏪</div>
         <h1 id="welcome-title">Shop POS</h1>
         <p class="login-sub" id="welcome-sub">Sign in if you already have an account, or set up your shop to get started.</p>
+        <div id="welcome-shop-picker" class="shop-profile-picker" style="margin:12px 0;text-align:left">
+          <label style="display:block;font-size:13px;margin-bottom:4px">Shop on this device</label>
+          <select id="welcome-shop-select" class="input" style="width:100%;margin-bottom:8px"></select>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button type="button" class="btn btn-ghost btn-sm" id="welcome-shop-add">+ Add shop</button>
+            <button type="button" class="btn btn-ghost btn-sm" id="welcome-shop-switch">Switch shop</button>
+          </div>
+        </div>
         <p id="welcome-status" class="muted welcome-status hidden"></p>
         <button type="button" class="btn btn-primary btn-lg btn-block" id="welcome-signin">Sign In</button>
         <button type="button" class="btn btn-ghost btn-lg btn-block" id="welcome-accounting" style="margin-top:10px">Business Accounting</button>
@@ -203,6 +211,7 @@
   <div id="mobile-loading" style="display:none;position:fixed;inset:0;align-items:center;justify-content:center;background:#0f172a;color:#e2e8f0;z-index:99999;flex-direction:column;gap:12px;font-family:system-ui,sans-serif"><p style="margin:0">Loading…</p></div>
   <!-- Core only at startup — page modules load on first navigate (much faster sign-in) -->
   <script defer src="js/env.js"></script>
+  <script defer src="js/shop-profiles.js"></script>
   <script defer src="js/app-mode.js"></script>
   <script defer src="js/connection-status.js"></script>
   <script defer src="js/offline-queue.js"></script>

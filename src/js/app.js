@@ -412,6 +412,42 @@ const App = {
     }
     this.showScreen('welcome');
     this.applyLoginChrome();
+    this.renderShopProfilePicker();
+  },
+
+  renderShopProfilePicker() {
+    const picker = document.getElementById('welcome-shop-picker');
+    const sel = document.getElementById('welcome-shop-select');
+    if (!picker || !sel || !window.ShopProfiles) return;
+    const list = ShopProfiles.list();
+    const active = ShopProfiles.getActive();
+    sel.innerHTML = list.map((p) =>
+      `<option value="${Utils.escHtml(p.id)}" ${p.id === active?.id ? 'selected' : ''}>${Utils.escHtml(p.name)}</option>`
+    ).join('');
+    picker.style.display = list.length ? '' : 'none';
+  },
+
+  bindShopProfileEvents() {
+    document.getElementById('welcome-shop-switch')?.addEventListener('click', () => {
+      const sel = document.getElementById('welcome-shop-select');
+      const id = sel?.value;
+      if (!id || !window.ShopProfiles) return;
+      ShopProfiles.setActive(id);
+      ShopProfiles.clearPanelSessions();
+      Utils.toast(`Switched to ${ShopProfiles.getActive()?.name || 'shop'}`, 'success');
+      setTimeout(() => location.reload(), 400);
+    });
+    document.getElementById('welcome-shop-add')?.addEventListener('click', () => {
+      const name = prompt('Shop name (e.g. Chisa Food Branch 2)')?.trim();
+      if (!name) return;
+      const url = prompt('Cloud URL (Railway shop link)', ShopProfiles.DEFAULT_CLOUD)?.trim();
+      if (!url) return;
+      ShopProfiles.save({ name, cloudUrl: url });
+      ShopProfiles.setActive(ShopProfiles.list().slice(-1)[0]?.id);
+      ShopProfiles.clearPanelSessions();
+      Utils.toast('Shop added — reloading…', 'success');
+      setTimeout(() => location.reload(), 400);
+    });
   },
 
   hideMobileLoading() {
@@ -445,6 +481,7 @@ const App = {
   },
 
   bindEvents() {
+    this.bindShopProfileEvents();
     document.getElementById('login-form').addEventListener('submit', (e) => this.handleLogin(e));
     document.getElementById('welcome-signin')?.addEventListener('click', () => {
       this.showScreen('login');

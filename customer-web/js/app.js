@@ -168,6 +168,50 @@ const OrderApp = {
     return Math.min(bal, maxByTotal);
   },
 
+  phoneLink(phone) {
+    const p = String(phone || '').replace(/\D/g, '');
+    return p ? `tel:${p}` : '#';
+  },
+
+  whatsappLink(phone, text) {
+    const p = String(phone || '').replace(/\D/g, '');
+    if (!p) return '#';
+    const wa = p.startsWith('27') ? p : (p.startsWith('0') ? `27${p.slice(1)}` : p);
+    const q = text ? `?text=${encodeURIComponent(text)}` : '';
+    return `https://wa.me/${wa}${q}`;
+  },
+
+  contactHeaderHtml() {
+    const phone = this.settings?.phone || this.branch?.phone;
+    const wa = this.settings?.whatsapp_number || phone;
+    if (!phone && !wa) return '';
+    return `<div class="shop-contact-bar">
+      ${phone ? `<a href="${this.phoneLink(phone)}" class="contact-icon" aria-label="Call shop">📞</a>` : ''}
+      ${wa ? `<a href="${this.whatsappLink(wa)}" target="_blank" rel="noopener" class="contact-icon" aria-label="WhatsApp shop">💬</a>` : ''}
+      ${phone ? `<span class="contact-phone">${this.esc(phone)}</span>` : ''}
+    </div>`;
+  },
+
+  trackingTimelineHtml(steps) {
+    if (!steps?.length) return '';
+    return `<ul class="track-timeline">${steps.map((s) =>
+      `<li class="${s.done ? 'done' : ''} ${s.active ? 'active' : ''}"><strong>${this.esc(s.label)}</strong></li>`
+    ).join('')}</ul>`;
+  },
+
+  checkoutCartHtml() {
+    if (!this.cart.length) return '<p class="muted">Your cart is empty.</p>';
+    return this.cart.map((c) => `<div class="cart-line">
+          <div><strong>${this.esc(c.name)}</strong><div class="muted">× ${c.quantity}${c.modifiers?.length ? ` · ${c.modifiers.map((m) => m.name).join(', ')}` : ''}</div></div>
+          <div class="cart-actions">
+            <button type="button" data-act="cart-dec" data-key="${c._key}">−</button>
+            <span>${c.quantity}</span>
+            <button type="button" data-act="cart-inc" data-key="${c._key}">+</button>
+            <button type="button" class="link-btn" data-act="cart-edit" data-key="${c._key}">Edit</button>
+            <button type="button" class="link-btn" data-act="cart-remove" data-key="${c._key}">Remove</button>
+          </div></div>`).join('');
+  },
+
   saveCart() {
     try { localStorage.setItem('order_cart', JSON.stringify(this.cart)); } catch (_) { /* ignore */ }
   },
@@ -183,16 +227,20 @@ const OrderApp = {
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('sw.js').catch(() => {});
     }
-    // New tab / new visit → login first (sessionStorage, not localStorage)
+    window.addEventListener('beforeunload', (e) => {
+      if (this.token && this.view !== 'login') {
+        e.preventDefault();
+        e.returnValue = 'You are signed in. Leave and sign out?';
+      }
+    });
     try {
       localStorage.removeItem('order_token');
       localStorage.removeItem('order_branch');
       localStorage.removeItem('order_view');
     } catch (_) { /* ignore */ }
-    if (!sessionStorage.getItem('order_token') && localStorage.getItem('order_token')) {
-      sessionStorage.removeItem('order_token');
-    }
     this.token = sessionStorage.getItem('order_token') || '';
+    const savedCat = sessionStorage.getItem('order_category');
+    if (savedCat != null && savedCat !== '') this.categoryId = savedCat;
     try {
       this.settings = await OrderAPI.getSettings();
       if (this.token) {
@@ -225,11 +273,23 @@ const OrderApp = {
     }
   },
 
-  async loadMenu() {
+  async loadMenu(opts = {}) {
     if (!this.branch) return;
+    const scrollEl = document.querySelector('.category-scroll');
+    const scrollLeft = opts.preserveScroll !== false && scrollEl ? scrollEl.scrollLeft : null;
     try {
-      this.menu = await OrderAPI.getMenu(this.branch.id, { q: this.search || undefined, category_id: this.categoryId || undefined });
+      this.menu = await OrderAPI.getMenu(this.branch.id, {
+        q: this.search || undefined,
+        category_id: this.categoryId || undefined
+      });
       if (this.view === 'home' || this.view === 'menu') this.render();
+      requestAnimationFrame(() => {
+        const el = document.querySelector('.category-scroll');
+        if (!el) return;
+        if (scrollLeft != null) el.scrollLeft = scrollLeft;
+        const active = el.querySelector('.cat-chip.active');
+        if (active) active.scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'instant' });
+      });
     } catch (err) { this.toast(err.message, 'error'); }
   },
 
@@ -293,11 +353,21 @@ const OrderApp = {
   bind() {
     const app = document.getElementById('app');
     app.onclick = async (e) => {
+      const productCard = e.target.closest('.product-card[data-product-id]');
+      if (productCard && !e.target.closest('[data-act="quick-add"]')) {
+        const pid = productCard.dataset.productId;
+        this.product = await OrderAPI.getProduct(this.branch.id, pid);
+        this.editingCartKey = null;
+        this.view = 'product';
+        this.render();
+        return;
+      }
       const catChip = e.target.closest('[data-cat-id]');
       if (catChip) {
         this.categoryId = catChip.dataset.catId || null;
+        try { sessionStorage.setItem('order_category', this.categoryId || ''); } catch (_) { /* */ }
         document.querySelectorAll('[data-cat-id]').forEach((el) => el.classList.toggle('active', el === catChip));
-        await this.loadMenu();
+        await this.loadMenu({ preserveScroll: true });
         return;
       }
       const btn = e.target.closest('[data-act]');
@@ -417,14 +487,39 @@ const OrderApp = {
             modifiers: mods,
             unit_price: this.product.sale_price ?? this.product.price
           });
-          this.view = 'cart';
+          this.view = 'menu';
           this.render();
         } catch (err) { this.toast(err.message, 'error'); }
         return;
       }
-      if (act === 'cart-inc') { e.preventDefault(); this.updateCartQty(btn.dataset.key, 1); return; }
-      if (act === 'cart-dec') { e.preventDefault(); this.updateCartQty(btn.dataset.key, -1); return; }
-      if (act === 'cart-remove') { e.preventDefault(); this.cart = this.cart.filter((c) => c._key !== btn.dataset.key); this.saveCart(); this.render(); return; }
+      if (act === 'cart-inc') {
+        e.preventDefault();
+        this.updateCartQty(btn.dataset.key, 1);
+        if (this.view === 'checkout') {
+          this.quote = await this.validateCurrentCart();
+          this.render();
+        }
+        return;
+      }
+      if (act === 'cart-dec') {
+        e.preventDefault();
+        this.updateCartQty(btn.dataset.key, -1);
+        if (this.view === 'checkout') {
+          this.quote = await this.validateCurrentCart();
+          this.render();
+        }
+        return;
+      }
+      if (act === 'cart-remove') {
+        e.preventDefault();
+        this.cart = this.cart.filter((c) => c._key !== btn.dataset.key);
+        this.saveCart();
+        if (this.view === 'checkout') {
+          this.quote = await this.validateCurrentCart();
+        }
+        this.render();
+        return;
+      }
       if (act === 'checkout') {
         if (!this.isShopOpenNow()) { this.toast('We are closed for online orders right now', 'error'); this.render(); return; }
         if (!this.token) { this.view = 'register'; this.authReturn = 'checkout'; this.render(); return; }
@@ -635,6 +730,7 @@ const OrderApp = {
             : `<button type="button" class="ghost-btn" data-act="nav" data-view="register">Register</button>
                <button type="button" class="ghost-btn" data-act="nav" data-view="login" style="margin-left:6px">Sign in</button>`}
         </div></header>
+      ${this.contactHeaderHtml()}
       ${branchChip}
       <main class="main">${body}</main>
       ${this.renderClosedOverlay()}
@@ -796,6 +892,9 @@ const OrderApp = {
       ].filter((m) => !m.fulfillment || m.fulfillment === fulfillment);
       app.innerHTML = this.shell(`<section class="page"><h1>Checkout</h1>
         <p class="muted">Review your order from <strong>${this.esc(this.branch?.name)}</strong></p>
+        <div class="checkout-card"><h3>Your order</h3>
+          ${this.checkoutCartHtml()}
+        </div>
         <div class="checkout-card"><h3>Order type</h3>
           <label><input type="radio" name="fulfillment" value="collection" ${fulfillment === 'collection' ? 'checked' : ''}> 🏪 Collection — pick up at branch</label>
           <label><input type="radio" name="fulfillment" value="delivery" ${fulfillment === 'delivery' ? 'checked' : ''}> 🚚 Delivery</label>
@@ -848,10 +947,12 @@ const OrderApp = {
       return;
     }
     if (this.view === 'confirmed' && this.lastOrder) {
+      const code = this.lastOrder.confirmation_code;
       app.innerHTML = this.shell(`<section class="page confirmed">
         <div class="success-icon">✓</div>
         <h1>Order confirmed</h1>
         <p class="order-num">${this.esc(this.lastOrder.order_number)}</p>
+        ${code ? `<div class="confirmation-code-box"><span class="muted">Your delivery code</span><strong>${this.esc(code)}</strong><p class="muted" style="margin:8px 0 0;font-size:13px">Give this code to the driver. We also sent it to your WhatsApp if we have your number.</p></div>` : ''}
         <p><strong>${this.esc(this.branch?.name)}</strong> · ${this.money(this.lastOrder.total)}</p>
         <p class="muted">We'll notify you when the branch accepts your order.</p>
         <button type="button" class="btn-primary btn-block" data-act="nav" data-view="orders">Track my order</button>
@@ -899,11 +1000,15 @@ const OrderApp = {
       const items = Array.isArray(o.items) ? o.items : [];
       const fulfillment = o.fulfillment_type || o.fulfillment || 'collection';
       const events = Array.isArray(o.events) ? o.events : [];
+      const steps = o.tracking_steps || [];
+      const code = o.confirmation_code;
       app.innerHTML = this.shell(`<section class="page">
         <button type="button" class="link-btn" data-act="nav" data-view="orders">← Back to orders</button>
         <h1>${this.esc(o.order_number || 'Order')}</h1>
-        <p><span class="order-status">${this.esc(String(o.status || 'pending').toUpperCase())}</span>
+        <p><span class="order-status">${this.esc(String(o.status_label || o.status || 'pending').toUpperCase())}</span>
           · ${this.esc(String(o.created_at).slice(0, 16))}</p>
+        ${code ? `<div class="confirmation-code-box"><span class="muted">Delivery code</span><strong>${this.esc(code)}</strong></div>` : ''}
+        ${steps.length ? `<div class="checkout-card"><h3>Track order</h3>${this.trackingTimelineHtml(steps)}</div>` : ''}
         <div class="checkout-card">
           <h3>Items</h3>
           ${items.length ? items.map((i) => {
@@ -995,7 +1100,7 @@ const OrderApp = {
   productCard(p) {
     const btnLabel = p.is_combo ? 'View combo' : (p.has_modifiers ? 'Choose options' : 'Add');
     const btnAct = p.has_modifiers && !p.is_combo ? 'open-product' : (p.is_combo ? 'open-product' : 'quick-add');
-    return `<article class="product-card ${p.available ? '' : 'unavailable'} ${p.is_combo ? 'combo-card' : ''}">
+    return `<article class="product-card ${p.available ? '' : 'unavailable'} ${p.is_combo ? 'combo-card' : ''}" data-product-id="${this.esc(p.id)}" role="button" tabindex="0">
       ${p.image ? `<img src="${this.esc(p.image)}" alt="" loading="lazy">` : `<div class="thumb">${p.is_combo ? '🎁' : '🍽️'}</div>`}
       <div class="pc-body">
         <h3>${p.is_combo ? '🎁 ' : ''}${this.esc(p.name)}</h3>

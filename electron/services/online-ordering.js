@@ -5,6 +5,7 @@
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const { getDb } = require('../database/db');
+const { publicProductImageUrl } = require('../../lib/product-images');
 
 function dbGet(sql, p = []) { return getDb().prepare(sql).get(...p); }
 function dbAll(sql, p = []) { return getDb().prepare(sql).all(...p); }
@@ -426,12 +427,14 @@ function mapProductForWeb(p, branchId, promos = []) {
   const salePrice = promo ? round2(price * (1 - (Number(promo.discount_percent) || 0) / 100)) : null;
   const qty = branchStockQty(p.id, branchId);
   const available = productAvailableAtBranch(p, branchId);
+  const pic = p.picture_path || p.image_path || p.image;
+  const imageUrl = pic ? publicProductImageUrl(p.id, false) : null;
   return {
     id: p.id,
     name: p.name,
     description: p.online_description || p.description || '',
     category_id: p.category_id,
-    image: p.image_path || p.image || null,
+    image: imageUrl,
     price,
     sale_price: salePrice,
     on_sale: !!salePrice && salePrice < price,
@@ -457,6 +460,7 @@ function mapComboForWeb(combo, branchId) {
   const available = comboAvailableAtBranch(combo, branchId);
   const normal = Number(combo.normal_price) || 0;
   const finalPrice = Number(combo.final_price) || normal;
+  const pic = combo.image_path || combo.picture_path;
   return {
     id: `combo-${combo.id}`,
     combo_id: combo.id,
@@ -464,7 +468,7 @@ function mapComboForWeb(combo, branchId) {
     name: combo.name,
     description: combo.description || '',
     category_id: 'combos',
-    image: combo.image_path || null,
+    image: pic ? publicProductImageUrl(combo.id, true) : null,
     price: normal,
     sale_price: finalPrice < normal ? finalPrice : null,
     on_sale: finalPrice < normal,
@@ -496,6 +500,49 @@ function ensureOrderGiftColumns() {
   for (const col of ['gift_card_code TEXT', 'gift_card_amount REAL DEFAULT 0']) {
     try { dbRun(`ALTER TABLE online_orders_local ADD COLUMN ${col}`); } catch (_) { /* exists */ }
   }
+}
+
+function ensureOrderTrackingColumns() {
+  for (const col of ['confirmation_code TEXT', 'tracking_token TEXT']) {
+    try { dbRun(`ALTER TABLE online_orders_local ADD COLUMN ${col}`); } catch (_) { /* exists */ }
+  }
+}
+
+function sendCustomerWhatsApp(phone, body, branchId) {
+  if (!phone || !body) return;
+  try {
+    const whatsapp = require('./whatsapp');
+    const url = whatsapp.buildWaUrl(phone, body);
+    dbRun(`INSERT INTO whatsapp_messages (recipient_type, phone, message_type, body, status, sender_name, branch_id, metadata_json)
+      VALUES ('customer',?,?,?,'pending','online-order',?,?)`, [
+      phone.trim(), 'online_order', body, branchId || null, JSON.stringify({ url, via: 'wa.me' })
+    ]);
+  } catch (_) { /* optional */ }
+}
+
+function buildTrackingSteps(order, deliveryRow) {
+  const status = String(order.status || 'pending').toLowerCase();
+  const ds = deliveryRow?.status || '';
+  const step = (key, label, done, active) => ({ key, label, done: !!done, active: !!active });
+  const accepted = ['accepted', 'preparing', 'ready', 'completed', 'delivered'].includes(status);
+  const preparing = ['preparing', 'ready', 'completed', 'delivered'].includes(status);
+  const driverAssigned = ['assigned', 'driver_accepted', 'picked_up', 'on_way', 'delivered'].includes(ds);
+  const pickedUp = ['picked_up', 'on_way', 'delivered'].includes(ds);
+  const onWay = ['on_way', 'delivered'].includes(ds);
+  const delivered = status === 'completed' || status === 'delivered' || ds === 'delivered';
+  const steps = [
+    step('pending', 'Order placed', true, status === 'pending'),
+    step('accepted', 'Accepted', accepted, status === 'accepted'),
+    step('preparing', 'Preparing', preparing, status === 'preparing'),
+    step('driver_assigned', 'Driver assigned', driverAssigned, ['assigned', 'driver_accepted'].includes(ds)),
+    step('picked_up', 'Picked up from store', pickedUp, ds === 'picked_up'),
+    step('on_way', 'On the way', onWay, ds === 'on_way'),
+    step('delivered', 'Delivered', delivered, delivered && !onWay)
+  ];
+  if (!deliveryRow && order.fulfillment_type !== 'delivery' && order.fulfillment !== 'delivery') {
+    return steps.filter((s) => !['driver_assigned', 'picked_up', 'on_way'].includes(s.key));
+  }
+  return steps;
 }
 
 function getActivePromotions(branchId) {
@@ -896,16 +943,27 @@ function submitOrder(branchId, payload = {}, webToken = null, idempotencyKey = n
   if (!cart.lines.length) throw new Error('Your cart is empty — add at least one item');
 
   ensureOrderGiftColumns();
+  ensureOrderTrackingColumns();
   const orderNumber = nextOnlineOrderNumber();
   const fulfillment = payload.fulfillment_type || 'collection';
   const payment = resolvePaymentForOrder(payload, fulfillment);
   const itemsJson = JSON.stringify(cart.lines);
+  let confirmationCode = null;
+  let trackingToken = null;
+  if (fulfillment === 'delivery') {
+    try {
+      const delivery = require('./delivery-platform');
+      confirmationCode = delivery.nextConfirmationCode();
+      trackingToken = crypto.randomBytes(16).toString('hex');
+    } catch (_) { /* optional */ }
+  }
   const r = dbRun(`INSERT INTO online_orders_local (
     order_number, branch_id, order_source, web_customer_id, customer_id, customer_name, customer_phone, customer_email,
     items_json, subtotal, discount, delivery_fee, tax_amount, total, coupon_code, loyalty_points_used,
     gift_card_code, gift_card_amount,
-    payment_method, payment_status, fulfillment_type, fulfillment, delivery_address, scheduled_for, notes, status, idempotency_key
-  ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [
+    payment_method, payment_status, fulfillment_type, fulfillment, delivery_address, scheduled_for, notes, status, idempotency_key,
+    confirmation_code, tracking_token
+  ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [
     orderNumber, branchId, 'ONLINE', customer.id, customer.customer_id,
     `${customer.first_name} ${customer.last_name || ''}`.trim(),
     customer.phone, customer.email, itemsJson,
@@ -915,7 +973,8 @@ function submitOrder(branchId, payload = {}, webToken = null, idempotencyKey = n
     payment.payment_method, payment.payment_status,
     fulfillment, fulfillment,
     payload.delivery_address || null, payload.scheduled_for || null,
-    payload.notes || null, 'pending', idempotencyKey || null
+    payload.notes || null, 'pending', idempotencyKey || null,
+    confirmationCode, trackingToken
   ]);
 
   const orderId = r.lastInsertRowid;
@@ -972,6 +1031,10 @@ function submitOrder(branchId, payload = {}, webToken = null, idempotencyKey = n
       console.warn('[delivery] online order upsert:', err.message || err);
     }
   }
+  if (confirmationCode && customer.phone) {
+    const waBody = `Hi ${`${customer.first_name}`.trim()}! Your order ${orderNumber} is confirmed.\n\nYour delivery code: *${confirmationCode}*\n\nGive this code to the driver when they arrive. Thank you!`;
+    sendCustomerWhatsApp(customer.phone, waBody, branchId);
+  }
   try { require('./store').notifyPosOnlineOrder(order); } catch (_) { /* */ }
   try { require('./mobile-manager').notifyOnlineOrder(orderId); } catch (_) { /* */ }
   return formatOrder(order);
@@ -980,12 +1043,23 @@ function submitOrder(branchId, payload = {}, webToken = null, idempotencyKey = n
 function formatOrder(row) {
   if (!row) return null;
   const events = dbAll('SELECT * FROM online_order_events WHERE order_id = ? ORDER BY id', [row.id]);
+  let confirmationCode = row.confirmation_code || null;
+  let deliveryRow = null;
+  try {
+    deliveryRow = dbGet('SELECT * FROM delivery_assignments WHERE source_type=? AND source_id=?', ['online_order', row.id]);
+    if (!confirmationCode && deliveryRow?.confirmation_code) confirmationCode = deliveryRow.confirmation_code;
+  } catch (_) { /* */ }
+  const trackingSteps = buildTrackingSteps(row, deliveryRow);
+  const activeStep = trackingSteps.find((s) => s.active) || trackingSteps.filter((s) => s.done).pop();
   return {
     ...row,
     items: parseJson(row.items_json, []),
     audit: parseJson(row.audit_json, []),
     events,
-    order_source: row.order_source || 'ONLINE'
+    order_source: row.order_source || 'ONLINE',
+    confirmation_code: confirmationCode,
+    tracking_steps: trackingSteps,
+    status_label: activeStep?.label || String(row.status || 'pending')
   };
 }
 

@@ -568,6 +568,65 @@ async function main() {
       });
     }
 
+    if (urlPath === '/api/logo') {
+      try {
+        const { getShopLogo } = require('./lib/product-images');
+        const file = getShopLogo();
+        if (file.buffer) {
+          res.writeHead(200, { 'Content-Type': file.mime, 'Cache-Control': 'public, max-age=300', ...corsHeaders() });
+          return res.end(file.buffer);
+        }
+        return fs.readFile(file.path, (err, buf) => {
+          if (err) { res.writeHead(404); return res.end('Not found'); }
+          res.writeHead(200, { 'Content-Type': file.mime, 'Cache-Control': 'public, max-age=300', ...corsHeaders() });
+          res.end(buf);
+        });
+      } catch (e) {
+        res.writeHead(404);
+        return res.end('Logo not available');
+      }
+    }
+
+    if (urlPath.startsWith('/api/product-image/')) {
+      const productId = urlPath.replace('/api/product-image/', '').split('?')[0];
+      try {
+        const { getProductImage } = require('./lib/product-images');
+        const file = getProductImage(Number(productId));
+        if (file.buffer) {
+          res.writeHead(200, { 'Content-Type': file.mime, 'Cache-Control': 'public, max-age=3600', ...corsHeaders() });
+          return res.end(file.buffer);
+        }
+        return fs.readFile(file.path, (err, buf) => {
+          if (err) { res.writeHead(404); return res.end('Not found'); }
+          res.writeHead(200, { 'Content-Type': file.mime, 'Cache-Control': 'public, max-age=3600', ...corsHeaders() });
+          res.end(buf);
+        });
+      } catch (e) {
+        res.writeHead(e.message === 'Product not found' || e.message === 'Image not available' ? 404 : 500);
+        return res.end(String(e.message || 'Error'));
+      }
+    }
+
+    if (urlPath.startsWith('/api/combo-image/')) {
+      const comboId = urlPath.replace('/api/combo-image/', '').split('?')[0];
+      try {
+        const { getComboImage } = require('./lib/product-images');
+        const file = getComboImage(Number(comboId));
+        if (file.buffer) {
+          res.writeHead(200, { 'Content-Type': file.mime, 'Cache-Control': 'public, max-age=3600', ...corsHeaders() });
+          return res.end(file.buffer);
+        }
+        return fs.readFile(file.path, (err, buf) => {
+          if (err) { res.writeHead(404); return res.end('Not found'); }
+          res.writeHead(200, { 'Content-Type': file.mime, 'Cache-Control': 'public, max-age=3600', ...corsHeaders() });
+          res.end(buf);
+        });
+      } catch (e) {
+        res.writeHead(e.message === 'Combo not found' || e.message === 'Image not available' ? 404 : 500);
+        return res.end(String(e.message || 'Error'));
+      }
+    }
+
     if (urlPath.startsWith('/signage-media/')) {
       const mediaId = urlPath.replace('/signage-media/', '').split('?')[0];
       const q = (req.url || '').split('?')[1] || '';

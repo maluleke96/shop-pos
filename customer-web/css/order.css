@@ -543,6 +543,31 @@ input:focus, textarea:focus, select:focus {
 .closed-note { font-size: 14px; color: var(--muted); margin: 12px 0 20px; }
 .closed-wa { text-decoration: none; display: inline-block; }
 
+.shop-contact-bar {
+  display: flex; align-items: center; gap: 10px; padding: 8px 16px; background: var(--surface);
+  border-bottom: 1px solid var(--border); font-size: 14px;
+}
+.contact-icon { font-size: 20px; text-decoration: none; line-height: 1; }
+.contact-phone { color: var(--muted); }
+
+.product-card { cursor: pointer; }
+.product-card .btn-sm { position: relative; z-index: 1; }
+
+.confirmation-code-box {
+  background: linear-gradient(135deg, #14532d, #166534); color: #fff; border-radius: var(--radius);
+  padding: 16px; text-align: center; margin: 16px 0;
+}
+.confirmation-code-box strong { display: block; font-size: 28px; letter-spacing: 2px; margin-top: 6px; }
+
+.track-timeline { list-style: none; padding: 0; margin: 0; }
+.track-timeline li {
+  padding: 10px 0 10px 20px; border-left: 3px solid var(--border); margin-left: 8px; color: var(--muted);
+}
+.track-timeline li.done { border-color: var(--primary); color: var(--text); }
+.track-timeline li.active { font-weight: 700; color: var(--primary); border-color: var(--primary); }
+
+.category-scroll { scroll-behavior: auto; }
+
 @media (min-width: 768px) {
   .product-grid { grid-template-columns: repeat(3, 1fr); }
   .main { padding: 28px 24px; }

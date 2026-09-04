@@ -33,6 +33,27 @@ const OnlineOrdersWidget = {
     return Utils.escHtml(s == null ? '' : String(s));
   },
 
+  phoneLink(phone) {
+    const p = String(phone || '').replace(/\D/g, '');
+    return p ? `tel:${p}` : '#';
+  },
+
+  whatsappLink(phone) {
+    const p = String(phone || '').replace(/\D/g, '');
+    if (!p) return '#';
+    const wa = p.startsWith('27') ? p : (p.startsWith('0') ? `27${p.slice(1)}` : p);
+    return `https://wa.me/${wa}`;
+  },
+
+  customerContactHtml(phone, inline = false) {
+    if (!phone) return '';
+    const style = inline ? 'display:inline-flex;gap:6px;margin-left:8px;vertical-align:middle' : 'display:flex;gap:8px;margin:8px 0';
+    return `<span class="oo-contact" style="${style}">
+      <a href="${this.phoneLink(phone)}" title="Call customer" aria-label="Call">📞</a>
+      <a href="${this.whatsappLink(phone)}" target="_blank" rel="noopener" title="WhatsApp customer" aria-label="WhatsApp">💬</a>
+    </span>`;
+  },
+
   parseItems(order) {
     try { return JSON.parse(order.items_json || '[]'); } catch (_) { return []; }
   },
@@ -268,7 +289,7 @@ const OnlineOrdersWidget = {
           ${this.sourceTag(order)}
           ${order.sale_id ? '<span class="tag tag-ok">ON POS</span>' : '<span class="tag tag-warn">NOT ON POS</span>'}
         </div>
-        <div class="muted" style="font-size:12px;margin-top:4px"><strong>${this.esc(order.customer_name || 'Customer')}</strong>${order.customer_email ? ` · ${this.esc(order.customer_email)}` : ''} · ${this.esc(order.customer_phone || '—')}</div>
+        <div class="muted" style="font-size:12px;margin-top:4px"><strong>${this.esc(order.customer_name || 'Customer')}</strong>${order.customer_email ? ` · ${this.esc(order.customer_email)}` : ''} · ${this.esc(order.customer_phone || '—')}${this.customerContactHtml(order.customer_phone, true)}</div>
         <div class="muted" style="font-size:12px">${this.esc(itemLine)}${more}</div>
         <div style="font-size:12px;margin-top:4px">${this.formatWhen(order)} · ${this.esc(fulfillment)}${fulfillment === 'delivery' && order.delivery_address ? ` · ${this.esc(order.delivery_address)}` : ''}</div>
         ${order.notes ? `<div class="muted" style="font-size:12px;margin-top:2px">Note: ${this.esc(order.notes)}</div>` : ''}
@@ -288,7 +309,8 @@ const OnlineOrdersWidget = {
     const fulfillment = order.fulfillment_type || order.fulfillment || 'collection';
     Utils.showModal(title, `
       <p><strong>${this.esc(order.order_number)}</strong> · ${Utils.formatMoney(order.total, this.currency())} ${this.sourceTag(order)}</p>
-      <p><strong>${this.esc(order.customer_name || 'Customer')}</strong>${order.customer_email ? `<br>${this.esc(order.customer_email)}` : ''}<br>${this.esc(order.customer_phone || '—')}</p>
+      <p><strong>${this.esc(order.customer_name || 'Customer')}</strong>${order.customer_email ? `<br>${this.esc(order.customer_email)}` : ''}<br>
+      <strong>Phone:</strong> ${this.esc(order.customer_phone || '—')}${this.customerContactHtml(order.customer_phone, true)}</p>
       <p class="muted">${this.esc(fulfillment)}${fulfillment === 'delivery' && order.delivery_address ? ` · ${this.esc(order.delivery_address)}` : ''} · ${items.length} item(s)</p>
       ${order.notes ? `<p class="muted"><strong>Note:</strong> ${this.esc(order.notes)}</p>` : ''}
       <ul style="margin:8px 0;padding-left:18px;font-size:13px">${items.slice(0, 8).map((i) =>
@@ -404,7 +426,7 @@ const OnlineOrdersWidget = {
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">${this.statusTag(order)}${this.sourceTag(order)}${order.sale_id ? '<span class="tag tag-ok">Linked to POS sale</span>' : '<span class="tag tag-warn">Awaiting POS accept</span>'}</div>
       <p><strong>Customer:</strong> ${this.esc(order.customer_name || '—')}<br>
       ${order.customer_email ? `<strong>Email:</strong> ${this.esc(order.customer_email)}<br>` : ''}
-      <strong>Phone:</strong> ${this.esc(order.customer_phone || '—')}<br>
+      <strong>Phone:</strong> ${this.esc(order.customer_phone || '—')}${this.customerContactHtml(order.customer_phone, true)}<br>
       <strong>Source:</strong> ${this.esc(order.order_source || 'ONLINE')} (web order — not placed on POS)<br>
       <strong>Fulfillment:</strong> ${this.esc(fulfillment)}<br>
       ${fulfillment === 'delivery' && order.delivery_address ? `<strong>Delivery address:</strong> ${this.esc(order.delivery_address)}<br>` : ''}

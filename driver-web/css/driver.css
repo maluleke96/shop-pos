@@ -21,7 +21,9 @@ input, textarea, select { width:100%; margin-top:4px; padding:10px; border-radiu
 .order-actions button { flex:1; min-width:120px; }
 .nav { position:fixed; bottom:0; left:0; right:0; background:#111827; display:flex; border-top:1px solid #334155; }
 .nav button { flex:1; padding:12px 4px; background:none; border:none; color:var(--muted); font-size:.75rem; }
+.nav.hidden { display: none; }
 .nav button.active { color:var(--accent); }
+.delivery-code { background:#14532d; padding:8px 10px; border-radius:8px; margin:6px 0; font-size:.95rem; }
 .toast { position:fixed; top:12px; left:50%; transform:translateX(-50%); background:#14532d; color:#fff; padding:10px 16px; border-radius:8px; z-index:99; }
 .toast.error { background:#7f1d1d; }
 .status-pill { display:inline-block; padding:6px 12px; border-radius:999px; background:#14532d; }

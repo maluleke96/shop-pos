@@ -18,48 +18,114 @@
     a.btn { display:inline-block; background:var(--accent); color:#052e16; text-decoration:none; font-weight:600; padding:8px 14px; border-radius:8px; font-size:14px; }
     a.btn.secondary { background:transparent; color:var(--text); border:1px solid var(--border); }
     .domain { background:#020617; border:1px solid var(--border); border-radius:8px; padding:12px 14px; margin-bottom:24px; font-family:monospace; word-break:break-all; }
+    .shop-bar { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:16px; margin-bottom:20px; }
+    .shop-bar label { display:block; font-size:13px; color:var(--muted); margin-bottom:6px; }
+    .shop-bar select, .shop-bar input { width:100%; padding:10px; border-radius:8px; border:1px solid var(--border); background:#0f172a; color:var(--text); margin-bottom:8px; }
+    .shop-actions { display:flex; gap:8px; flex-wrap:wrap; }
+    .shop-actions button { padding:8px 12px; border-radius:8px; border:1px solid var(--border); background:transparent; color:var(--text); cursor:pointer; font-size:13px; }
+    .shop-actions button.primary { background:var(--accent); color:#052e16; border:none; font-weight:600; }
     footer { margin-top:32px; font-size:12px; color:var(--muted); }
   </style>
 </head>
 <body>
   <div class="wrap">
     <h1>🍽️ Chisa Food</h1>
-    <p class="sub">All shop panels — bookmark this page on every device.</p>
+    <p class="sub">All shop panels — bookmark this page. Use <strong>Multi-shop</strong> below to run more than one shop on the same computer without mixing logins.</p>
+
+    <div class="shop-bar">
+      <h2 style="margin:0 0 10px;font-size:1rem">Multi-shop on this device</h2>
+      <p style="margin:0 0 12px;font-size:13px;color:var(--muted)">Each shop has its own cloud URL and separate login sessions for Admin, POS, and Online.</p>
+      <label for="shop-select">Active shop</label>
+      <select id="shop-select"></select>
+      <label for="shop-url">Cloud URL</label>
+      <input id="shop-url" type="url" placeholder="https://your-shop.up.railway.app">
+      <label for="shop-name">Shop name</label>
+      <input id="shop-name" type="text" placeholder="My shop name">
+      <div class="shop-actions">
+        <button type="button" class="primary" id="shop-switch">Switch shop</button>
+        <button type="button" id="shop-save">Save / add shop</button>
+      </div>
+    </div>
+
     <div class="domain" id="base-url">https://chisafood.up.railway.app</div>
     <div class="grid" id="links"></div>
     <footer>Cloud POS · Supabase Postgres · Railway</footer>
   </div>
+  <script src="js/shop-profiles.js"></script>
   <script>
-    const BASE = location.origin.replace(/\/$/, '') || 'https://chisafood.up.railway.app';
-    document.getElementById('base-url').textContent = BASE;
-    const panels = [
-      { title: 'Admin Panel', desc: 'Owner & managers — shop setup, reports, delivery, HR approvals', path: '/admin-app.html' },
-      { title: 'POS Till', desc: 'Cashiers — sales, delivery orders, payments', path: '/index.html?app=pos' },
-      { title: 'Staff Portal', desc: 'Employees — clocking, payslips, salary claims', path: '/staff-app.html' },
-      { title: 'HR & Payroll', desc: 'HR team — employees, payroll prep (Admin approves)', path: '/index.html', note: 'Open POS hub → HR, Payroll & Documents' },
-      { title: 'Business Accounting', desc: 'Bookkeeping, journals, financial reports', path: '/accounting-app.html' },
-      { title: 'Recipe & Production', desc: 'Kitchen recipes, production, approvals', path: '/recipe-app.html' },
-      { title: 'Marketing Agent', desc: 'Referrals, campaigns, agent login', path: '/marketing-app.html' },
-      { title: 'Online Ordering', desc: 'Customers order delivery or collection', path: '/order/' },
-      { title: 'Manager App', desc: 'Mobile manager dashboard', path: '/manager/' },
-      { title: 'Delivery — Drivers', desc: 'Driver sign-in, accept deliveries, earnings', path: '/driver/' },
-      { title: 'Driver Registration', desc: 'New drivers apply here', path: '/driver/register.html' },
-      { title: 'Delivery Department', desc: 'Assign drivers (inside Admin → Delivery)', path: '/admin-app.html', note: 'Admin → Delivery Department' },
-      { title: 'Kiosk', desc: 'Self-service ordering kiosk', path: '/kiosk/' },
-      { title: 'Drive-Thru', desc: 'Drive-thru order screen', path: '/drive-thru/' },
-      { title: 'Digital Signage', desc: 'Manage menu boards & screens', path: '/signage/' },
-      { title: 'Signage Player', desc: 'Display device player', path: '/signage-player/' },
-      { title: 'Referral Links', desc: 'Marketing referral landing (/r/CODE)', path: '/r/' },
-      { title: 'Investor Portal', desc: 'Investor documents & updates', path: '/investor/' },
-      { title: 'Release Notes', desc: 'Product release portal', path: '/release/' },
-      { title: 'Meetings', desc: 'Meeting portal', path: '/meeting/' }
-    ];
-    document.getElementById('links').innerHTML = panels.map((p) => `
-      <div class="card">
-        <h2>${p.title}</h2>
-        <p>${p.desc}${p.note ? `<br><em>${p.note}</em>` : ''}</p>
-        <a class="btn" href="${BASE}${p.path}">Open</a>
-      </div>`).join('');
+    function activeBase() {
+      const p = window.ShopProfiles?.getActive?.();
+      return (p?.cloudUrl || location.origin || 'https://chisafood.up.railway.app').replace(/\/$/, '');
+    }
+
+    function refreshShopUi() {
+      const list = window.ShopProfiles?.list?.() || [];
+      const active = window.ShopProfiles?.getActive?.();
+      const sel = document.getElementById('shop-select');
+      const url = document.getElementById('shop-url');
+      const name = document.getElementById('shop-name');
+      if (sel) {
+        sel.innerHTML = list.map((p) => `<option value="${p.id}" ${p.id === active?.id ? 'selected' : ''}>${p.name}</option>`).join('');
+      }
+      if (url && active) url.value = active.cloudUrl || '';
+      if (name && active) name.value = active.name || '';
+      const BASE = activeBase();
+      document.getElementById('base-url').textContent = BASE;
+      renderLinks(BASE);
+    }
+
+    function renderLinks(BASE) {
+      const panels = [
+        { title: 'Admin Panel', desc: 'Owner & managers — shop setup, reports, delivery, HR approvals', path: '/admin-app.html' },
+        { title: 'POS Till', desc: 'Cashiers — sales, delivery orders, payments', path: '/index.html?app=pos' },
+        { title: 'Staff Portal', desc: 'Employees — clocking, payslips, salary claims', path: '/staff-app.html' },
+        { title: 'Business Accounting', desc: 'Bookkeeping, journals, financial reports', path: '/accounting-app.html' },
+        { title: 'Recipe & Production', desc: 'Kitchen recipes, production, approvals', path: '/recipe-app.html' },
+        { title: 'Marketing Agent', desc: 'Referrals, campaigns, agent login', path: '/marketing-app.html' },
+        { title: 'Online Ordering', desc: 'Customers order delivery or collection', path: '/order/' },
+        { title: 'Manager App', desc: 'Mobile manager dashboard', path: '/manager/' },
+        { title: 'Delivery — Drivers', desc: 'Driver sign-in, accept deliveries, earnings', path: '/driver/' },
+        { title: 'Driver Registration', desc: 'New drivers apply here', path: '/driver/register.html' },
+        { title: 'Kiosk', desc: 'Self-service ordering kiosk', path: '/kiosk/' },
+        { title: 'Drive-Thru', desc: 'Drive-thru order screen', path: '/drive-thru/' },
+        { title: 'Digital Signage', desc: 'Manage menu boards & screens', path: '/signage/' }
+      ];
+      document.getElementById('links').innerHTML = panels.map((p) => `
+        <div class="card">
+          <h2>${p.title}</h2>
+          <p>${p.desc}</p>
+          <a class="btn" href="${BASE}${p.path}">Open</a>
+        </div>`).join('');
+    }
+
+    document.getElementById('shop-switch')?.addEventListener('click', () => {
+      const id = document.getElementById('shop-select')?.value;
+      if (!id) return;
+      ShopProfiles.setActive(id);
+      ShopProfiles.clearPanelSessions();
+      refreshShopUi();
+      alert('Switched shop. Panel links below now point to ' + activeBase());
+    });
+
+    document.getElementById('shop-save')?.addEventListener('click', () => {
+      const id = document.getElementById('shop-select')?.value;
+      const name = document.getElementById('shop-name')?.value.trim();
+      const cloudUrl = document.getElementById('shop-url')?.value.trim();
+      if (!name || !cloudUrl) return alert('Enter shop name and cloud URL');
+      ShopProfiles.save({ id: id || undefined, name, cloudUrl });
+      const saved = ShopProfiles.list().find((p) => p.name === name && p.cloudUrl === cloudUrl.replace(/\/$/, ''));
+      if (saved) ShopProfiles.setActive(saved.id);
+      refreshShopUi();
+      alert('Shop saved.');
+    });
+
+    document.getElementById('shop-select')?.addEventListener('change', () => {
+      const id = document.getElementById('shop-select').value;
+      ShopProfiles.setActive(id);
+      refreshShopUi();
+    });
+
+    refreshShopUi();
   </script>
 </body>
 </html>

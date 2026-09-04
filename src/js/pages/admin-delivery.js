@@ -183,12 +183,19 @@ window.AdminDeliveryPage = {
 
   ordersTable(rows, opts = {}) {
     if (!rows?.length) return '<p class="muted">No delivery orders yet. Delivery orders appear from POS, online, or kiosk when delivery is selected.</p>';
+    const sourceLabel = (o) => {
+      const s = String(o.source_label || o.source_type || '').toLowerCase();
+      if (s.includes('online')) return 'Online';
+      if (s.includes('pos') || s === 'sale') return 'POS';
+      return o.source_label || o.source_type || '—';
+    };
     return `<table class="data-table"><thead><tr>
       ${opts.selectable ? '<th></th>' : ''}
-      <th>Order</th><th>Delivery #</th><th>Customer</th><th>Address</th><th>Branch</th><th>Fee</th><th>Driver</th><th>Status</th><th>Actions</th>
+      <th>Order</th><th>Source</th><th>Delivery #</th><th>Customer</th><th>Address</th><th>Branch</th><th>Fee</th><th>Driver</th><th>Status</th><th>Actions</th>
     </tr></thead><tbody>${rows.map((o) => `<tr data-oid="${o.id}">
       ${opts.selectable ? `<td><input type="checkbox" class="del-pick" value="${o.id}"></td>` : ''}
-      <td>${this.esc(o.order_number)}<br><small class="muted">${this.esc(o.source_label || o.source_type || '')}</small></td>
+      <td>${this.esc(o.order_number)}</td>
+      <td><span class="badge">${this.esc(sourceLabel(o))}</span></td>
       <td><strong>${this.esc(o.confirmation_code || '—')}</strong></td>
       <td>${this.esc(o.customer_name)}<br><small>${this.esc(o.customer_phone)}</small></td>
       <td>${this.esc(o.delivery_address)}</td>
@@ -360,8 +367,9 @@ window.AdminDeliveryPage = {
     </tr>`).join('') : '<tr><td colspan="5" class="muted">No branch fees saved yet — add one below.</td></tr>'}
     </tbody></table>
     <h3>Add / edit branch fee</h3>
-    <div style="display:flex;gap:8px;flex-wrap:wrap;margin:12px 0">
-      <select id="del-branch-pick">${branchOpts}</select>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin:12px 0;align-items:center">
+      <select id="del-branch-pick"><option value="">— Select branch —</option>${branchOpts}</select>
+      <label style="display:flex;align-items:center;gap:6px;font-size:13px"><input type="checkbox" id="del-all-branches"> Apply to all branches</label>
       <button class="btn btn-ghost" id="del-branch-load">Load branch</button>
     </div>
     <form id="del-branch-fee-form" class="form-grid" style="max-width:420px;display:none">
@@ -403,10 +411,21 @@ window.AdminDeliveryPage = {
     });
     branchForm.onsubmit = async (e) => {
       e.preventDefault();
-      const bid = branchForm.dataset.branchId;
       const fd = new FormData(branchForm);
-      await API.saveDeliveryBranchSettings(bid, Object.fromEntries(fd.entries()), this.actor);
-      Utils.toast('Branch delivery fee saved — synced to POS & online', 'success');
+      const payload = Object.fromEntries(fd.entries());
+      const allBranches = body.querySelector('#del-all-branches')?.checked;
+      if (allBranches) {
+        const branches = this.branches?.length ? this.branches : (await API.getBranches?.().catch(() => ({ data: [] })))?.data || [];
+        for (const b of branches) {
+          await API.saveDeliveryBranchSettings(b.id, payload, this.actor);
+        }
+        Utils.toast(`Delivery fees saved for ${branches.length} branch(es) — synced to POS & online`, 'success');
+      } else {
+        const bid = branchForm.dataset.branchId || body.querySelector('#del-branch-pick')?.value;
+        if (!bid) return Utils.toast('Select a branch first', 'error');
+        await API.saveDeliveryBranchSettings(bid, payload, this.actor);
+        Utils.toast('Branch delivery fee saved — synced to POS & online', 'success');
+      }
       this._loadedTabs.settings = false;
       await this.load(true);
       this.renderTab();
