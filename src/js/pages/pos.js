@@ -4,6 +4,60 @@ const POSPage = {
   discountApprover: null,
   discountManagerPin: null,
   selectedCategory: null,
+
+  _menuHighlightSettings() {
+    const raw = this.app?.settings?.customization?.menu_highlight_settings || {};
+    return {
+      tabs: {
+        available_today: { pos: raw.tabs?.available_today?.pos !== false },
+        new_arrival: { pos: raw.tabs?.new_arrival?.pos !== false },
+        best_seller: { pos: raw.tabs?.best_seller?.pos !== false },
+        today_special: { pos: raw.tabs?.today_special?.pos !== false }
+      }
+    };
+  },
+
+  _menuTabCounts() {
+    const today = new Date().toLocaleDateString('en-CA');
+    const products = this.products || [];
+    return {
+      __available_today: products.filter((p) => Number(p.available_today) === 1).length,
+      __new_arrival: products.filter((p) => Number(p.is_new_arrival) === 1
+        && (!p.new_arrival_until || p.new_arrival_until >= today)).length,
+      __best_seller: products.filter((p) => Number(p.is_best_seller) === 1).length,
+      __today_special: products.filter((p) => p.promo_active).length
+    };
+  },
+
+  _buildHighlightTabsHtml(activeCat = '') {
+    const cfg = this._menuHighlightSettings();
+    const counts = this._menuTabCounts();
+    const defs = [
+      { key: 'available_today', cat: '__available_today', label: 'Available Today', color: '#2dd4bf' },
+      { key: 'new_arrival', cat: '__new_arrival', label: 'New Arrival', color: '#38bdf8' },
+      { key: 'best_seller', cat: '__best_seller', label: 'Best Seller', color: '#fbbf24' },
+      { key: 'today_special', cat: '__today_special', label: "Today's Special", color: '#ef4444', sale: true }
+    ];
+    return defs.filter((d) => cfg.tabs[d.key]?.pos !== false).map((d) => {
+      const cnt = counts[d.cat] || 0;
+      const badge = cnt ? `<span class="menu-tab-count${d.sale ? ' sale' : ''}">${cnt}</span>` : '';
+      const cls = d.sale ? 'cat-tab cat-tab-sale' : 'cat-tab';
+      const active = activeCat === d.cat ? ' active' : '';
+      return `<button class="${cls}${active}" data-cat="${d.cat}" style="border-color:${d.color}">${d.label}${badge}</button>`;
+    }).join('');
+  },
+
+  renderCategoryTabs(activeCat = '') {
+    const cat = activeCat || this.selectedCategory || '';
+    const tabs = document.getElementById('pos-categories');
+    if (!tabs) return;
+    tabs.innerHTML = `
+      <button class="cat-tab ${!cat ? 'active' : ''}" data-cat="">All</button>
+      ${this._buildHighlightTabsHtml(cat)}
+      ${this.combos?.length ? `<button class="cat-tab cat-tab-sale ${cat === 'combos' ? 'active' : ''}" data-cat="combos" style="border-color:#ef4444">COMBOS<span class="menu-tab-count sale">${this.combos.length}</span></button>` : ''}
+      ${(this.categories || []).map((c) => `<button class="cat-tab ${String(cat) === String(c.id) ? 'active' : ''}" data-cat="${c.id}" style="border-color:${c.color}">
+        ${c.image_path ? `<img ${Utils.cachedImageAttr(c.image_path)} class="cat-tab-img" alt="">` : ''}${c.name}</button>`).join('')}`;
+  },
   products: [],
   combos: [],
   categories: [],
@@ -82,29 +136,23 @@ const POSPage = {
     ]);
     const catalogP = Promise.all([
       API.getCategories(filters),
-      API.getProducts(filters)
+      API.getProducts(filters),
+      API.getActiveCombos(branchId ? { branch_id: branchId, for_pos: true } : { for_pos: true }).catch(() => ({ success: false, data: [] }))
     ]);
 
-    const [[shiftSettingsRes, shiftRes], [catRes, prodRes]] = await Promise.all([shiftP, catalogP]);
+    const [[shiftSettingsRes, shiftRes], [catRes, prodRes, comboRes]] = await Promise.all([shiftP, catalogP]);
     if (shiftSettingsRes.success) {
       this.shiftSettings = shiftSettingsRes.data || this.shiftSettings;
     }
     this.openShift = shiftRes?.data || null;
     this.categories = catRes.data || [];
     this.products = prodRes.data || [];
+    this.combos = comboRes?.data || [];
     this.rebuildProductLookups();
 
     // Refresh product grid with real catalog
     const tabs = document.getElementById('pos-categories');
-    if (tabs) {
-      tabs.innerHTML = `
-        <button class="cat-tab active" data-cat="">All</button>
-        <button class="cat-tab" data-cat="__available_today" style="border-color:#2dd4bf">Available Today</button>
-        <button class="cat-tab" data-cat="__new_arrival" style="border-color:#38bdf8">New Arrival</button>
-        <button class="cat-tab" data-cat="__best_seller" style="border-color:#fbbf24">Best Seller</button>
-        ${this.categories.map(c => `<button class="cat-tab" data-cat="${c.id}" style="border-color:${c.color}">
-          ${c.image_path ? `<img ${Utils.cachedImageAttr(c.image_path)} class="cat-tab-img" alt="">` : ''}${c.name}</button>`).join('')}`;
-    }
+    if (tabs) this.renderCategoryTabs('');
     this.renderProducts(document.getElementById('pos-search')?.value || '');
     this.renderCart?.();
 
@@ -131,20 +179,14 @@ const POSPage = {
     this.updateShiftGate();
     this._startOnlineOrdersWidget();
 
-    // Secondary data — don't block selling
+    // Refresh targets/campaigns in background (combos already loaded with catalog)
     Promise.all([
-      API.getActiveCombos(branchId ? { branch_id: branchId } : {}).catch(() => ({ success: false, data: [] })),
       API.getSalesTargets().catch(() => ({ success: false })),
       API.getActiveCampaigns(app.user?.branch_id).catch(() => ({ success: false }))
-    ]).then(([comboRes, targetsRes, campRes]) => {
-      this.combos = comboRes.data || [];
+    ]).then(([targetsRes, campRes]) => {
       this.salesTargets = targetsRes.success ? (targetsRes.data || { daily: { amount: 0, active: false } }) : { daily: { amount: 0, active: false } };
       this.activeCampaigns = campRes.success ? (campRes.data || []) : [];
-      const catTabs = document.getElementById('pos-categories');
-      if (catTabs && this.combos.length && !catTabs.querySelector('[data-cat="combos"]')) {
-        const best = catTabs.querySelector('[data-cat="__best_seller"]');
-        best?.insertAdjacentHTML('afterend', '<button class="cat-tab" data-cat="combos" style="border-color:#e11d48">🎁 COMBOS</button>');
-      }
+      this.renderCategoryTabs(this.selectedCategory || '');
     });
 
     if (pendingQuote?.status === 'open' && pendingQuote.items?.length) {
@@ -532,15 +574,7 @@ const POSPage = {
               <button type="button" class="btn btn-ghost btn-sm ${this.topSellerPeriod === 'month' ? 'active' : ''}" data-top-period="month" style="padding:2px 6px;font-size:10px">Month</button>
             </div>
           </div>
-          <div class="category-tabs" id="pos-categories">
-            <button class="cat-tab active" data-cat="">All</button>
-            <button class="cat-tab" data-cat="__available_today" style="border-color:#2dd4bf">Available Today</button>
-            <button class="cat-tab" data-cat="__new_arrival" style="border-color:#38bdf8">New Arrival</button>
-            <button class="cat-tab" data-cat="__best_seller" style="border-color:#fbbf24">Best Seller</button>
-            ${this.combos.length ? '<button class="cat-tab" data-cat="combos" style="border-color:#e11d48">🎁 COMBOS</button>' : ''}
-            ${this.categories.map(c => `<button class="cat-tab" data-cat="${c.id}" style="border-color:${c.color}">
-              ${c.image_path ? `<img ${Utils.cachedImageAttr(c.image_path)} class="cat-tab-img" alt="">` : ''}${c.name}</button>`).join('')}
-          </div>
+          <div class="category-tabs" id="pos-categories"></div>
           <div class="product-grid" id="pos-grid"></div>
         </div>
         <div class="pos-cart">
@@ -858,6 +892,22 @@ const POSPage = {
     return (product.options?.length || product.extras?.length || product.removals?.length || product.requires_options);
   },
 
+  calcPromoUnitPrice(product, allMods) {
+    const promoActive = !!product.promo_active;
+    const normal = Number(product.original_price ?? product.selling_price) || 0;
+    const sale = Number(product.selling_price) || 0;
+    const extraTotal = (allMods || []).reduce((s, m) => s + (Number(m.extra_price) || 0), 0);
+    const hasRemoval = (allMods || []).some((m) =>
+      m.modifier_type === 'removal' || (Number(m.extra_price) < 0 && m.modifier_type !== 'extra' && m.modifier_type !== 'option'));
+    if (promoActive && hasRemoval) {
+      return { unitPrice: Math.round((normal + extraTotal) * 100) / 100, optedOut: true };
+    }
+    if (promoActive) {
+      return { unitPrice: Math.round((sale + extraTotal) * 100) / 100, optedOut: false };
+    }
+    return { unitPrice: Math.round((sale + extraTotal) * 100) / 100, optedOut: false };
+  },
+
   comboMatchesCategory(combo, categoryKey) {
     if (!categoryKey || categoryKey === 'combos') return true;
     const cat = this.categories.find(c => String(c.id) === String(categoryKey));
@@ -890,35 +940,45 @@ const POSPage = {
     if (!this.app?.user) return;
     try {
       const filters = { for_pos: true, actor: this.app.user };
-      const prodRes = await API.getProducts._uncached
-        ? API.getProducts._uncached(filters)
-        : API.getProducts(filters);
+      const branchId = this.app.user?.branch_id || undefined;
+      const [prodRes, comboRes] = await Promise.all([
+        API.getProducts._uncached ? API.getProducts._uncached(filters) : API.getProducts(filters),
+        API.getActiveCombos(branchId ? { branch_id: branchId, for_pos: true } : { for_pos: true }).catch(() => ({ data: [] }))
+      ]);
       this.products = prodRes?.data || prodRes || [];
+      this.combos = comboRes?.data || [];
       this.rebuildProductLookups();
+      this.renderCategoryTabs(this.selectedCategory || '');
       this.renderProducts(document.getElementById('pos-search')?.value || '');
     } catch (_) { /* ignore */ }
   },
 
   comboNeedsOptions(combo) {
+    if (combo.combo_kind === 'custom') return false;
     const set = this._productsNeedingOptions;
-    if (!set) return (combo.items || []).some(i => {
-      const p = this.products.find(x => x.id == i.product_id);
-      return p && this.productNeedsDialog(p);
+    return (combo.items || []).some(i => {
+      if (i.allow_pap_choice && i.product_id) return true;
+      if (!i.product_id) return false;
+      if (!set) {
+        const p = this.products.find(x => x.id == i.product_id);
+        return p && this.productNeedsDialog(p);
+      }
+      return set.has(String(i.product_id));
     });
-    return (combo.items || []).some(i => set.has(String(i.product_id)));
   },
 
   comboCardHtml(c, currency) {
     const items = c.items || [];
     const components = items.map(i => `${i.quantity}× ${i.product_name}`).join(', ');
     const needsOpts = this.comboNeedsOptions(c);
-    const thumbs = items.filter(i => i.picture_path).slice(0, 4);
+    const thumbs = items.filter(i => i.picture_path || i.custom_image_path).slice(0, 4);
     let media;
     if (c.image_path) {
       media = `<img ${Utils.cachedImageAttr(c.image_path)} alt="">`;
     } else if (thumbs.length) {
-      media = `<div class="combo-item-thumbs" style="display:grid;grid-template-columns:repeat(${Math.min(thumbs.length, 2)},1fr);gap:2px;width:100%;height:100%">
-        ${thumbs.map(i => `<img ${Utils.cachedImageAttr(i.picture_path)} alt="" style="width:100%;height:100%;object-fit:cover;min-height:36px">`).join('')}
+      const cols = Math.min(thumbs.length, 3);
+      media = `<div class="combo-item-thumbs" style="display:grid;grid-template-columns:repeat(${cols},1fr);gap:2px;width:100%;height:100%">
+        ${thumbs.map(i => `<img ${Utils.cachedImageAttr(i.custom_image_path || i.picture_path)} alt="" style="width:100%;height:100%;object-fit:cover;min-height:36px">`).join('')}
       </div>`;
     } else {
       media = `<span class="product-card-placeholder">🎁</span>`;
@@ -964,6 +1024,62 @@ const POSPage = {
       }
     }
     return product || null;
+  },
+
+  /** Blocking price choice when customer opts out of pap / removal on promo or combo. */
+  confirmWithoutOptionPrice(opts = {}) {
+    const currency = opts.currency || this.app.settings?.currency || 'R';
+    const optionName = opts.optionName || 'Without pap';
+    const salePrice = Number(opts.salePrice) || 0;
+    const normalPrice = Number(opts.normalPrice) || salePrice;
+    const isCombo = !!opts.isCombo;
+    const saleLabel = isCombo ? 'Combo deal price' : 'Sale price';
+    const normalLabel = isCombo ? 'Standard combo price' : 'Normal price';
+    const saleHint = isCombo ? 'Keep the combo as advertised (with pap)' : 'Keep the promotional sale price';
+    const normalHint = isCombo ? 'Without pap — charged at the regular combo total' : 'Without pap — charged at the regular menu price';
+
+    return new Promise((resolve) => {
+      const host = document.getElementById('modal-body');
+      if (!host) return resolve(null);
+      const overlay = document.createElement('div');
+      overlay.className = 'pos-price-confirm-overlay';
+      overlay.setAttribute('role', 'dialog');
+      overlay.setAttribute('aria-modal', 'true');
+      overlay.innerHTML = `
+        <div class="pos-price-confirm-panel">
+          <div class="pos-price-confirm-badge">Price confirmation required</div>
+          <h4 class="pos-price-confirm-title">Confirm pricing choice</h4>
+          <p class="pos-price-confirm-lead">You selected <strong>${Utils.escHtml(optionName)}</strong>.</p>
+          <p class="muted pos-price-confirm-sub">Please confirm how this item should be priced before continuing.</p>
+          <div class="pos-price-confirm-cards">
+            <button type="button" class="pos-price-confirm-card" data-choice="sale">
+              <span class="pos-price-confirm-card-label">${saleLabel}</span>
+              <span class="pos-price-confirm-card-price">${Utils.formatMoney(salePrice, currency)}</span>
+              <span class="pos-price-confirm-card-hint">${saleHint}</span>
+            </button>
+            <button type="button" class="pos-price-confirm-card pos-price-confirm-card-alt" data-choice="normal">
+              <span class="pos-price-confirm-card-label">${normalLabel}</span>
+              <span class="pos-price-confirm-card-price">${Utils.formatMoney(normalPrice, currency)}</span>
+              <span class="pos-price-confirm-card-hint">${normalHint}</span>
+            </button>
+          </div>
+          <p class="pos-price-confirm-foot muted">You must choose one option to continue.</p>
+        </div>`;
+      host.style.position = 'relative';
+      host.appendChild(overlay);
+      const finish = (choice) => {
+        overlay.remove();
+        if (host && !host.querySelector('.pos-price-confirm-overlay')) host.style.position = '';
+        resolve(choice);
+      };
+      overlay.querySelector('[data-choice="sale"]')?.addEventListener('click', () => finish('sale'));
+      overlay.querySelector('[data-choice="normal"]')?.addEventListener('click', () => finish('normal'));
+    });
+  },
+
+  isRemovalModifier(mod) {
+    return mod?.modifier_type === 'removal'
+      || (Number(mod?.extra_price) < 0 && mod?.modifier_type !== 'extra' && mod?.modifier_type !== 'option');
   },
 
   /** Collect options/extras for a product. Returns config or null if cancelled. */
@@ -1014,7 +1130,9 @@ const POSPage = {
         ${ui.subtitle ? `<p class="muted" style="margin-bottom:10px">${ui.subtitle}</p>` : ''}
         ${product.picture_path ? `<div style="text-align:center;margin-bottom:12px"><img data-image-path="${product.picture_path}" style="max-height:80px;border-radius:8px"></div>` : ''}
         ${product.description ? `<p class="muted">${product.description}</p>` : ''}
-        <p class="muted">Base price: <strong>${Utils.formatMoney(product.selling_price, currency)}</strong></p>
+        <p class="muted">Price: <strong>${product.promo_active && product.original_price
+          ? `<s>${Utils.formatMoney(product.original_price, currency)}</s> ${Utils.formatMoney(product.selling_price, currency)} (sale)`
+          : Utils.formatMoney(product.selling_price, currency)}</strong></p>
         ${groupHtml || '<p class="muted">Select required options to continue.</p>'}
         ${removals.length ? `<h4 style="margin-top:16px">Without / Remove</h4>${removals.map((e, i) =>
           `<label class="option-choice"><input type="checkbox" class="pos-removal" data-i="${i}">
@@ -1026,8 +1144,46 @@ const POSPage = {
          <button class="btn btn-primary" id="pos-add-configured">${submitLabel}</button>`,
         { noDismiss: true });
       Utils.hydrateImages(document.getElementById('modal-body'));
+
+      const needsPriceConfirm = (ui.comboContext || product.promo_active) && removals.length;
+      const salePrice = ui.comboContext
+        ? Number(ui.comboContext.salePrice) || 0
+        : Number(product.selling_price) || 0;
+      const normalPrice = ui.comboContext
+        ? Number(ui.comboContext.normalPrice) || salePrice
+        : Number(product.original_price ?? product.selling_price) || 0;
+
+      const bindRemovalConfirm = (cb) => {
+        cb.addEventListener('change', async () => {
+          if (!cb.checked) {
+            delete cb.dataset.priceConfirmed;
+            return;
+          }
+          cb.checked = false;
+          const removal = removals[parseInt(cb.dataset.i, 10)];
+          const choice = await this.confirmWithoutOptionPrice({
+            optionName: removal?.name || 'Without pap',
+            salePrice,
+            normalPrice,
+            isCombo: !!ui.comboContext,
+            currency
+          });
+          if (choice === 'normal') {
+            cb.checked = true;
+            cb.dataset.priceConfirmed = '1';
+          } else {
+            cb.checked = false;
+            delete cb.dataset.priceConfirmed;
+          }
+        });
+      };
+
+      if (needsPriceConfirm) {
+        document.querySelectorAll('.pos-removal').forEach(bindRemovalConfirm);
+      }
+
       document.getElementById('pos-opt-cancel')?.addEventListener('click', () => finish(null));
-      document.getElementById('pos-add-configured')?.addEventListener('click', () => {
+      document.getElementById('pos-add-configured')?.addEventListener('click', async () => {
         const selectedOptions = [];
         for (let gi = 0; gi < optionGroups.length; gi++) {
           const g = optionGroups[gi];
@@ -1056,8 +1212,30 @@ const POSPage = {
           return Utils.toast('Select required options before continuing', 'error');
         }
         const selectedRemovals = [...document.querySelectorAll('.pos-removal:checked')].map(cb => removals[parseInt(cb.dataset.i, 10)]).filter(Boolean);
+        if (needsPriceConfirm && selectedRemovals.length) {
+          for (const cb of document.querySelectorAll('.pos-removal:checked')) {
+            if (cb.dataset.priceConfirmed !== '1') {
+              const removal = removals[parseInt(cb.dataset.i, 10)];
+              const choice = await this.confirmWithoutOptionPrice({
+                optionName: removal?.name || 'Without pap',
+                salePrice,
+                normalPrice,
+                isCombo: !!ui.comboContext,
+                currency
+              });
+              if (choice === 'normal') {
+                cb.checked = true;
+                cb.dataset.priceConfirmed = '1';
+              } else {
+                cb.checked = false;
+                delete cb.dataset.priceConfirmed;
+              }
+            }
+          }
+        }
+        const confirmedRemovals = [...document.querySelectorAll('.pos-removal:checked')].map(cb => removals[parseInt(cb.dataset.i, 10)]).filter(Boolean);
         const selectedExtras = [...document.querySelectorAll('.pos-extra:checked')].map(cb => extras[parseInt(cb.dataset.i, 10)]).filter(Boolean);
-        finish({ selectedOptions, selectedExtras: [...selectedRemovals, ...selectedExtras] });
+        finish({ selectedOptions, selectedExtras: [...confirmedRemovals, ...selectedExtras] });
       });
     });
   },
@@ -1067,14 +1245,31 @@ const POSPage = {
     const items = combo.items || [];
     if (!items.length) return Utils.toast('This combo has no items', 'error');
 
-    // First pass: resolve products and count how many need options
+    if (combo.combo_kind === 'custom') {
+      const configured = items.map((item) => ({
+        product_id: item.product_id || null,
+        product_name: item.product_name || item.custom_name || 'Item',
+        quantity: Number(item.quantity) || 1,
+        modifiers: [],
+        modifiers_text: null
+      }));
+      this.addComboToCart(combo, configured);
+      Utils.toast(`Added ${combo.name}`, 'success');
+      return;
+    }
+
     const resolved = [];
     for (const item of items) {
+      if (!item.product_id) continue;
       const product = await this.resolveComboProduct(item);
       if (!product) {
         return Utils.toast(`Combo item missing from products (id ${item.product_id})`, 'error');
       }
-      resolved.push({ item, product, needsOptions: this.productNeedsDialog(product) });
+      resolved.push({
+        item,
+        product,
+        needsOptions: item.allow_pap_choice || this.productNeedsDialog(product)
+      });
     }
     const optionSteps = resolved.filter(r => r.needsOptions).length;
     let optionStep = 0;
@@ -1086,8 +1281,14 @@ const POSPage = {
         optionStep += 1;
         const config = await this.collectProductOptions(product, {
           title: `${combo.name} — ${product.name}`,
-          subtitle: `Fill options for this combo item first (${optionStep} of ${optionSteps}), then continue.`,
-          submitLabel: optionStep < optionSteps ? 'Next item →' : 'Add Combo to Order'
+          subtitle: item.allow_pap_choice
+            ? `Choose with or without pap (${optionStep} of ${optionSteps})`
+            : `Fill options for this combo item first (${optionStep} of ${optionSteps}), then continue.`,
+          submitLabel: optionStep < optionSteps ? 'Next item →' : 'Add Combo to Order',
+          comboContext: item.allow_pap_choice ? {
+            salePrice: combo.final_price,
+            normalPrice: combo.normal_price
+          } : null
         });
         if (!config) {
           Utils.toast('Combo cancelled — options must be filled before adding to order', 'error');
@@ -1143,6 +1344,8 @@ const POSPage = {
         : [...items].filter(p => p.has_recipe || p.item_type === 'restaurant')
           .sort((a, b) => String(b.last_sale_date || '').localeCompare(String(a.last_sale_date || '')))
           .slice(0, 40);
+    } else if (catKey === '__today_special') {
+      items = items.filter((p) => p.promo_active);
     } else if (catKey) {
       items = items.filter(p => String(p.category_id) === String(catKey));
     }
@@ -1176,7 +1379,7 @@ const POSPage = {
         <div class="product-card-body">
           ${cat ? `<span class="product-card-cat">${cat.name}</span>` : ''}
           <span class="product-card-name">${p.name}</span>
-          <span class="product-card-price">${Utils.formatMoney(p.selling_price, currency)}</span>
+          <span class="product-card-price${p.promo_active ? ' promo-price' : ''}">${p.promo_active && p.original_price ? `<s class="was-price">${Utils.formatMoney(p.original_price, currency)}</s> ` : ''}${Utils.formatMoney(p.selling_price, currency)}</span>
           <span class="product-card-meta">${availLabel}${p.sku && !st.isMeal ? ` · ${p.sku}` : ''}</span>
           ${promoBadge}${mealBadge}
           ${hasOpts ? '<span class="product-card-badge">Customise</span>' : ''}
@@ -1683,10 +1886,11 @@ const POSPage = {
     }
     const opts = config.selectedOptions || [];
     const extras = config.selectedExtras || [];
-    const extraTotal = [...opts, ...extras].reduce((s, m) => s + (Number(m.extra_price) || 0), 0);
-    const modText = [...opts, ...extras].map(m => m.name).join(', ');
-    // Postgres NUMERIC arrives as strings — never use + or JS will concat ("50"+0 => "500")
-    const unitPrice = Math.round(((Number(product.selling_price) || 0) + extraTotal) * 100) / 100;
+    const allMods = [...opts, ...extras];
+    const extraTotal = allMods.reduce((s, m) => s + (Number(m.extra_price) || 0), 0);
+    const modText = allMods.map(m => m.name).join(', ');
+    const priced = this.calcPromoUnitPrice(product, allMods);
+    const unitPrice = priced.unitPrice;
     const subKey = substitutions ? JSON.stringify(substitutions) : '';
     const cartKey = `${product.id}:${modText}:${subKey}`;
 
@@ -1715,12 +1919,12 @@ const POSPage = {
         total: unitPrice,
         item_type: product.item_type || 'retail',
         modifiers_text: modText || null,
-        modifiers: [...opts, ...extras],
+        modifiers: allMods,
         substitutions: substitutions || null,
-        promo_request_id: product.promo_request_id || null,
-        original_unit_price: product.promo_active
+        promo_request_id: priced.optedOut ? null : (product.promo_request_id || null),
+        original_unit_price: priced.optedOut ? null : (product.promo_active
           ? (Number(product.original_price ?? product.selling_price) || 0)
-          : null
+          : null)
       });
     }
     this.renderCart();
@@ -1742,8 +1946,11 @@ const POSPage = {
     const modKey = components.map(i => `${i.product_id}:${i.modifiers_text || ''}`).join('|');
     const cartKey = `combo:${combo.id}:${modKey}`;
     const allMods = components.flatMap(i => i.modifiers || []);
-    const unitPrice = Number(combo.final_price) || 0;
-    const normalPrice = Number(combo.normal_price) || 0;
+    const hasRemoval = components.some((c) => (c.modifiers || []).some((m) => this.isRemovalModifier(m)));
+    const comboSale = Number(combo.final_price) || 0;
+    const comboNormal = Number(combo.normal_price) || comboSale;
+    const unitPrice = hasRemoval ? comboNormal : comboSale;
+    const normalPrice = comboNormal;
     const existing = this.cart.find(i => i.cart_key === cartKey);
     if (existing) {
       existing.quantity++;
@@ -1763,7 +1970,8 @@ const POSPage = {
         item_type: 'combo',
         modifiers_text: componentsLabel || null,
         modifiers: allMods.length ? allMods : null,
-        combo_components: components
+        combo_components: components,
+        combo_price_opted_out: hasRemoval || undefined
       });
     }
     this.renderCart();

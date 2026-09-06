@@ -39,13 +39,11 @@ const AdminPage = {
     { id: 'analytics', label: '📊 Sales Analytics', icon: 'analytics' },
     { id: 'inventory', label: '📦 Inventory', icon: 'inventory' },
     { id: 'discounts', label: '🏷️ Discounts', icon: 'discounts' },
-    { id: 'loyalty', label: '⭐ Loyalty Points', icon: 'loyalty' },
-    { id: 'customer-rewards', label: '🎁 Customer Gift Rewards', icon: 'loyalty' },
+    { id: 'loyalty', label: '⭐ Loyalty & Gift Cards', icon: 'loyalty' },
     { id: 'importexport', label: '📁 Import & Export', icon: 'importexport' },
     { id: 'customize', label: '🎨 Customization', icon: 'customize' },
     { id: 'branches', label: '🏢 Branches', icon: 'branches' },
     { id: 'online-orders', label: '🛒 Online Orders', icon: 'online' },
-    { id: 'deliveries', label: '🚚 Deliveries', icon: 'delivery' },
     { id: 'business-modules', label: '🏢 Business Modules', icon: 'business' },
     { id: 'digital-signage', label: '📺 Digital Signage', icon: 'signage' },
     { id: 'mobile-app', label: '📱 Mobile App Users', icon: 'mobile' },
@@ -183,7 +181,7 @@ const AdminPage = {
       inventory: () => this.renderInventory(el),
       discounts: () => this.renderDiscounts(el),
       loyalty: () => this.renderLoyalty(el),
-      'customer-rewards': () => this.renderCustomerRewards(el),
+      'customer-rewards': () => { this._loyaltyTab = 'rewards'; return this.renderLoyalty(el); },
       importexport: () => this.renderImportExport(el),
       customize: () => this.renderCustomize(el),
       branches: () => this.renderBranchesSync(el),
@@ -295,6 +293,17 @@ const AdminPage = {
         () => this.renderOnAccount(el),
         'On Account'
       ),
+      combos: async () => {
+        if (window.App?.ensurePageScripts) await App.ensurePageScripts('admin');
+        if (window.AdminCombosPage) return window.AdminCombosPage.render(el, this);
+        el.innerHTML = `<div class="admin-section"><p class="muted">Combos module loading…</p>
+          <button type="button" class="btn btn-primary" id="admin-reload-combos">Reload</button></div>`;
+        document.getElementById('admin-reload-combos')?.addEventListener('click', async () => {
+          if (window.App?.ensurePageScripts) await App.ensurePageScripts('admin');
+          if (window.AdminCombosPage) return window.AdminCombosPage.render(el, this);
+          Utils.toast('Could not load combos module — hard refresh the page', 'error');
+        });
+      },
       opscompliance: () => tryModule(
         () => typeof this.renderOpsCompliance === 'function',
         () => this.renderOpsCompliance(el),
@@ -1457,6 +1466,7 @@ const AdminPage = {
       const t = taxRes.data || {};
       const sales = t.sales || [];
       this._lastTaxReport = t;
+      const isOwner = this.app.user?.role === 'owner';
       body.innerHTML = `
         <div class="stats-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:12px 0">
           <div class="card"><div class="card-body"><div class="muted">Sales count</div><strong>${t.salesCount || sales.length}</strong></div></div>
@@ -1468,11 +1478,12 @@ const AdminPage = {
           <div class="card"><div class="card-body"><div class="muted">Net VAT</div><strong>${Utils.formatMoney(t.netVat != null ? t.netVat : 0, currency)}</strong></div></div>
           <div class="card"><div class="card-body"><div class="muted">VAT rate</div><strong>${t.vatRate || 0}%</strong></div></div>
         </div>
+        <p class="muted" style="font-size:13px;margin-bottom:8px">Click a receipt to view full sale details (POS or online).</p>
         <div class="card"><div class="table-wrap"><table>
-          <thead><tr><th>Receipt</th><th>Date</th><th>Source</th><th>Branch</th><th>Cashier</th><th>Excl. tax</th><th>Tax</th><th>Total</th></tr></thead>
+          <thead><tr><th>Receipt</th><th>Date</th><th>Source</th><th>Branch</th><th>Cashier</th><th>Excl. tax</th><th>Tax</th><th>Total</th><th></th></tr></thead>
           <tbody>
             ${sales.map((s) => `<tr>
-              <td>${Utils.escHtml(s.receipt_number || '—')}</td>
+              <td><button type="button" class="link-btn tax-view-sale" data-id="${s.id}">${Utils.escHtml(s.receipt_number || '—')}</button></td>
               <td>${Utils.formatDateTime(s.created_at)}</td>
               <td>${Utils.escHtml(s.channel || (s.order_type === 'online' ? 'Online' : 'POS'))}</td>
               <td>${Utils.escHtml(s.branch_name || '—')}</td>
@@ -1480,9 +1491,34 @@ const AdminPage = {
               <td>${Utils.formatMoney(s.subtotal || 0, currency)}</td>
               <td>${Utils.formatMoney(s.tax_amount || 0, currency)}</td>
               <td><strong>${Utils.formatMoney(s.total || 0, currency)}</strong></td>
-            </tr>`).join('') || '<tr><td colspan="7" class="muted">No sales in this period</td></tr>'}
+              <td style="white-space:nowrap">
+                <button type="button" class="btn btn-sm btn-ghost tax-view-sale" data-id="${s.id}">View</button>
+                ${isOwner ? `<button type="button" class="btn btn-sm btn-danger tax-void-sale" data-id="${s.id}">Void</button>` : ''}
+              </td>
+            </tr>`).join('') || '<tr><td colspan="9" class="muted">No sales in this period</td></tr>'}
           </tbody>
         </table></div></div>`;
+      body.querySelectorAll('.tax-view-sale').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          if (window.AdminPage?.showSaleDetail) AdminPage.showSaleDetail(Number(btn.dataset.id));
+          else Utils.toast('Open from Business Dashboard → Sales Management', 'info');
+        });
+      });
+      body.querySelectorAll('.tax-void-sale').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          Utils.showModal('Void sale', '<div class="field"><label>Reason (required)</label><textarea id="tax-void-reason" rows="3"></textarea></div>',
+            '<button class="btn btn-danger" id="tax-void-confirm">Void receipt</button>');
+          document.getElementById('tax-void-confirm')?.addEventListener('click', async () => {
+            const reason = document.getElementById('tax-void-reason')?.value?.trim();
+            if (!reason) return Utils.toast('Reason required', 'error');
+            const r = await API.voidSale(Number(btn.dataset.id), reason, this.app.user);
+            if (!r.success) return Utils.toast(r.error || 'Void failed', 'error');
+            Utils.hideModal();
+            Utils.toast('Sale voided', 'success');
+            load();
+          });
+        });
+      });
     };
 
     document.getElementById('tax-hub-refresh')?.addEventListener('click', load);
@@ -1721,19 +1757,22 @@ const AdminPage = {
       const res = await API.getTopCustomers(f, t, lim);
       const rows = res.data || [];
       document.getElementById('tc-table').innerHTML = `<div class="card"><div class="table-wrap"><table>
-        <thead><tr><th>#</th><th>Customer</th><th>Phone</th><th>Email</th><th>Total Spent</th><th>Visits</th><th></th></tr></thead>
-        <tbody>${rows.map((c, i) => `<tr>
-          <td>${i + 1}</td>
-          <td><strong>${Utils.escHtml(c.name)}</strong></td><td>${Utils.escHtml(c.phone || '—')}</td>
-          <td>${Utils.escHtml(c.email || '—')}</td>
-          <td>${Utils.formatMoney(c.total_spent, currency)}</td><td>${c.visits}</td>
+        <thead><tr><th>#</th><th>Customer</th><th>Phone</th><th>POS</th><th>Online</th><th>Total Spent</th><th>Visits</th><th></th></tr></thead>
+        <tbody>${rows.map((c) => `<tr>
+          <td>${c.rank || ''}</td>
+          <td><strong>${Utils.escHtml(c.name)}</strong>${Number(c.total_spent) >= lim * 10 ? ' <span class="tag tag-ok">Top</span>' : ''}</td>
+          <td>${Utils.escHtml(c.phone || '—')}</td>
+          <td>${Utils.formatMoney(c.pos_spent || 0, currency)}</td>
+          <td>${Utils.formatMoney(c.online_spent || 0, currency)}</td>
+          <td><strong>${Utils.formatMoney(c.total_spent, currency)}</strong></td><td>${c.visits}</td>
           <td style="white-space:nowrap">
-            <button class="btn btn-sm btn-primary tc-edit" data-id="${c.id}">Edit</button>
-            <button class="btn btn-sm btn-ghost tc-gift" data-id="${c.id}" data-name="${Utils.escHtml(c.name)}" data-phone="${Utils.escHtml(c.phone || '')}">Gift Card</button>
-            ${c.phone ? `<button class="btn btn-sm btn-success tc-wa" data-id="${c.id}" data-name="${Utils.escHtml(c.name)}" data-phone="${Utils.escHtml(c.phone)}">WhatsApp</button>` : ''}
-            <button class="btn btn-sm btn-danger tc-del" data-id="${c.id}" data-name="${Utils.escHtml(c.name)}">Delete</button>
-          </td></tr>`).join('') || '<tr><td colspan="7" class="muted">No customers in this period</td></tr>'}
-        </tbody></table></div></div>`;
+            ${c.id ? `<button class="btn btn-sm btn-primary tc-edit" data-id="${c.id}">Edit</button>` : ''}
+            <button class="btn btn-sm btn-ghost tc-gift" data-id="${c.id || ''}" data-phone="${Utils.escHtml(c.phone || '')}" data-name="${Utils.escHtml(c.name)}">Gift Card</button>
+            ${c.phone ? `<button class="btn btn-sm btn-success tc-wa" data-id="${c.id || ''}" data-name="${Utils.escHtml(c.name)}" data-phone="${Utils.escHtml(c.phone)}">WhatsApp</button>` : ''}
+            ${c.id ? `<button class="btn btn-sm btn-danger tc-del" data-id="${c.id}" data-name="${Utils.escHtml(c.name)}">Delete</button>` : ''}
+          </td></tr>`).join('') || '<tr><td colspan="8" class="muted">No customers in this period</td></tr>'}
+        </tbody></table></div>
+        <p class="muted" style="padding:12px;font-size:13px">Ranked highest to lowest — includes POS sales and online orders. Use Top N to set list size.</p></div>`;
       document.querySelectorAll('.tc-edit').forEach(b => b.addEventListener('click', async () => {
         const detail = await API.getCustomer(parseInt(b.dataset.id, 10));
         const c = detail.data || rows.find(x => String(x.id) === b.dataset.id);
@@ -2152,21 +2191,30 @@ const AdminPage = {
   },
 
   async renderInventory(el) {
-    const res = await API.getInventoryStats();
+    const branchId = this.app?.viewBranchId;
+    const res = await API.getInventoryStats(branchId);
     const inv = res.data || {};
     const currency = this.settings.currency || 'R';
     el.innerHTML = `<div class="admin-section"><h3>Inventory Dashboard</h3>
       <div class="stats-grid">
-        <div class="stat-card primary"><div class="label">Total Stock Value</div><div class="value">${Utils.formatMoney(inv.totalValue, currency)}</div></div>
-        <div class="stat-card warning"><div class="label">Low Stock</div><div class="value">${inv.lowStock||0}</div></div>
-        <div class="stat-card danger"><div class="label">Out of Stock</div><div class="value">${inv.outOfStock||0}</div></div>
+        <div class="stat-card primary"><div class="label">Total Stock Value</div><div class="value">${Utils.formatMoney(inv.totalValue, currency)}</div><small>At buying cost</small></div>
+        <div class="stat-card warning"><div class="label">Low Stock</div><div class="value">${inv.lowStock || 0}</div><small>At or below minimum</small></div>
+        <div class="stat-card danger"><div class="label">Out of Stock</div><div class="value">${inv.outOfStock || 0}</div></div>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px">
-        <div class="card"><div class="card-header"><h3>Fast Moving</h3></div><div class="card-body">
-          ${(inv.fastMoving||[]).map(p=>`<div style="padding:6px 0;border-bottom:1px solid var(--border)">${p.product_name} — ${p.qty} sold</div>`).join('')||'<p class="muted">No data</p>'}
+        <div class="card"><div class="card-header"><h3>Low stock items</h3></div><div class="card-body">
+          ${(inv.lowStockItems || []).map(p => `<div style="padding:6px 0;border-bottom:1px solid var(--border);color:var(--warning)">${Utils.escHtml(p.name)} — ${p.stock_quantity} left (min ${p.min_stock ?? 0})</div>`).join('') || '<p class="muted">All good</p>'}
         </div></div>
-        <div class="card"><div class="card-header"><h3>Slow Moving</h3></div><div class="card-body">
-          ${(inv.slowMoving||[]).map(p=>`<div style="padding:6px 0;border-bottom:1px solid var(--border)">${p.name} — ${p.stock_quantity} in stock</div>`).join('')||'<p class="muted">No data</p>'}
+        <div class="card"><div class="card-header"><h3>Out of stock</h3></div><div class="card-body">
+          ${(inv.outOfStockItems || []).map(p => `<div style="padding:6px 0;border-bottom:1px solid var(--border);color:var(--danger)">${Utils.escHtml(p.name)}</div>`).join('') || '<p class="muted">None</p>'}
+        </div></div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px">
+        <div class="card"><div class="card-header"><h3>Fast Moving (30 days)</h3></div><div class="card-body">
+          ${(inv.fastMoving||[]).map(p=>`<div style="padding:6px 0;border-bottom:1px solid var(--border)">${Utils.escHtml(p.product_name)} — ${p.qty} sold</div>`).join('')||'<p class="muted">No data</p>'}
+        </div></div>
+        <div class="card"><div class="card-header"><h3>Slow Moving (30+ days)</h3></div><div class="card-body">
+          ${(inv.slowMoving||[]).map(p=>`<div style="padding:6px 0;border-bottom:1px solid var(--border)">${Utils.escHtml(p.name)} — ${p.stock_quantity} in stock</div>`).join('')||'<p class="muted">No data</p>'}
         </div></div>
       </div></div>`;
   },
@@ -2199,15 +2247,77 @@ const AdminPage = {
   },
 
   renderLoyalty(el) {
+    return this.renderLoyaltyHub(el);
+  },
+
+  formatOnlineOrderSavings(o, currency) {
+    const parts = [];
+    const disc = Number(o.discount) || 0;
+    if (disc > 0) {
+      let line = `-${Utils.formatMoney(disc, currency)}`;
+      if (o.coupon_code) line += ` (${o.coupon_code})`;
+      parts.push(line);
+    }
+    if (Number(o.loyalty_points_used) > 0) parts.push(`Loyalty ${o.loyalty_points_used} pts`);
+    return parts.length ? parts.join('<br>') : '—';
+  },
+
+  formatOnlineOrderGiftCard(o, currency) {
+    const amt = Number(o.gift_card_amount) || 0;
+    if (amt <= 0 || !o.gift_card_code) return '—';
+    return `<code>${Utils.escHtml(o.gift_card_code)}</code><br><small>-${Utils.formatMoney(amt, currency)}</small>`;
+  },
+
+  async renderLoyaltyHub(el) {
+    const tab = this._loyaltyTab || 'points';
+    const tabs = [
+      { id: 'points', label: 'Loyalty Points' },
+      { id: 'giftcards', label: 'Gift Cards' },
+      { id: 'rewards', label: 'Auto Gift Rewards' },
+      { id: 'online', label: 'Online Store' }
+    ];
+    if (!this._loyaltyGiftPrefetch) {
+      this._loyaltyGiftPrefetch = Promise.all([
+        API.getGiftCards({ limit: 15 }).catch(() => ({ data: [] })),
+        API.getGiftCardSettings(this.app.user).catch(() => ({ data: { auto_approve: true } }))
+      ]);
+    }
+    if (!this._loyaltyOnlinePrefetch) {
+      this._loyaltyOnlinePrefetch = API.webGetSettings?.().catch(() => ({ data: {} }));
+    }
+    el.innerHTML = `<div class="admin-section">
+      <h3>Loyalty & Gift Cards</h3>
+      <p class="muted">Manage loyalty points, gift cards, automatic customer rewards, and what customers can use when ordering online.</p>
+      <div class="admin-tabs" id="loyalty-tabs">
+        ${tabs.map((t) => `<button class="admin-tab ${tab === t.id ? 'active' : ''}" data-loy-tab="${t.id}">${t.label}</button>`).join('')}
+      </div>
+      <div id="loyalty-tab-body"><p class="muted">Loading…</p></div>
+    </div>`;
+    el.querySelector('#loyalty-tabs').onclick = (e) => {
+      const b = e.target.closest('[data-loy-tab]');
+      if (!b) return;
+      this._loyaltyTab = b.dataset.loyTab;
+      el.querySelectorAll('#loyalty-tabs .admin-tab').forEach((x) => x.classList.toggle('active', x.dataset.loyTab === this._loyaltyTab));
+      this.renderLoyaltyHubTab(el.querySelector('#loyalty-tab-body'), this._loyaltyTab);
+    };
+    await this.renderLoyaltyHubTab(el.querySelector('#loyalty-tab-body'), tab);
+  },
+
+  async renderLoyaltyHubTab(body, tab) {
+    if (tab === 'points') return this.renderLoyaltyPoints(body);
+    if (tab === 'giftcards') return this.renderLoyaltyGiftCards(body);
+    if (tab === 'rewards') return this.renderCustomerRewards(body);
+    if (tab === 'online') return this.renderLoyaltyOnline(body);
+  },
+
+  renderLoyaltyPoints(el) {
     const ls = this.settings.loyalty_settings || {};
     const spend = ls.spend_amount ?? 10;
     const earned = ls.points_earned ?? 1;
     const minSale = ls.min_sale_total ?? 0;
     const pointValue = ls.point_value ?? 1;
     const currency = this.settings.currency || 'R';
-    el.innerHTML = `<div class="admin-section"><h3>Loyalty Points</h3>
-      <p class="muted">Customers earn points when selected on POS. Cashiers can redeem points at checkout to reduce the amount due.</p>
-      <div class="card"><div class="card-body"><div class="form-grid">
+    el.innerHTML = `<div class="card"><div class="card-body"><div class="form-grid">
         <div class="field full"><label><input type="checkbox" id="loy-enabled" ${ls.enabled !== false ? 'checked' : ''}> Enable loyalty points</label></div>
         <div class="field"><label>Earn: spend amount (${currency})</label>
           <input type="number" id="loy-spend" step="0.01" min="0.01" value="${spend}"></div>
@@ -2223,7 +2333,7 @@ const AdminPage = {
         </div>
       </div>
       <button class="btn btn-primary" id="save-loyalty" style="margin-top:16px">Save Loyalty Settings</button>
-      </div></div></div>`;
+      </div></div>`;
 
     const updatePreview = () => {
       const s = parseFloat(document.getElementById('loy-spend').value) || 10;
@@ -2252,11 +2362,95 @@ const AdminPage = {
     });
   },
 
+  async renderLoyaltyGiftCards(el) {
+    const currency = this.settings.currency || 'R';
+    const pref = this._loyaltyGiftPrefetch || Promise.all([
+      API.getGiftCards({ limit: 15 }).catch(() => ({ data: [] })),
+      API.getGiftCardSettings(this.app.user).catch(() => ({ data: { auto_approve: true } }))
+    ]);
+    this._loyaltyGiftPrefetch = null;
+    const [cardsRes, settingsRes] = await pref;
+    const cards = cardsRes.data || [];
+    const gcSettings = settingsRes.data || { auto_approve: true };
+    const active = cards.filter((c) => (c.display_status || c.status) === 'active').length;
+    el.innerHTML = `<div class="card" style="margin-bottom:12px"><div class="card-body">
+      <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between">
+        <div>
+          <strong>${cards.length}</strong> recent cards · <strong>${active}</strong> active
+          <p class="muted" style="margin:4px 0 0">Sell, redeem, and manage gift cards from the main Gift Cards page or POS checkout.</p>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button type="button" class="btn btn-primary" id="loy-open-giftcards">Open Gift Cards</button>
+          <button type="button" class="btn btn-ghost" id="loy-new-giftcard">+ Sell Gift Card</button>
+        </div>
+      </div>
+      ${['owner', 'manager'].includes(this.app.user?.role) ? `
+      <label style="display:flex;align-items:center;gap:8px;margin-top:12px;font-size:13px">
+        <input type="checkbox" id="loy-gc-auto-approve" ${gcSettings.auto_approve !== false ? 'checked' : ''}>
+        Auto-approve new gift cards
+      </label>` : ''}
+    </div></div>
+    <div class="table-wrap"><table class="table">
+      <thead><tr><th>Code</th><th>Customer</th><th>Balance</th><th>Status</th><th>Created</th></tr></thead>
+      <tbody>${cards.length ? cards.map((c) => `<tr>
+        <td><code>${Utils.escHtml(c.code)}</code></td>
+        <td>${Utils.escHtml(c.customer_name || '—')}</td>
+        <td>${Utils.formatMoney(c.balance, currency)}</td>
+        <td><span class="tag">${Utils.escHtml(c.display_status || c.status || '—')}</span></td>
+        <td>${Utils.formatDateTime(c.created_at)}</td>
+      </tr>`).join('') : '<tr><td colspan="5" class="muted">No gift cards yet — use Open Gift Cards to create one</td></tr>'}
+      </tbody></table></div>`;
+    el.querySelector('#loy-open-giftcards')?.addEventListener('click', () => {
+      if (window.App?.navigate) App.navigate('giftcards');
+      else Utils.toast('Open Gift Cards from the main sidebar', 'info');
+    });
+    el.querySelector('#loy-new-giftcard')?.addEventListener('click', () => {
+      if (window.App?.navigate) App.navigate('giftcards');
+      else Utils.toast('Open Gift Cards from the main sidebar', 'info');
+    });
+    el.querySelector('#loy-gc-auto-approve')?.addEventListener('change', async (e) => {
+      const r = await API.saveGiftCardSettings({ auto_approve: e.target.checked }, this.app.user);
+      if (r?.success === false) return Utils.toast(r.error || 'Save failed', 'error');
+      Utils.toast('Gift card settings saved', 'success');
+    });
+  },
+
+  async renderLoyaltyOnline(el) {
+    const globalRes = await (this._loyaltyOnlinePrefetch || API.webGetSettings?.().catch(() => ({ data: {} })));
+    this._loyaltyOnlinePrefetch = null;
+    const global = globalRes?.data || globalRes || {};
+    const online = global.online || {};
+    el.innerHTML = `<div class="card"><div class="card-body">
+      <h4 style="margin-top:0">Online store — loyalty & gift cards</h4>
+      <p class="muted">Control what customers can use when ordering on your website. Full online order settings are under <strong>Online Orders</strong>.</p>
+      <label style="display:block;margin:8px 0"><input type="checkbox" id="loy-on-loyalty" ${online.loyalty_enabled !== false ? 'checked' : ''}> Allow loyalty points at online checkout</label>
+      <label style="display:block;margin:8px 0"><input type="checkbox" id="loy-on-giftcards" ${online.gift_cards_enabled !== false ? 'checked' : ''}> Allow gift card redemption online</label>
+      <label style="display:block;margin:8px 0"><input type="checkbox" id="loy-on-coupons" ${online.coupons_enabled !== false ? 'checked' : ''}> Allow coupon codes online</label>
+      <button type="button" class="btn btn-primary btn-sm" id="loy-on-save" style="margin-top:8px">Save online settings</button>
+      <button type="button" class="btn btn-ghost btn-sm" id="loy-on-orders" style="margin-top:8px;margin-left:8px">Open Online Orders</button>
+    </div></div>`;
+    el.querySelector('#loy-on-save')?.addEventListener('click', async () => {
+      const r = await API.webSaveGlobalSettings?.({
+        loyalty_enabled: document.getElementById('loy-on-loyalty').checked,
+        gift_cards_enabled: document.getElementById('loy-on-giftcards').checked,
+        coupons_enabled: document.getElementById('loy-on-coupons').checked
+      }, this.app.user);
+      if (r?.success === false) return Utils.toast(r.error || 'Save failed', 'error');
+      Utils.toast('Online loyalty & gift card settings saved', 'success');
+      this._loyaltyOnlinePrefetch = null;
+    });
+    el.querySelector('#loy-on-orders')?.addEventListener('click', () => {
+      this.section = 'online-orders';
+      document.querySelectorAll('.admin-nav-btn').forEach((b) => b.classList.toggle('active', b.dataset.section === 'online-orders'));
+      this.renderSection(document.getElementById('admin-content'));
+    });
+  },
+
   async renderCustomerRewards(el) {
     const res = await API.getCustomerRewardRules();
     const rules = res.data || [];
     const currency = this.settings.currency || 'R';
-    el.innerHTML = `<div class="admin-section"><h3>Customer Gift Rewards</h3>
+    el.innerHTML = `<div>
       <p class="muted">When a customer's total spend within a period reaches the threshold, a gift card is created automatically after checkout. Owner, manager, and assistant manager receive WhatsApp links to notify the customer.</p>
       <button class="btn btn-primary" id="reward-add" style="margin-bottom:12px">+ Add Rule</button>
       <div class="table-wrap"><table>
@@ -2273,7 +2467,7 @@ const AdminPage = {
         </tr>`).join('') || '<tr><td colspan="7" class="muted">No reward rules yet</td></tr>'}
         </tbody></table></div></div>`;
 
-    const reload = () => this.renderCustomerRewards(el);
+    const reload = () => this.renderLoyaltyHubTab(el, 'rewards');
     document.getElementById('reward-add')?.addEventListener('click', () => this.showRewardRuleForm(null, reload));
     el.querySelectorAll('.reward-edit').forEach(b => b.addEventListener('click', () => {
       const rule = rules.find(r => r.id == b.dataset.id);
@@ -2918,7 +3112,7 @@ const AdminPage = {
     }
     if (data.giftcards?.length && Utils.canAccess(this.app.user, 'giftcards')) {
       html += '<div class="search-group"><h4>Gift Cards</h4>' +
-        data.giftcards.map(g => `<div class="search-item" data-action="page" data-page="giftcards"><code>${g.code}</code> — ${g.customer_name || '—'}</div>`).join('') + '</div>';
+        data.giftcards.map(g => `<div class="search-item" data-action="admin-section" data-section="loyalty"><code>${g.code}</code> — ${g.customer_name || '—'} (Loyalty & Gift Cards)</div>`).join('') + '</div>';
     }
     if (data.laybyes?.length && Utils.canAccess(this.app.user, 'layby')) {
       html += '<div class="search-group"><h4>Lay-Bye</h4>' +
@@ -3014,14 +3208,17 @@ const AdminPage = {
     const currency = this.settings?.currency || 'R';
     const from = this._ooFrom || Utils.daysAgo(30);
     const to = this._ooTo || Utils.today();
-    const [ordersRes, analyticsRes, settingsRes] = await Promise.all([
+    const ooTab = this._ooTab || 'all';
+    const [ordersRes, analyticsRes, settingsRes, rejectedRes] = await Promise.all([
       API.webAdminOrders?.({ from, to }, this.app?.user) || API.getOnlineOrdersLocal?.(''),
       API.webAdminAnalytics?.({ from, to }, this.app?.user).catch(() => ({ data: {} })),
-      API.webGetSettings?.().catch(() => ({ data: {} }))
+      API.webGetSettings?.().catch(() => ({ data: {} })),
+      API.webRejectedOrdersReport?.({ from, to }, this.app?.user).catch(() => ({ data: {} }))
     ]);
     const orders = ordersRes?.data || ordersRes || [];
     const list = Array.isArray(orders) ? orders : [];
     const stats = analyticsRes?.data || analyticsRes || {};
+    const rejectedReport = rejectedRes?.data || rejectedRes || {};
     const global = settingsRes?.data || settingsRes || {};
     const cloudBase = (window.__SHOP_POS_ENV__?.RPC_URL || window.__SHOP_POS_ENV__?.SHOP_POS_RPC_URL || '')
       .replace(/\/rpc\/?$/i, '') || 'https://chisafood.up.railway.app';
@@ -3036,52 +3233,77 @@ const AdminPage = {
         <button type="button" class="btn btn-ghost btn-sm" id="oo-filter">Filter</button>
         <button type="button" class="btn btn-primary btn-sm" id="oo-pdf">Save PDF</button>
         <button type="button" class="btn btn-ghost btn-sm" id="oo-print">Print</button>
+        <button type="button" class="btn btn-ghost btn-sm oo-tab ${ooTab === 'all' ? 'active' : ''}" data-oo-tab="all">All</button>
+        <button type="button" class="btn btn-ghost btn-sm oo-tab ${ooTab === 'rejected' ? 'active' : ''}" data-oo-tab="rejected">Rejected</button>
       </div>
       <div class="stats-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin:12px 0">
         <div class="card"><div class="card-body"><div class="muted">Orders</div><strong>${stats.orders || 0}</strong></div></div>
         <div class="card"><div class="card-body"><div class="muted">Revenue</div><strong>${Utils.formatMoney(stats.revenue || 0, currency)}</strong></div></div>
         <div class="card"><div class="card-body"><div class="muted">Rejected</div><strong>${stats.rejected || 0}</strong></div></div>
       </div>
+      ${ooTab === 'rejected' ? `<div class="card" style="margin:12px 0"><div class="card-body">
+        <h4 style="margin-top:0">Rejected by cashier</h4>
+        <table class="table"><tr><th>Cashier</th><th>Count</th><th>Value</th><th>Top reasons</th></tr>
+        ${(rejectedReport.by_cashier || []).map(c => `<tr><td>${Utils.escHtml(c.cashier)}</td><td>${c.count}</td><td>${Utils.formatMoney(c.total, currency)}</td><td>${Object.entries(c.reasons || {}).slice(0, 3).map(([r, n]) => `${Utils.escHtml(r)} (${n})`).join(', ') || '—'}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">No rejections in this period</td></tr>'}
+        </table>
+        <h4>Weekly totals</h4>
+        <table class="table"><tr><th>Week starting</th><th>Rejected</th><th>Value</th></tr>
+        ${(rejectedReport.by_week || []).map(w => `<tr><td>${w.week_start}</td><td>${w.count}</td><td>${Utils.formatMoney(w.total, currency)}</td></tr>`).join('') || '<tr><td colspan="3" class="muted">—</td></tr>'}
+        </table>
+        <h4>Rejected orders</h4>
+        <div class="table-wrap"><table class="table"><tr><th>Order</th><th>Cashier</th><th>Reason</th><th>Total</th><th>Date</th></tr>
+        ${(rejectedReport.orders || []).slice(0, 50).map(o => `<tr><td>${Utils.escHtml(o.order_number)}</td><td>${Utils.escHtml(o.rejected_by_name || o.rejected_by_username || '—')}</td><td>${Utils.escHtml(o.reject_reason || '—')}</td><td>${Utils.formatMoney(o.total, currency)}</td><td>${Utils.formatDateTime(o.rejected_at || o.updated_at || o.created_at)}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">None</td></tr>'}
+        </table></div></div></div>` : ''}
       <div class="card"><div class="card-body">
         <h4 style="margin-top:0">Settings</h4>
         <label><input type="checkbox" id="oo-enabled" ${global.online?.enabled !== false ? 'checked' : ''}> Enable online orders</label><br>
         <label><input type="checkbox" id="oo-coupons" ${global.online?.coupons_enabled !== false ? 'checked' : ''}> Coupons</label>
-        <label style="margin-left:12px"><input type="checkbox" id="oo-loyalty" ${global.online?.loyalty_enabled !== false ? 'checked' : ''}> Loyalty</label>
+        <label style="margin-left:12px"><input type="checkbox" id="oo-loyalty" ${global.online?.loyalty_enabled !== false ? 'checked' : ''}> Loyalty points</label>
+        <label style="margin-left:12px"><input type="checkbox" id="oo-giftcards" ${global.online?.gift_cards_enabled !== false ? 'checked' : ''}> Gift cards</label>
+        <label style="margin-left:12px"><input type="checkbox" id="oo-reviews" ${global.online?.reviews_enabled !== false ? 'checked' : ''}> Reviews</label>
+        <label style="margin-left:12px"><input type="checkbox" id="oo-scheduled" ${global.online?.scheduled_enabled !== false ? 'checked' : ''}> Scheduled orders</label>
         <div class="field" style="margin-top:12px">
           <label>POS reminder if order not attended (minutes)</label>
           <input type="number" id="oo-reminder-min" min="1" max="60" value="${Number(global.online?.pos_reminder_minutes) || 2}" style="max-width:120px">
           <p class="muted" style="font-size:12px;margin:4px 0 0">POS will alert cashiers after this many minutes on pending online orders.</p>
         </div>
         <button type="button" class="btn btn-primary btn-sm" id="oo-save-settings" style="margin-top:8px">Save settings</button>
+        <button type="button" class="btn btn-ghost btn-sm" id="oo-open-loyalty" style="margin-top:8px;margin-left:8px">Loyalty & Gift Cards</button>
       </div></div>
       <div class="table-wrap" style="margin-top:16px"><table class="table">
-        <thead><tr><th>Order</th><th>Branch</th><th>Customer</th><th>Total</th><th>Discount</th><th>Status</th><th>Source</th><th></th></tr></thead>
-        <tbody>${list.slice(0, 100).map((o) => `<tr>
+        <thead><tr><th>Order</th><th>Branch</th><th>Customer</th><th>Total</th><th>Discount / Loyalty</th><th>Gift Card</th><th>Status</th><th>Source</th><th></th></tr></thead>
+        <tbody>${(ooTab === 'rejected' ? (rejectedReport.orders || []) : list).slice(0, 100).map((o) => `<tr>
           <td>${Utils.escHtml(o.order_number)}</td>
           <td>${Utils.escHtml(String(o.branch_id))}</td>
-          <td>${Utils.escHtml(o.customer_name || '—')}</td>
+          <td>${Utils.escHtml(o.customer_name || '—')}${o.customer_phone ? `<br><small class="muted">${Utils.escHtml(o.customer_phone)}</small>` : ''}</td>
           <td>${Utils.formatMoney(o.total, currency)}</td>
-          <td>${Number(o.discount) > 0 ? `-${Utils.formatMoney(o.discount, currency)}${o.coupon_code ? `<br><small>${Utils.escHtml(o.coupon_code)}</small>` : ''}${o.loyalty_points_used ? `<br><small>Loyalty ${o.loyalty_points_used}pts</small>` : ''}` : '—'}</td>
+          <td>${this.formatOnlineOrderSavings(o, currency)}</td>
+          <td>${this.formatOnlineOrderGiftCard(o, currency)}</td>
           <td><span class="tag">${Utils.escHtml(o.status)}</span></td>
           <td>${Utils.escHtml(o.order_source || 'ONLINE')}</td>
           <td>${o.status === 'pending' ? `<button type="button" class="btn btn-sm btn-primary oo-accept" data-id="${o.id}">Accept</button>` : ''}</td>
-        </tr>`).join('') || '<tr><td colspan="8" class="muted">No online orders yet</td></tr>'}
+        </tr>`).join('') || '<tr><td colspan="9" class="muted">No online orders yet</td></tr>'}
         </tbody></table></div></div>`;
 
+    el.querySelectorAll('[data-oo-tab]').forEach(btn => btn.addEventListener('click', () => {
+      this._ooTab = btn.dataset.ooTab;
+      this.renderOnlineOrders(el);
+    }));
     document.getElementById('oo-filter')?.addEventListener('click', () => {
       this._ooFrom = document.getElementById('oo-from')?.value;
       this._ooTo = document.getElementById('oo-to')?.value;
       this.renderOnlineOrders(el);
     });
     document.getElementById('oo-pdf')?.addEventListener('click', async () => {
-      const headers = ['Order', 'Branch', 'Customer', 'Phone', 'Total', 'Discount', 'Tax', 'Status', 'Payment', 'Date'];
+      const headers = ['Order', 'Branch', 'Customer', 'Phone', 'Total', 'Discount/Loyalty', 'Gift Card', 'Tax', 'Status', 'Payment', 'Date'];
       const rows = list.map((o) => [
         o.order_number || '',
         String(o.branch_id || ''),
         o.customer_name || '',
         o.customer_phone || '',
         Utils.formatMoney(o.total, currency),
-        o.discount ? `-${Utils.formatMoney(o.discount, currency)}` : '',
+        [o.discount ? `-${Utils.formatMoney(o.discount, currency)}` : '', o.loyalty_points_used ? `${o.loyalty_points_used} pts` : ''].filter(Boolean).join(' · ') || '',
+        o.gift_card_code ? `${o.gift_card_code} (-${Utils.formatMoney(o.gift_card_amount || 0, currency)})` : '',
         o.tax_amount ? Utils.formatMoney(o.tax_amount, currency) : '',
         o.status || '',
         o.payment_method || '',
@@ -3099,8 +3321,8 @@ const AdminPage = {
       const html = `<h2>${this.settings?.shop_name || 'Shop'} — Online Orders</h2>
         <p>${from} to ${to} · ${list.length} orders · Revenue ${Utils.formatMoney(list.reduce((n, o) => n + Number(o.total || 0), 0), currency)}</p>
         <table border="1" cellpadding="6" style="border-collapse:collapse;width:100%;font-size:12px">
-        <tr><th>Order</th><th>Customer</th><th>Total</th><th>Status</th><th>Date</th></tr>
-        ${list.map((o) => `<tr><td>${Utils.escHtml(o.order_number)}</td><td>${Utils.escHtml(o.customer_name || '')}</td><td>${Utils.formatMoney(o.total, currency)}</td><td>${Utils.escHtml(o.status)}</td><td>${Utils.formatDateTime(o.created_at)}</td></tr>`).join('')}
+        <tr><th>Order</th><th>Customer</th><th>Total</th><th>Discount/Loyalty</th><th>Gift Card</th><th>Status</th><th>Date</th></tr>
+        ${list.map((o) => `<tr><td>${Utils.escHtml(o.order_number)}</td><td>${Utils.escHtml(o.customer_name || '')}</td><td>${Utils.formatMoney(o.total, currency)}</td><td>${this.formatOnlineOrderSavings(o, currency)}</td><td>${this.formatOnlineOrderGiftCard(o, currency)}</td><td>${Utils.escHtml(o.status)}</td><td>${Utils.formatDateTime(o.created_at)}</td></tr>`).join('')}
         </table>`;
       if (typeof Export?.print === 'function') Export.print(html, 'Online Orders');
       else window.print();
@@ -3110,10 +3332,19 @@ const AdminPage = {
         enabled: document.getElementById('oo-enabled').checked,
         coupons_enabled: document.getElementById('oo-coupons').checked,
         loyalty_enabled: document.getElementById('oo-loyalty').checked,
+        gift_cards_enabled: document.getElementById('oo-giftcards').checked,
+        reviews_enabled: document.getElementById('oo-reviews').checked,
+        scheduled_enabled: document.getElementById('oo-scheduled').checked,
         pos_reminder_minutes: Math.max(1, parseInt(document.getElementById('oo-reminder-min')?.value, 10) || 2)
       }, this.app?.user);
       if (r?.success === false) return Utils.toast(r.error, 'error');
       Utils.toast('Online settings saved', 'success');
+    });
+    document.getElementById('oo-open-loyalty')?.addEventListener('click', () => {
+      this._loyaltyTab = 'online';
+      this.section = 'loyalty';
+      document.querySelectorAll('.admin-nav-btn').forEach((b) => b.classList.toggle('active', b.dataset.section === 'loyalty'));
+      this.renderSection(document.getElementById('admin-content'));
     });
     el.querySelectorAll('.oo-accept').forEach((btn) => {
       btn.addEventListener('click', async () => {
@@ -3126,69 +3357,11 @@ const AdminPage = {
   },
 
   async renderDeliveries(el) {
-    const currency = this.settings?.currency || 'R';
-    const [deliveriesRes, driversRes] = await Promise.all([
-      API.listDeliveries?.({}, this.app?.user) || { data: [] },
-      API.listDeliveryDrivers?.(this.app?.user) || { data: [] }
-    ]);
-    const list = deliveriesRes?.data || deliveriesRes || [];
-    const rows = Array.isArray(list) ? list : [];
-    const drivers = driversRes?.data || driversRes || [];
-    const driverOpts = Array.isArray(drivers) ? drivers : [];
-
-    el.innerHTML = `<div class="admin-section"><h3>Delivery Drivers</h3>
-      <p class="muted">Assign drivers to delivery orders from POS and online checkout.</p>
-      <div class="table-wrap"><table class="table">
-        <thead><tr><th>Order</th><th>Customer</th><th>Address</th><th>Total</th><th>Status</th><th>Driver</th><th></th></tr></thead>
-        <tbody>${rows.length ? rows.map((d) => `<tr>
-          <td>${Utils.escHtml(d.order_number || d.source_id)}</td>
-          <td>${Utils.escHtml(d.customer_name || '—')}<br><small class="muted">${Utils.escHtml(d.customer_phone || '')}</small></td>
-          <td>${Utils.escHtml(d.delivery_address || '—')}</td>
-          <td>${Utils.formatMoney(d.total, currency)}</td>
-          <td><span class="tag">${Utils.escHtml(d.status)}</span></td>
-          <td>${Utils.escHtml(d.driver_name || '—')}</td>
-          <td>
-            ${d.status === 'pending' || d.status === 'assigned' ? `
-              <select class="input input-sm del-driver" data-id="${d.id}" style="max-width:140px;margin-right:4px">
-                <option value="">Assign driver…</option>
-                ${driverOpts.map((dr) => `<option value="${dr.id}" ${String(dr.id) === String(d.driver_employee_id) ? 'selected' : ''}>${Utils.escHtml(dr.full_name)}</option>`).join('')}
-              </select>
-              <button type="button" class="btn btn-sm btn-primary del-assign" data-id="${d.id}">Assign</button>
-            ` : ''}
-            ${d.status === 'assigned' ? `<button type="button" class="btn btn-sm btn-ghost del-out" data-id="${d.id}">Out for delivery</button>` : ''}
-            ${d.status === 'out_for_delivery' ? `<button type="button" class="btn btn-sm btn-primary del-done" data-id="${d.id}">Delivered</button>` : ''}
-          </td>
-        </tr>`).join('') : '<tr><td colspan="7" class="muted">No delivery orders yet</td></tr>'}
-        </tbody></table></div></div>`;
-
-    el.querySelectorAll('.del-assign').forEach((btn) => {
-      btn.addEventListener('click', async () => {
-        const id = parseInt(btn.dataset.id, 10);
-        const sel = el.querySelector(`.del-driver[data-id="${id}"]`);
-        const employeeId = parseInt(sel?.value, 10);
-        if (!employeeId) return Utils.toast('Select a driver', 'error');
-        const r = await API.assignDeliveryDriver(id, employeeId, this.app?.user);
-        if (r?.success === false) return Utils.toast(r.error || 'Assign failed', 'error');
-        Utils.toast('Driver assigned', 'success');
-        this.renderDeliveries(el);
-      });
-    });
-    el.querySelectorAll('.del-out').forEach((btn) => {
-      btn.addEventListener('click', async () => {
-        const r = await API.updateDeliveryStatus(parseInt(btn.dataset.id, 10), 'out_for_delivery', '', this.app?.user);
-        if (r?.success === false) return Utils.toast(r.error, 'error');
-        Utils.toast('Marked out for delivery', 'success');
-        this.renderDeliveries(el);
-      });
-    });
-    el.querySelectorAll('.del-done').forEach((btn) => {
-      btn.addEventListener('click', async () => {
-        const r = await API.updateDeliveryStatus(parseInt(btn.dataset.id, 10), 'delivered', '', this.app?.user);
-        if (r?.success === false) return Utils.toast(r.error, 'error');
-        Utils.toast('Delivery completed', 'success');
-        this.renderDeliveries(el);
-      });
-    });
+    if (window.App?.ensurePageScripts) await App.ensurePageScripts('admin');
+    if (window.AdminDeliveryPage) {
+      return window.AdminDeliveryPage.render(el, this);
+    }
+    el.innerHTML = `<div class="admin-section"><p class="muted">Delivery Department module not loaded. Try refreshing, or open <strong>Delivery Department</strong> from the sidebar.</p></div>`;
   },
 
   async renderMobileAppUsers(el) {

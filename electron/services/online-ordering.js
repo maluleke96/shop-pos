@@ -5,7 +5,8 @@
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const { getDb } = require('../database/db');
-const { publicProductImageUrl } = require('../../lib/product-images');
+const { publicProductImageUrl, publicAssetImageUrl } = require('../../lib/product-images');
+const promoPricing = require('../../lib/promo-pricing');
 
 function dbGet(sql, p = []) { return getDb().prepare(sql).get(...p); }
 function dbAll(sql, p = []) { return getDb().prepare(sql).all(...p); }
@@ -187,6 +188,7 @@ function getGlobalSettings() {
       enabled: online?.enabled !== false,
       loyalty_enabled: online?.loyalty_enabled !== false,
       coupons_enabled: online?.coupons_enabled !== false,
+      gift_cards_enabled: online?.gift_cards_enabled !== false,
       reviews_enabled: online?.reviews_enabled !== false,
       scheduled_enabled: online?.scheduled_enabled !== false,
       pos_reminder_minutes: Number(online?.pos_reminder_minutes) > 0 ? Number(online.pos_reminder_minutes) : 2,
@@ -421,27 +423,44 @@ function getModifiersForProduct(productId, branchId) {
   return Object.values(groups);
 }
 
-function mapProductForWeb(p, branchId, promos = []) {
+function mapProductForWeb(p, branchId, promos = [], productPromo = null) {
   const price = Number(p.selling_price) || 0;
   const promo = promos.find((pr) => String(pr.product_id) === String(p.id));
-  const salePrice = promo ? round2(price * (1 - (Number(promo.discount_percent) || 0) / 100)) : null;
+  let salePrice = promo ? round2(price * (1 - (Number(promo.discount_percent) || 0) / 100)) : null;
+  let displayPrice = price;
+  if (productPromo) {
+    displayPrice = Number(productPromo.original_price) || price;
+    salePrice = Number(productPromo.proposed_price) || salePrice;
+  }
   const qty = branchStockQty(p.id, branchId);
   const available = productAvailableAtBranch(p, branchId);
   const pic = p.picture_path || p.image_path || p.image;
   const imageUrl = pic ? publicProductImageUrl(p.id, false) : null;
+  const todayStr = new Date().toLocaleDateString('en-CA');
+  const badges = [];
+  if (Number(p.available_today) === 1) badges.push({ key: 'available_today', label: 'Available Today', color: '#2dd4bf' });
+  if (Number(p.is_new_arrival) === 1 && (!p.new_arrival_until || p.new_arrival_until >= todayStr)) {
+    badges.push({ key: 'new_arrival', label: 'New Arrival', color: '#38bdf8' });
+  }
+  if (Number(p.is_best_seller) === 1) badges.push({ key: 'best_seller', label: 'Best Seller', color: '#fbbf24' });
+  if (productPromo || (salePrice && salePrice < displayPrice)) badges.push({ key: 'promo', label: 'SALE', color: '#ef4444' });
   return {
     id: p.id,
     name: p.name,
     description: p.online_description || p.description || '',
     category_id: p.category_id,
     image: imageUrl,
-    price,
-    sale_price: salePrice,
-    on_sale: !!salePrice && salePrice < price,
+    price: displayPrice,
+    sale_price: salePrice && salePrice < displayPrice ? salePrice : null,
+    on_sale: !!(salePrice && salePrice < displayPrice),
     available,
     stock_qty: qty,
     has_modifiers: !!dbGet('SELECT 1 FROM product_modifiers WHERE product_id = ? LIMIT 1', [p.id]),
-    is_combo: false
+    is_combo: false,
+    available_today: Number(p.available_today) === 1,
+    is_new_arrival: Number(p.is_new_arrival) === 1 && (!p.new_arrival_until || p.new_arrival_until >= todayStr),
+    is_best_seller: Number(p.is_best_seller) === 1,
+    badges
   };
 }
 
@@ -449,11 +468,19 @@ function comboAvailableAtBranch(combo, branchId) {
   if (!combo) return false;
   const combosSvc = require('./combos');
   if (!combosSvc.isComboActive(combo)) return false;
+  if (combo.combo_kind === 'custom') return (combo.items || []).length > 0;
   for (const ci of combo.items || []) {
+    if (!ci.product_id) continue;
     const qty = branchStockQty(ci.product_id, branchId);
     if (qty < (Number(ci.quantity) || 1)) return false;
   }
   return (combo.items || []).length > 0;
+}
+
+function comboItemImageUrl(ci) {
+  if (ci.custom_image_path) return publicAssetImageUrl(ci.custom_image_path);
+  if (ci.product_id) return publicProductImageUrl(ci.product_id, false);
+  return null;
 }
 
 function mapComboForWeb(combo, branchId) {
@@ -461,24 +488,38 @@ function mapComboForWeb(combo, branchId) {
   const normal = Number(combo.normal_price) || 0;
   const finalPrice = Number(combo.final_price) || normal;
   const pic = combo.image_path || combo.picture_path;
+  const items = combo.items || [];
+  const thumbs = items.map(comboItemImageUrl).filter(Boolean).slice(0, 6);
+  const gallery = (combo.gallery_paths || []).map(publicAssetImageUrl).filter(Boolean).slice(0, 6);
+  let hasModifiers = combo.combo_kind === 'custom' ? false : false;
+  for (const ci of items) {
+    if (ci.allow_pap_choice || (ci.product_id && dbGet('SELECT 1 FROM product_modifiers WHERE product_id = ? LIMIT 1', [ci.product_id]))) {
+      hasModifiers = true;
+      break;
+    }
+  }
   return {
     id: `combo-${combo.id}`,
     combo_id: combo.id,
     is_combo: true,
+    combo_kind: combo.combo_kind || 'standard',
     name: combo.name,
     description: combo.description || '',
     category_id: 'combos',
-    image: pic ? publicProductImageUrl(combo.id, true) : null,
+    image: pic ? publicAssetImageUrl(pic) || publicProductImageUrl(combo.id, true) : (thumbs[0] || gallery[0] || null),
+    combo_thumbs: [...gallery, ...thumbs].filter(Boolean).slice(0, 6),
     price: normal,
     sale_price: finalPrice < normal ? finalPrice : null,
     on_sale: finalPrice < normal,
     available,
     stock_qty: available ? 99 : 0,
-    has_modifiers: false,
-    combo_items: (combo.items || []).map((ci) => ({
+    has_modifiers: hasModifiers,
+    combo_items: items.map((ci) => ({
       product_id: ci.product_id,
-      product_name: ci.product_name,
-      quantity: ci.quantity
+      product_name: ci.product_name || ci.custom_name || 'Item',
+      quantity: ci.quantity,
+      allow_pap_choice: !!ci.allow_pap_choice,
+      image: comboItemImageUrl(ci)
     }))
   };
 }
@@ -486,7 +527,9 @@ function mapComboForWeb(combo, branchId) {
 function getActiveCombos(branchId) {
   try {
     const combosSvc = require('./combos');
-    return combosSvc.getCombos({ active_only: true, branch_id: branchId, approval_status: 'approved' }, null) || [];
+    return combosSvc.getCombos({
+      active_only: true, branch_id: branchId, approval_status: 'approved', for_online: true
+    }, null) || [];
   } catch (_) { return []; }
 }
 
@@ -558,34 +601,70 @@ function getBranchMenu(branchId, filters = {}) {
   ensureSchema();
   const settings = getBranchOnlineSettings(branchId);
   if (!settings || Number(settings.online_enabled) === 0) throw new Error('Online ordering is not available at this branch');
+  const store = require('./store');
+  const menuHl = require('../../lib/menu-highlights');
+  try { menuHl.syncAutoBestSellers(getDb(), store.getSettingsParsed()); } catch (_) { /* optional */ }
   const promos = getActivePromotions(branchId);
+  let productPromoMap = {};
+  try {
+    const promoRequestsSvc = require('./promo-requests');
+    productPromoMap = promoRequestsSvc.getActivePromosMap();
+  } catch (_) { /* optional */ }
   const categories = dbAll('SELECT * FROM categories WHERE is_active = 1 ORDER BY sort_order, name');
   let products = dbAll(`SELECT p.* FROM products p
     WHERE p.is_active = 1 AND COALESCE(p.online_enabled, 1) = 1
     AND (p.branch_id IS NULL OR p.branch_id = ? OR EXISTS (SELECT 1 FROM branch_stock bs WHERE bs.product_id = p.id AND bs.branch_id = ?))
     ORDER BY p.name`, [branchId, branchId]);
-  if (filters.category_id) products = products.filter((p) => String(p.category_id) === String(filters.category_id));
+  if (filters.category_id) {
+    const cat = String(filters.category_id);
+    if (cat.startsWith('__')) {
+      products = menuHl.filterProductsByTab(products, cat, productPromoMap);
+    } else {
+      products = products.filter((p) => String(p.category_id) === cat);
+    }
+  }
   if (filters.q) {
     const q = String(filters.q).toLowerCase();
     products = products.filter((p) => p.name.toLowerCase().includes(q));
   }
   if (filters.specials_only) {
     const promoIds = new Set(promos.map((pr) => String(pr.product_id)));
-    products = products.filter((p) => promoIds.has(String(p.id)));
+    products = products.filter((p) => promoIds.has(String(p.id)) || productPromoMap[p.id]);
   }
-  const mapped = products.map((p) => mapProductForWeb(p, branchId, promos));
+  const mapped = products.map((p) => mapProductForWeb(p, branchId, promos, productPromoMap[p.id]));
   const combos = getActiveCombos(branchId);
-  const comboMapped = combos.map((c) => mapComboForWeb(c, branchId));
+  let comboMapped = combos.map((c) => mapComboForWeb(c, branchId));
+  if (filters.q) {
+    const q = String(filters.q).toLowerCase();
+    comboMapped = comboMapped.filter((c) => c.name.toLowerCase().includes(q));
+  }
   let allProducts = [...mapped, ...comboMapped];
-  if (filters.category_id) {
-    if (String(filters.category_id) === 'combos') allProducts = comboMapped;
-    else allProducts = allProducts.filter((p) => String(p.category_id) === String(filters.category_id));
+  const catFilter = filters.category_id ? String(filters.category_id) : '';
+  if (catFilter && !catFilter.startsWith('__')) {
+    if (catFilter === 'combos') allProducts = comboMapped;
+    else allProducts = allProducts.filter((p) => String(p.category_id) === catFilter);
+  } else if (catFilter.startsWith('__')) {
+    allProducts = mapped;
   }
   const catList = categories.map((c) => ({ id: c.id, name: c.name, color: c.color, image: c.image }));
-  if (comboMapped.length) catList.unshift({ id: 'combos', name: 'Combos & Deals', color: '#f59e0b', image: null });
+  const allRaw = dbAll(`SELECT p.* FROM products p
+    WHERE p.is_active = 1 AND COALESCE(p.online_enabled, 1) = 1
+    AND (p.branch_id IS NULL OR p.branch_id = ? OR EXISTS (SELECT 1 FROM branch_stock bs WHERE bs.product_id = p.id AND bs.branch_id = ?))`,
+  [branchId, branchId]);
+  const menuTabs = menuHl.buildMenuTabs(allRaw, productPromoMap, 'online', store.getSettingsParsed());
+  if (comboMapped.length) {
+    menuTabs.unshift({
+      id: 'combos',
+      name: 'Combos & Deals',
+      count: comboMapped.length,
+      color: '#f59e0b',
+      saleStyle: true
+    });
+  }
   return {
     branch: settings,
     categories: catList,
+    menu_tabs: menuTabs,
     products: allProducts,
     combos: comboMapped,
     specials: allProducts.filter((p) => p.on_sale)
@@ -598,17 +677,31 @@ function getProductDetail(branchId, productId) {
     const combosSvc = require('./combos');
     const combo = combosSvc.getCombo(comboId);
     if (!combo) throw new Error('Combo not found');
+    const items = (combo.items || []).map((ci) => {
+      const groups = getModifiersForProduct(ci.product_id, branchId);
+      return {
+        ...ci,
+        modifier_groups: groups,
+        has_modifiers: groups.length > 0,
+        image: ci.picture_path ? publicProductImageUrl(ci.product_id, false) : null
+      };
+    });
     return {
       ...mapComboForWeb(combo, branchId),
-      modifier_groups: [],
-      combo_items: combo.items || []
+      has_modifiers: items.some((i) => i.has_modifiers),
+      combo_items: items,
+      modifier_groups: []
     };
   }
   const p = dbGet('SELECT * FROM products WHERE id = ? AND is_active = 1', [productId]);
   if (!p) throw new Error('Product not found');
   const promos = getActivePromotions(branchId);
+  let productPromo = null;
+  try {
+    productPromo = require('./promo-requests').getActivePromosMap()[productId] || null;
+  } catch (_) { /* optional */ }
   return {
-    ...mapProductForWeb(p, branchId, promos),
+    ...mapProductForWeb(p, branchId, promos, productPromo),
     modifier_groups: getModifiersForProduct(productId, branchId)
   };
 }
@@ -703,6 +796,13 @@ function validateCart(branchId, cart = {}) {
       const unitPrice = round2(Number(combo.final_price) || 0);
       const lineTotal = round2(unitPrice * qty);
       subtotal = round2(subtotal + lineTotal);
+      const components = Array.isArray(item.combo_components) ? item.combo_components : [];
+      const modText = components.length
+        ? components.map((c) => {
+          const base = `${c.product_name || 'Item'}`;
+          return c.modifiers_text ? `${base} (${c.modifiers_text})` : base;
+        }).join('; ')
+        : (combo.items || []).map((ci) => ci.product_name).join(', ');
       lines.push({
         combo_id: comboId,
         product_id: null,
@@ -712,7 +812,8 @@ function validateCart(branchId, cart = {}) {
         unit_price: unitPrice,
         line_total: lineTotal,
         modifiers: [],
-        modifiers_text: (combo.items || []).map((ci) => ci.product_name).join(', ')
+        combo_components: components,
+        modifiers_text: modText
       });
       continue;
     }
@@ -729,8 +830,11 @@ function validateCart(branchId, cart = {}) {
       continue;
     }
     const promos = getActivePromotions(branchId);
-    const mapped = mapProductForWeb(product, branchId, promos);
-    let unitPrice = mapped.sale_price != null ? mapped.sale_price : mapped.price;
+    let productPromo = null;
+    try {
+      productPromo = require('./promo-requests').getActivePromosMap()[productId] || null;
+    } catch (_) { /* optional */ }
+    const mapped = mapProductForWeb(product, branchId, promos, productPromo);
     const selectedMods = [];
     let modExtra = 0;
     const modGroups = getModifiersForProduct(productId, branchId);
@@ -742,10 +846,19 @@ function validateCart(branchId, cart = {}) {
         const mod = g.options.find((o) => String(o.id) === String(pick.id) || o.name === pick.name);
         if (!mod || mod.out_of_stock) { errors.push(`${pick.name || 'Option'} unavailable`); continue; }
         modExtra += Number(mod.extra_price) || 0;
-        selectedMods.push({ id: mod.id, name: mod.name, extra_price: mod.extra_price, group: g.name });
+        selectedMods.push({
+          id: mod.id, name: mod.name, extra_price: mod.extra_price,
+          modifier_type: mod.modifier_type, group: g.name
+        });
       }
     }
-    unitPrice = round2(unitPrice + modExtra);
+    const unitPrice = promoPricing.calcPromoAwareUnitPrice({
+      promoActive: mapped.on_sale,
+      normalPrice: mapped.price,
+      salePrice: mapped.sale_price ?? mapped.price,
+      modifiers: selectedMods,
+      modifierExtraTotal: modExtra
+    });
     const lineTotal = round2(unitPrice * qty);
     subtotal = round2(subtotal + lineTotal);
     lines.push({
@@ -775,9 +888,13 @@ function validateCart(branchId, cart = {}) {
   let discount = 0;
   let couponApplied = null;
   if (cart.coupon_code) {
+    if (getGlobalSettings().online?.coupons_enabled === false) {
+      errors.push('Coupon codes are disabled for online orders');
+    } else {
     const couponResult = validateCoupon(cart.coupon_code, branchId, { subtotal, items: lines }, cart.web_customer_id);
     if (couponResult.error) errors.push(couponResult.error);
     else { discount = couponResult.discount; couponApplied = couponResult.coupon; }
+    }
   }
 
   let loyaltyDiscount = 0;
@@ -830,6 +947,9 @@ function validateCart(branchId, cart = {}) {
   let giftCardAmount = 0;
   let giftCardCode = null;
   if (cart.gift_card_code) {
+    if (shop.online?.gift_cards_enabled === false) {
+      errors.push('Gift card redemption is disabled for online orders');
+    } else {
     try {
       const features = require('./features');
       const card = features.checkGiftCardBalance(String(cart.gift_card_code).trim().toUpperCase());
@@ -838,6 +958,7 @@ function validateCart(branchId, cart = {}) {
       if (!giftCardAmount) errors.push('Gift card has no balance to apply');
     } catch (err) {
       errors.push(err.message || 'Invalid gift card');
+    }
     }
   }
   const total = round2(Math.max(0, totalBeforeGift - giftCardAmount));
@@ -1048,9 +1169,38 @@ function formatOrder(row) {
   try {
     deliveryRow = dbGet('SELECT * FROM delivery_assignments WHERE source_type=? AND source_id=?', ['online_order', row.id]);
     if (!confirmationCode && deliveryRow?.confirmation_code) confirmationCode = deliveryRow.confirmation_code;
-  } catch (_) { /* */ }
+    if (confirmationCode && deliveryRow && deliveryRow.confirmation_code !== confirmationCode) {
+      try {
+        dbRun('UPDATE delivery_assignments SET confirmation_code=? WHERE id=?', [confirmationCode, deliveryRow.id]);
+      } catch (_) { /* optional */ }
+    }
+  } catch (_) { /* optional */ }
+  if (!confirmationCode && (row.fulfillment_type === 'delivery' || row.fulfillment === 'delivery')) {
+    try {
+      const delivery = require('./delivery-platform');
+      confirmationCode = delivery.nextConfirmationCode();
+      dbRun('UPDATE online_orders_local SET confirmation_code=? WHERE id=?', [confirmationCode, row.id]);
+      if (deliveryRow?.id) {
+        dbRun('UPDATE delivery_assignments SET confirmation_code=? WHERE id=?', [confirmationCode, deliveryRow.id]);
+      }
+    } catch (_) { /* optional */ }
+  }
   const trackingSteps = buildTrackingSteps(row, deliveryRow);
   const activeStep = trackingSteps.find((s) => s.active) || trackingSteps.filter((s) => s.done).pop();
+  let driver = null;
+  if (deliveryRow?.driver_id) {
+    try {
+      const dp = require('./delivery-platform');
+      driver = dp.driverPublicInfo(deliveryRow.driver_id);
+    } catch (_) { /* optional */ }
+  }
+  let acceptedBy = null;
+  if (row.sale_id) {
+    try {
+      const linked = dbGet(`SELECT u.full_name AS cashier_name FROM sales s LEFT JOIN users u ON u.id = s.user_id WHERE s.id = ?`, [row.sale_id]);
+      acceptedBy = linked?.cashier_name || null;
+    } catch (_) { /* optional */ }
+  }
   return {
     ...row,
     items: parseJson(row.items_json, []),
@@ -1059,7 +1209,10 @@ function formatOrder(row) {
     order_source: row.order_source || 'ONLINE',
     confirmation_code: confirmationCode,
     tracking_steps: trackingSteps,
-    status_label: activeStep?.label || String(row.status || 'pending')
+    status_label: activeStep?.label || String(row.status || 'pending'),
+    driver,
+    accepted_by: acceptedBy,
+    cashier: acceptedBy
   };
 }
 
@@ -1105,7 +1258,10 @@ function resolveOrderRef(orderRef) {
 function updateOrderStatus(orderId, status, actor, opts = {}) {
   const order = resolveOrderRef(orderId);
   const localId = order.id;
-  dbRun(`UPDATE online_orders_local SET status = ?, reject_reason = COALESCE(?, reject_reason), updated_at = ? WHERE id = ?`,
+  const rejectExtras = status === 'rejected' && actor?.id
+    ? `, rejected_by = ${Number(actor.id)}, rejected_at = '${nowIso()}'`
+    : '';
+  dbRun(`UPDATE online_orders_local SET status = ?, reject_reason = COALESCE(?, reject_reason), updated_at = ?${rejectExtras} WHERE id = ?`,
     [status, opts.reject_reason || null, nowIso(), localId]);
   logOrderEvent(localId, status, opts.note || opts.reject_reason || '', actor ? 'staff' : 'system', actor?.id || null);
   if (status === 'rejected' || status === 'cancelled') {
@@ -1245,6 +1401,54 @@ function toggleFavorite(webToken, productId, branchId) {
   return { favorited: true };
 }
 
+function listRejectedOrdersReport(filters = {}) {
+  ensureSchema();
+  let sql = `SELECT o.*, u.full_name AS rejected_by_name, u.username AS rejected_by_username
+    FROM online_orders_local o
+    LEFT JOIN users u ON u.id = COALESCE(o.rejected_by, (
+      SELECT e.actor_id FROM online_order_events e
+      WHERE e.order_id = o.id AND e.status = 'rejected' AND e.actor_type = 'staff'
+      ORDER BY e.id DESC LIMIT 1
+    ))
+    WHERE o.status = 'rejected'`;
+  const p = [];
+  if (filters.branch_id) { sql += ' AND o.branch_id = ?'; p.push(filters.branch_id); }
+  if (filters.from) { sql += ' AND date(o.created_at) >= date(?)'; p.push(filters.from); }
+  if (filters.to) { sql += ' AND date(o.created_at) <= date(?)'; p.push(filters.to); }
+  sql += ' ORDER BY o.created_at DESC LIMIT 500';
+  const rows = dbAll(sql, p);
+  const byCashier = {};
+  const byWeek = {};
+  for (const r of rows) {
+    const cashier = r.rejected_by_name || r.rejected_by_username || `Staff #${r.rejected_by || '?'}`;
+    const dt = r.rejected_at || r.updated_at || r.created_at;
+    const weekKey = dt ? String(dt).slice(0, 10) : 'unknown';
+    const wkStart = (() => {
+      try {
+        const d = new Date(dt);
+        const day = d.getDay();
+        const diff = d.getDate() - day + (day === 0 ? -6 : 1);
+        const mon = new Date(d.setDate(diff));
+        return mon.toISOString().slice(0, 10);
+      } catch (_) { return weekKey; }
+    })();
+    if (!byCashier[cashier]) byCashier[cashier] = { cashier, count: 0, total: 0, reasons: {} };
+    byCashier[cashier].count += 1;
+    byCashier[cashier].total += Number(r.total) || 0;
+    const reason = r.reject_reason || 'No reason';
+    byCashier[cashier].reasons[reason] = (byCashier[cashier].reasons[reason] || 0) + 1;
+    if (!byWeek[wkStart]) byWeek[wkStart] = { week_start: wkStart, count: 0, total: 0 };
+    byWeek[wkStart].count += 1;
+    byWeek[wkStart].total += Number(r.total) || 0;
+  }
+  return {
+    orders: rows.map(formatOrder),
+    by_cashier: Object.values(byCashier).sort((a, b) => b.count - a.count),
+    by_week: Object.values(byWeek).sort((a, b) => b.week_start.localeCompare(a.week_start)),
+    total_rejected: rows.length
+  };
+}
+
 function getOnlineAnalytics(filters = {}) {
   ensureSchema();
   const branchClause = filters.branch_id ? ' AND branch_id = ?' : '';
@@ -1286,6 +1490,7 @@ module.exports = {
   deleteWebCustomerAccount,
   toggleFavorite,
   getOnlineAnalytics,
+  listRejectedOrdersReport,
   formatOrder,
   logOrderEvent,
   resolvePaymentForOrder

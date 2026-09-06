@@ -593,10 +593,6 @@ async function main() {
       });
     }
 
-    if (urlPath.startsWith('/shared/')) {
-      return serveShared(req, res);
-    }
-
     if (urlPath === '/api/logo') {
       try {
         const { getShopLogo } = require('./lib/product-images');
@@ -613,6 +609,43 @@ async function main() {
       } catch (e) {
         res.writeHead(404);
         return res.end('Logo not available');
+      }
+    }
+
+    if (urlPath === '/api/notification-sound') {
+      try {
+        const { getNotificationSound } = require('./lib/product-images');
+        const file = getNotificationSound();
+        if (file.buffer) {
+          res.writeHead(200, { 'Content-Type': file.mime, 'Cache-Control': 'public, max-age=60', ...corsHeaders() });
+          return res.end(file.buffer);
+        }
+        return fs.readFile(file.path, (err, buf) => {
+          if (err) { res.writeHead(404); return res.end('Not found'); }
+          res.writeHead(200, { 'Content-Type': file.mime, 'Cache-Control': 'public, max-age=60', ...corsHeaders() });
+          res.end(buf);
+        });
+      } catch (e) {
+        res.writeHead(404);
+        return res.end('Sound not available');
+      }
+    }
+
+    if (urlPath.startsWith('/api/driver-doc/')) {
+      const parts = urlPath.replace('/api/driver-doc/', '').split('/').filter(Boolean);
+      const driverId = parts[0];
+      const docKey = parts[1];
+      try {
+        const { getDriverDocument } = require('./lib/driver-documents');
+        const file = getDriverDocument(driverId, docKey);
+        return fs.readFile(file.path, (err, buf) => {
+          if (err) { res.writeHead(404); return res.end('Not found'); }
+          res.writeHead(200, { 'Content-Type': file.mime, 'Cache-Control': 'private, max-age=3600', ...corsHeaders() });
+          res.end(buf);
+        });
+      } catch (e) {
+        res.writeHead(404);
+        return res.end('Not found');
       }
     }
 
@@ -652,6 +685,27 @@ async function main() {
         });
       } catch (e) {
         res.writeHead(e.message === 'Combo not found' || e.message === 'Image not available' ? 404 : 500);
+        return res.end(String(e.message || 'Error'));
+      }
+    }
+
+    if (urlPath.startsWith('/api/app-image')) {
+      const q = (req.url || '').split('?')[1] || '';
+      const p = new URLSearchParams(q).get('p');
+      try {
+        const { getAppImage } = require('./lib/product-images');
+        const file = getAppImage(p);
+        if (file.buffer) {
+          res.writeHead(200, { 'Content-Type': file.mime, 'Cache-Control': 'public, max-age=3600', ...corsHeaders() });
+          return res.end(file.buffer);
+        }
+        return fs.readFile(file.path, (err, buf) => {
+          if (err) { res.writeHead(404); return res.end('Not found'); }
+          res.writeHead(200, { 'Content-Type': file.mime, 'Cache-Control': 'public, max-age=3600', ...corsHeaders() });
+          res.end(buf);
+        });
+      } catch (e) {
+        res.writeHead(e.message === 'Image not available' ? 404 : 500);
         return res.end(String(e.message || 'Error'));
       }
     }
@@ -756,7 +810,11 @@ async function main() {
     }
 
     // Customer ordering website (PWA)
-    if (urlPath === '/order' || urlPath.startsWith('/order/')) {
+    if (urlPath === '/order') {
+      res.writeHead(301, { Location: '/order/', ...corsHeaders() });
+      return res.end();
+    }
+    if (urlPath.startsWith('/order/')) {
       return serveCustomerWeb(req, res);
     }
 
@@ -802,6 +860,10 @@ async function main() {
 
     if (urlPath === '/track' || urlPath.startsWith('/track/')) {
       return serveTrackingWeb(req, res);
+    }
+
+    if (urlPath.startsWith('/shared/')) {
+      return serveShared(req, res);
     }
 
     // Static UI

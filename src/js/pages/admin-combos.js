@@ -12,6 +12,9 @@
     async render(el, admin) {
       this.admin = admin;
       this.app = admin.app;
+      if (window.App?.ensurePageScripts) {
+        await App.ensurePageScripts('admin');
+      }
       this.tab = this.tab || 'list';
       const tabs = [
         ['list', 'Combos'],
@@ -68,26 +71,35 @@
     async renderList(el) {
       const currency = this.admin.settings?.currency || 'R';
       const isOwner = this.app.user?.role === 'owner';
-      const res = await API.getCombos({});
+      const res = await API.getCombos({ list_only: true });
       if (!res.success) {
         el.innerHTML = `<p class="error-msg">${Utils.escHtml(res.error || 'Could not load combos')}</p>`;
         return;
       }
       const combos = res.data || [];
-      el.innerHTML = `<button class="btn btn-primary" id="combo-new" style="margin-bottom:12px">+ New Combo</button>
+      el.innerHTML = `<div class="combo-list-actions">
+        <button class="btn btn-primary" id="combo-new">+ New Combo (from menu)</button>
+        <button class="btn btn-primary btn-outline" id="combo-new-custom">+ Custom Combo (from scratch)</button>
+      </div>
         <div class="table-wrap"><table>
           <thead><tr><th>Code</th><th>Name</th><th>Normal</th><th>Final</th><th>Status</th><th>Approval</th><th>Items</th><th></th></tr></thead>
           <tbody>${combos.map(c => `<tr>
             <td>${c.combo_code}</td><td>${c.name}</td>
             <td>${Utils.formatMoney(c.normal_price, currency)}</td>
             <td>${Utils.formatMoney(c.final_price, currency)}</td>
-            <td>${c.status}</td><td><span class="tag">${c.approval_status || 'approved'}</span></td><td>${(c.items || []).length}</td>
-            <td><button class="btn btn-sm btn-ghost combo-edit" data-id="${c.id}">Edit</button>
+            <td>${c.status}</td><td><span class="tag">${c.approval_status || 'approved'}</span></td><td>${c.item_count ?? (c.items || []).length}</td>
+            <td><button class="btn btn-sm btn-ghost combo-view" data-id="${c.id}">View</button>
+            <button class="btn btn-sm btn-ghost combo-edit" data-id="${c.id}">Edit</button>
             ${isOwner && c.status === 'active' ? `<button class="btn btn-sm btn-warning combo-deact" data-id="${c.id}">Deactivate</button>` : ''}
             ${isOwner && c.status !== 'active' && (c.approval_status || 'approved') === 'approved' ? `<button class="btn btn-sm btn-success combo-act" data-id="${c.id}">Activate</button>` : ''}
             </td></tr>`).join('') || '<tr><td colspan="8" class="muted">No combos yet</td></tr>'}
           </tbody></table></div>`;
-      document.getElementById('combo-new').addEventListener('click', () => this.showForm());
+      document.getElementById('combo-new').addEventListener('click', () => this.showForm(null, { mode: 'standard' }));
+      document.getElementById('combo-new-custom').addEventListener('click', () => this.showForm(null, { mode: 'custom' }));
+      el.querySelectorAll('.combo-view').forEach(b => b.addEventListener('click', async () => {
+        const r = await API.getCombo(parseInt(b.dataset.id, 10));
+        if (r.success) this.showComboPoster(r.data);
+      }));
       el.querySelectorAll('.combo-edit').forEach(b => b.addEventListener('click', async () => {
         const r = await API.getCombo(parseInt(b.dataset.id, 10));
         if (r.success) this.showForm(r.data);
@@ -143,83 +155,370 @@
       }));
     },
 
-    async showForm(combo = null) {
-      const c = combo || { items: [], pricing_type: 'fixed' };
-      const prodRes = await API.getProducts({});
-      const products = prodRes.data || [];
-      const currency = this.admin.settings?.currency || 'R';
-      const itemRows = (c.items || []).map((item, i) => `
-        <div class="form-grid combo-item-row" data-idx="${i}">
-          <div class="field"><label>Product</label><select class="ci-prod">${products.map(p =>
-            `<option value="${p.id}" ${p.id == item.product_id ? 'selected' : ''}>${p.name}</option>`).join('')}</select></div>
-          <div class="field"><label>Qty</label><input type="number" class="ci-qty" step="0.01" value="${item.quantity || 1}"></div>
-        </div>`).join('') || `<div class="form-grid combo-item-row" data-idx="0">
-          <div class="field"><label>Product</label><select class="ci-prod">${products.map(p => `<option value="${p.id}">${p.name}</option>`).join('')}</select></div>
-          <div class="field"><label>Qty</label><input type="number" class="ci-qty" step="0.01" value="1"></div></div>`;
+    async comboImageSrc(pathOrId, isProduct) {
+      if (!pathOrId) return null;
+      const raw = String(pathOrId);
+      if (raw.startsWith('data:')) return raw;
+      if (raw.startsWith('http://') || raw.startsWith('https://') || raw.startsWith('/api/')) return raw;
+      if (isProduct) return `/api/product-image/${pathOrId}`;
+      const appUrl = `/api/app-image?p=${encodeURIComponent(raw)}`;
+      try {
+        const r = await API.getImageDataUrl(raw);
+        return r?.dataUrl || r?.data || appUrl;
+      } catch (_) { return appUrl; }
+    },
 
-      Utils.showModal(combo ? `Edit ${c.name}` : 'New Combo', `
+    async resolveComboItemImage(i) {
+      if (i.custom_image_path) {
+        const src = String(i.custom_image_path);
+        if (src.startsWith('data:')) return src;
+        return this.comboImageSrc(src, false);
+      }
+      if (i.product_id) return `/api/product-image/${i.product_id}`;
+      if (i.picture_path) {
+        const src = String(i.picture_path);
+        if (src.startsWith('data:')) return src;
+        return this.comboImageSrc(src, false);
+      }
+      return null;
+    },
+
+    async showComboPoster(combo) {
+      if (!window.PromoPoster && window.App?.ensurePageScripts) {
+        await App.ensurePageScripts('admin');
+      }
+      if (!window.PromoPoster) return Utils.toast('Poster tool loading — try again', 'error');
+      const currency = this.admin.settings?.currency || 'R';
+      const shopName = this.admin.settings?.shop_name || 'Our Shop';
+      let groupLink = '';
+      try {
+        const wa = await API.getWhatsAppSettings(this.app.user);
+        groupLink = wa?.data?.business_group_link || wa?.data?.whatsapp_business_group_link || '';
+      } catch (_) { /* optional */ }
+      let branchLabel = 'All branches';
+      if (combo.branch_id) {
+        try {
+          const br = await API.getBranches?.();
+          const list = br?.data || br || [];
+          const hit = list.find((b) => Number(b.id) === Number(combo.branch_id));
+          if (hit) branchLabel = hit.name;
+        } catch (_) { /* optional */ }
+      }
+      const items = combo.items || [];
+      const itemImages = await Promise.all(items.map((i) => this.resolveComboItemImage(i)));
+      const gallery = (combo.gallery_paths || []).filter(Boolean);
+      const galleryUrls = (await Promise.all(gallery.map(async (g) => {
+        if (String(g).startsWith('data:')) return g;
+        return this.comboImageSrc(g, false);
+      }))).filter(Boolean);
+      let heroUrl = null;
+      if (combo.image_path) {
+        const raw = String(combo.image_path);
+        heroUrl = raw.startsWith('data:') ? raw : await this.comboImageSrc(combo.image_path, false);
+      }
+      const posterSlots = [];
+      const itemCount = Math.max(items.length, 1);
+      for (let i = 0; i < itemCount; i++) {
+        posterSlots.push(itemImages[i] || galleryUrls[i] || null);
+      }
+      galleryUrls.forEach((g) => {
+        if (g && !posterSlots.includes(g)) posterSlots.push(g);
+      });
+      if (posterSlots.filter(Boolean).length === 0 && heroUrl) posterSlots.push(heroUrl);
+      while (posterSlots.length < itemCount) posterSlots.push(null);
+      const dateRange = combo.start_date && combo.end_date
+        ? `${combo.start_date} — ${combo.end_date}`
+        : (combo.start_date ? `From ${combo.start_date}` : (combo.end_date ? `Until ${combo.end_date}` : ''));
+      const timeRange = combo.valid_time_start && combo.valid_time_end
+        ? `${combo.valid_time_start} – ${combo.valid_time_end}`
+        : '';
+      const availability = [dateRange, timeRange].filter(Boolean).join(' · ');
+      const msg = `🎁 *COMBO — ${shopName}*\n\n*${combo.name}*\nWas ${Number(combo.normal_price || 0).toFixed(2)} → Now *${Number(combo.final_price || 0).toFixed(2)}*\n${branchLabel}${availability ? `\n${availability}` : ''}\n\nIncludes: ${items.map((i) => i.product_name || i.custom_name).join(', ')}`;
+      Utils.showModal('Building combo poster…', '<p class="muted">Preparing WhatsApp Status poster…</p>', '');
+      try {
+        const canvas = await PromoPoster.renderCombo({
+          title: combo.name,
+          wasPrice: combo.normal_price,
+          nowPrice: combo.final_price,
+          dateRange: availability || dateRange,
+          shopName,
+          shopAddress: this.admin.settings?.address || '',
+          shopPhone: this.admin.settings?.phone || '',
+          branchLabel,
+          imageUrl: heroUrl || posterSlots.find(Boolean) || '',
+          itemImages: posterSlots,
+          itemCount,
+          items: items.map((i) => ({ name: i.product_name || i.custom_name, qty: i.quantity })),
+          description: combo.description || '',
+          currency
+        });
+        Utils.hideModal();
+        PromoPoster.showPreviewModal(canvas, {
+          title: `Combo — ${combo.name}`,
+          filename: `combo-${combo.combo_code || combo.id}.png`,
+          groupLink,
+          whatsappMessage: msg
+        });
+      } catch (err) {
+        Utils.hideModal();
+        Utils.toast(err.message || 'Could not build poster', 'error');
+      }
+    },
+
+    async showForm(combo = null, opts = {}) {
+      const c = combo || { items: [], pricing_type: 'fixed', show_on_pos: true, show_on_online: true };
+      const isCustom = opts.mode === 'custom' || c.combo_kind === 'custom';
+      const prodRes = await API.getProducts({ combo_picker: true });
+      const products = prodRes.data || prodRes || [];
+      const branchesRes = await API.getBranches?.().catch(() => ({ data: [] }));
+      const branches = branchesRes?.data || branchesRes || [];
+      const currency = this.admin.settings?.currency || 'R';
+      this._comboGallery = Array.isArray(c.gallery_paths) ? [...c.gallery_paths] : [];
+      this._comboHero = c.image_path || null;
+
+      const prodThumb = (pid) => {
+        if (!pid) return '<span class="combo-item-thumb ph">🍽️</span>';
+        return `<img src="/api/product-image/${pid}" class="combo-item-thumb" alt="" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'combo-item-thumb ph',textContent:'🍽️'}))">`;
+      };
+
+      const standardItemRow = (item, i) => {
+        const pid = item.product_id || products[0]?.id;
+        const papHint = products.find((p) => String(p.id) === String(pid))?.has_pap_option;
+        return `<div class="form-grid combo-item-row" data-idx="${i}">
+          <div class="field combo-item-preview">${prodThumb(pid)}</div>
+          <div class="field"><label>Product</label><select class="ci-prod">${products.map(p =>
+            `<option value="${p.id}" ${String(p.id) === String(item.product_id) ? 'selected' : ''}>${p.name}${p.has_pap_option ? ' (pap option)' : ''}</option>`).join('')}</select></div>
+          <div class="field"><label>Qty</label><input type="number" class="ci-qty" step="0.01" value="${item.quantity || 1}"></div>
+          <div class="field combo-pap-field" style="min-width:150px"><label>Pap option</label>
+            <label class="combo-pap-label">
+              <input type="checkbox" class="ci-pap" ${item.allow_pap_choice ? 'checked' : ''} ${papHint ? '' : 'title="Product has no pap/removal modifiers"'}>
+              With / without pap
+            </label></div>
+        </div>`;
+      };
+
+      const customItemRow = (item, i) => `<div class="form-grid combo-item-row combo-custom-row" data-idx="${i}">
+          <div class="field combo-item-preview">${item.custom_image_path ? `<img src="${item.custom_image_path.startsWith('data:') ? item.custom_image_path : ''}" class="combo-item-thumb ci-custom-img" data-path="${Utils.escHtml(item.custom_image_path || '')}" alt="">` : '<span class="combo-item-thumb ph">📷</span>'}</div>
+          <div class="field"><label>Item name</label><input class="ci-custom-name" value="${Utils.escHtml(item.custom_name || item.product_name || '')}" placeholder="e.g. Pap & wors"></div>
+          <div class="field"><label>Qty</label><input type="number" class="ci-qty" step="0.01" value="${item.quantity || 1}"></div>
+          <div class="field"><label>Photo</label><button type="button" class="btn btn-ghost btn-sm ci-upload">Upload</button></div>
+        </div>`;
+
+      const itemRows = (c.items || []).length
+        ? (c.items || []).map((item, i) => isCustom ? customItemRow(item, i) : standardItemRow(item, i)).join('')
+        : (isCustom ? customItemRow({}, 0) : standardItemRow({}, 0));
+
+      const galleryHtml = this._comboGallery.map((g, i) =>
+        `<img src="${g.startsWith('data:') ? g : ''}" class="combo-gallery-thumb" data-i="${i}" alt="">`).join('');
+
+      Utils.showModal(combo ? `Edit ${c.name}` : (isCustom ? 'Custom Combo (from scratch)' : 'New Combo'), `
+        ${!combo ? `<div class="combo-mode-tabs">
+          <button type="button" class="btn btn-sm ${!isCustom ? 'active' : 'btn-ghost'}" data-mode="standard">From menu products</button>
+          <button type="button" class="btn btn-sm ${isCustom ? 'active' : 'btn-ghost'}" data-mode="custom">Custom from scratch</button>
+        </div>` : ''}
         <div class="form-grid">
-          <div class="field"><label>Name *</label><input id="cb-name" value="${c.name || ''}"></div>
-          <div class="field"><label>Category Label</label><input id="cb-cat" value="${c.category || 'COMBOS'}"></div>
+          <div class="field"><label>Name *</label><input id="cb-name" value="${Utils.escHtml(c.name || '')}"></div>
+          <div class="field"><label>Category Label</label><input id="cb-cat" value="${Utils.escHtml(c.category || 'COMBOS')}"></div>
+          ${isCustom ? `
+          <div class="field"><label>Normal price (${currency})</label><input type="number" id="cb-normal" step="0.01" value="${c.normal_price || ''}"></div>
+          <div class="field"><label>Sale price (${currency}) *</label><input type="number" id="cb-final" step="0.01" value="${c.final_price || ''}"></div>
+          ` : `
           <div class="field"><label>Pricing Type</label><select id="cb-ptype">
             ${['fixed', 'percent', 'fixed_discount'].map(t => `<option value="${t}" ${c.pricing_type === t ? 'selected' : ''}>${t}</option>`).join('')}
           </select></div>
           <div class="field"><label>Discount / Fixed Price</label><input type="number" id="cb-disc" step="0.01" value="${c.discount_value || c.final_price || 0}"></div>
+          `}
           <div class="field"><label>Start Date</label><input type="date" id="cb-start" value="${c.start_date || ''}"></div>
           <div class="field"><label>End Date</label><input type="date" id="cb-end" value="${c.end_date || ''}"></div>
-          <div class="field full"><label>Description</label><input id="cb-desc" value="${c.description || ''}"></div>
+          <div class="field"><label>Branch</label><select id="cb-branch">
+            <option value="">All branches</option>
+            ${branches.map((b) => `<option value="${b.id}" ${String(c.branch_id) === String(b.id) ? 'selected' : ''}>${b.name}</option>`).join('')}
+          </select></div>
+          <div class="field full"><label>Show on</label>
+            <label style="margin-right:16px"><input type="checkbox" id="cb-pos" ${c.show_on_pos !== 0 && c.show_on_pos !== false ? 'checked' : ''}> POS</label>
+            <label><input type="checkbox" id="cb-online" ${c.show_on_online !== 0 && c.show_on_online !== false ? 'checked' : ''}> Online orders</label>
+          </div>
+          <div class="field full"><label>Description</label><textarea id="cb-desc" rows="2">${Utils.escHtml(c.description || '')}</textarea></div>
+          <div class="field full"><label>Combo poster photo</label>
+            <button type="button" class="btn btn-ghost btn-sm" id="cb-hero-upload">Upload main photo</button>
+            <div id="cb-hero-preview" style="margin-top:6px"></div></div>
+          <div class="field full"><label>Extra poster photos</label>
+            <button type="button" class="btn btn-ghost btn-sm" id="cb-gallery-add">+ Add photo</button>
+            <div class="combo-gallery-preview" id="cb-gallery">${galleryHtml}</div></div>
         </div>
-        <h4 style="margin-top:16px">Components</h4>
+        <h4 style="margin-top:16px">${isCustom ? 'What\'s included' : 'Components'}</h4>
         <div id="cb-items">${itemRows}</div>
         <button type="button" class="btn btn-ghost btn-sm" id="cb-add-item">+ Add Item</button>
         <p class="muted" id="cb-price-preview" style="margin-top:8px"></p>`,
         '<button class="btn btn-primary" id="cb-save">Save Combo</button>');
 
-      const updatePreview = async () => {
-        const items = [...document.querySelectorAll('.combo-item-row')].map(row => ({
-          product_id: parseInt(row.querySelector('.ci-prod').value, 10),
-          quantity: parseFloat(row.querySelector('.ci-qty').value) || 1
+      document.querySelector('.modal')?.classList.add('modal-combo-form');
+      const cleanupComboModal = () => document.querySelector('.modal')?.classList.remove('modal-combo-form');
+      document.getElementById('cb-save')?.addEventListener('click', () => cleanupComboModal(), { once: true });
+      document.getElementById('modal-close')?.addEventListener('click', cleanupComboModal, { once: true });
+
+      const hydrateGallery = async () => {
+        const gal = document.getElementById('cb-gallery');
+        if (!gal) return;
+        for (const img of gal.querySelectorAll('.combo-gallery-thumb')) {
+          const i = Number(img.dataset.i);
+          const path = this._comboGallery[i];
+          if (path && !path.startsWith('data:')) {
+            const url = await this.comboImageSrc(path, false);
+            if (url) img.src = url;
+          } else if (path) img.src = path;
+        }
+        if (this._comboHero) {
+          const prev = document.getElementById('cb-hero-preview');
+          if (prev) {
+            const url = this._comboHero.startsWith('data:') ? this._comboHero : await this.comboImageSrc(this._comboHero, false);
+            if (url) prev.innerHTML = `<img src="${url}" style="max-height:64px;border-radius:8px">`;
+          }
+        }
+        for (const row of document.querySelectorAll('.combo-custom-row .ci-custom-img')) {
+          const path = row.dataset.path;
+          if (path && !path.startsWith('data:')) {
+            const url = await this.comboImageSrc(path, false);
+            if (url) row.src = url;
+          }
+        }
+      };
+
+      const collectItems = () => {
+        if (isCustom) {
+          return [...document.querySelectorAll('.combo-custom-row')].map((row, idx) => ({
+            custom_name: row.querySelector('.ci-custom-name')?.value?.trim() || `Item ${idx + 1}`,
+            custom_image_path: row.dataset.imagePath || null,
+            quantity: parseFloat(row.querySelector('.ci-qty')?.value) || 1
+          }));
+        }
+        return [...document.querySelectorAll('.combo-item-row:not(.combo-custom-row)')].map(row => ({
+          product_id: parseInt(row.querySelector('.ci-prod')?.value, 10),
+          quantity: parseFloat(row.querySelector('.ci-qty')?.value) || 1,
+          allow_pap_choice: row.querySelector('.ci-pap')?.checked ? 1 : 0
         }));
+      };
+
+      const updatePreview = async () => {
+        if (isCustom) {
+          const n = parseFloat(document.getElementById('cb-normal')?.value) || 0;
+          const f = parseFloat(document.getElementById('cb-final')?.value) || 0;
+          document.getElementById('cb-price-preview').textContent =
+            `Your price: ${Utils.formatMoney(f || n, currency)}${n && f && f < n ? ` (was ${Utils.formatMoney(n, currency)})` : ''}`;
+          return;
+        }
+        const items = collectItems();
         const r = await API.calcComboPrices(items, document.getElementById('cb-ptype').value, parseFloat(document.getElementById('cb-disc').value) || 0);
         if (r.success) {
           document.getElementById('cb-price-preview').textContent =
             `Normal: ${Utils.formatMoney(r.data.normal_price, currency)} → Final: ${Utils.formatMoney(r.data.final_price, currency)}`;
         }
       };
-      document.getElementById('cb-ptype').addEventListener('change', updatePreview);
-      document.getElementById('cb-disc').addEventListener('input', updatePreview);
-      document.querySelectorAll('.ci-prod, .ci-qty').forEach(el => el.addEventListener('change', updatePreview));
+
+      document.querySelectorAll('.combo-mode-tabs [data-mode]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          Utils.hideModal();
+          this.showForm(null, { mode: btn.dataset.mode });
+        });
+      });
+
+      document.getElementById('cb-hero-upload')?.addEventListener('click', async () => {
+        const r = await API.selectImage('combo-hero');
+        if (r?.cancelled || !r?.success || !r.path) return;
+        this._comboHero = r.path;
+        const prev = document.getElementById('cb-hero-preview');
+        if (prev) prev.innerHTML = `<img src="${r.dataUrl || r.path}" style="max-height:64px;border-radius:8px">`;
+      });
+
+      document.getElementById('cb-gallery-add')?.addEventListener('click', async () => {
+        const r = await API.selectImage('combo-gallery');
+        if (r?.cancelled || !r?.success || !r.path) return;
+        this._comboGallery.push(r.path);
+        const gal = document.getElementById('cb-gallery');
+        const img = document.createElement('img');
+        img.className = 'combo-gallery-thumb';
+        img.src = r.dataUrl || r.path;
+        img.dataset.i = String(this._comboGallery.length - 1);
+        gal?.appendChild(img);
+      });
+
+      const bindRow = (row) => {
+        row.querySelector('.ci-prod')?.addEventListener('change', (e) => {
+          const preview = row.querySelector('.combo-item-preview');
+          if (preview) preview.innerHTML = prodThumb(e.target.value);
+          updatePreview();
+        });
+        row.querySelector('.ci-qty')?.addEventListener('change', updatePreview);
+        row.querySelector('.ci-upload')?.addEventListener('click', async () => {
+          const r = await API.selectImage('combo-item');
+          if (r?.cancelled || !r?.success || !r.path) return;
+          row.dataset.imagePath = r.path;
+          const preview = row.querySelector('.combo-item-preview');
+          if (preview) preview.innerHTML = `<img src="${r.dataUrl || r.path}" class="combo-item-thumb" alt="">`;
+        });
+      };
+
+      document.querySelectorAll('.combo-item-row').forEach(bindRow);
+      if (!isCustom) {
+        document.getElementById('cb-ptype')?.addEventListener('change', updatePreview);
+        document.getElementById('cb-disc')?.addEventListener('input', updatePreview);
+      } else {
+        document.getElementById('cb-normal')?.addEventListener('input', updatePreview);
+        document.getElementById('cb-final')?.addEventListener('input', updatePreview);
+      }
       updatePreview();
+      hydrateGallery();
 
       document.getElementById('cb-add-item').addEventListener('click', () => {
         const container = document.getElementById('cb-items');
         const idx = container.querySelectorAll('.combo-item-row').length;
         const div = document.createElement('div');
-        div.className = 'form-grid combo-item-row';
-        div.dataset.idx = idx;
-        div.innerHTML = `<div class="field"><label>Product</label><select class="ci-prod">${products.map(p => `<option value="${p.id}">${p.name}</option>`).join('')}</select></div>
-          <div class="field"><label>Qty</label><input type="number" class="ci-qty" step="0.01" value="1"></div>`;
+        if (isCustom) {
+          div.className = 'form-grid combo-item-row combo-custom-row';
+          div.dataset.idx = idx;
+          div.innerHTML = `<div class="field combo-item-preview"><span class="combo-item-thumb ph">📷</span></div>
+            <div class="field"><label>Item name</label><input class="ci-custom-name" placeholder="Item name"></div>
+            <div class="field"><label>Qty</label><input type="number" class="ci-qty" step="0.01" value="1"></div>
+            <div class="field"><label>Photo</label><button type="button" class="btn btn-ghost btn-sm ci-upload">Upload</button></div>`;
+        } else {
+          div.className = 'form-grid combo-item-row';
+          div.dataset.idx = idx;
+          const firstPid = products[0]?.id || '';
+          div.innerHTML = `<div class="field combo-item-preview">${prodThumb(firstPid)}</div>
+            <div class="field"><label>Product</label><select class="ci-prod">${products.map(p => `<option value="${p.id}">${p.name}</option>`).join('')}</select></div>
+            <div class="field"><label>Qty</label><input type="number" class="ci-qty" step="0.01" value="1"></div>
+            <div class="field" style="min-width:150px"><label>Pap option</label>
+              <label class="combo-pap-label">
+                <input type="checkbox" class="ci-pap"> With / without pap</label></div>`;
+        }
         container.appendChild(div);
-        div.querySelectorAll('.ci-prod, .ci-qty').forEach(el => el.addEventListener('change', updatePreview));
+        bindRow(div);
       });
 
       document.getElementById('cb-save').addEventListener('click', async () => {
-        const items = [...document.querySelectorAll('.combo-item-row')].map(row => ({
-          product_id: parseInt(row.querySelector('.ci-prod').value, 10),
-          quantity: parseFloat(row.querySelector('.ci-qty').value) || 1
-        }));
+        const items = collectItems();
         const data = {
-          id: c.id, name: document.getElementById('cb-name').value.trim(),
+          id: c.id,
+          combo_kind: isCustom ? 'custom' : 'standard',
+          name: document.getElementById('cb-name').value.trim(),
           category: document.getElementById('cb-cat').value.trim() || 'COMBOS',
-          pricing_type: document.getElementById('cb-ptype').value,
-          discount_value: parseFloat(document.getElementById('cb-disc').value) || 0,
-          final_price: document.getElementById('cb-ptype').value === 'fixed' ? parseFloat(document.getElementById('cb-disc').value) || 0 : undefined,
+          pricing_type: isCustom ? 'fixed' : document.getElementById('cb-ptype').value,
+          discount_value: isCustom ? 0 : (parseFloat(document.getElementById('cb-disc').value) || 0),
+          normal_price: isCustom ? (parseFloat(document.getElementById('cb-normal')?.value) || 0) : undefined,
+          final_price: isCustom ? (parseFloat(document.getElementById('cb-final')?.value) || 0) : (document.getElementById('cb-ptype')?.value === 'fixed' ? parseFloat(document.getElementById('cb-disc')?.value) || 0 : undefined),
           start_date: document.getElementById('cb-start').value || null,
           end_date: document.getElementById('cb-end').value || null,
+          branch_id: document.getElementById('cb-branch')?.value ? parseInt(document.getElementById('cb-branch').value, 10) : null,
+          show_on_pos: document.getElementById('cb-pos')?.checked ? 1 : 0,
+          show_on_online: document.getElementById('cb-online')?.checked ? 1 : 0,
           description: document.getElementById('cb-desc').value.trim(),
-          items, status: c.status || 'draft'
+          image_path: this._comboHero || c.image_path || null,
+          gallery_paths: this._comboGallery || [],
+          items,
+          status: this.app.user?.role === 'owner' ? 'active' : (c.status || 'draft')
         };
         if (!data.name || !items.length) return Utils.toast('Name and at least one item required', 'error');
+        if (isCustom && !data.final_price) return Utils.toast('Enter your combo sale price', 'error');
         const r = await API.saveCombo(data, this.app.user);
         if (!r.success) return Utils.toast(r.error, 'error');
         Utils.hideModal();
@@ -230,12 +529,16 @@
 
     async renderPromoApprovals(el) {
       const isOwner = this.app.user?.role === 'owner';
-      const [pendingRes, historyRes] = await Promise.all([
+      const from = this._promoFrom || Utils.daysAgo(30);
+      const to = this._promoTo || Utils.today();
+      const [pendingRes, historyRes, salesRes] = await Promise.all([
         API.getPendingPromoRequests(),
-        API.getPromoRequestHistory({})
+        API.getPromoRequestHistory({}),
+        API.getPromoSalesLog({ from, to }).catch(() => ({ data: [] }))
       ]);
       const pending = pendingRes.data || [];
       const history = historyRes.data || [];
+      const salesLog = salesRes.data || [];
       const currency = this.admin.settings?.currency || 'R';
       el.innerHTML = `<h4>Pending Promo Approvals</h4>
       <p class="muted">Review manager proposals from Stock → Non-Selling Products.${isOwner ? '' : ' Only the admin (owner) can approve.'}</p>
@@ -262,7 +565,37 @@
           <td>${r.start_date} → ${r.end_date}</td>
           <td>${r.proposed_by_name || '—'}</td>
         </tr>`).join('') || '<tr><td colspan="5" class="muted">No promo history yet</td></tr>'}
+        </tbody></table></div>
+      <h4 style="margin-top:24px">Promo Sales Report</h4>
+      ${Utils.extendedDateFilterHTML('promo-sales-date', from, to)}
+      <div style="margin:8px 0;display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-ghost btn-sm" id="promo-export-csv">Export CSV</button>
+      </div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Product</th><th>Receipt</th><th>Qty</th><th>Unit</th><th>Total</th><th>Date</th></tr></thead>
+        <tbody>${salesLog.slice(0, 100).map((r) => `<tr>
+          <td>${Utils.escHtml(r.product_name || '—')}</td>
+          <td>${Utils.escHtml(r.receipt_number || '—')}</td>
+          <td>${r.quantity || 1}</td>
+          <td>${Utils.formatMoney(r.unit_price, currency)}</td>
+          <td>${Utils.formatMoney(r.line_total ?? r.total, currency)}</td>
+          <td>${Utils.formatDateTime(r.sale_date || r.created_at)}</td>
+        </tr>`).join('') || '<tr><td colspan="6" class="muted">No promo sales in period</td></tr>'}
         </tbody></table></div>`;
+      Utils.bindDateFilter('promo-sales-date', (f, t) => { this._promoFrom = f; this._promoTo = t; this.renderPromoApprovals(el); });
+      document.getElementById('promo-export-csv')?.addEventListener('click', () => {
+        const rows = [['Product', 'Receipt', 'Qty', 'Unit', 'Total', 'Date'],
+          ...salesLog.map((r) => [
+            r.product_name || '', r.receipt_number || '', r.quantity || 1,
+            r.unit_price ?? '', r.line_total ?? r.total ?? '', r.sale_date || r.created_at || ''
+          ])];
+        const csv = rows.map((row) => row.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+        a.download = `promo-sales-${from}-${to}.csv`;
+        a.click();
+        Utils.toast('Promo report exported', 'success');
+      });
       if (!isOwner) return;
       el.querySelectorAll('.promo-approve').forEach(b => b.addEventListener('click', async () => {
         const r = await API.approvePromoRequest(parseInt(b.dataset.id, 10), this.app.user);

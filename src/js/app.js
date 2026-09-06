@@ -7,7 +7,7 @@ const App = {
 
   navItems: [
     { id: 'dashboard', label: '📊 Dashboard', roles: ['owner', 'manager'] },
-    { id: 'admin', label: '⚙️ Admin Panel', roles: ['owner', 'manager', 'supervisor'] },
+    { id: 'admin', label: '⚙️ Admin Panel', roles: ['owner', 'manager', 'supervisor', 'delivery_manager'] },
     { id: 'pos', label: '💳 POS', roles: ['owner', 'manager', 'cashier', 'assistant_manager', 'supervisor'] },
     { id: 'staff', label: '👷 Staff Portal', roles: ['owner', 'manager', 'cashier', 'assistant_manager', 'supervisor'] },
     { id: 'products', label: '📦 Products', roles: ['owner', 'manager'] },
@@ -34,7 +34,7 @@ const App = {
   ],
 
   pages: {},
-  /** Page script bundles — Android loads these on first open (Windows index still preloads most). */
+  /** Page script bundles ? Android loads these on first open (Windows index still preloads most). */
   _pageBundles: {
     dashboard: ['js/pages/dashboard.js'],
     pos: ['js/pages/pos.js'],
@@ -62,6 +62,7 @@ const App = {
     audit: ['js/pages/audit.js'],
     settings: ['js/pages/settings.js'],
     admin: [
+      'js/promo-poster.js',
       'js/pages/staff.js',
       'js/pages/staff-owner-salary.js',
       'js/pages/admin.js',
@@ -121,6 +122,32 @@ const App = {
     return this.appMode() === 'pos';
   },
 
+  isDeliveryPortal() {
+    return this.appMode() === 'delivery';
+  },
+
+  isRecipePortal() {
+    return this.appMode() === 'recipe';
+  },
+
+  _isPortalEntry() {
+    try {
+      return new URLSearchParams(location.search).get('entry') === '1';
+    } catch (_) { return false; }
+  },
+
+  _clearPortalEntry() {
+    try {
+      const u = new URL(location.href);
+      u.searchParams.delete('entry');
+      history.replaceState(null, '', `${u.pathname}${u.search}${u.hash}`);
+    } catch (_) { /* ignore */ }
+  },
+
+  _shouldSkipSessionRestore() {
+    return this._isPortalEntry();
+  },
+
   _navStateKey: 'shoppos_nav_v1',
 
   _navFromHash() {
@@ -154,10 +181,13 @@ const App = {
 
   _saveNavState() {
     if (!this.user) return;
+    if (this.isPosKiosk() || this.isDeliveryPortal() || this.isRecipePortal()) return;
     try {
       const state = {
         page: this.currentPage,
         adminSection: (typeof AdminPage !== 'undefined' && AdminPage.section) ? AdminPage.section : null,
+        adminLoyaltyTab: (typeof AdminPage !== 'undefined' && AdminPage._loyaltyTab) ? AdminPage._loyaltyTab : null,
+        adminComboTab: (typeof AdminCombosPage !== 'undefined' && AdminCombosPage.tab) ? AdminCombosPage.tab : null,
         mode: this.appMode(),
         ts: Date.now()
       };
@@ -184,19 +214,40 @@ const App = {
 
   async tryRestoreSession() {
     let token = '';
-    try { token = localStorage.getItem('shoppos_rpc_session') || ''; } catch (_) { /* ignore */ }
+    try {
+      const store = this.appMode?.() === 'admin' ? sessionStorage : localStorage;
+      token = store.getItem('shoppos_rpc_session') || '';
+    } catch (_) { /* ignore */ }
     if (!token) return false;
     try {
       const res = await API.getSession();
       const user = res?.data || res?.user;
-      if (!res?.success || !user?.id) return false;
+      if (!res?.success || !user?.id) {
+        try { localStorage.removeItem('shoppos_rpc_session'); } catch (_) { /* ignore */ }
+        try { sessionStorage.removeItem('shoppos_rpc_session'); } catch (_) { /* ignore */ }
+        return false;
+      }
       this.user = user;
       this.user.is_active = 1;
       this.applyPosKioskChrome();
       this._restoredNav = this._loadNavState();
+      if (this.appMode() === 'delivery') {
+        await this.openDeliveryDepartment();
+        return true;
+      }
+      if (this.appMode() === 'recipe') {
+        await this.openRecipeProduction({ fromApp: true });
+        return true;
+      }
+      if (this.isPosKiosk()) {
+        await this.enterApp({ restored: true, skipPosWelcome: true });
+        return true;
+      }
       await this.enterApp({ restored: true });
       return true;
     } catch (_) {
+      try { localStorage.removeItem('shoppos_rpc_session'); } catch (_) { /* ignore */ }
+      try { sessionStorage.removeItem('shoppos_rpc_session'); } catch (_) { /* ignore */ }
       return false;
     }
   },
@@ -223,9 +274,11 @@ const App = {
     const mode = this.appMode();
     const pages = mode === 'pos'
       ? ['pos']
-      : mode === 'admin'
-        ? ['pos', 'dashboard']
-        : [];
+      : mode === 'delivery'
+        ? []
+        : mode === 'admin'
+          ? ['pos', 'dashboard']
+          : [];
     const run = () => {
       pages.forEach((p, i) => setTimeout(() => this.ensurePageScripts(p).catch(() => {}), i * 80));
     };
@@ -256,7 +309,7 @@ const App = {
 
       const mode = this.appMode();
 
-      // Dedicated apps: skip admin welcome/setup — go straight to that app's login
+      // Dedicated apps: skip admin welcome/setup ? go straight to that app's login
       if (mode === 'staff') {
         this.hideMobileLoading();
         this.ensureSettingsLoaded().catch(() => {});
@@ -272,6 +325,7 @@ const App = {
       if (mode === 'recipe') {
         this.hideMobileLoading();
         this.ensureSettingsLoaded().catch(() => {});
+        if (!this._shouldSkipSessionRestore() && await this.tryRestoreSession()) return;
         await this.openRecipeProduction();
         return;
       }
@@ -287,12 +341,31 @@ const App = {
         await this.openHr({ fromLogin: true });
         return;
       }
+      if (mode === 'delivery') {
+        this.applyLoginChrome();
+        this.hideMobileLoading();
+        if (!this._shouldSkipSessionRestore() && await this.tryRestoreSession()) return;
+        this.showScreen('login');
+        const loginSub = document.getElementById('login-sub');
+        if (loginSub) {
+          loginSub.textContent = 'Delivery Department — sign in with your assigned username and password.';
+        }
+        const loginName = document.getElementById('login-shop-name');
+        if (loginName && !this.settings?.shop_name) loginName.textContent = 'Delivery Department';
+        this.startLoginOperatingTimer?.();
+        this.prefetchLoginScripts();
+        this.ensureSettingsLoaded().then(() => {
+          this.applyTheme?.();
+          this.updateBranding?.();
+        }).catch(() => {});
+        return;
+      }
 
       // POS-only installer: show login immediately (no setup / welcome delay)
       if (mode === 'pos') {
         this.applyPosKioskChrome();
         this.hideMobileLoading();
-        if (await this.tryRestoreSession()) return;
+        if (!this._shouldSkipSessionRestore() && await this.tryRestoreSession()) return;
         await this.populateLoginBranchPicker();
         this.showScreen('login');
         this.startLoginOperatingTimer?.();
@@ -304,15 +377,18 @@ const App = {
         return;
       }
 
-      // Admin portal: sign in first, then Dashboard (not POS)
+      // Admin portal: restore session on refresh (stay signed in + same page)
       if (mode === 'admin') {
         this.applyLoginChrome();
         this.hideMobileLoading();
-        const adminSess = sessionStorage.getItem('admin_portal_session');
-        if (adminSess && await this.tryRestoreSession()) return;
+        if (!this._shouldSkipSessionRestore() && await this.tryRestoreSession()) return;
         this.showScreen('login');
+        const loginSub = document.getElementById('login-sub');
+        if (loginSub) {
+          loginSub.textContent = 'Sign in with your shop owner or manager username and password (the username you chose at setup — not "admin" unless you created that user).';
+        }
         this.startLoginOperatingTimer?.();
-        this.prefetchLoginScripts(['pos', 'dashboard']);
+        this.prefetchLoginScripts();
         this.ensureSettingsLoaded().then(() => {
           this.applyTheme?.();
           this.updateBranding?.();
@@ -320,10 +396,10 @@ const App = {
         return;
       }
 
-      // Show Sign in ASAP — load settings in background (don't block login UI)
+      // Show Sign in ASAP ? load settings in background (don't block login UI)
       this.hideMobileLoading();
       if (await this.tryRestoreSession()) return;
-      this.showWelcome({ shopReady: true, status: 'Loading shop…' });
+      this.showWelcome({ shopReady: true, status: 'Loading shop?' });
       this.prefetchLoginScripts();
 
       // Prefer adopting existing business before deciding setup vs login
@@ -349,7 +425,7 @@ const App = {
           Utils.toast('Could not load settings, but your shop was found. Tap Retry or restart the app.', 'error');
           this.showMobileError(
             (res.error || 'Settings load failed') +
-            ' — existing shop detected. Restart Shop POS (do not register a new shop).'
+            ' ? existing shop detected. Restart Shop POS (do not register a new shop).'
           );
           return;
         }
@@ -360,7 +436,7 @@ const App = {
       }
       this.settings = res.data;
       this.applyTheme();
-      // Device sync can wait — don't block Sign in
+      // Device sync can wait ? don't block Sign in
       this.syncDeviceSettings().catch(() => {});
 
       if (!Number(this.settings?.setup_complete)) {
@@ -445,7 +521,7 @@ const App = {
       ShopProfiles.save({ name, cloudUrl: url });
       ShopProfiles.setActive(ShopProfiles.list().slice(-1)[0]?.id);
       ShopProfiles.clearPanelSessions();
-      Utils.toast('Shop added — reloading…', 'success');
+      Utils.toast('Shop added ? reloading?', 'success');
       setTimeout(() => location.reload(), 400);
     });
   },
@@ -483,6 +559,11 @@ const App = {
   bindEvents() {
     this.bindShopProfileEvents();
     document.getElementById('login-form').addEventListener('submit', (e) => this.handleLogin(e));
+    document.querySelector('#login-form button[type="submit"]')?.addEventListener('click', (e) => {
+      if (e.defaultPrevented) return;
+      const form = document.getElementById('login-form');
+      if (form && !e.defaultPrevented) form.requestSubmit?.();
+    });
     document.getElementById('welcome-signin')?.addEventListener('click', () => {
       this.showScreen('login');
       this.startLoginOperatingTimer();
@@ -507,7 +588,10 @@ const App = {
     document.getElementById('setup-back-welcome')?.addEventListener('click', () => {
       this.showWelcome({ needsSetup: !Number(this.settings?.setup_complete) });
     });
-    document.getElementById('login-forgot')?.addEventListener('click', () => this.showRecoveryModal());
+    document.getElementById('login-forgot')?.addEventListener('click', () => {
+      if (this.appMode() === 'marketing') this.showMarketingRecoveryModal();
+      else this.showRecoveryModal();
+    });
     document.getElementById('login-register-agent')?.addEventListener('click', () => {
       this.openMarketingAgentLogin({ fromLogin: true, view: 'apply' });
     });
@@ -522,11 +606,11 @@ const App = {
     });
     document.getElementById('setup-form').addEventListener('submit', (e) => this.handleSetup(e));
     document.getElementById('setup-restore-db')?.addEventListener('click', async () => {
-      if (!confirm('Restore a .db backup onto this empty device? You will then sign in with that shop’s owner account.')) return;
+      if (!confirm('Restore a .db backup onto this empty device? You will then sign in with that shop?s owner account.')) return;
       const r = await API.backupRestoreSetup();
       if (r.cancelled) return;
       if (!r.success) return Utils.toast(r.error || 'Restore failed', 'error');
-      Utils.toast('Shop data restored. Loading…', 'success');
+      Utils.toast('Shop data restored. Loading?', 'success');
       setTimeout(() => location.reload(), 900);
     });
     document.getElementById('btn-logout').addEventListener('click', () => this.logout());
@@ -592,18 +676,21 @@ const App = {
   },
 
   showScreen(name) {
-    ['welcome', 'login', 'setup', 'app', 'staff-portal', 'recipe-production', 'marketing-agent', 'accounting', 'hr', 'display'].forEach(s =>
+    ['welcome', 'login', 'setup', 'pos-welcome', 'app', 'staff-portal', 'recipe-production', 'marketing-agent', 'accounting', 'hr', 'display', 'delivery-dept'].forEach(s =>
       document.getElementById(`screen-${s}`)?.classList.toggle('hidden', s !== name));
+    document.body.dataset.activeScreen = name;
     if (name === 'login' || name === 'welcome') this.applyLoginChrome();
     if (name === 'login' && this.isPosKiosk()) this.populateLoginBranchPicker().catch(() => {});
     const branchWrap = document.getElementById('login-branch-wrap');
+    const branchSel = document.getElementById('login-branch');
     if (branchWrap) branchWrap.classList.toggle('hidden', !this.isPosKiosk());
+    if (branchSel) branchSel.required = !!this.isPosKiosk();
   },
 
   /** Hide cross-app links on dedicated installers (Admin, POS, HR, etc.) */
   applyLoginChrome() {
     const mode = this.appMode();
-    const dedicated = new Set(['admin', 'pos', 'staff', 'marketing', 'recipe', 'accounting', 'hr']);
+    const dedicated = new Set(['pos', 'staff', 'marketing', 'recipe', 'accounting', 'hr', 'delivery']);
     const crossIds = [
       'login-register-agent',
       'login-open-accounting',
@@ -624,6 +711,10 @@ const App = {
       if (loginName && !this.settings?.shop_name) loginName.textContent = 'Shop POS Admin';
       const welcomeTitle = document.getElementById('welcome-title');
       if (welcomeTitle && !this.settings?.shop_name) welcomeTitle.textContent = 'Shop POS Admin';
+    }
+    if (mode === 'delivery') {
+      const loginName = document.getElementById('login-shop-name');
+      if (loginName) loginName.textContent = this.settings?.shop_name ? `${this.settings.shop_name} — Delivery` : 'Delivery Department';
     }
   },
 
@@ -652,6 +743,58 @@ const App = {
       };
     }
     return true;
+  },
+
+  async closeDeliveryDepartment() {
+    await this.doLogout();
+  },
+
+  async openDeliveryDepartment() {
+    this.stopLoginOperatingTimer();
+    document.body.classList.remove('sidebar-open');
+    if (!this.user) {
+      this.showScreen('login');
+      return;
+    }
+    const allowed = ['owner', 'manager', 'supervisor', 'delivery_manager'];
+    if (!allowed.includes(this.user.role)) {
+      Utils.toast('Delivery Department access only', 'error');
+      await this.doLogout();
+      return;
+    }
+    this.showScreen('delivery-dept');
+    const root = document.getElementById('delivery-dept-root');
+    const userEl = document.getElementById('delivery-dept-user');
+    const titleEl = document.getElementById('delivery-dept-title');
+    if (userEl) userEl.textContent = `${this.user.full_name || this.user.username} · ${this.user.role}`;
+    if (titleEl) titleEl.textContent = this.settings?.shop_name ? `${this.settings.shop_name} — Delivery` : 'Delivery Department';
+    document.getElementById('delivery-dept-logout')?.addEventListener('click', () => this.closeDeliveryDepartment(), { once: true });
+    if (!root) return;
+    root.innerHTML = '<p class="muted" style="padding:24px">Loading delivery department…</p>';
+    try {
+      if (!this.settings) await this.ensureSettingsLoaded().catch(() => { this.settings = this.settings || {}; });
+      await this.ensureFeatureScript('js/pages/admin-delivery.js');
+      if (!window.AdminDeliveryPage) throw new Error('Delivery module failed to load');
+      const admin = {
+        app: this,
+        settings: this.settings,
+        user: this.user,
+        renderSection: async (section, el) => {
+          if (section === 'delivery-dept' && window.AdminDeliveryPage) {
+            AdminDeliveryPage.standalone = true;
+            await AdminDeliveryPage.render(el, admin);
+          }
+        }
+      };
+      AdminDeliveryPage.standalone = true;
+      await AdminDeliveryPage.render(root, admin);
+    } catch (err) {
+      console.error('[DeliveryDepartment]', err);
+      root.innerHTML = `<div class="login-card" style="max-width:420px;margin:40px auto;text-align:center">
+        <p class="error-msg">${Utils.escHtml(err.message || 'Could not load Delivery Department')}</p>
+        <button type="button" class="btn btn-primary" id="dd-retry">Retry</button></div>`;
+      document.getElementById('dd-retry')?.addEventListener('click', () => this.openDeliveryDepartment());
+    }
   },
 
   async openStaffPortal() {
@@ -930,12 +1073,16 @@ const App = {
   },
 
   closeRecipeProduction() {
-    if (this._recipeReturnToApp && this.user) {
+    if (this._recipeReturnToApp && this.user && this.appMode() !== 'recipe') {
       this._recipeReturnToApp = false;
       this.showScreen('app');
       return;
     }
     this._recipeReturnToApp = false;
+    if (this.appMode() === 'recipe') {
+      this.openRecipeProduction();
+      return;
+    }
     this.showScreen('login');
     this.startLoginOperatingTimer();
   },
@@ -966,7 +1113,7 @@ const App = {
     document.title = appName;
 
     const useCloudLogo = !!(window.__SHOP_POS_CLOUD__ || /^https?:/i.test(String(location.protocol || '')));
-    const applyLogo = async (elId, fallback = '🏪') => {
+    const applyLogo = async (elId, fallback = '??') => {
       const el = document.getElementById(elId);
       if (!el) return;
       if (useCloudLogo) {
@@ -1100,45 +1247,145 @@ const App = {
     const pin = document.getElementById('login-pin').value || null;
     const errEl = document.getElementById('login-error');
     const btn = e.target?.querySelector?.('button[type="submit"]') || document.querySelector('#login-form button[type="submit"]');
-    if (btn) { btn.disabled = true; btn.dataset.prev = btn.textContent; btn.textContent = 'Signing in…'; }
+    if (btn) { btn.disabled = true; btn.dataset.prev = btn.textContent; btn.textContent = 'Signing in?'; }
 
     try {
-      const result = await API.login(username, password, pin);
-      const user = result?.user || result?.data?.user;
-      if (!result.success || !user) {
-        errEl.textContent = result.error || 'Invalid username or password';
+      if (!window.posAPI) {
+        await new Promise((resolve) => {
+          if (window.posAPI) return resolve();
+          window.addEventListener('posAPIReady', resolve, { once: true });
+          setTimeout(resolve, 8000);
+        });
+      }
+      if (!window.posAPI) {
+        errEl.textContent = 'Still connecting to the shop server. Wait a few seconds and try again.';
         errEl.classList.remove('hidden');
         return;
       }
+      const result = await API.login(username, password, pin);
+      const user = result?.user || result?.data?.user;
+      if (!result.success || !user) {
+        const errMsg = result.error || 'Invalid username or password';
+        if (this.isPosKiosk() && /branch|till/i.test(errMsg)) {
+          errEl.classList.add('hidden');
+          await this.showPosBranchErrorModal(errMsg);
+        } else {
+          errEl.textContent = errMsg;
+          errEl.classList.remove('hidden');
+          Utils.showModal('Sign in failed', `<p>${Utils.escHtml(errMsg)}</p>`, '<button type="button" class="btn btn-primary" id="login-fail-ok">OK</button>');
+          document.getElementById('login-fail-ok')?.addEventListener('click', Utils.hideModal);
+        }
+        return;
+      }
+
+      const mode = this.appMode();
+      if (mode === 'delivery') {
+        const allowed = ['owner', 'manager', 'supervisor', 'delivery_manager'];
+        if (!allowed.includes(user.role)) {
+          try { await API.logout(); } catch (_) { /* ignore */ }
+          errEl.textContent = 'This portal is for Delivery Department staff only. Ask admin to assign you the Delivery Department role.';
+          errEl.classList.remove('hidden');
+          this.user = null;
+          return;
+        }
+        try { sessionStorage.setItem('delivery_portal_session', '1'); } catch (_) { /* ignore */ }
+      }
+
       errEl.classList.add('hidden');
       this.user = user;
       this.user.is_active = 1;
-      if (this.appMode() === 'admin') {
+      if (mode === 'admin') {
         try { sessionStorage.setItem('admin_portal_session', '1'); } catch (_) { /* ignore */ }
       }
+      Utils.toast(`Signed in as ${user.full_name || user.username}`, 'success');
+
       if (this.isPosKiosk()) {
         const branchSel = document.getElementById('login-branch');
-        const branchId = branchSel?.value;
-        if (branchId) {
-          try {
-            await API.setActiveBranch(Number(branchId), this.user);
-          } catch (_) { /* optional */ }
+        const branchId = Number(branchSel?.value || 0);
+        if (branchId && ['owner', 'manager'].includes(user.role)) {
+          try { await API.setActiveBranch(branchId, this.user); } catch (_) { /* optional */ }
         }
+        const restricted = ['cashier', 'supervisor', 'assistant_manager'].includes(user.role);
+        const userBranch = user.branch_id != null ? Number(user.branch_id) : null;
+        if (restricted && branchId && userBranch && userBranch !== branchId) {
+          let branchName = 'this branch';
+          try {
+            const brRes = await API.getBranches();
+            const branches = brRes?.data || brRes || [];
+            branchName = branches.find((b) => Number(b.id) === branchId)?.name || branchName;
+          } catch (_) { /* ignore */ }
+          try { await API.logout(); } catch (_) { /* ignore */ }
+          this.user = null;
+          await this.showPosBranchErrorModal(
+            `Oops — you chose ${branchName}, but your account is not assigned to that branch. Select the branch you work at, or ask admin to update your user profile.`
+          );
+          return;
+        }
+        if (restricted && userBranch) {
+          const tillRes = await API.getActiveBranch().catch(() => null);
+          const tillId = Number(tillRes?.data?.id || tillRes?.id || 0);
+          if (tillId && userBranch !== tillId) {
+            try { await API.logout(); } catch (_) { /* ignore */ }
+            this.user = null;
+            await this.showPosBranchErrorModal(result.error || 'This till is connected to a different branch than your account. Ask admin to connect this computer to your branch.');
+            return;
+          }
+        }
+        let branchLabel = 'your branch';
+        try {
+          const brRes = await API.getBranches();
+          const branches = brRes?.data || brRes || [];
+          const pickId = branchId || userBranch;
+          branchLabel = branches.find((b) => Number(b.id) === Number(pickId))?.name || branchLabel;
+        } catch (_) { /* ignore */ }
+        await this.showPosWelcomeSuccessModal(user, branchLabel);
+        try { sessionStorage.setItem('pos_welcome_done', '1'); } catch (_) { /* ignore */ }
       }
-      // Keep existing settings — do NOT clear (was forcing a slow reload after every login)
+      // Keep existing settings ? do NOT clear (was forcing a slow reload after every login)
       try { window.DataCache?.invalidate?.(); } catch (_) { /* ignore */ }
       this.applyPosKioskChrome();
-      this.showScreen('app');
-      if (!this.isPosKiosk()) {
-        document.getElementById('sidebar-user-role').textContent =
-          (this.user.full_name || '') + ' · ' + (this.user.role || '');
-        this.renderNav();
+      this._clearPortalEntry();
+      try {
+        if (mode === 'delivery') {
+          await this.openDeliveryDepartment();
+        } else if (mode === 'recipe') {
+          await this.openRecipeProduction({ fromApp: true });
+        } else {
+          await this.enterApp({ skipPosWelcome: this.isPosKiosk() });
+        }
+      } catch (err) {
+        console.error('[login] enterApp failed:', err);
+        errEl.textContent = err?.message || 'Signed in but the dashboard could not load. Please refresh and try again.';
+        errEl.classList.remove('hidden');
+        this.showScreen('login');
       }
-      // Enter without blocking the Sign In button on non-critical work
-      await this.enterApp();
     } finally {
       if (btn) { btn.disabled = false; btn.textContent = btn.dataset.prev || 'Sign In'; }
     }
+  },
+
+  async showMarketingRecoveryModal() {
+    Utils.showModal('Referral Agent ? Password Recovery', `
+      <p class="muted">Enter your username or mobile number. A temporary password will be sent to your WhatsApp.</p>
+      <div class="field"><label>Username or mobile</label><input id="mkt-rec-id" autocomplete="username"></div>
+      <p id="mkt-rec-err" class="error-msg hidden"></p>`,
+      '<button class="btn btn-primary" id="mkt-rec-send">Send via WhatsApp</button><button class="btn btn-ghost" id="mkt-rec-cancel">Cancel</button>');
+    document.getElementById('mkt-rec-cancel')?.addEventListener('click', Utils.hideModal);
+    document.getElementById('mkt-rec-send')?.addEventListener('click', async () => {
+      const id = document.getElementById('mkt-rec-id')?.value?.trim();
+      const err = document.getElementById('mkt-rec-err');
+      err?.classList.add('hidden');
+      if (!id) { err.textContent = 'Enter username or mobile'; err.classList.remove('hidden'); return; }
+      try {
+        const r = await API.recoverMarketingPassword(id);
+        if (r?.whatsapp_url) window.open(r.whatsapp_url, '_blank');
+        Utils.hideModal();
+        Utils.toast(r?.message || 'Check WhatsApp for your temporary password', 'success');
+      } catch (e) {
+        err.textContent = e.message || 'Recovery failed';
+        err.classList.remove('hidden');
+      }
+    });
   },
 
   async showRecoveryModal() {
@@ -1147,7 +1394,7 @@ const App = {
     if (!hasLocalOrCloud) {
       Utils.showModal('Account Recovery', `
         <p>Private recovery has not been set up on this shop yet.</p>
-        <p class="muted">Sign in on the online shop (or after first successful login here), then go to <strong>Admin → Security → Account Recovery</strong> and create a Private Recovery Phrase. That phrase is stored in your Supabase shop database and works on the browser URL and on installers when you are online.</p>`,
+        <p class="muted">Sign in on the online shop (or after first successful login here), then go to <strong>Admin ? Security ? Account Recovery</strong> and create a Private Recovery Phrase. That phrase is stored in your Supabase shop database and works on the browser URL and on installers when you are online.</p>`,
         '<button class="btn btn-primary" id="recovery-close">OK</button>');
       document.getElementById('recovery-close')?.addEventListener('click', Utils.hideModal);
       return;
@@ -1238,7 +1485,7 @@ const App = {
     if (!hasRes.success || !hasRes.data) {
       Utils.showModal('Delete Business', `
         <p>Factory reset requires a Private Recovery Phrase.</p>
-        <p class="muted">${fromAdmin ? 'Set one in Admin → Security first, then try again.' : 'Recovery is not configured on this system.'}</p>`,
+        <p class="muted">${fromAdmin ? 'Set one in Admin ? Security first, then try again.' : 'Recovery is not configured on this system.'}</p>`,
         '<button class="btn btn-primary" id="fr-close">OK</button>');
       document.getElementById('fr-close')?.addEventListener('click', Utils.hideModal);
       return;
@@ -1274,7 +1521,7 @@ const App = {
       }
       Utils.hideModal();
       localStorage.removeItem('shoppos_device_settings');
-      Utils.toast('Business deleted. Register your new shop…', 'success');
+      Utils.toast('Business deleted. Register your new shop?', 'success');
       setTimeout(() => location.reload(), 800);
     });
   },
@@ -1302,7 +1549,7 @@ const App = {
     };
 
     btn.disabled = true;
-    btn.textContent = 'Setting up…';
+    btn.textContent = 'Setting up?';
 
     try {
       const result = await API.completeSetup(data);
@@ -1332,7 +1579,7 @@ const App = {
       ...(this._lazyScripts[page] || [])
     ];
     const failures = [];
-    // Load in order — Admin extenders (admin-audit, admin-pro, …) must run AFTER admin.js
+    // Load in order ? Admin extenders (admin-audit, admin-pro, ?) must run AFTER admin.js
     for (const src of scripts) {
       try {
         await Utils.loadScript(src);
@@ -1406,41 +1653,75 @@ const App = {
     this.updateBranding();
     this.applyTheme();
 
-    // Marketing agents work in the standalone Marketing Agent System
+    
+// Marketing agents work in the standalone Marketing Agent System
     if (this.user?.role === 'marketing_agent') {
       await this.openMarketingAgent({ fromLogin: true });
       return;
     }
 
-    this.showScreen('app');
+    if (this.appMode() === 'delivery') {
+      await this.openDeliveryDepartment();
+      return;
+    }
+
+    if (this.appMode() === 'recipe') {
+      await this.openRecipeProduction({ fromApp: true });
+      return;
+    }
+
     if (this.isPosKiosk()) {
+      if (!opts.skipPosWelcome) {
+        let welcomeDone = false;
+        try { welcomeDone = sessionStorage.getItem('pos_welcome_done') === '1'; } catch (_) { /* ignore */ }
+        if (!welcomeDone) {
+          await this.showPosWelcome();
+          return;
+        }
+      }
+      this.showScreen('app');
       SoundService?.stopAlert();
       this.stopNotificationRefresh();
       this.stopNotificationSoundMonitor();
       this.stopScheduledDocMonitor();
       document.getElementById('notif-badge')?.classList.add('hidden');
       try { window.ShopPosConnection?.set?.('hidden'); } catch (_) { /* ignore */ }
+      await this.navigate('pos');
+      const bgPos = async () => {
+        try { await API.logOperatingEvent('open', this.user); } catch { /* ignore */ }
+        this.startAutoLogoutTimer();
+        this.startSyncMonitor();
+        this.startSessionMonitor();
+        try { window.PanelExitGuard?.bind?.(() => this.doLogout()); } catch (_) { /* ignore */ }
+      };
+      if (isMobile) setTimeout(bgPos, 0);
+      else requestIdleCallback?.(() => bgPos(), { timeout: 1500 }) || setTimeout(bgPos, 100);
+      return;
     }
+
+    this.showScreen('app');
     if (!this.isPosKiosk()) {
       this.renderNav();
       document.getElementById('sidebar-user-role').textContent =
-        (this.user?.full_name || '') + ' · ' + (this.user?.role || '');
+        (this.user?.full_name || '') + ' ? ' + (this.user?.role || '');
       this.refreshBranchSwitcher().catch(() => {});
     }
 
     const savedNav = opts.restored ? (this._restoredNav || this._loadNavState()) : null;
     const preferredCustom = this.settings?.customization?.default_home_page;
-    const preferred = this.isPosKiosk()
-      ? 'pos'
-      : (this.appMode() === 'admin'
+    const preferred = this.appMode() === 'admin'
+      ? 'dashboard'
+      : (preferredCustom === 'recipe'
         ? 'dashboard'
-        : (preferredCustom === 'recipe'
-          ? 'dashboard'
-          : (preferredCustom
-            || (['cashier', 'supervisor', 'assistant_manager'].includes(this.user.role) ? 'pos' : 'dashboard'))));
+        : (preferredCustom
+          || (['cashier', 'supervisor', 'assistant_manager'].includes(this.user.role) ? 'pos' : 'dashboard')));
     let startPage = preferred;
     if (this.appMode() === 'admin') {
-      startPage = 'dashboard';
+      if (savedNav?.page && Utils.canAccess(this.user, savedNav.page)) {
+        startPage = savedNav.page;
+      } else {
+        startPage = 'dashboard';
+      }
     } else if (savedNav?.page && Utils.canAccess(this.user, savedNav.page)) {
       startPage = savedNav.page;
     } else {
@@ -1450,15 +1731,17 @@ const App = {
     }
     if (startPage === 'admin' && savedNav?.adminSection && typeof AdminPage !== 'undefined') {
       AdminPage.section = savedNav.adminSection;
+      if (savedNav.adminLoyaltyTab) AdminPage._loyaltyTab = savedNav.adminLoyaltyTab;
+      if (savedNav.adminComboTab && typeof AdminCombosPage !== 'undefined') AdminCombosPage.tab = savedNav.adminComboTab;
     }
 
-    // Navigate ASAP — do not wait for timers / sync / notifications
+    // Navigate ASAP ? do not wait for timers / sync / notifications
     await this.navigate(startPage);
     if (preferredCustom === 'recipe' && Utils.canAccess(this.user, 'recipe')) {
       this.openRecipeProduction({ fromApp: true }).catch(() => {});
     }
 
-    // Background startup (never block UI) — lighter on POS kiosk
+    // Background startup (never block UI) ? lighter on POS kiosk
     const bg = async () => {
       if (!this.isPosKiosk()) {
         try {
@@ -1466,7 +1749,7 @@ const App = {
           if (br.success && br.data) {
             this.activeBranch = br.data;
             document.getElementById('sidebar-user-role').textContent =
-              this.user.full_name + ' · ' + this.user.role + ' · ' + this.activeBranch.name;
+              this.user.full_name + ' ? ' + this.user.role + ' ? ' + this.activeBranch.name;
           }
         } catch { /* ignore */ }
       }
@@ -1483,6 +1766,7 @@ const App = {
       this.startAutoLogoutTimer();
       this.startSyncMonitor();
       this.startSessionMonitor();
+      try { window.PanelExitGuard?.bind?.(() => this.doLogout()); } catch (_) { /* ignore */ }
     };
     if (isMobile) setTimeout(bg, 0);
     else requestIdleCallback?.(() => bg(), { timeout: 1500 }) || setTimeout(bg, 100);
@@ -1562,7 +1846,7 @@ const App = {
       return this.openAccounting({ fromApp: true, skipLogin: true });
     }
     const navT0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-    // Immediate UI feedback — never block navigation on session/network
+    // Immediate UI feedback ? never block navigation on session/network
     this.closeSidebar();
     if (!this.user) return;
     if (!Utils.canAccess(this.user, page)) return;
@@ -1589,7 +1873,7 @@ const App = {
     if (!content) return;
     content.dataset.page = page;
 
-    // Keep page hosts in memory — show previous DOM instantly on revisit
+    // Keep page hosts in memory ? show previous DOM instantly on revisit
     let hosts = content.querySelector(':scope > .page-hosts');
     if (!hosts) {
       content.innerHTML = '';
@@ -1613,7 +1897,7 @@ const App = {
     host.hidden = false;
     host.classList.add('page-host-active');
 
-    // Session check always in background — never await on click
+    // Session check always in background ? never await on click
     this.ensureSessionActive().then((ok) => {
       if (ok) this._lastSessionOkAt = Date.now();
     }).catch(() => {});
@@ -1651,7 +1935,7 @@ const App = {
       return;
     }
 
-    // First visit: skeleton shell immediately, then load (POS paints its own shell — skip skeleton)
+    // First visit: skeleton shell immediately, then load (POS paints its own shell ? skip skeleton)
     if (page !== 'pos') host.innerHTML = Utils.pageSkeleton();
     markVisible(false);
     content.dataset.loading = '1';
@@ -1714,6 +1998,7 @@ const App = {
       }
       if (page === 'pos') {
         tasks.push(() => API.getProducts({ for_pos: true }));
+        tasks.push(() => API.getActiveCombos({ for_pos: true }));
         this.ensurePageScripts('products').catch(() => {});
       }
       if (page === 'stock') {
@@ -1746,10 +2031,101 @@ const App = {
     });
   },
 
+
+  async showPosBranchErrorModal(message) {
+    return new Promise((resolve) => {
+      Utils.showModal('Wrong branch', `
+        <p style="margin:0 0 12px;font-size:16px">Oops — you've chosen the wrong branch, or you are not assigned here.</p>
+        <p class="muted" style="margin:0">${Utils.escHtml(message || '')}</p>`,
+      '<button class="btn btn-primary" id="pos-branch-err-ok">OK</button>');
+      document.getElementById('pos-branch-err-ok')?.addEventListener('click', () => {
+        Utils.hideModal();
+        resolve();
+      });
+    });
+  },
+
+  async showPosWelcomeSuccessModal(user, branchName) {
+    const shop = this.settings?.shop_name || 'Shop POS';
+    return new Promise((resolve) => {
+      Utils.showModal('Welcome to POS', `
+        <div style="text-align:center;padding:8px 0">
+          <div style="font-size:48px;margin-bottom:12px">✓</div>
+          <p style="margin:0 0 8px;font-size:17px;font-weight:600">You have successfully entered the POS</p>
+          <p style="margin:0 0 6px">Welcome, <strong>${Utils.escHtml(user?.full_name || user?.username || 'Cashier')}</strong></p>
+          <p class="muted" style="margin:0">${Utils.escHtml(shop)} · ${Utils.escHtml(branchName || 'Branch')}</p>
+        </div>`,
+      '<button class="btn btn-primary btn-lg" id="pos-welcome-ok" style="min-width:160px">Open POS</button>');
+      document.getElementById('pos-welcome-ok')?.addEventListener('click', () => {
+        Utils.hideModal();
+        resolve();
+      });
+    });
+  },
+
+  async showPosWelcome() {
+    this.showScreen('pos-welcome');
+    const nameEl = document.getElementById('pos-welcome-cashier');
+    const branchSel = document.getElementById('pos-welcome-branch');
+    const tillNote = document.getElementById('pos-welcome-till-note');
+    const errEl = document.getElementById('pos-welcome-error');
+    if (nameEl) nameEl.textContent = this.user?.full_name || this.user?.username || 'Cashier';
+    try {
+      const [brRes, tillRes] = await Promise.all([API.getBranches(), API.getViewBranch?.().catch(() => API.getActiveBranch())]);
+      const branches = brRes?.data || brRes || [];
+      const till = tillRes?.data?.till_branch || tillRes?.data || tillRes || {};
+      const tillId = Number(till?.id || till?.till_branch_id || 1);
+      if (branchSel) {
+        branchSel.innerHTML = branches.map((b) => `<option value="${b.id}">${Utils.escHtml(b.name)}</option>`).join('');
+        branchSel.value = String(tillId);
+        const canChange = ['owner', 'manager'].includes(this.user?.role);
+        branchSel.disabled = !canChange;
+        document.getElementById('pos-welcome-branch-wrap')?.classList.toggle('hidden', branches.length <= 1 && !canChange);
+      }
+      if (tillNote) tillNote.textContent = `This computer is connected to: ${till?.name || 'Main branch'}`;
+    } catch (_) { /* offline */ }
+    document.getElementById('pos-welcome-logout')?.addEventListener('click', () => this.doLogout(), { once: true });
+    document.getElementById('pos-welcome-continue')?.addEventListener('click', async () => {
+      errEl?.classList.add('hidden');
+      const branchId = Number(branchSel?.value || 0);
+      if (branchId && ['owner', 'manager'].includes(this.user?.role)) {
+        try { await API.setActiveBranch(branchId, this.user); } catch (_) { /* optional */ }
+      }
+      const tillRes = await API.getActiveBranch().catch(() => null);
+      const tillId = Number(tillRes?.data?.id || tillRes?.id || branchId || 1);
+      const userBranch = this.user?.branch_id != null ? Number(this.user.branch_id) : null;
+      const restricted = ['cashier', 'supervisor', 'assistant_manager'].includes(this.user?.role);
+      let branchLabel = tillRes?.data?.name || 'Branch';
+      if (restricted && branchId && userBranch && userBranch !== branchId) {
+        try {
+          const brRes = await API.getBranches();
+          const branches = brRes?.data || brRes || [];
+          branchLabel = branches.find((b) => Number(b.id) === branchId)?.name || branchLabel;
+        } catch (_) { /* ignore */ }
+        await this.showPosBranchErrorModal(
+          `Oops — you chose ${branchLabel}, but your account is not assigned to that branch.`
+        );
+        return;
+      }
+      if (restricted && userBranch && userBranch !== tillId) {
+        await this.showPosBranchErrorModal('This till is connected to a different branch than your account.');
+        return;
+      }
+      if (userBranch && userBranch !== tillId && ['owner', 'manager'].includes(this.user?.role)) {
+        const tillName = tillRes?.data?.name || 'this branch';
+        const ok = confirm(`Your account belongs to a different branch than this till (${tillName}). Continue anyway?`);
+        if (!ok) return;
+      }
+      try { sessionStorage.setItem('pos_welcome_done', '1'); } catch (_) { /* ignore */ }
+      await this.showPosWelcomeSuccessModal(this.user, branchLabel);
+      await this.enterApp({ skipPosWelcome: true, restored: false });
+    }, { once: true });
+  },
   async populateLoginBranchPicker() {
     const wrap = document.getElementById('login-branch-wrap');
     const sel = document.getElementById('login-branch');
     if (!wrap || !sel) return;
+    sel.required = true;
     wrap.classList.remove('hidden');
     try {
       const res = await API.getBranches();
@@ -1782,11 +2158,14 @@ const App = {
     this.stopScheduledDocMonitor();
     SoundService?.stopAlert();
     Utils.forceHideModal();
+    try { window.PanelExitGuard?.unbind?.(); } catch (_) { /* ignore */ }
+    try { sessionStorage.removeItem('pos_welcome_done'); } catch (_) { /* ignore */ }
     this.clearPageHosts();
     this._clearNavState();
     this.user = null;
     try {
       if (this.appMode() === 'admin') sessionStorage.removeItem('admin_portal_session');
+      sessionStorage.removeItem('shoppos_rpc_session');
     } catch (_) { /* ignore */ }
     document.getElementById('login-username').value = '';
     document.getElementById('login-password').value = '';
@@ -1860,6 +2239,10 @@ const App = {
     this.stopLoginOperatingTimer();
     const el = document.getElementById('login-operating-timer');
     if (!el) return;
+    if (this.appMode() === 'admin') {
+      el.classList.add('hidden');
+      return;
+    }
     el.classList.remove('hidden');
     this._loginOperatingTick = () => this.updateLoginOperatingTimer();
     this._loginOperatingTick();
@@ -1878,7 +2261,7 @@ const App = {
     const oh = this.getTodayOperatingHours();
     const hasSchedule = oh.open_time && oh.close_time;
     if (!oh.enabled && !hasSchedule) {
-      label.textContent = 'Operating hours not configured — set in Admin → Operating Hours';
+      label.textContent = 'Operating hours not configured ? set in Admin ? Operating Hours';
       el.classList.remove('hidden');
       return;
     }
@@ -1893,11 +2276,11 @@ const App = {
     const openAt = this.parseTimeToday(openTime);
     const closeAt = this.parseTimeToday(closeTime);
     if (now < openAt) {
-      label.textContent = `Opens at ${openTime} — ${this.formatCountdown(openAt - now)} until open`;
+      label.textContent = `Opens at ${openTime} ? ${this.formatCountdown(openAt - now)} until open`;
     } else if (now >= closeAt) {
-      label.textContent = `Closed — was open until ${closeTime}`;
+      label.textContent = `Closed ? was open until ${closeTime}`;
     } else {
-      label.textContent = `Open until ${closeTime} — ${this.formatCountdown(closeAt - now)} remaining`;
+      label.textContent = `Open until ${closeTime} ? ${this.formatCountdown(closeAt - now)} remaining`;
     }
   },
 
@@ -1911,7 +2294,7 @@ const App = {
     this._autoLogoutEvents.forEach(ev => document.addEventListener(ev, this._autoLogoutReset, { passive: true }));
     this._autoLogoutInterval = setInterval(() => {
       if (Date.now() - this._lastActivity >= mins * 60000) {
-        Utils.toast('Session timed out — please sign in again', 'error');
+        Utils.toast('Session timed out ? please sign in again', 'error');
         this.doLogout();
       }
     }, 30000);
@@ -1967,7 +2350,7 @@ const App = {
     }
 
     banner.className = 'operating-banner' + (diff / 60000 <= warnMins ? ' operating-banner--warn' : '');
-    label.textContent = `Closes at ${oh.close_time} — ${this.formatCountdown(diff)} remaining`;
+    label.textContent = `Closes at ${oh.close_time} ? ${this.formatCountdown(diff)} remaining`;
   },
 
   _portalFeatureEnabled(feature) {
@@ -2029,7 +2412,7 @@ const App = {
   startNotificationSoundMonitor() {
     this.stopNotificationSoundMonitor();
     if (!this.user || !['owner', 'manager'].includes(this.user.role)) return;
-    // Sound is driven by pollNotifications — no separate interval
+    // Sound is driven by pollNotifications ? no separate interval
   },
 
   stopNotificationSoundMonitor() {
@@ -2067,7 +2450,7 @@ const App = {
     this.stopSessionMonitor();
     if (!this.user?.id) return;
     const isMobile = !!(window.__SHOP_POS_MOBILE__ || Utils.isNative?.());
-    // Android: less frequent — avoid freezing taps every 15s
+    // Android: less frequent ? avoid freezing taps every 15s
     const every = isMobile ? 60000 : 15000;
     if (!isMobile) this.ensureSessionActive();
     else setTimeout(() => this.ensureSessionActive().catch(() => {}), 8000);
@@ -2081,7 +2464,7 @@ const App = {
       // Only freeze when the server explicitly says this account is deactivated.
       // Missing/expired session tokens, Railway restarts, and network errors must never log the admin out.
       if (v.success && v.data?.frozen === true && v.data?.active === false) {
-        Utils.toast(v.data?.error || 'Account deactivated — system access is frozen.', 'error');
+        Utils.toast(v.data?.error || 'Account deactivated ? system access is frozen.', 'error');
         document.body.classList.add('system-frozen');
         await this.doLogout();
         return false;
@@ -2187,7 +2570,7 @@ const App = {
     }
     const page = String(n.action_page || '').toLowerCase();
     const t = String(n.type || '').toLowerCase();
-    // Cashier: POS + staff-portal checklist only — never admin/ops/bookkeeping panels
+    // Cashier: POS + staff-portal checklist only ? never admin/ops/bookkeeping panels
     if (role === 'cashier') {
       if (page.startsWith('admin:') || page.startsWith('operations:') || page.startsWith('bookkeeping')
         || page.startsWith('stock:') || page.includes('inventory')) return false;
@@ -2382,7 +2765,7 @@ const App = {
   startSyncMonitor() {
     this.stopSyncMonitor();
     const isMobile = !!(window.__SHOP_POS_MOBILE__ || Utils.isNative?.());
-    // Never block UI — sync after first paint; longer interval on Android
+    // Never block UI ? sync after first paint; longer interval on Android
     const kick = () => { this.runBackgroundSync().catch(() => {}); };
     if (isMobile) {
       setTimeout(kick, 2500);
@@ -2420,7 +2803,7 @@ const App = {
     if (!featureHits.length) return;
     dropdown.innerHTML = '<div class="search-group"><h4>Features</h4>' +
       featureHits.map(f => `<div class="search-item" data-action="page" data-page="${f.id}">${f.label}</div>`).join('') +
-      '<p class="muted" style="padding:8px;font-size:12px">Searching…</p></div>';
+      '<p class="muted" style="padding:8px;font-size:12px">Searching?</p></div>';
     dropdown.classList.remove('hidden');
     dropdown.querySelectorAll('[data-action="page"]').forEach(el => {
       el.addEventListener('click', () => {
@@ -2460,13 +2843,13 @@ const App = {
       html += featureHits.map(f =>
         `<div class="search-item" data-action="page" data-page="${f.id}">${f.label}</div>`).join('');
       html += adminHits.map(s =>
-        `<div class="search-item" data-action="setting" data-section="${s.id}">Admin · ${s.label}</div>`).join('');
+        `<div class="search-item" data-action="setting" data-section="${s.id}">Admin ? ${s.label}</div>`).join('');
       html += '</div>';
     }
 
     if (data.products?.length && (Utils.canAccess(user, 'products') || Utils.canAccess(user, 'pos'))) {
       html += '<div class="search-group"><h4>Products</h4>' +
-        data.products.map(p => `<div class="search-item" data-action="product" data-id="${p.id}">${p.name} — ${Utils.formatMoney(p.selling_price, currency)}</div>`).join('') + '</div>';
+        data.products.map(p => `<div class="search-item" data-action="product" data-id="${p.id}">${p.name} ? ${Utils.formatMoney(p.selling_price, currency)}</div>`).join('') + '</div>';
     }
     if (data.categories?.length && Utils.canAccess(user, 'categories')) {
       html += '<div class="search-group"><h4>Categories</h4>' +
@@ -2474,47 +2857,47 @@ const App = {
     }
     if (data.employees?.length && (Utils.canAccess(user, 'staff') || canAdmin)) {
       html += '<div class="search-group"><h4>Employees</h4>' +
-        data.employees.map(e => `<div class="search-item" data-action="employee">${e.full_name}${e.employee_code ? ` (${e.employee_code})` : ''}${e.position ? ` — ${e.position}` : ''}</div>`).join('') + '</div>';
+        data.employees.map(e => `<div class="search-item" data-action="employee">${e.full_name}${e.employee_code ? ` (${e.employee_code})` : ''}${e.position ? ` ? ${e.position}` : ''}</div>`).join('') + '</div>';
     }
     if (data.combos?.length && (Utils.canAccess(user, 'pos') || (canAdmin && Utils.canAccessAdminSection(user, 'combos')))) {
       html += '<div class="search-group"><h4>Combos</h4>' +
-        data.combos.map(c => `<div class="search-item" data-action="combo">${c.name} — ${Utils.formatMoney(c.selling_price, currency)}</div>`).join('') + '</div>';
+        data.combos.map(c => `<div class="search-item" data-action="combo">${c.name} ? ${Utils.formatMoney(c.selling_price, currency)}</div>`).join('') + '</div>';
     }
     if (data.giftcards?.length && Utils.canAccess(user, 'giftcards')) {
       html += '<div class="search-group"><h4>Gift Cards</h4>' +
-        data.giftcards.map(g => `<div class="search-item" data-action="page" data-page="giftcards"><code>${g.code}</code> — ${g.customer_name || '—'} · ${Utils.formatMoney(g.balance, currency)}</div>`).join('') + '</div>';
+        data.giftcards.map(g => `<div class="search-item" data-action="page" data-page="giftcards"><code>${g.code}</code> ? ${g.customer_name || '?'} ? ${Utils.formatMoney(g.balance, currency)}</div>`).join('') + '</div>';
     }
     if (data.laybyes?.length && Utils.canAccess(user, 'layby')) {
       html += '<div class="search-group"><h4>Lay-Bye</h4>' +
-        data.laybyes.map(l => `<div class="search-item" data-action="page" data-page="layby">${l.layby_number || 'Layby'} — ${l.customer_name || '—'} · ${l.status}</div>`).join('') + '</div>';
+        data.laybyes.map(l => `<div class="search-item" data-action="page" data-page="layby">${l.layby_number || 'Layby'} ? ${l.customer_name || '?'} ? ${l.status}</div>`).join('') + '</div>';
     }
     if (data.quotes?.length && Utils.canAccess(user, 'quotes')) {
       html += '<div class="search-group"><h4>Quotations</h4>' +
-        data.quotes.map(qt => `<div class="search-item" data-action="page" data-page="quotes">${qt.quote_number} — ${Utils.formatMoney(qt.total, currency)}</div>`).join('') + '</div>';
+        data.quotes.map(qt => `<div class="search-item" data-action="page" data-page="quotes">${qt.quote_number} ? ${Utils.formatMoney(qt.total, currency)}</div>`).join('') + '</div>';
     }
     if (data.expenses?.length && Utils.canAccess(user, 'expenses')) {
       html += '<div class="search-group"><h4>Expenses</h4>' +
-        data.expenses.map(e => `<div class="search-item" data-action="page" data-page="expenses">${e.description} — ${Utils.formatMoney(e.amount, currency)}</div>`).join('') + '</div>';
+        data.expenses.map(e => `<div class="search-item" data-action="page" data-page="expenses">${e.description} ? ${Utils.formatMoney(e.amount, currency)}</div>`).join('') + '</div>';
     }
     if (data.donations?.length && Utils.canAccess(user, 'bookkeeping')) {
       html += '<div class="search-group"><h4>Donations</h4>' +
-        data.donations.map(d => `<div class="search-item" data-action="donation">${d.donation_number || 'Donation'} — ${d.recipient_org || 'Unknown'}</div>`).join('') + '</div>';
+        data.donations.map(d => `<div class="search-item" data-action="donation">${d.donation_number || 'Donation'} ? ${d.recipient_org || 'Unknown'}</div>`).join('') + '</div>';
     }
     if (data.customers?.length && Utils.canAccess(user, 'customers')) {
       html += '<div class="search-group"><h4>Customers</h4>' +
-        data.customers.map(c => `<div class="search-item" data-action="customer" data-id="${c.id}">${c.name} — ${c.phone || ''}</div>`).join('') + '</div>';
+        data.customers.map(c => `<div class="search-item" data-action="customer" data-id="${c.id}">${c.name} ? ${c.phone || ''}</div>`).join('') + '</div>';
     }
     if (data.suppliers?.length && Utils.canAccess(user, 'suppliers')) {
       html += '<div class="search-group"><h4>Suppliers</h4>' +
-        data.suppliers.map(s => `<div class="search-item" data-action="supplier">${s.name}${s.phone ? ` — ${s.phone}` : ''}</div>`).join('') + '</div>';
+        data.suppliers.map(s => `<div class="search-item" data-action="supplier">${s.name}${s.phone ? ` ? ${s.phone}` : ''}</div>`).join('') + '</div>';
     }
     if (data.receipts?.length && Utils.canAccess(user, 'pos')) {
       html += '<div class="search-group"><h4>Receipts / Orders</h4>' +
-        data.receipts.map(r => `<div class="search-item" data-action="receipt" data-id="${r.receipt_number}">${r.order_number ? `Order ${r.order_number} · ` : ''}${r.receipt_number} — ${Utils.formatMoney(r.total, currency)}</div>`).join('') + '</div>';
+        data.receipts.map(r => `<div class="search-item" data-action="receipt" data-id="${r.receipt_number}">${r.order_number ? `Order ${r.order_number} ? ` : ''}${r.receipt_number} ? ${Utils.formatMoney(r.total, currency)}</div>`).join('') + '</div>';
     }
     if (data.users?.length && Utils.canAccess(user, 'users')) {
       html += '<div class="search-group"><h4>Users</h4>' +
-        data.users.map(u => `<div class="search-item" data-action="page" data-page="users">${u.full_name || u.username} · ${u.role}</div>`).join('') + '</div>';
+        data.users.map(u => `<div class="search-item" data-action="page" data-page="users">${u.full_name || u.username} ? ${u.role}</div>`).join('') + '</div>';
     }
     if (data.settings?.length && canAdmin) {
       html += '<div class="search-group"><h4>Settings</h4>' +
@@ -2576,8 +2959,8 @@ const App = {
           Utils.showModal(`Receipt ${saleRes.data.receipt_number}`, `
             <p><strong>Total:</strong> ${Utils.formatMoney(saleRes.data.total, currency)}</p>
             <p><strong>Date:</strong> ${Utils.formatDateTime(saleRes.data.created_at)}</p>
-            <p><strong>Cashier:</strong> ${saleRes.data.cashier_name || '—'}</p>
-            <p><strong>Payments:</strong> ${(saleRes.data.payments||[]).map(p => `${p.payment_type} ${Utils.formatMoney(p.amount, currency)}`).join(', ') || '—'}</p>`,
+            <p><strong>Cashier:</strong> ${saleRes.data.cashier_name || '?'}</p>
+            <p><strong>Payments:</strong> ${(saleRes.data.payments||[]).map(p => `${p.payment_type} ${Utils.formatMoney(p.amount, currency)}`).join(', ') || '?'}</p>`,
             '<button class="btn btn-primary" id="search-receipt-close">Close</button>');
           document.getElementById('search-receipt-close')?.addEventListener('click', Utils.hideModal);
         } else Utils.toast('Receipt not found', 'error');
@@ -2635,7 +3018,7 @@ const App = {
       } catch { /* offline */ }
     }
 
-    // Online ordering removed — do not surface hub online-order alerts.
+    // Online ordering removed ? do not surface hub online-order alerts.
 
     const data = { alerts, pending, reminders };
     this._notifCache = { at: now, data };
@@ -2669,7 +3052,7 @@ const App = {
     if (this.isPosKiosk()) return;
     if (filter) this._notifFilter = filter;
     if (!this._notifFilter) this._notifFilter = 'today';
-    Utils.showModal('Notifications', '<p class="muted">Loading…</p>', '<button class="btn btn-ghost" id="notif-close">Close</button>');
+    Utils.showModal('Notifications', '<p class="muted">Loading?</p>', '<button class="btn btn-ghost" id="notif-close">Close</button>');
     document.getElementById('notif-close')?.addEventListener('click', () => Utils.hideModal());
     const { alerts, pending, reminders } = await this.fetchNotificationBuckets(true);
     const f = this._notifFilter;
@@ -2703,7 +3086,7 @@ const App = {
 
     if (reminders.length) {
       html += `<h4 style="margin:16px 0 8px">Business reminders (${reminders.length})</h4>
-        <p class="muted" style="font-size:12px;margin-bottom:8px">Informational only — click to go to the relevant screen.</p>`;
+        <p class="muted" style="font-size:12px;margin-bottom:8px">Informational only ? click to go to the relevant screen.</p>`;
       if (filteredReminders.length) {
         html += filteredReminders.map(n => this._renderNotifRow(n)).join('');
       } else {
@@ -2728,7 +3111,7 @@ const App = {
         const fresh = await API.getSettingsParsed();
         if (fresh.success) this.settings = fresh.data;
         await SoundService.testAlert(this.settings);
-        Utils.toast('Playing test sound for 8 seconds…', 'success');
+        Utils.toast('Playing test sound for 8 seconds?', 'success');
       } catch (err) {
         Utils.toast(err.message || 'Could not play sound', 'error');
       }

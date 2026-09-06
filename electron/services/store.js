@@ -692,7 +692,7 @@ async function factoryResetBusiness(recoverySecret, confirmText) {
   return { success: true };
 }
 
-const VALID_USER_ROLES = ['owner', 'manager', 'assistant_manager', 'supervisor', 'marketing_agent', 'cashier'];
+const VALID_USER_ROLES = ['owner', 'manager', 'assistant_manager', 'supervisor', 'marketing_agent', 'cashier', 'delivery_manager'];
 
 function createUser(data, actorId, actorName) {
   const actor = requireActor({ id: actorId }, ['owner', 'manager']);
@@ -715,6 +715,9 @@ function createUser(data, actorId, actorName) {
   }
   if (data.role === 'marketing_agent') {
     // Shared across branches — branch_id optional
+    branchId = branchId || null;
+  }
+  if (data.role === 'delivery_manager') {
     branchId = branchId || null;
   }
   const hash = bcrypt.hashSync(data.password, 10);
@@ -765,6 +768,9 @@ function updateUser(id, data, actorId, actorName) {
   }
   if (['manager', 'supervisor', 'cashier', 'assistant_manager'].includes(nextRole) && !nextBranch) {
     throw new Error('Select a branch for this user');
+  }
+  if (nextRole === 'delivery_manager' && actor.role === 'manager' && nextBranch && Number(actor.branch_id) !== Number(nextBranch)) {
+    throw new Error('Managers can only assign delivery staff for their own branch');
   }
   if (data.clear_pin) {
     fields.push('pin = ?'); values.push(null);
@@ -1001,6 +1007,25 @@ function saveJsonSetting(key, value, actorId, actorName) {
 
 function getSettings() {
   return getDb().prepare('SELECT * FROM shop_settings WHERE id = 1').get();
+}
+
+function saveMenuHighlightSettings(data, actorId, actorName) {
+  const s = getSettingsParsed();
+  const customization = { ...(s.customization || {}), menu_highlight_settings: data };
+  saveJsonSetting('customization', customization, actorId, actorName);
+  return parseSettingsFromStore();
+}
+
+function getMenuHighlightSettings() {
+  return parseSettingsFromStore();
+}
+
+function parseSettingsFromStore() {
+  try {
+    return require('../../lib/menu-highlights').parseSettings(getSettingsParsed());
+  } catch (_) {
+    return require('../../lib/menu-highlights').DEFAULTS;
+  }
 }
 
 function saveSettings(data, actorId, actorName) {
@@ -1312,7 +1337,44 @@ function getProducts(filters = {}) {
   if (filters.low_stock) sql += ' AND p.stock_quantity <= p.min_stock';
   sql += ' ORDER BY p.name';
   const products = getDb().prepare(sql).all(...params);
-  try { require('./recipe-production').clearExpiredNewArrivals(); } catch (_) { /* ignore */ }
+  const liteProductFetch = !!(filters.combo_picker || filters.menu_flags_only || filters.ids_only);
+  if (!liteProductFetch) {
+    try { require('./recipe-production').clearExpiredNewArrivals(); } catch (_) { /* ignore */ }
+    try {
+      const menuHl = require('../../lib/menu-highlights');
+      menuHl.syncAutoBestSellers(getDb(), getSettingsParsed());
+    } catch (_) { /* optional */ }
+  }
+
+  if (filters.menu_flags_only) {
+    return products.map((p) => ({
+      id: p.id,
+      name: p.name,
+      selling_price: p.selling_price,
+      available_today: p.available_today,
+      is_new_arrival: p.is_new_arrival,
+      is_best_seller: p.is_best_seller,
+      new_arrival_until: p.new_arrival_until
+    }));
+  }
+
+  if (filters.combo_picker) {
+    const modRows = products.length
+      ? getDb().prepare(`SELECT product_id, modifier_type FROM product_modifiers WHERE product_id IN (${products.map(() => '?').join(',')})`).all(...products.map(p => p.id))
+      : [];
+    const hasRemoval = {};
+    for (const m of modRows) {
+      if (m.modifier_type === 'removal') hasRemoval[m.product_id] = true;
+    }
+    return products.map((p) => ({
+      id: p.id,
+      name: p.name,
+      picture_path: p.picture_path,
+      selling_price: p.selling_price,
+      has_pap_option: !!hasRemoval[p.id]
+    }));
+  }
+
   const byProduct = {};
   if (products.length) {
     const placeholders = products.map(() => '?').join(',');
@@ -1711,6 +1773,11 @@ function saveProduct(data, actorId, actorName) {
     syncProductBranchStock(newId, fields.stock_quantity, actorId, 'Product create');
   }
   checkLowStock(newId);
+  try {
+    if (fields.item_type !== 'ingredient') {
+      require('../../lib/menu-highlights').markNewArrival(getDb(), newId, getSettingsParsed());
+    }
+  } catch (_) { /* optional */ }
   try { require('../database/db').persistNow?.(); } catch (_) { /* optional */ }
   return getProduct(newId) || newId;
 }
@@ -2078,14 +2145,33 @@ function resolveModifierExtras(productId, modifiers) {
   for (const m of modifiers) {
     let mod = null;
     if (m.id) {
-      mod = db.prepare('SELECT extra_price FROM product_modifiers WHERE id = ? AND product_id = ?').get(m.id, productId);
+      mod = db.prepare('SELECT extra_price, modifier_type FROM product_modifiers WHERE id = ? AND product_id = ?').get(m.id, productId);
     }
     if (!mod && m.name) {
-      mod = db.prepare('SELECT extra_price FROM product_modifiers WHERE product_id = ? AND name = ?').get(productId, m.name);
+      mod = db.prepare('SELECT extra_price, modifier_type FROM product_modifiers WHERE product_id = ? AND name = ?').get(productId, m.name);
     }
     extra += Number(mod?.extra_price) || Number(m.extra_price) || 0;
   }
   return extra;
+}
+
+function serverPromoUnitPrice(product, modifiers) {
+  const promoPricing = require('../../lib/promo-pricing');
+  const enriched = promoRequestsSvc.applyPromoPricesToProducts([product])[0] || product;
+  const modExtra = resolveModifierExtras(product.id, modifiers);
+  return {
+    unitPrice: promoPricing.calcPromoAwareUnitPrice({
+      promoActive: !!enriched.promo_active,
+      normalPrice: enriched.original_price ?? enriched.selling_price,
+      salePrice: enriched.selling_price,
+      modifiers,
+      modifierExtraTotal: modExtra
+    }),
+    promoRequestId: promoPricing.promoOptedOut(enriched.promo_active, modifiers) ? null : (enriched.promo_request_id || null),
+    originalUnitPrice: promoPricing.promoOptedOut(enriched.promo_active, modifiers)
+      ? null
+      : (enriched.promo_active ? (enriched.original_price ?? null) : null)
+  };
 }
 
 function completeSale(saleData, actorId, actorName, actorRole) {
@@ -2172,16 +2258,16 @@ function completeSale(saleData, actorId, actorName, actorRole) {
     } else if (item.product_id) {
       const product = getProduct(item.product_id);
       if (!product) throw new Error(`Product not found: ${item.product_name || item.product_id}`);
+      const priced = serverPromoUnitPrice(product, item.modifiers);
       if (saleData.order_type === 'online' && item.unit_price != null && discountAuthorized) {
         unitPrice = Number(item.unit_price);
       } else {
-        unitPrice = Number(product.selling_price) || 0;
-        unitPrice += resolveModifierExtras(item.product_id, item.modifiers);
+        unitPrice = priced.unitPrice;
       }
       buyingPrice = lineCostForProduct(product);
       productName = product.name || productName;
-      promoRequestId = product.promo_request_id || promoRequestId;
-      originalUnitPrice = product.promo_active ? (product.original_price ?? null) : null;
+      promoRequestId = priced.promoRequestId ?? promoRequestId;
+      originalUnitPrice = priced.originalUnitPrice;
     }
 
     const lineTotal = Math.round(unitPrice * qty * 100) / 100;
@@ -3328,24 +3414,87 @@ function getDashboardStats(from, to, branchId) {
   };
 }
 
-function getInventoryStats() {
+function getInventoryStats(branchId) {
   const db = getDb();
-  const totalValue = db.prepare(`
-    SELECT COALESCE(SUM(stock_quantity * buying_price), 0) as val FROM products WHERE is_active=1
-  `).get();
-  const lowStock = db.prepare('SELECT COUNT(*) as c FROM products WHERE is_active=1 AND stock_quantity <= min_stock AND stock_quantity > 0').get();
-  const outOfStock = db.prepare('SELECT COUNT(*) as c FROM products WHERE is_active=1 AND stock_quantity <= 0').get();
+  const branchesSvc = require('./branches');
+  const flags = branchesSvc.ensureBranchSchema();
+  const useBranch = branchId != null && branchId !== '' && branchId !== 'all' && flags.branch_stock;
+
+  let totalValue = { val: 0 };
+  let lowStock = { c: 0 };
+  let outOfStock = { c: 0 };
+  let lowStockItems = [];
+  let outOfStockItems = [];
+
+  if (useBranch) {
+    totalValue = db.prepare(`
+      SELECT COALESCE(SUM(bs.quantity * COALESCE(p.buying_price, 0)), 0) AS val
+      FROM branch_stock bs JOIN products p ON p.id = bs.product_id
+      WHERE bs.branch_id = ? AND p.is_active = 1
+    `).get(Number(branchId)) || { val: 0 };
+    lowStock = db.prepare(`
+      SELECT COUNT(*) AS c FROM branch_stock bs JOIN products p ON p.id = bs.product_id
+      WHERE bs.branch_id = ? AND p.is_active = 1 AND bs.quantity <= bs.min_stock AND bs.quantity > 0
+    `).get(Number(branchId)) || { c: 0 };
+    outOfStock = db.prepare(`
+      SELECT COUNT(*) AS c FROM branch_stock bs JOIN products p ON p.id = bs.product_id
+      WHERE bs.branch_id = ? AND p.is_active = 1 AND bs.quantity <= 0
+    `).get(Number(branchId)) || { c: 0 };
+    lowStockItems = db.prepare(`
+      SELECT p.name, bs.quantity AS stock_quantity, bs.min_stock AS min_stock
+      FROM branch_stock bs JOIN products p ON p.id = bs.product_id
+      WHERE bs.branch_id = ? AND p.is_active = 1 AND bs.quantity <= bs.min_stock AND bs.quantity > 0
+      ORDER BY bs.quantity ASC LIMIT 15
+    `).all(Number(branchId));
+    outOfStockItems = db.prepare(`
+      SELECT p.name, bs.quantity AS stock_quantity
+      FROM branch_stock bs JOIN products p ON p.id = bs.product_id
+      WHERE bs.branch_id = ? AND p.is_active = 1 AND bs.quantity <= 0
+      ORDER BY p.name LIMIT 15
+    `).all(Number(branchId));
+  } else {
+    totalValue = db.prepare(`
+      SELECT COALESCE(SUM(stock_quantity * COALESCE(buying_price, 0)), 0) AS val FROM products WHERE is_active = 1
+    `).get() || { val: 0 };
+    lowStock = db.prepare(`
+      SELECT COUNT(*) AS c FROM products WHERE is_active = 1 AND stock_quantity <= min_stock AND stock_quantity > 0
+    `).get() || { c: 0 };
+    outOfStock = db.prepare(`
+      SELECT COUNT(*) AS c FROM products WHERE is_active = 1 AND stock_quantity <= 0
+    `).get() || { c: 0 };
+    lowStockItems = db.prepare(`
+      SELECT name, stock_quantity, min_stock FROM products
+      WHERE is_active = 1 AND stock_quantity <= min_stock AND stock_quantity > 0
+      ORDER BY stock_quantity ASC LIMIT 15
+    `).all();
+    outOfStockItems = db.prepare(`
+      SELECT name, stock_quantity FROM products WHERE is_active = 1 AND stock_quantity <= 0 ORDER BY name LIMIT 15
+    `).all();
+  }
+
   const fastMoving = db.prepare(`
-    SELECT si.product_name, SUM(si.quantity) as qty FROM sale_items si
-    JOIN sales s ON si.sale_id = s.id WHERE date(s.created_at) >= date('now', '-30 days')
+    SELECT si.product_name, SUM(si.quantity) AS qty FROM sale_items si
+    JOIN sales s ON si.sale_id = s.id WHERE date(s.created_at) >= date('now', '-30 days') AND s.status = 'completed'
     GROUP BY si.product_name ORDER BY qty DESC LIMIT 5
   `).all();
   const slowMoving = db.prepare(`
-    SELECT p.name, p.stock_quantity FROM products p WHERE p.is_active=1
-    AND p.id NOT IN (SELECT DISTINCT product_id FROM sale_items WHERE product_id IS NOT NULL)
+    SELECT p.name, p.stock_quantity FROM products p WHERE p.is_active = 1
+    AND p.id NOT IN (
+      SELECT DISTINCT si.product_id FROM sale_items si
+      JOIN sales s ON s.id = si.sale_id WHERE s.status = 'completed' AND date(s.created_at) >= date('now', '-30 days')
+    )
     ORDER BY p.stock_quantity DESC LIMIT 5
   `).all();
-  return { totalValue: totalValue.val, lowStock: lowStock.c, outOfStock: outOfStock.c, fastMoving, slowMoving };
+
+  return {
+    totalValue: totalValue.val,
+    lowStock: lowStock.c,
+    outOfStock: outOfStock.c,
+    lowStockItems,
+    outOfStockItems,
+    fastMoving,
+    slowMoving
+  };
 }
 
 function getSalesAnalytics(from, to) {
@@ -4423,7 +4572,7 @@ module.exports = {
   setEmployeeSession: session.setEmployeeSession,
   verifyBookkeepingPassword, setBookkeepingPassword, isBookkeepingUnlocked, requireBookkeepingAccess,
   hasRecoverySecret, getRecoveryStatus, setRecoverySecret, getUsernamesForRecovery, resetPasswordViaRecovery, seedInstallerAccountFromCloud, factoryResetBusiness, clearOperationalData,
-  getSettings, getSettingsParsed, saveSettings, saveJsonSetting, completeSetup,
+  getSettings, getSettingsParsed, saveSettings, saveJsonSetting, getMenuHighlightSettings, saveMenuHighlightSettings, completeSetup,
   detectExistingBusiness, adoptExistingBusiness, parseJsonField,
   getCategories, saveCategory, deleteCategory, ensureOtherItemsCategory, saveOtherSellItem, suggestSellPrice, cartProfitFloor,
   getProducts, getProduct, getProductByBarcode, getProductModifiers, saveProductModifiers, saveProduct, deleteProduct,
