@@ -85,6 +85,7 @@ const MarketingAgentApp = {
   },
 
   exit() {
+    try { window.PanelExitGuard?.unbind?.(); this._exitGuardBound = false; } catch (_) {}
     if (typeof App !== 'undefined' && typeof App.closeMarketingAgent === 'function') {
       App.closeMarketingAgent();
     } else if (typeof App !== 'undefined' && typeof App.navigate === 'function') {
@@ -164,6 +165,7 @@ const MarketingAgentApp = {
   /* ─── Entry point ─────────────────────────────────────────────────────── */
 
   async render(root, app) {
+    try { if (this.app?.user && !this._exitGuardBound) { window.PanelExitGuard?.bind?.(() => this.exit()); this._exitGuardBound = true; } } catch (_) {}
     this.container = root || this.container;
     this.app = app || this.app;
     if (!this.container) return;

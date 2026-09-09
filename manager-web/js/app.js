@@ -2,8 +2,9 @@
 const ManagerApp = {
   view: 'splash',
   tab: 'home',
-  token: localStorage.getItem('manager_token') || '',
+  token: sessionStorage.getItem('manager_token') || '',
   user: null,
+  shop: null,
   period: 'today',
   customFrom: '',
   customTo: '',
@@ -19,6 +20,76 @@ const ManagerApp = {
   lastAlertId: 0,
   lastUpdated: null,
   _pollTimer: null,
+  _dashTimer: null,
+  _midnightTimer: null,
+  _pendingOrderAlert: false,
+  _pendingOnlineOrders: [],
+  _popupOrderId: null,
+  _quietUntil: {},
+  _knownAvailableIds: new Set(),
+  _stateKey: 'manager_app_state',
+
+  localTodayStr() {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  },
+
+  periodSubtitle(d = {}) {
+    const branch = this.branchFilter === 'all' ? 'All branches' : (this.selectedBranch()?.name || 'Branch');
+    const period = d.period || 'Today';
+    if (d.period_from && d.period_to && d.period_from !== d.period_to) {
+      return `${branch} · ${period} (${d.period_from} → ${d.period_to})`;
+    }
+    if (d.period_from) return `${branch} · ${period} (${d.period_from})`;
+    return `${branch} · ${period}`;
+  },
+
+  orderEventKey(o) {
+    const id = o?.online_order_id || (String(o?.id || '').startsWith('online:') ? String(o.id).slice(7) : o?.id);
+    return `online_pending:${id}`;
+  },
+
+  isOrderMuted(orderId) {
+    const until = this._quietUntil[String(orderId)];
+    return until && Date.now() < until;
+  },
+
+  snoozeOrderPopup(orderId, minutes = 30) {
+    this._quietUntil[String(orderId)] = Date.now() + minutes * 60 * 1000;
+    window.PanelSound?.stop();
+  },
+
+  soundEnabled() {
+    return this.prefs?.new_orders !== false && window.PanelNotify?.isSoundEnabled('manager') !== false;
+  },
+
+  _saveState() {
+    try {
+      const data = {
+        tab: this.tab,
+        period: this.period,
+        onlineTab: this.onlineTab,
+        branchFilter: this.branchFilter,
+        customFrom: this.customFrom,
+        customTo: this.customTo
+      };
+      if (window.PanelState) PanelState.save(this._stateKey, data);
+      else sessionStorage.setItem(this._stateKey, JSON.stringify(data));
+    } catch (_) { /* ignore */ }
+  },
+
+  _loadState() {
+    try {
+      const o = window.PanelState ? PanelState.load(this._stateKey) : JSON.parse(sessionStorage.getItem(this._stateKey) || 'null');
+      if (!o) return;
+      if (o.tab) this.tab = o.tab;
+      if (o.period) this.period = o.period;
+      if (o.onlineTab) this.onlineTab = o.onlineTab;
+      if (o.branchFilter) this.branchFilter = o.branchFilter;
+      if (o.customFrom) this.customFrom = o.customFrom;
+      if (o.customTo) this.customTo = o.customTo;
+    } catch (_) { /* ignore */ }
+  },
 
   money(n) { return `R${(Number(n) || 0).toFixed(2)}`; },
   esc(s) { const d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; },
@@ -42,6 +113,24 @@ const ManagerApp = {
       actions.push(`<a href="mailto:${encodeURIComponent(em)}" class="contact-btn" title="Email customer" onclick="event.stopPropagation()">✉️</a>`);
     }
     return actions.length ? `<div class="contact-actions">${actions.join('')}</div>` : '';
+  },
+  selectedBranch() {
+    if (!this.branchFilter || this.branchFilter === 'all') return null;
+    return (this.user?.branches || []).find((b) => String(b.id) === String(this.branchFilter));
+  },
+  shopHeaderHtml() {
+    const shop = this.shop || {};
+    const branch = this.selectedBranch();
+    const phone = branch?.phone || shop.phone || '';
+    return `<div class="shop-header">
+      <div data-shop-logo class="shop-logo-wrap"></div>
+      <div class="shop-info">
+        <strong class="shop-name">${this.esc(shop.shop_name || 'Business Manager')}</strong>
+        ${shop.address ? `<div class="meta">${this.esc(shop.address)}</div>` : ''}
+        ${phone ? `<div class="meta shop-phone">📞 ${this.esc(phone)}</div>` : ''}
+        ${branch ? `<div class="meta branch-tag">${this.esc(branch.name)}</div>` : ''}
+      </div>
+    </div>`;
   },
   branchFilters() {
     const f = { period: this.period };
@@ -86,6 +175,12 @@ const ManagerApp = {
     return rows.join('');
   },
   playAlertSound() {
+    if (this.prefs?.new_orders === false) return;
+    if (window.PanelNotify && !PanelNotify.isSoundEnabled('manager')) return;
+    if (window.PanelSound) PanelSound.playOnce();
+    else this._synthBeep();
+  },
+  _synthBeep() {
     try {
       const ctx = new (window.AudioContext || window.webkitAudioContext)();
       const play = (freq, delay) => {
@@ -110,6 +205,40 @@ const ManagerApp = {
     setTimeout(() => el.remove(), 3500);
   },
 
+  async loadLoginBranding() {
+    try {
+      const res = await fetch(`${ManagerAPI.rpcUrl}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ method: 'web:getSettings', args: [] })
+      });
+      const json = await res.json();
+      const s = json.data || json;
+      const meta = document.getElementById('login-shop-meta');
+      if (meta) {
+        const parts = [s.address, s.phone].filter(Boolean);
+        meta.textContent = parts.join(' · ');
+      }
+      if (window.PanelBrand) window.PanelBrand.apply();
+    } catch (_) { if (window.PanelBrand) window.PanelBrand.apply(); }
+  },
+
+  initNotify() {
+    if (!window.PanelNotify || this._notifyReady) return;
+    this._notifyReady = true;
+    PanelNotify.init({
+      panel: 'manager',
+      loggedIn: () => !!this.token,
+      rpc: (method, args) => ManagerAPI.call(method, args)
+    });
+    const saved = localStorage.getItem('mgr_last_alert_id');
+    if (saved) this.lastAlertId = Number(saved) || 0;
+  },
+
+  saveAlertCursor() {
+    try { localStorage.setItem('mgr_last_alert_id', String(this.lastAlertId || 0)); } catch (_) { /* */ }
+  },
+
   deviceInfo() {
     const uid = localStorage.getItem('manager_device_uid') || `mgr-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     localStorage.setItem('manager_device_uid', uid);
@@ -122,13 +251,15 @@ const ManagerApp = {
 
   async init() {
     if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+    this._loadState();
+    try { localStorage.removeItem('manager_token'); } catch (_) { /* migrate to sessionStorage */ }
     const hash = location.hash.replace(/^#/, '');
     if (hash.startsWith('order/')) this._deepOrder = hash.split('/')[1];
     const hashParams = new URLSearchParams(hash.includes('=') ? hash : '');
     const hashToken = hashParams.get('token');
     if (hashToken) {
       this.token = hashToken;
-      localStorage.setItem('manager_token', hashToken);
+      sessionStorage.setItem('manager_token', hashToken);
       history.replaceState(null, '', location.pathname + location.search);
     }
     this.view = this.token ? 'splash' : 'login';
@@ -137,30 +268,61 @@ const ManagerApp = {
       try {
         const p = await ManagerAPI.profile();
         this.user = p.user;
+        this.shop = p.shop || null;
         this.prefs = p.notification_prefs;
+        this.initNotify();
+        PanelSound?.setPanel('manager');
+        PanelSound?.setEnabled(PanelNotify?.isSoundEnabled('manager') !== false);
         this.view = 'main';
         await this.refresh();
         if (this._deepOrder) { this.tab = 'orders'; await this.openOrder(this._deepOrder); }
-        else {
-          const savedTab = localStorage.getItem('manager_tab');
-          if (savedTab) this.tab = savedTab;
-        }
+        this._saveState();
       } catch (_) {
         this.token = '';
-        localStorage.removeItem('manager_token');
+        sessionStorage.removeItem('manager_token');
         this.view = 'login';
       }
     } else {
       this.view = 'login';
     }
     this.render();
+    if (window.PanelBrand) window.PanelBrand.apply();
     this.startPolling();
+    this.scheduleMidnightRefresh();
     window.addEventListener('online', () => this.refresh());
+  },
+
+  scheduleMidnightRefresh() {
+    if (this._midnightTimer) clearTimeout(this._midnightTimer);
+    const now = new Date();
+    const next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 5);
+    this._midnightTimer = setTimeout(() => {
+      if (this.period === 'today') {
+        this.dashboard = null;
+        this.orders = [];
+        this.alerts = [];
+        this.refresh({ silent: true });
+      }
+      this.scheduleMidnightRefresh();
+    }, Math.max(1000, next - now));
+  },
+
+  startDashboardPolling() {
+    if (this._dashTimer) clearInterval(this._dashTimer);
+    this._dashTimer = setInterval(() => {
+      if (!this.token || this.view !== 'main') return;
+      if (this.tab === 'home' || this._pendingOnlineOrders?.length) this.refresh({ silent: true });
+    }, 30000);
+  },
+
+  stopDashboardPolling() {
+    if (this._dashTimer) { clearInterval(this._dashTimer); this._dashTimer = null; }
   },
 
   startPolling() {
     if (this._pollTimer) clearInterval(this._pollTimer);
-    this._pollTimer = setInterval(() => this.pollAlerts(), 15000);
+    this._pollTimer = setInterval(() => this.pollAlerts(), 12000);
+    this.startDashboardPolling();
   },
 
   async pollAlerts() {
@@ -169,43 +331,150 @@ const ManagerApp = {
       const fresh = await ManagerAPI.poll(this.lastAlertId);
       if (fresh?.length) {
         this.lastAlertId = Math.max(...fresh.map((a) => a.id));
+        this.saveAlertCursor();
         const latest = fresh[fresh.length - 1];
-        if (latest.type === 'new_order' || latest.type === 'large_order') {
-          this.playAlertSound();
+        const p = latest.payload || {};
+        const ackKey = p.online_order_id ? `online_pending:${p.online_order_id}` : `mgr_alert:${latest.id}`;
+        if ((latest.type === 'new_order' || latest.type === 'large_order') && !PanelNotify?.isAcked(ackKey)) {
+          if (this.soundEnabled()) this.playAlertSound();
           this.toast(`${latest.title}: ${latest.body?.split('\n')[0] || ''}`, 'success');
-          if (Notification.permission === 'granted') {
-            new Notification(latest.title, { body: latest.body, tag: `order-${latest.id}` });
-          }
+          PanelNotify?.notifyBrowser(latest.title, latest.body, `order-${latest.id}`);
         }
-        if (this.tab === 'home' || this.tab === 'alerts') await this.refresh();
+        await this.refresh({ silent: true });
       }
     } catch (_) { /* ignore */ }
   },
 
-  async refresh() {
+  async refresh(opts = {}) {
     if (!this.token) return;
+    const silent = !!opts.silent;
     try {
       const filters = this.branchFilters();
-      const [dash, alerts, pos] = await Promise.all([
+      const branchOnly = this.branchFilter && this.branchFilter !== 'all' ? { branch_id: this.branchFilter } : {};
+      const [dash, alerts, pos, pendingLive] = await Promise.all([
         ManagerAPI.dashboard(filters),
-        ManagerAPI.alerts(30),
-        ManagerAPI.posStatus()
+        ManagerAPI.alerts({ ...filters, limit: 50 }),
+        ManagerAPI.posStatus(),
+        ManagerAPI.pendingOnline(branchOnly).catch(() => [])
       ]);
       this.dashboard = dash;
       this.alerts = alerts;
       this.posStatus = pos;
+      this._pendingOnlineOrders = pendingLive || [];
       this.lastUpdated = new Date();
       if (alerts.length) this.lastAlertId = Math.max(this.lastAlertId, ...alerts.map((a) => a.id));
       if (this.tab === 'orders') await this.loadOrders();
       if (this.tab === 'online') await this.loadOnlineOrders();
+      this.syncOrderPopups();
+      const pendingOnline = (this._pendingOnlineOrders || []).filter((o) => {
+        const st = String(o.status || '').toLowerCase();
+        return st === 'pending' && !o.sale_id && !(window.PanelNotify?.isAcked(this.orderEventKey(o)));
+      });
+      this._pendingOrderAlert = pendingOnline.length > 0;
+      if (window.PanelNotify) {
+        PanelNotify.syncPendingAlert(
+          pendingOnline.filter((o) => !this.isOrderMuted(o.online_order_id || o.id)),
+          (o) => this.orderEventKey(o),
+          this.soundEnabled()
+        );
+      } else if (window.PanelSound) {
+        PanelSound.syncPending(this._pendingOrderAlert && this.soundEnabled());
+      }
+      if (this.tab === 'staff') await this.loadStaffActivity();
       if (this.view === 'main') this.render();
     } catch (err) {
       if (/session|revoked|not authenticated/i.test(err.message)) {
         this.token = '';
         this.view = 'login';
-        this.render();
+        if (!silent) this.render();
       }
     }
+  },
+
+  syncOrderPopups() {
+    const pending = (this._pendingOnlineOrders || []).filter((o) => {
+      const st = String(o.status || '').toLowerCase();
+      return st === 'pending' && !o.sale_id;
+    });
+    const pendingIds = new Set(pending.map((o) => String(o.online_order_id || o.id)));
+    if (this._popupOrderId && !pendingIds.has(String(this._popupOrderId))) {
+      this.closeOrderPopup(true);
+    }
+    pending.forEach((o) => {
+      const oid = String(o.online_order_id || o.id);
+      if (window.PanelNotify?.isAcked(this.orderEventKey(o))) return;
+      if (this.isOrderMuted(oid)) return;
+      if (this._popupOrderId === oid) return;
+      this.showOrderPopup(o);
+    });
+  },
+
+  showOrderPopup(order) {
+    if (!order) return;
+    const oid = String(order.online_order_id || order.id);
+    this._popupOrderId = oid;
+    let root = document.getElementById('mgr-order-popup');
+    if (!root) {
+      root = document.createElement('div');
+      root.id = 'mgr-order-popup';
+      root.className = 'mgr-order-popup';
+      document.body.appendChild(root);
+    }
+    const items = (order.items || []).slice(0, 6);
+    const fulfillment = order.fulfillment_type || 'collection';
+    root.innerHTML = `<div class="mgr-popup-card" role="dialog" aria-live="assertive">
+      <div class="mgr-popup-head">
+        <strong>🛒 New online order</strong>
+        <span class="pill unread">Awaiting POS</span>
+      </div>
+      <p><strong>${this.esc(order.order_number)}</strong> · ${this.money(order.total)}</p>
+      <p class="meta">${this.esc(order.branch_name || '')}${order.branch_name ? ' · ' : ''}${this.esc(fulfillment)}</p>
+      <p><strong>${this.esc(order.customer_name || 'Customer')}</strong>${order.customer_phone ? `<br>${this.esc(order.customer_phone)}` : ''}</p>
+      ${order.delivery_address ? `<p class="meta">${this.esc(order.delivery_address)}</p>` : ''}
+      <ul class="mgr-popup-items">${items.map((i) =>
+        `<li>${this.esc(i.name)} ×${i.quantity || 1}</li>`).join('')}</ul>
+      <p class="meta" style="margin:0">Popup stays until this order is accepted on POS.</p>
+      <div class="mgr-popup-actions">
+        <button type="button" class="btn-sm btn-ghost" data-act="popup-mute" data-id="${this.esc(oid)}">🔇 Mute alert</button>
+        <button type="button" class="btn-sm btn-ghost" data-act="popup-view" data-id="online:${this.esc(oid)}">View order</button>
+        <button type="button" class="btn-sm btn-primary" data-act="popup-online">Open POS Online</button>
+      </div>
+    </div>`;
+    root.classList.remove('hidden');
+    root.onclick = async (e) => {
+      const btn = e.target.closest('[data-act]');
+      if (!btn) return;
+      const act = btn.dataset.act;
+      if (act === 'popup-mute') {
+        this.snoozeOrderPopup(btn.dataset.id, 60);
+        window.PanelSound?.stop();
+        this.toast('Alert muted for 1 hour — popup stays until POS accepts', 'info');
+        return;
+      }
+      if (act === 'popup-view') {
+        await this.openOrder(btn.dataset.id);
+        return;
+      }
+      if (act === 'popup-online') {
+        this.tab = 'online';
+        this.onlineTab = 'pending';
+        this.view = 'main';
+        this.onlineOrders = [];
+        await this.refresh();
+        return;
+      }
+    };
+    if (this.soundEnabled() && !this.isOrderMuted(oid)) this.playAlertSound();
+  },
+
+  closeOrderPopup(accepted = false) {
+    const oid = this._popupOrderId;
+    if (accepted && oid) {
+      window.PanelNotify?.ack(`online_pending:${oid}`, 'accepted');
+      window.PanelSound?.stop();
+    }
+    this._popupOrderId = null;
+    document.getElementById('mgr-order-popup')?.classList.add('hidden');
   },
 
   async loadOrders() {
@@ -214,6 +483,10 @@ const ManagerApp = {
 
   async loadOnlineOrders() {
     this.onlineOrders = await ManagerAPI.onlineOrders({ ...this.branchFilters(), status: this.onlineTab, limit: 50 });
+  },
+
+  async loadStaffActivity() {
+    this.staffActivity = await ManagerAPI.staffActivity(this.branchFilters()).catch(() => []);
   },
 
   orderIdFromAlert(a) {
@@ -247,11 +520,14 @@ const ManagerApp = {
   },
 
   navTabs() {
-    const multi = this.user?.branches?.length > 1;
+    const multi = (this.user?.branches?.length > 1) || this.user?.permissions?.view_all_branches;
+    const canStaff = this.user?.permissions?.view_staff_activity !== false
+      && ['owner', 'manager', 'assistant_manager'].includes(this.user?.role);
     const tabs = [
       { id: 'home', icon: '🏠', label: 'Home' },
       { id: 'orders', icon: '📋', label: 'Orders' },
       { id: 'online', icon: '🛒', label: 'POS Online' },
+      ...(canStaff ? [{ id: 'staff', icon: '👥', label: 'Staff' }] : []),
       ...(multi ? [{ id: 'branches', icon: '🏢', label: 'Branches' }] : []),
       { id: 'alerts', icon: '🔔', label: 'Alerts' },
       { id: 'more', icon: '⋯', label: 'More' }
@@ -268,10 +544,13 @@ const ManagerApp = {
       if (act === 'tab') {
         this.tab = btn.dataset.tab;
         this.view = 'main';
-        try { localStorage.setItem('manager_tab', this.tab); } catch (_) { /* ignore */ }
+        try { sessionStorage.setItem('manager_tab', this.tab); localStorage.setItem('manager_tab', this.tab); } catch (_) { /* ignore */ }
+        this._saveState();
+        this.render();
         if (this.tab === 'orders') this.orders = [];
         if (this.tab === 'online') this.onlineOrders = [];
-        await this.refresh();
+        if (this.tab === 'staff') this.staffActivity = [];
+        this.refresh();
         return;
       }
       if (act === 'login') {
@@ -283,20 +562,32 @@ const ManagerApp = {
             this.deviceInfo()
           );
           this.token = r.token;
-          localStorage.setItem('manager_token', this.token);
+          sessionStorage.setItem('manager_token', this.token);
           this.user = r.user;
+          this.initNotify();
           this.view = 'main';
-          if (Notification.permission === 'default') Notification.requestPermission();
+          try { await window.PanelNotify?.requestPermission?.(); } catch (_) { /* Android WebView may lack Notification API */ }
+          try {
+            const p = await ManagerAPI.profile();
+            this.shop = p.shop || null;
+            this.prefs = p.prefs || p.notification_prefs || this.prefs;
+          } catch (_) { /* optional */ }
           await this.refresh();
           this.toast('Welcome back!', 'success');
+          try { window.PanelExitGuard?.bind?.(() => { this.token=''; sessionStorage.removeItem('manager_token'); this.user=null; this.view='login'; window.PanelExitGuard?.unbind?.(); this.render(); }); } catch (_) {}
         } catch (err) { this.toast(err.message, 'error'); }
         finally { btn.disabled = false; }
         return;
       }
       if (act === 'logout') {
         try { await ManagerAPI.logout(); } catch (_) {}
+        window.PanelNotify?.onLogout();
+        this.closeOrderPopup();
+        this.stopDashboardPolling();
+        if (this._midnightTimer) clearTimeout(this._midnightTimer);
         this.token = '';
-        localStorage.removeItem('manager_token');
+        sessionStorage.removeItem('manager_token');
+        try { window.PanelExitGuard?.unbind?.(); } catch (_) {}
         this.user = null;
         this.view = 'login';
         this.render();
@@ -325,6 +616,9 @@ const ManagerApp = {
         document.querySelectorAll('[data-pref]').forEach((el) => {
           prefs[el.dataset.pref] = el.type === 'checkbox' ? el.checked : Number(el.value);
         });
+        const soundOn = document.getElementById('mgr-sound-enabled')?.checked !== false;
+        window.PanelNotify?.setSoundEnabled('manager', soundOn);
+        PanelSound?.setEnabled(soundOn);
         this.prefs = await ManagerAPI.savePrefs(prefs);
         this.toast('Settings saved', 'success');
         return;
@@ -357,34 +651,45 @@ const ManagerApp = {
         this.period = e.target.value;
         if (this.period !== 'custom') {
           this.orders = [];
-          await this.refresh();
+          this.alerts = [];
+          this.render();
+          this.refresh();
         } else {
           this.render();
         }
       }
     };
+    this.afterRenderBrand();
   },
 
   shell(body) {
     const tabs = this.navTabs();
     const unread = this.alerts.filter((a) => !a.read).length;
-    return `<div class="mgr-app">${body}
+    const header = this.view === 'main' ? this.shopHeaderHtml() : '';
+    return `<div class="mgr-app">${header}${body}
       <nav class="bottom-nav">${tabs.map((t) =>
         `<button type="button" data-act="tab" data-tab="${t.id}" class="${this.tab === t.id && this.view === 'main' ? 'active' : ''}">
           <span class="icon">${t.icon}${t.id === 'alerts' && unread ? ' •' : ''}</span>${t.label}</button>`).join('')}
       </nav></div>`;
   },
 
+  afterRenderBrand() {
+    if (window.PanelBrand) window.PanelBrand.apply();
+  },
+
   render() {
     const app = document.getElementById('app');
     if (this.view === 'login') {
       app.innerHTML = `<div class="auth-page"><form class="auth-card" onsubmit="return false">
-        <h1>Business Manager</h1>
-        <p class="sub" style="color:var(--muted);margin:0 0 16px">Monitor sales, orders & alerts from your phone</p>
+        <div data-shop-logo class="login-logo"></div>
+        <h1 data-shop-name>Business Manager</h1>
+        <p class="sub login-shop-meta" id="login-shop-meta"></p>
+        <p class="sub" style="color:var(--muted);margin:0 0 16px">Sign in with the same username and password you use for Admin or POS.</p>
         <label>Username<input id="login-user" autocomplete="username" required></label>
         <label>Password<input type="password" id="login-pass" autocomplete="current-password" required></label>
         <button type="button" class="btn-primary" data-act="login">Sign in</button>
       </form></div>`;
+      this.loadLoginBranding();
       this.bind();
       return;
     }
@@ -395,14 +700,17 @@ const ManagerApp = {
         <button type="button" class="back-btn" data-act="back">← Back</button>
         <div class="order-detail">
           <h2>Order ${this.esc(o.order_number || o.receipt_number)}</h2>
+          ${o.receipt_number && o.receipt_number !== o.order_number ? `<div class="row"><span>Receipt</span><span>${this.esc(o.receipt_number)}</span></div>` : ''}
+          ${o.confirmation_code ? `<div class="row"><span>Delivery code</span><span><code>${this.esc(o.confirmation_code)}</code></span></div>` : ''}
           <div class="row"><span>Branch</span><span>${this.esc(o.branch_name)}</span></div>
           <div class="row"><span>Time</span><span>${this.esc(String(o.time).slice(0, 16))}</span></div>
-          <div class="row"><span>Cashier</span><span>${this.esc(o.cashier || '—')}</span></div>
+          <div class="row"><span>Cashier</span><span>${this.esc(o.cashier || o.accepted_by || '—')}</span></div>
           <div class="row"><span>Status</span><span>${this.esc(o.status)}</span></div>
           ${o.order_source ? `<div class="row"><span>Source</span><span>${this.esc(o.order_source)}${o.is_online_pending ? ' (web — not on POS yet)' : ''}</span></div>` : ''}
           ${hasCustomer ? `<div class="customer-card">
             <div class="row" style="align-items:flex-start"><span>Customer</span>
               <div style="text-align:right">
+                ${o.customer_code ? `<div class="meta">Code: <code>${this.esc(o.customer_code)}</code></div>` : ''}
                 <strong>${this.esc(o.customer_name || '—')}</strong>
                 ${o.customer_phone ? `<div class="meta">${this.esc(o.customer_phone)}</div>` : ''}
                 ${o.customer_email ? `<div class="meta">${this.esc(o.customer_email)}</div>` : ''}
@@ -420,34 +728,41 @@ const ManagerApp = {
           ${this.orderFinancialHtml(o)}
         </div></div>`);
       this.bind();
+      this.afterRenderBrand();
       return;
     }
     if (this.view === 'main' && this.tab === 'home') {
       const d = this.dashboard || {};
       app.innerHTML = this.shell(`<div class="mgr-header">
         <h1>${this.esc(d.greeting || 'Hello')}, ${this.esc(d.user_name || this.user?.full_name || '')}</h1>
-        <div class="sub">${d.multi_branch ? 'All branches' : (this.user?.branches?.[0]?.name || 'Your branch')} · ${this.esc(d.period || 'Today')}</div>
+        <div class="sub">${this.esc(this.periodSubtitle(d))}</div>
       </div><div class="mgr-main">
         ${this.periodToolbarHtml()}
         <div class="stat-grid">
-          <div class="stat-card"><div class="label">Orders</div><div class="value">${d.orders ?? '—'}</div></div>
+          <div class="stat-card"><div class="label">Orders</div><div class="value">${d.orders ?? 0}</div></div>
           <div class="stat-card"><div class="label">Sales</div><div class="value">${this.money(d.sales)}</div></div>
           <div class="stat-card wide"><div class="label">Average order</div><div class="value">${this.money(d.average_order)}</div></div>
         </div>
         <div class="stat-grid">
-          <div class="stat-card"><div class="label">POS online</div><div class="value">${d.branches_online ?? 0}/${d.branches_total ?? 0}</div></div>
-          <div class="stat-card"><div class="label">Alerts</div><div class="value">${d.alerts_count ?? 0}</div></div>
+          <div class="stat-card"><div class="label">POS orders</div><div class="value">${d.pos_orders ?? 0}</div></div>
+          <div class="stat-card"><div class="label">Online orders</div><div class="value">${d.online_orders ?? 0}</div></div>
         </div>
+        <div class="stat-grid">
+          <div class="stat-card"><div class="label">Alerts</div><div class="value">${d.alerts_count ?? 0}</div></div>
+          <div class="stat-card"><div class="label">POS tills online</div><div class="value">${d.branches_online ?? 0}/${d.branches_total ?? 0}</div></div>
+        </div>
+        ${this._pendingOnlineOrders?.length ? `<p class="meta" style="margin:0 0 8px;color:var(--warn)">${this._pendingOnlineOrders.length} online order(s) waiting for POS acceptance</p>` : ''}
         <div class="list-card"><h3>Recent orders</h3>
           ${(d.recent_orders || []).map((o) =>
             `<div class="list-row" data-act="order" data-id="${o.id}">
               <div><strong>#${this.esc(o.number)}</strong>${o.order_source && o.order_source !== 'POS' ? ` <small>(${this.esc(o.order_source)})</small>` : ''}
-              <div class="meta">${this.esc(String(o.time).slice(11, 16))}${o.status ? ` · ${this.esc(o.status)}` : ''}</div></div>
-              <strong>${this.money(o.total)}</strong></div>`).join('') || '<div class="empty">No orders yet</div>'}
+              <div class="meta">${this.esc(String(o.time).slice(0, 10))} ${this.esc(String(o.time).slice(11, 16))}${o.status ? ` · ${this.esc(o.status)}` : ''}</div></div>
+              <strong>${this.money(o.total)}</strong></div>`).join('') || '<div class="empty">No orders for this period</div>'}
         </div>
-        ${this.lastUpdated ? `<div class="updated">Last updated: ${this.lastUpdated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>` : ''}
+        ${this.lastUpdated ? `<div class="updated">Last updated: ${this.lastUpdated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · stats reset at midnight</div>` : ''}
       </div>`);
       this.bind();
+      this.afterRenderBrand();
       return;
     }
     if (this.tab === 'orders') {
@@ -485,8 +800,8 @@ const ManagerApp = {
       const renderOnline = () => {
         const pending = this.onlineOrders.filter((o) => String(o.status).toLowerCase() === 'pending').length;
         app.innerHTML = this.shell(`<div class="mgr-header"><h1>POS Online</h1>
-          <div class="sub">Live online orders · ${pending} pending</div></div><div class="mgr-main">
-          ${this.branchSelectorHtml()}
+          <div class="sub">Live online orders · ${pending} pending · ${this.esc(this.dashboard?.period || 'Today')}</div></div><div class="mgr-main">
+          ${this.periodToolbarHtml()}
           <div class="toolbar" style="margin-bottom:12px">
             <button type="button" class="btn-sm ${this.onlineTab === 'pending' ? 'btn-primary' : 'btn-ghost'}" data-act="online-tab" data-status="pending">Pending</button>
             <button type="button" class="btn-sm ${this.onlineTab === 'accepted' ? 'btn-primary' : 'btn-ghost'}" data-act="online-tab" data-status="accepted">Accepted</button>
@@ -521,6 +836,19 @@ const ManagerApp = {
       }
       return;
     }
+    if (this.tab === 'staff') {
+      const rows = this.staffActivity || [];
+      app.innerHTML = this.shell(`<div class="mgr-header"><h1>Staff activity</h1>
+        <div class="sub">${this.esc(this.dashboard?.period || 'Today')}</div></div><div class="mgr-main">
+        ${this.periodToolbarHtml()}
+        <div class="list-card">${rows.length ? rows.map((r) => `<div class="list-row">
+          <div><strong>${this.esc(r.name)}</strong>
+            <div class="meta">${r.orders || 0} orders · ${this.money(r.sales)} sales</div></div></div>`).join('')
+          : '<div class="empty">No staff sales in this period</div>'}
+        </div></div>`);
+      this.bind();
+      return;
+    }
     if (this.tab === 'branches') {
       const branches = this.dashboard?.branches || [];
       app.innerHTML = this.shell(`<div class="mgr-header"><h1>Branches</h1></div><div class="mgr-main">
@@ -538,8 +866,11 @@ const ManagerApp = {
       return;
     }
     if (this.tab === 'alerts') {
+      const periodLabel = this.dashboard?.period || (this.period === 'today' ? 'Today' : this.period === 'yesterday' ? 'Yesterday' : this.period === 'week' ? 'This week' : this.period === 'month' ? 'This month' : 'Custom');
       app.innerHTML = this.shell(`<div class="mgr-header"><h1>Alerts</h1>
+        <div class="sub">${this.esc(periodLabel)} · ${this.alerts.length} alert${this.alerts.length === 1 ? '' : 's'}</div>
         <button type="button" class="btn-ghost" data-act="mark-read" style="margin-top:8px">Mark all read</button></div><div class="mgr-main">
+        ${this.periodToolbarHtml()}
         <div class="list-card">${this.alerts.map((a) => {
           const oid = this.orderIdFromAlert(a);
           return `<div class="list-row" data-act="${oid ? 'order' : ''}" data-id="${oid}">
@@ -558,27 +889,47 @@ const ManagerApp = {
         app.innerHTML = this.shell(`<div class="mgr-main">
           <button type="button" class="back-btn" data-act="more-nav" data-screen="more">← Back</button>
           <h2>Notification settings</h2>
-          ${['new_orders', 'large_orders', 'low_stock', 'pos_offline', 'cashup_alerts', 'system_alerts'].map((k) =>
+          ${['new_orders', 'large_orders'].map((k) =>
             `<div class="toggle-row"><span>${k.replace(/_/g, ' ')}</span>
               <input type="checkbox" data-pref="${k}" ${p[k] !== false ? 'checked' : ''}></div>`).join('')}
+          <div class="toggle-row"><span>Alert sound</span>
+            <input type="checkbox" id="mgr-sound-enabled" ${PanelNotify?.isSoundEnabled('manager') !== false ? 'checked' : ''}></div>
+          <p class="muted" style="font-size:12px;margin-top:8px">Uses the sound uploaded in Admin → Security. New orders still show alerts when sound is off.</p>
           <label style="display:block;margin-top:12px">Large order threshold (R)
             <input type="number" data-pref="large_order_threshold" value="${p.large_order_threshold || 1000}" style="width:100%;margin-top:6px;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--bg);color:var(--text)">
           </label>
           <button type="button" class="btn-primary" data-act="save-prefs" style="margin-top:16px">Save</button>
         </div>`);
       } else if (screen === 'profile') {
+        const initials = (this.user?.full_name || '?').split(' ').map((w) => w[0]).join('').slice(0, 2).toUpperCase();
         app.innerHTML = this.shell(`<div class="mgr-main">
           <button type="button" class="back-btn" data-act="more-nav" data-screen="more">← Back</button>
-          <h2>Profile</h2>
-          <p><strong>${this.esc(this.user?.full_name)}</strong></p>
-          <p class="meta">@${this.esc(this.user?.username)} · ${this.esc(this.user?.role)}</p>
-          <p class="meta">Branches: ${(this.user?.branches || []).map((b) => this.esc(b.name)).join(', ') || 'All'}</p>
+          <div class="profile-card">
+            <div class="profile-avatar">${initials}</div>
+            <h2 style="margin:8px 0 4px">${this.esc(this.user?.full_name)}</h2>
+            <p class="meta">@${this.esc(this.user?.username)} · ${this.esc(this.user?.role?.replace(/_/g, ' '))}</p>
+            <div class="profile-section">
+              <h3>Branches</h3>
+              ${(this.user?.branches || []).map((b) =>
+                `<div class="profile-row"><strong>${this.esc(b.name)}</strong>
+                ${b.phone ? `<span class="meta">📞 ${this.esc(b.phone)}</span>` : ''}
+                ${b.address ? `<span class="meta">${this.esc(b.address)}</span>` : ''}</div>`).join('') || '<p class="muted">All branches</p>'}
+            </div>
+            ${this.shop ? `<div class="profile-section">
+              <h3>Company</h3>
+              <p><strong>${this.esc(this.shop.shop_name)}</strong></p>
+              ${this.shop.address ? `<p class="meta">${this.esc(this.shop.address)}</p>` : ''}
+              ${this.shop.phone ? `<p class="meta">📞 ${this.esc(this.shop.phone)}</p>` : ''}
+            </div>` : ''}
+          </div>
         </div>`);
       } else {
         app.innerHTML = this.shell(`<div class="mgr-header"><h1>More</h1></div><div class="mgr-main">
           <div class="list-card">
             <div class="list-row" data-act="more-nav" data-screen="profile"><strong>Profile</strong></div>
             <div class="list-row" data-act="more-nav" data-screen="prefs"><strong>Notification settings</strong></div>
+            ${(['owner', 'manager', 'assistant_manager'].includes(this.user?.role) && this.user?.permissions?.view_staff_activity !== false)
+              ? `<div class="list-row" data-act="tab" data-tab="staff"><strong>Staff activity</strong></div>` : ''}
             <div class="list-row" data-act="logout"><strong style="color:var(--danger)">Logout</strong></div>
           </div>
         </div>`);

@@ -151,23 +151,35 @@
   AdminPage.renderStaffHR = async function (el) {
     this.staffTab = this.staffTab || 'employees';
     const tabs = [
-      ['employees', 'Employees'], ['attendance', 'Attendance'], ['leave', 'Leave'],
-      ['payroll', 'Payroll'], ['shifts', 'Shifts'], ['hrdocs', 'HR Documents'],
-      ['selfies', 'Login Selfies'], ['logins', 'Login Events'], ['disciplinary', 'Disciplinary'],
-      ['recruitment', 'Recruitment'], ['reports', 'Reports'], ['notifications', 'Alerts']
+      ['employees', '👥 Employees'], ['attendance', '📋 Attendance'], ['leave', '🏖 Leave'],
+      ['payroll', '💰 Payroll'], ['shifts', '📅 Shifts'], ['hrdocs', '📄 HR Documents'],
+      ['selfies', '📸 Login Selfies'], ['logins', '🔐 Login Events'], ['disciplinary', '⚠ Disciplinary'],
+      ['recruitment', '🎯 Recruitment'], ['reports', '📊 Reports'], ['notifications', '🔔 Alerts']
     ];
+    const existingShell = el.querySelector('.staffhr-shell');
+    if (existingShell && el.querySelector('#staff-admin-content')) {
+      el.querySelectorAll('.staffhr-tab').forEach((b) => b.classList.toggle('active', b.dataset.tab === this.staffTab));
+      return this.renderStaffHRTab(document.getElementById('staff-admin-content'));
+    }
     const ps = this.settings?.staff_portal_settings || {};
     const visHtml = window.StaffPage?.portalToggleHtml ? StaffPage.portalToggleHtml(ps) : '';
-    el.innerHTML = `<div class="admin-section">
-      <div class="page-toolbar" style="margin-bottom:8px">
-        <h3 style="margin:0">Staff & HR Management</h3>
-        <button type="button" class="btn btn-primary btn-sm" id="staffhr-open-portal">Open Staff Portal</button>
+    el.innerHTML = `<div class="admin-section staffhr-shell">
+      <div class="staffhr-hero">
+        <div>
+          <p class="staffhr-kicker">Human Resources</p>
+          <h3>Staff &amp; HR Management</h3>
+          <p class="muted staffhr-sub">Employees, attendance, leave, payroll, shifts, documents, and the staff portal — fully connected to admin.</p>
+        </div>
+        <div class="staffhr-hero-actions">
+          <button type="button" class="btn btn-primary" id="staffhr-open-portal">Open Staff Portal</button>
+        </div>
       </div>
-      ${visHtml}
-      ${visHtml ? '<button type="button" class="btn btn-primary" id="staffhr-save-portal-vis" style="margin:0 0 16px">Save portal visibility</button>' : ''}
-      <div class="form-tabs" id="staff-admin-tabs">${tabs.map(([id, label]) =>
-        `<button type="button" class="form-tab ${this.staffTab === id ? 'active' : ''}" data-tab="${id}">${label}</button>`).join('')}</div>
-      <div id="staff-admin-content"><p class="muted">Loading…</p></div></div>`;
+      ${visHtml ? `<div class="staffhr-portal-bar">${visHtml}
+        <button type="button" class="btn btn-primary staffhr-save-vis" id="staffhr-save-portal-vis">Save portal visibility</button>
+      </div>` : ''}
+      <nav class="staffhr-tabs" id="staff-admin-tabs" aria-label="Staff HR sections">${tabs.map(([id, label]) =>
+        `<button type="button" class="staffhr-tab ${this.staffTab === id ? 'active' : ''}" data-tab="${id}">${label}</button>`).join('')}</nav>
+      <div id="staff-admin-content" class="staffhr-panel"><p class="muted">Loading…</p></div></div>`;
     window.StaffPage?.bindPortalToggleStates?.(el);
     document.getElementById('staffhr-save-portal-vis')?.addEventListener('click', async () => {
       const data = {
@@ -188,11 +200,17 @@
     });
     el.querySelector('#staff-admin-tabs').addEventListener('click', (e) => {
       const btn = e.target.closest('[data-tab]');
-      if (!btn) return;
+      if (!btn || btn.dataset.tab === this.staffTab) return;
       this.staffTab = btn.dataset.tab;
-      this.renderStaffHR(el);
+      el.querySelectorAll('.staffhr-tab').forEach((b) => b.classList.toggle('active', b.dataset.tab === this.staffTab));
+      this.renderStaffHRTab(document.getElementById('staff-admin-content'));
     });
-    const content = document.getElementById('staff-admin-content');
+    await this.renderStaffHRTab(document.getElementById('staff-admin-content'));
+  };
+
+  AdminPage.renderStaffHRTab = async function (content) {
+    if (!content) return;
+    content.innerHTML = '<p class="muted">Loading…</p>';
     const renderers = {
       employees: () => this.renderStaffEmployees(content),
       attendance: () => this.renderStaffAttendance(content),

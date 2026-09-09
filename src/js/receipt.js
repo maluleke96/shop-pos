@@ -267,9 +267,13 @@ const Receipt = {
     };
   },
 
-  async printKitchen(sale, items, settings) {
+  async printKitchen(sale, items, settings, opts = {}) {
     const html = Receipt.buildKitchenTicket(sale, items, settings);
-    return API.printKitchen(html, Receipt._devicePrintOpts(settings));
+    const ps = Receipt._settings(settings).printer_settings || {};
+    return API.printKitchen(html, {
+      silent: opts.silent ?? ps.kitchen_auto !== false,
+      ...Receipt._devicePrintOpts(settings)
+    });
   },
 
   async print(sale, settings, docType) {

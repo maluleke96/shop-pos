@@ -35,6 +35,11 @@
   display: flex;
   flex-direction: column;
   gap: 4px;
+  overflow-y: auto;
+  max-height: 100vh;
+  position: sticky;
+  top: 0;
+  align-self: start;
 }
 
 .rp-brand {
@@ -81,8 +86,8 @@
 
 .rp-main {
   padding: 20px 24px 40px;
-  overflow: auto;
-  max-height: 100vh;
+  overflow: visible;
+  max-height: none;
   background: var(--rp-bg);
 }
 

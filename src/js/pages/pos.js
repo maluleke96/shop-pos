@@ -17,7 +17,8 @@ const POSPage = {
     };
   },
 
-  _menuTabCounts() {
+  getMenuTabCounts() {
+    if (this._menuTabCountCache) return this._menuTabCountCache;
     const today = new Date().toLocaleDateString('en-CA');
     const products = this.products || [];
     return {
@@ -31,7 +32,7 @@ const POSPage = {
 
   _buildHighlightTabsHtml(activeCat = '') {
     const cfg = this._menuHighlightSettings();
-    const counts = this._menuTabCounts();
+    const counts = this.getMenuTabCounts();
     const defs = [
       { key: 'available_today', cat: '__available_today', label: 'Available Today', color: '#2dd4bf' },
       { key: 'new_arrival', cat: '__new_arrival', label: 'New Arrival', color: '#38bdf8' },
@@ -47,16 +48,121 @@ const POSPage = {
     }).join('');
   },
 
+  _unwrapRpcList(res) {
+    if (Array.isArray(res)) return res;
+    if (res?.success === false) return [];
+    if (Array.isArray(res?.data)) return res.data;
+    return [];
+  },
+
+  _highlightTabEnabled(catKey) {
+    const cfg = this._menuHighlightSettings();
+    const map = {
+      __available_today: 'available_today',
+      __new_arrival: 'new_arrival',
+      __best_seller: 'best_seller',
+      __today_special: 'today_special'
+    };
+    const settingKey = map[catKey];
+    if (!settingKey) return catKey === 'combos';
+    return cfg.tabs?.[settingKey]?.pos !== false;
+  },
+
+  _productsForCategory(catKey) {
+    const products = this.products || [];
+    if (!catKey || catKey === '__all') return products;
+    if (catKey === 'combos') return [];
+    const today = new Date().toLocaleDateString('en-CA');
+    if (catKey === '__available_today') return products.filter((p) => Number(p.available_today) === 1);
+    if (catKey === '__new_arrival') {
+      return products.filter((p) => Number(p.is_new_arrival) === 1
+        && (!p.new_arrival_until || p.new_arrival_until >= today));
+    }
+    if (catKey === '__best_seller') {
+      const flagged = products.filter((p) => Number(p.is_best_seller) === 1);
+      return flagged.length
+        ? flagged
+        : [...products].filter((p) => p.has_recipe || p.item_type === 'restaurant')
+          .sort((a, b) => String(b.last_sale_date || '').localeCompare(String(a.last_sale_date || '')))
+          .slice(0, 40);
+    }
+    if (catKey === '__today_special') {
+      return this._promoProducts?.length ? this._promoProducts : products.filter((p) => p.promo_active);
+    }
+    return products.filter((p) => String(p.category_id) === String(catKey));
+  },
+
+  _categoryHasProducts(catKey) {
+    if (catKey === 'combos') return (this.combos || []).length > 0;
+    return this._productsForCategory(catKey).length > 0;
+  },
+
+  defaultCategoryKey() {
+    const cfg = this._menuHighlightSettings();
+    const counts = this.getMenuTabCounts();
+    const highlightOrder = [
+      ['available_today', '__available_today'],
+      ['new_arrival', '__new_arrival'],
+      ['best_seller', '__best_seller'],
+      ['today_special', '__today_special']
+    ];
+    for (const [settingKey, catKey] of highlightOrder) {
+      if (cfg.tabs?.[settingKey]?.pos === false) continue;
+      if ((counts[catKey] || 0) > 0) return catKey;
+    }
+    for (const c of this.categories || []) {
+      if (this._categoryHasProducts(String(c.id))) return String(c.id);
+    }
+    return '__all';
+  },
+
+  _isHighlightCategory(catKey) {
+    const key = String(catKey || '');
+    return key.startsWith('__') && key !== '__all';
+  },
+
+  ensureDefaultCategory() {
+    const cur = this.selectedCategory;
+    if (cur == null || cur === '') {
+      this.selectedCategory = this.defaultCategoryKey();
+      return;
+    }
+    if (cur === '__all' || cur === 'combos') return;
+    if (this._isHighlightCategory(cur)) {
+      if (this._highlightTabEnabled(cur) && this._categoryHasProducts(cur)) return;
+      this.selectedCategory = this.defaultCategoryKey();
+      return;
+    }
+    if ((this.categories || []).some((c) => String(c.id) === String(cur))) return;
+    this.selectedCategory = this.defaultCategoryKey();
+  },
+
+  setActiveCategoryTab(catKey) {
+    const key = String(catKey ?? '');
+    document.querySelectorAll('#pos-categories .cat-tab').forEach((t) => {
+      t.classList.toggle('active', String(t.dataset.cat) === key);
+    });
+  },
+
+  _invalidateProductGridCache() {
+    this._productGridCache = null;
+  },
+
+  _productGridCacheKey(catKey, filter) {
+    const sig = `${(this.products || []).length}:${(this.combos || []).length}`;
+    return `${catKey}|${filter}|${sig}`;
+  },
+
   renderCategoryTabs(activeCat = '') {
-    const cat = activeCat || this.selectedCategory || '';
+    this.ensureDefaultCategory();
+    const cat = activeCat || this.selectedCategory || this.defaultCategoryKey();
     const tabs = document.getElementById('pos-categories');
     if (!tabs) return;
     tabs.innerHTML = `
-      <button class="cat-tab ${!cat ? 'active' : ''}" data-cat="">All</button>
       ${this._buildHighlightTabsHtml(cat)}
       ${this.combos?.length ? `<button class="cat-tab cat-tab-sale ${cat === 'combos' ? 'active' : ''}" data-cat="combos" style="border-color:#ef4444">COMBOS<span class="menu-tab-count sale">${this.combos.length}</span></button>` : ''}
       ${(this.categories || []).map((c) => `<button class="cat-tab ${String(cat) === String(c.id) ? 'active' : ''}" data-cat="${c.id}" style="border-color:${c.color}">
-        ${c.image_path ? `<img ${Utils.cachedImageAttr(c.image_path)} class="cat-tab-img" alt="">` : ''}${c.name}</button>`).join('')}`;
+        ${c.image_path ? `<img ${Utils.categoryImageAttr(c)} class="cat-tab-img" alt="">` : ''}${c.name}</button>`).join('')}`;
   },
   products: [],
   combos: [],
@@ -98,9 +204,16 @@ const POSPage = {
   async render(el, app) {
     this.app = app;
     this._host = el;
+    document.body.classList.add('pos-till-active');
+    try {
+      if (app?.ensureFeatureCss) await app.ensureFeatureCss('css/pos-till.css');
+      else if (window.App?.ensureFeatureCss) await window.App.ensureFeatureCss('css/pos-till.css');
+    } catch (_) { /* optional */ }
+    try {
     const pendingQuote = app.pendingQuote;
     app.pendingQuote = null;
     // Only reset cart on a true first mount / explicit new sale flow — not on keep-alive revisit
+    this._bindPosLiveUpdates();
     if (!this._posMounted) {
       this.cart = [];
       this.discount = 0;
@@ -125,11 +238,26 @@ const POSPage = {
     this.activeCampaigns = this.activeCampaigns || [];
     this.renderLayout(el);
     this.bindEvents(el);
+    this.bindMoreMenu(el);
+    this.startAdvertReminderMonitor();
     this._stockRefreshHandler = () => this.reloadCatalog?.();
     window.addEventListener('shop-pos-stock-updated', this._stockRefreshHandler);
+    this._comboRefreshHandler = () => this.reloadCombosOnly?.();
+    window.addEventListener('shop-pos-combos-updated', this._comboRefreshHandler);
+    this._bindComboLiveRefresh();
     if (isKiosk) this.ensureKioskLogout(el);
 
     const filters = { for_pos: true, actor: app.user };
+    const cachedProd = window.DataCache?.peek?.('products', [filters]);
+    const cachedCat = window.DataCache?.peek?.('categories', [filters]);
+    const comboFilters = branchId ? { branch_id: branchId, for_pos: true } : { for_pos: true };
+    const cachedCombo = window.DataCache?.peek?.('combos', [comboFilters]);
+    if (!(this.products || []).length && cachedProd?.data?.length) {
+      this.categories = cachedCat?.data || this.categories || [];
+      this.products = cachedProd.data;
+      this.combos = this.filterActiveCombos(cachedCombo?.data || cachedCombo || this.combos || []);
+      this.rebuildProductLookups?.();
+    }
     const shiftP = Promise.all([
       API.getShiftSettings().catch(() => ({ success: false })),
       API.getOpenShift(app.user).catch(() => ({ success: false, data: null }))
@@ -140,21 +268,54 @@ const POSPage = {
       API.getActiveCombos(branchId ? { branch_id: branchId, for_pos: true } : { for_pos: true }).catch(() => ({ success: false, data: [] }))
     ]);
 
-    const [[shiftSettingsRes, shiftRes], [catRes, prodRes, comboRes]] = await Promise.all([shiftP, catalogP]);
-    if (shiftSettingsRes.success) {
-      this.shiftSettings = shiftSettingsRes.data || this.shiftSettings;
-    }
-    this.openShift = shiftRes?.data || null;
-    this.categories = catRes.data || [];
-    this.products = prodRes.data || [];
-    this.combos = comboRes?.data || [];
-    this.rebuildProductLookups();
+    this._shiftFlowComplete = false;
+    this.refreshShiftBarQuick();
+    this.updateShiftGate();
+    shiftP.then(async ([shiftSettingsRes, shiftRes]) => {
+      if (shiftSettingsRes.success) {
+        this.shiftSettings = shiftSettingsRes.data || this.shiftSettings;
+      }
+      this.openShift = shiftRes?.data || null;
+      this.refreshShiftBarQuick();
+      this.updateShiftGate();
+      if (!this.requiresShift()) {
+        this._finishShiftFlow();
+        return;
+      }
+      if (this.openShift) await this.promptResumeShift();
+      else await this.ensureShift();
+      this._finishShiftFlow();
+    }).catch(() => {
+      this._finishShiftFlow();
+    });
 
-    // Refresh product grid with real catalog
-    const tabs = document.getElementById('pos-categories');
-    if (tabs) this.renderCategoryTabs('');
-    this.renderProducts(document.getElementById('pos-search')?.value || '');
-    this.renderCart?.();
+    const paintCatalog = ([catRes, prodRes, comboRes]) => {
+      this.categories = this._unwrapRpcList(catRes);
+      this.products = this._unwrapRpcList(prodRes);
+      this.setPosCombos(comboRes);
+      this._menuTabCountCache = null;
+      this._invalidateProductGridCache();
+      this.rebuildProductLookups();
+      this.ensureDefaultCategory();
+      const tabs = document.getElementById('pos-categories');
+      if (tabs) this.renderCategoryTabs(this.selectedCategory || '');
+      this.renderProducts(document.getElementById('pos-search')?.value || '');
+      this.renderCart?.();
+    };
+
+    if ((this.products || []).length) {
+      paintCatalog([{ data: this.categories }, { data: this.products }, { data: this.combos }]);
+    } else {
+      const grid = document.getElementById('pos-grid');
+      if (grid && !grid.querySelector('.product-card')) {
+        grid.innerHTML = '<p class="muted" style="padding:16px;grid-column:1/-1">Loading menu…</p>';
+      }
+    }
+
+    catalogP.then(paintCatalog).catch(() => {
+      const grid = document.getElementById('pos-grid');
+      if (grid) grid.innerHTML = '<p class="error-msg" style="padding:16px">Could not load menu — tap refresh or sign in again.</p>';
+    });
 
     setTimeout(() => {
       API.enforceCashoutDeadlines().then(async (enforced) => {
@@ -162,22 +323,11 @@ const POSPage = {
           const refreshed = await API.getOpenShift(app.user);
           this.openShift = refreshed.data || null;
           Utils.toast(`Auto-closed ${enforced.data.closed} shift(s) past cash-out deadline`, 'info');
+          this.refreshShiftBarQuick();
           this.updateShiftGate();
         }
       }).catch(() => {});
     }, 0);
-
-    this._shiftFlowComplete = false;
-    if (this.requiresShift()) {
-      if (this.openShift) {
-        await this.promptResumeShift();
-      } else {
-        await this.ensureShift();
-      }
-    }
-    this._shiftFlowComplete = true;
-    this.updateShiftGate();
-    this._startOnlineOrdersWidget();
 
     // Refresh targets/campaigns in background (combos already loaded with catalog)
     Promise.all([
@@ -187,6 +337,7 @@ const POSPage = {
       this.salesTargets = targetsRes.success ? (targetsRes.data || { daily: { amount: 0, active: false } }) : { daily: { amount: 0, active: false } };
       this.activeCampaigns = campRes.success ? (campRes.data || []) : [];
       this.renderCategoryTabs(this.selectedCategory || '');
+      this.updateShiftBar().catch(() => {});
     });
 
     if (pendingQuote?.status === 'open' && pendingQuote.items?.length) {
@@ -198,7 +349,118 @@ const POSPage = {
     const scanEnabled = ss.enabled !== false;
     if (scanEnabled && ds.scanner_auto_mode !== false) this.toggleScanMode(true);
     if (ss.type === 'camera') this._preferCameraScan = true;
-    await this.updateShiftBar();
+    this.refreshShiftBarQuick();
+    } catch (err) {
+      console.error('[POS] render failed', err);
+      el.innerHTML = `<div class="login-card" style="max-width:420px;margin:40px auto;text-align:center">
+        <p class="error-msg">POS failed to load: ${Utils.escHtml(err?.message || 'Unknown error')}</p>
+        <button type="button" class="btn btn-primary" id="pos-render-retry">Retry</button></div>`;
+      document.getElementById('pos-render-retry')?.addEventListener('click', () => this.render(el, app));
+    }
+  },
+
+  _repaintMenuIfReady() {
+    if (!(this.products || []).length) return;
+    this._menuTabCountCache = null;
+    this._invalidateProductGridCache();
+    this.renderCategoryTabs(this.selectedCategory || '');
+    this.setActiveCategoryTab(this.selectedCategory || '');
+    this.renderProducts(document.getElementById('pos-search')?.value || '');
+    this.renderCart?.();
+  },
+
+  _bindPosLiveUpdates() {
+    if (this._posLiveUpdatesBound) return;
+    this._posLiveUpdatesBound = true;
+    window.addEventListener('shop-pos-sales-updated', () => {
+      this.updateShiftBar().catch(() => {});
+    });
+    window.addEventListener('shop-pos-targets-updated', async () => {
+      try {
+        const targetsRes = await API.getSalesTargets();
+        if (targetsRes.success) {
+          this.salesTargets = targetsRes.data || { daily: { amount: 0, active: false } };
+        }
+      } catch (_) { /* optional */ }
+      this.updateShiftBar().catch(() => {});
+    });
+  },
+
+  async fetchTodaySalesTotal() {
+    if (this.openShift?.id) {
+      try {
+        const preview = await API.getShiftClosePreview(this.openShift.id, this.app.user);
+        if (preview.success) return Number(preview.data?.todaySales) || 0;
+      } catch (_) { /* fall through */ }
+    }
+    const today = Utils.today();
+    try {
+      const stats = await API.getDashboardStats(today, today, this.app.user);
+      const data = stats.data ?? stats;
+      return Number(data?.todaySales) || 0;
+    } catch (_) {
+      return 0;
+    }
+  },
+
+  async renderTargetBanner() {
+    const targetBanner = document.getElementById('pos-target-banner');
+    if (!targetBanner) return { todaySales: 0, dailyTarget: 0, pct: 0, met: false };
+    const currency = this.app.settings?.currency || 'R';
+    const dailyTarget = this.activeDailyTargetAmount();
+    if (dailyTarget <= 0) {
+      targetBanner.style.display = 'none';
+      targetBanner.classList.add('hidden');
+      targetBanner.innerHTML = '';
+      return { todaySales: 0, dailyTarget: 0, pct: 0, met: false };
+    }
+    const todaySales = await this.fetchTodaySalesTotal();
+    const pct = Math.min(100, Math.round((todaySales / dailyTarget) * 100));
+    const met = todaySales >= dailyTarget;
+    targetBanner.style.display = 'block';
+    targetBanner.classList.remove('hidden');
+    targetBanner.innerHTML = `<div class="pos-target-inner">
+      <span class="pos-target-text">Today's sales target: <strong>${Utils.formatMoney(todaySales, currency)}</strong>
+        / ${Utils.formatMoney(dailyTarget, currency)}
+        <span class="pos-target-pct ${met ? 'met' : ''}">${pct}%${met ? ' ✓ Met' : ''}</span>
+      </span>
+      <div class="pos-target-bar"><div class="pos-target-fill ${met ? 'met' : ''}" style="width:${pct}%"></div></div>
+    </div>`;
+    return { todaySales, dailyTarget, pct, met };
+  },
+
+  refreshShiftBarQuick() {
+    const main = document.getElementById('pos-shift-bar-main');
+    if (!main) return;
+    const currency = this.app?.settings?.currency || 'R';
+    if (!this._shiftFlowComplete) {
+      if (this.openShift) {
+        main.innerHTML = `<span>Shift open · ${Utils.formatMoney(this.openShift.opening_float, currency)} · tap Continue below</span>`;
+      } else {
+        main.innerHTML = '<span class="muted">Checking shift…</span>';
+      }
+      return;
+    }
+    if (!this.requiresShift()) {
+      main.innerHTML = '<span class="muted">Shift not required</span>';
+      return;
+    }
+    if (!this.openShift) {
+      main.innerHTML = '<span style="color:var(--warning)">No shift open — open shift to sell</span>';
+      return;
+    }
+    main.innerHTML = `<span>Shift open · Float: ${Utils.formatMoney(this.openShift.opening_float, currency)} · ${Utils.formatDateTime(this.openShift.opened_at)}</span>
+      <button type="button" class="pos-link-btn" id="pos-cashout-history-inline">Cashout History</button>`;
+    document.getElementById('pos-cashout-history-inline')?.addEventListener('click', () => this.showCashOutHistory());
+  },
+
+  _finishShiftFlow() {
+    this._shiftFlowComplete = true;
+    this.refreshShiftBarQuick();
+    this.updateShiftGate();
+    this._repaintMenuIfReady();
+    this.updateShiftBar().catch(() => {});
+    this._startOnlineOrdersWidget();
   },
 
   _shiftFlowComplete: false,
@@ -245,33 +507,92 @@ const POSPage = {
 
   ensureKioskLogout(el) {
     if (window.__SHOP_POS_APP_MODE__ !== 'pos') return;
-    const bar = el.querySelector('.pos-toolbar') || el.querySelector('#pos-shift-bar');
-    if (!bar || el.querySelector('#pos-kiosk-logout')) return;
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.id = 'pos-kiosk-logout';
-    btn.className = 'btn btn-ghost btn-sm';
-    btn.textContent = 'Logout';
-    btn.title = 'Sign out';
-    btn.addEventListener('click', () => this.app?.logout?.());
-    (el.querySelector('.pos-toolbar') || bar).appendChild(btn);
+    const btn = el.querySelector('#pos-kiosk-logout');
+    if (!btn || btn.dataset.bound) return;
+    btn.dataset.bound = '1';
+    btn.classList.remove('hidden');
+    btn.addEventListener('click', () => {
+      this.closeMoreOverlay();
+      this.app?.logout?.();
+    });
+  },
+
+  openMoreOverlay() {
+    const overlay = document.getElementById('pos-more-overlay');
+    if (!overlay) return;
+    overlay.classList.remove('hidden');
+    requestAnimationFrame(() => overlay.classList.add('is-open'));
+    document.body.classList.add('pos-more-open');
+    overlay.querySelector('#pos-referral-code')?.focus?.();
+  },
+
+  closeMoreOverlay() {
+    const overlay = document.getElementById('pos-more-overlay');
+    if (!overlay) return;
+    overlay.classList.remove('is-open');
+    const finish = () => {
+      overlay.classList.add('hidden');
+      document.body.classList.remove('pos-more-open');
+    };
+    if (overlay.classList.contains('hidden')) return;
+    overlay.addEventListener('transitionend', finish, { once: true });
+    setTimeout(finish, 280);
+  },
+
+  bindMoreMenu(el) {
+    const toggle = el.querySelector('#pos-more-menu');
+    const overlay = document.getElementById('pos-more-overlay');
+    const closeBtn = overlay?.querySelector('#pos-more-close');
+    const backdrop = overlay?.querySelector('.pos-more-backdrop');
+    if (!toggle || !overlay || toggle.dataset.bound) return;
+    toggle.dataset.bound = '1';
+    toggle.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.openMoreOverlay();
+    });
+    closeBtn?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.closeMoreOverlay();
+    });
+    backdrop?.addEventListener('click', () => this.closeMoreOverlay());
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay || e.target.classList.contains('pos-more-backdrop')) this.closeMoreOverlay();
+    });
+    overlay.querySelector('.pos-more-sheet')?.addEventListener('click', (e) => e.stopPropagation());
+    overlay.querySelectorAll('button[id^="pos-"]').forEach((btn) => {
+      if (btn.id === 'pos-more-menu' || btn.id === 'pos-more-close') return;
+      btn.addEventListener('click', () => this.closeMoreOverlay());
+    });
+    if (!this._moreEscHandler) {
+      this._moreEscHandler = (e) => {
+        if (e.key === 'Escape') this.closeMoreOverlay();
+      };
+      document.addEventListener('keydown', this._moreEscHandler);
+    }
   },
 
   /** Keep-alive revisit: preserve cart, refresh catalog/shift in background. */
   async activate(el, app) {
+    if (!el?.querySelector?.('.pos-layout')) {
+      return this.render(el, app);
+    }
     this.app = app;
     this._host = el;
+    this.resetPosSaleUi();
     try {
-      const [catRes, prodRes, shiftRes] = await Promise.all([
+      const [catRes, prodRes, shiftRes, comboRes] = await Promise.all([
         API.getCategories({ for_pos: true }),
         API.getProducts({ for_pos: true }),
-        API.getOpenShift(app.user)
+        API.getOpenShift(app.user),
+        this.fetchPosCombos(true)
       ]);
-      this.categories = catRes.data || [];
-      this.products = prodRes.data || [];
-      this.openShift = shiftRes.data || null;
+      this.categories = catRes?.data || catRes || [];
+      this.products = this._unwrapRpcList(prodRes);
+      this.setPosCombos(comboRes);
+      this.openShift = shiftRes?.data || shiftRes || null;
       this.rebuildProductLookups();
       this.renderProducts(document.getElementById('pos-search')?.value || '');
+      this.refreshShiftBarQuick?.();
       this.updateShiftGate?.();
       if (typeof this.renderCart === 'function') this.renderCart();
       window.DataCache?.clearStaleBanner?.(el);
@@ -300,7 +621,9 @@ const POSPage = {
 
   updateShiftGate() {
     const layout = document.querySelector('.pos-layout');
-    if (layout) layout.classList.toggle('pos-shift-blocked', this.requiresShift() && !this.hasOpenShift());
+    const block = this._shiftFlowComplete && this.requiresShift() && !this.hasOpenShift();
+    if (layout) layout.classList.toggle('pos-shift-blocked', block);
+    this.refreshShiftBarQuick();
     this._syncOnlineOrdersWidget();
   },
 
@@ -349,8 +672,9 @@ const POSPage = {
         if (closeBtn) closeBtn.style.display = '';
         Utils.hideModal();
         Utils.toast('Shift opened — you can now take sales', 'success');
+        this.refreshShiftBarQuick();
         this.updateShiftGate();
-        this._startOnlineOrdersWidget();
+        this._repaintMenuIfReady();
         resolve();
       });
     });
@@ -375,8 +699,9 @@ const POSPage = {
         const closeBtn = document.getElementById('modal-close');
         if (closeBtn) closeBtn.style.display = '';
         Utils.hideModal();
+        this.refreshShiftBarQuick();
         this.updateShiftGate();
-        this._startOnlineOrdersWidget();
+        this._repaintMenuIfReady();
         resolve('continue');
       });
       document.getElementById('pos-close-resume-shift').addEventListener('click', () => {
@@ -416,8 +741,9 @@ const POSPage = {
       if (!this.openShift && this.requiresShift()) {
         await this.ensureShift();
       } else {
+        this.refreshShiftBarQuick();
         this.updateShiftGate();
-        this._startOnlineOrdersWidget();
+        this._repaintMenuIfReady();
       }
     }
   },
@@ -429,64 +755,33 @@ const POSPage = {
     if (branchLabel) {
       const bname = this.activeBranch?.name || this.app?.activeBranch?.name || this.app?.settings?.branch_name || '';
       if (bname) {
-        branchLabel.textContent = `📍 ${bname}`;
-        branchLabel.style.display = '';
+        branchLabel.textContent = bname;
+        branchLabel.classList.remove('hidden');
       } else {
         try {
           const br = await API.getActiveBranch();
           if (br?.success && br.data?.name) {
             this.activeBranch = br.data;
-            branchLabel.textContent = `📍 ${br.data.name}`;
-            branchLabel.style.display = '';
-          } else branchLabel.style.display = 'none';
-        } catch (_) { branchLabel.style.display = 'none'; }
+            branchLabel.textContent = br.data.name;
+            branchLabel.classList.remove('hidden');
+          } else branchLabel.classList.add('hidden');
+        } catch (_) { branchLabel.classList.add('hidden'); }
       }
     }
-    const targetBanner = document.getElementById('pos-target-banner');
     if (!bar || !main) return;
+    this.refreshShiftBarQuick();
     const currency = this.app.settings?.currency || 'R';
-    const dailyTarget = this.activeDailyTargetAmount();
-    let todaySales = 0;
-    if (this.openShift && dailyTarget > 0) {
-      try {
-        const preview = await API.getShiftClosePreview(this.openShift.id, this.app.user);
-        if (preview.success) todaySales = preview.data?.todaySales || 0;
-      } catch { /* optional */ }
-    }
-    if (targetBanner) {
-      if (dailyTarget > 0) {
-        const pct = Math.min(100, Math.round((todaySales / dailyTarget) * 100));
-        const met = todaySales >= dailyTarget;
-        targetBanner.style.display = 'block';
-        targetBanner.classList.remove('hidden');
-        targetBanner.innerHTML = `<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
-          <span>🎯 Today's sales target: <strong style="font-size:18px">${Utils.formatMoney(todaySales, currency)}</strong>
-            / ${Utils.formatMoney(dailyTarget, currency)}
-            <span style="margin-left:8px;padding:2px 10px;border-radius:6px;background:${met ? 'var(--success)' : 'var(--bg)'};color:${met ? '#fff' : 'inherit'}">${pct}%${met ? ' ✓ Met' : ''}</span>
-          </span>
-          <div style="flex:1;min-width:120px;max-width:280px;height:10px;background:var(--bg-secondary);border-radius:6px;overflow:hidden">
-            <div style="height:100%;width:${pct}%;background:${met ? 'var(--success)' : 'var(--primary)'};transition:width .3s"></div>
-          </div>
-        </div>`;
-      } else {
-        targetBanner.style.display = 'none';
-        targetBanner.classList.add('hidden');
-        targetBanner.innerHTML = '';
-      }
-    }
+    const { todaySales, dailyTarget, pct, met } = await this.renderTargetBanner();
     if (!this.openShift) {
-      main.innerHTML = `<span style="color:var(--warning)">No shift open</span>`;
       await this.updateTopSellerBar();
       return;
     }
     let progressHtml = '';
     if (dailyTarget > 0) {
-      const pct = Math.min(100, Math.round((todaySales / dailyTarget) * 100));
-      const met = todaySales >= dailyTarget;
       progressHtml = ` · Target: ${Utils.formatMoney(todaySales, currency)} / ${Utils.formatMoney(dailyTarget, currency)} (${pct}%)${met ? ' ✓' : ''}`;
     }
     main.innerHTML = `<span>Shift open · Float: ${Utils.formatMoney(this.openShift.opening_float, currency)} · ${Utils.formatDateTime(this.openShift.opened_at)}${progressHtml}</span>
-      <button class="btn btn-ghost btn-sm" id="pos-cashout-history-inline" style="margin-left:8px;padding:2px 8px;font-size:11px">Cashout History</button>`;
+      <button type="button" class="pos-link-btn" id="pos-cashout-history-inline">Cashout History</button>`;
     document.getElementById('pos-cashout-history-inline')?.addEventListener('click', () => this.showCashOutHistory());
     await this.updateTopSellerBar();
   },
@@ -525,67 +820,87 @@ const POSPage = {
       `<div class="pos-campaign-banner">🔥 ${c.title}${c.end_date ? ` — ends ${c.end_date}` : ''}</div>`
     ).join('');
     el.innerHTML = `
+      <div class="pos-till pos-mobile-show-menu">
       <div class="pos-layout">
         ${campaignBanner ? `<div class="pos-campaign-banners">${campaignBanner}</div>` : ''}
         <div class="pos-products">
-          <div class="pos-toolbar">
-            <input type="search" id="pos-search" placeholder="Search or scan barcode…" autofocus>
-            <button class="btn btn-primary btn-sm" id="pos-scan-toggle" title="Barcode scanner mode">📷 Scan</button>
-            <div class="pos-customer-wrap" style="position:relative;min-width:200px">
-              <input type="search" id="pos-customer-search" placeholder="Search customer name or phone…" autocomplete="off"
-                style="padding:8px;border-radius:8px;border:1.5px solid var(--border);width:100%">
-              <div id="pos-customer-dropdown" class="search-dropdown hidden" style="position:absolute;top:100%;left:0;right:0;z-index:50;max-height:220px;overflow:auto;background:var(--bg);border:1px solid var(--border);border-radius:8px"></div>
+          <div class="pos-till-header">
+            <div class="pos-search-row">
+              <div class="pos-search-field">
+                <svg class="pos-field-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3-3"/></svg>
+                <input type="search" id="pos-search" placeholder="Search products or scan barcode…" autofocus>
+                <button type="button" class="pos-search-scan" id="pos-scan-toggle" title="Barcode scanner mode">Scan</button>
+              </div>
+              <div class="pos-customer-row">
+                <div class="pos-customer-wrap">
+                  <input type="search" id="pos-customer-search" placeholder="Customer name or phone…" autocomplete="off">
+                  <div id="pos-customer-dropdown" class="search-dropdown hidden"></div>
+                </div>
+                <button type="button" class="pos-till-btn ghost sm" id="pos-clear-customer" title="Clear customer" style="display:none">Clear</button>
+                <button type="button" class="pos-till-btn ghost sm" id="pos-add-customer" title="Add customer">+ Customer</button>
+                <button type="button" class="pos-till-btn primary sm" id="pos-other-item" title="Sell other item">+ Other Item</button>
+                <span id="pos-table-label" class="pos-table-label muted hidden"></span>
+              </div>
             </div>
-            <input type="text" id="pos-referral-code" placeholder="Referral code" autocomplete="off" title="Agent referral code"
-              style="padding:8px;border-radius:8px;border:1.5px solid var(--border);width:120px;max-width:28vw">
-            <input type="text" id="pos-coupon-code" placeholder="Coupon" autocomplete="off" title="Marketing coupon"
-              style="padding:8px;border-radius:8px;border:1.5px solid var(--border);width:110px;max-width:24vw">
-            <button class="btn btn-ghost btn-sm" id="pos-clear-customer" title="Clear customer" style="display:none">✕</button>
-            <button class="btn btn-ghost btn-sm" id="pos-add-customer" title="Add customer">+ Customer</button>
-            <button class="btn btn-primary btn-sm" id="pos-other-item" title="Sell other item">+ Other Item</button>
-            <button class="btn btn-ghost btn-sm" id="pos-free-tables" title="Mark sit-in tables available">🪑 Free Table</button>
-            <span id="pos-table-label" class="muted" style="font-size:12px;display:none"></span>
-            <button class="btn btn-ghost" id="pos-held">📋 Held <span id="pos-held-count" class="tag tag-warn hidden" style="margin-left:4px;font-size:11px">0</span></button>
-            <button class="btn btn-ghost" id="pos-online-orders" title="Online orders">🛒 Online <span id="pos-online-orders-count" class="tag tag-warn hidden" style="margin-left:4px;font-size:11px">0</span></button>
-            <button class="btn btn-ghost" id="pos-quote" title="Save cart as quote">📄 Quote</button>
-            <button class="btn btn-ghost" id="pos-scanner" title="USB/Bluetooth barcode scanner">📡 Scanner</button>
-            <button class="btn btn-ghost" id="pos-printers" title="This computer's printers">🖨️ Printers</button>
-            <button class="btn btn-ghost" id="pos-kitchen-display" title="Open kitchen screen on second monitor">🍳 Kitchen</button>
-            <button class="btn btn-ghost" id="pos-customer-display" title="Open customer order board on second monitor">📺 Customer Board</button>
-            <button class="btn btn-ghost" id="pos-reprint">🖨️ Reprint</button>
-            <button class="btn btn-ghost" id="pos-sales-history" title="Today's POS sales — reprint receipts">📜 Sales</button>
-            <button class="btn btn-danger btn-sm" id="pos-void">Void Sale</button>
-            <button class="btn btn-warning btn-sm" id="pos-refund">Refund</button>
-            <button class="btn btn-warning" id="pos-cashout">💰 Cash Out</button>
-            <button class="btn btn-ghost btn-sm" id="pos-cash-drop" title="Send cash to admin during shift">💵 Cash Drop</button>
-            <button class="btn btn-ghost btn-sm" id="pos-cashout-history">📜 History</button>
+            <div class="pos-action-bar">
+              <button type="button" class="pos-action-chip" id="pos-held" title="Held orders">
+                <span class="pos-action-chip-icon"><svg viewBox="0 0 24 24"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2"/><path d="M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg></span>
+                <span class="pos-action-chip-label">Held</span>
+                <span id="pos-held-count" class="pos-action-badge hidden">0</span>
+              </button>
+              <button type="button" class="pos-action-chip" id="pos-online-orders" title="Online orders">
+                <span class="pos-action-chip-icon"><svg viewBox="0 0 24 24"><circle cx="9" cy="20" r="1"/><circle cx="17" cy="20" r="1"/><path d="M2 3h2l2.4 12.4a2 2 0 002 1.6h9.8a2 2 0 002-1.6L22 7H6"/></svg></span>
+                <span class="pos-action-chip-label">Online</span>
+                <span id="pos-online-orders-count" class="pos-action-badge hidden">0</span>
+              </button>
+              <button type="button" class="pos-action-chip" id="pos-quote" title="Save cart as quote">
+                <span class="pos-action-chip-icon"><svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6M16 13H8M16 17H8M10 9H8"/></svg></span>
+                <span class="pos-action-chip-label">Quote</span>
+              </button>
+              <button type="button" class="pos-action-chip pos-action-chip--danger" id="pos-void" title="Void sale">
+                <span class="pos-action-chip-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M15 9l-6 6M9 9l6 6"/></svg></span>
+                <span class="pos-action-chip-label">Void</span>
+              </button>
+              <button type="button" class="pos-action-chip pos-action-chip--warn" id="pos-refund" title="Refund">
+                <span class="pos-action-chip-icon"><svg viewBox="0 0 24 24"><path d="M3 10h13a4 4 0 010 8H7"/><path d="M3 10l4-4M3 10l4 4"/></svg></span>
+                <span class="pos-action-chip-label">Refund</span>
+              </button>
+              <button type="button" class="pos-action-chip pos-action-chip--cash" id="pos-cashout" title="Cash out shift">
+                <span class="pos-action-chip-icon"><svg viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20M7 15h.01M11 15h2"/></svg></span>
+                <span class="pos-action-chip-label">Cash Out</span>
+              </button>
+            </div>
           </div>
-          <div id="pos-scan-banner" class="pos-scan-banner hidden">📷 Scanner ready — scan barcode or type code and press Enter</div>
-          <div id="pos-target-banner" class="pos-target-banner hidden" style="display:none;padding:10px 14px;margin:0;background:linear-gradient(90deg,rgba(16,185,129,0.18),rgba(59,130,246,0.12));border-bottom:2px solid var(--primary);font-size:15px;font-weight:600"></div>
-          <div id="pos-shift-bar" class="muted" style="padding:4px 12px;font-size:12px;background:var(--bg-secondary);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
-            <span id="pos-branch-label" class="tag tag-info" style="font-size:11px"></span>
-            <span id="pos-conn-badge" class="pos-conn-badge" role="status" aria-live="polite"></span>
-            <span id="pos-shift-bar-main"></span>
-            <div id="pos-top-seller-bar" style="display:flex;align-items:center;gap:6px;font-size:11px">
-              <span>🏆</span>
-              <span id="pos-top-seller" class="muted">Loading…</span>
-              <button type="button" class="btn btn-ghost btn-sm ${this.topSellerPeriod === 'today' ? 'active' : ''}" data-top-period="today" style="padding:2px 6px;font-size:10px">Today</button>
-              <button type="button" class="btn btn-ghost btn-sm ${this.topSellerPeriod === 'week' ? 'active' : ''}" data-top-period="week" style="padding:2px 6px;font-size:10px">Week</button>
-              <button type="button" class="btn btn-ghost btn-sm ${this.topSellerPeriod === 'month' ? 'active' : ''}" data-top-period="month" style="padding:2px 6px;font-size:10px">Month</button>
+          <div id="pos-scan-banner" class="pos-scan-banner hidden">Scanner ready — scan barcode or type code and press Enter</div>
+          <div id="pos-target-banner" class="pos-target-banner hidden"></div>
+          <div id="pos-shift-bar" class="pos-status-strip">
+            <div class="pos-status-left">
+              <span id="pos-branch-label" class="pos-shift-branch hidden"></span>
+              <span id="pos-conn-badge" class="pos-conn-badge" role="status" aria-live="polite"></span>
+              <span id="pos-shift-bar-main" class="pos-shift-main"></span>
+            </div>
+            <div id="pos-top-seller-bar" class="pos-top-seller">
+              <span class="pos-top-seller-label">Top seller</span>
+              <span id="pos-top-seller" class="muted">…</span>
+              <button type="button" class="pos-period-pill ${this.topSellerPeriod === 'today' ? 'active' : ''}" data-top-period="today">Today</button>
+              <button type="button" class="pos-period-pill ${this.topSellerPeriod === 'week' ? 'active' : ''}" data-top-period="week">Week</button>
+              <button type="button" class="pos-period-pill ${this.topSellerPeriod === 'month' ? 'active' : ''}" data-top-period="month">Month</button>
             </div>
           </div>
           <div class="category-tabs" id="pos-categories"></div>
           <div class="product-grid" id="pos-grid"></div>
         </div>
         <div class="pos-cart">
-          <div class="form-tabs" id="pos-quote-tabs" style="margin:0;border-bottom:1px solid var(--border)">
-            <button type="button" class="form-tab active" data-qtab="current">Current Quote</button>
-            <button type="button" class="form-tab" data-qtab="saved">Saved Quotes <span id="pos-saved-quotes-count" class="tag tag-warn hidden" style="margin-left:4px;font-size:11px">0</span></button>
-            <button type="button" class="form-tab" data-qtab="history">History</button>
+          <div class="pos-cart-head">
+            <div class="form-tabs pos-quote-tabs" id="pos-quote-tabs">
+              <button type="button" class="form-tab active" data-qtab="current">Current Order</button>
+              <button type="button" class="form-tab" data-qtab="saved">Saved <span id="pos-saved-quotes-count" class="tag tag-warn hidden">0</span></button>
+              <button type="button" class="form-tab" data-qtab="history">History</button>
+              <button type="button" class="form-tab pos-more-tab" id="pos-more-menu" title="More tools">☰ More</button>
+            </div>
           </div>
-          <div id="pos-quote-panel-current">
-            <div class="cart-header"><h3>Current Order</h3></div>
-            <div class="cart-items" id="pos-cart-items"><p class="muted" style="padding:20px;text-align:center">Tap a product to add</p></div>
+          <div id="pos-quote-panel-current" class="pos-cart-panel">
+            <div class="cart-items" id="pos-cart-items"><p class="muted cart-empty">Tap a product to add</p></div>
             <div class="cart-summary">
               <div class="summary-row hidden" id="cart-subtotal-excl-row"><span id="cart-subtotal-excl-label">Subtotal (excl. tax)</span><span id="cart-subtotal-excl">${currency}0.00</span></div>
               <div class="summary-row"><span>Subtotal</span><span id="cart-subtotal">${currency}0.00</span></div>
@@ -601,12 +916,113 @@ const POSPage = {
                 <button class="btn btn-warning" id="pos-laybuy" title="Create lay-bye from cart">📋 Lay-Bye</button>
                 <button class="btn btn-ghost" id="pos-laybuy-pay" title="Take lay-bye payment">💰 Pay Lay-Bye</button>
                 <button class="btn btn-danger" id="pos-cancel">Cancel</button>
-                <button class="btn btn-success btn-pay" id="pos-pay">💳 Pay</button>
+                <button class="btn btn-success btn-pay" id="pos-pay">Pay</button>
               </div>
             </div>
           </div>
-          <div id="pos-quote-panel-saved" class="hidden" style="padding:12px;max-height:calc(100vh - 200px);overflow:auto"></div>
-          <div id="pos-quote-panel-history" class="hidden" style="padding:12px;max-height:calc(100vh - 200px);overflow:auto"></div>
+          <div id="pos-quote-panel-saved" class="pos-cart-panel hidden pos-cart-scroll"></div>
+          <div id="pos-quote-panel-history" class="pos-cart-panel hidden pos-cart-scroll"></div>
+        </div>
+      </div>
+      <nav class="pos-mobile-dock" id="pos-mobile-dock" aria-label="Switch menu or cart">
+        <button type="button" class="pos-mobile-dock-btn active" data-pos-panel="menu">
+          <span class="pos-mobile-dock-label">Menu</span>
+        </button>
+        <button type="button" class="pos-mobile-dock-btn" data-pos-panel="cart">
+          <span class="pos-mobile-dock-label">Cart</span>
+          <span class="pos-mobile-dock-total" id="pos-mobile-cart-total">${currency}0.00</span>
+          <span class="pos-mobile-dock-count hidden" id="pos-mobile-cart-count">0</span>
+        </button>
+      </nav>
+      </div>
+      <div id="pos-more-overlay" class="pos-more-overlay hidden" role="dialog" aria-modal="true" aria-label="More POS tools">
+        <div class="pos-more-backdrop" aria-hidden="true"></div>
+        <div class="pos-more-sheet">
+          <header class="pos-more-header">
+            <div class="pos-more-header-brand">
+              <span class="pos-more-header-icon" aria-hidden="true">⚙</span>
+              <div>
+                <h2>POS Tools</h2>
+                <p>Hardware, promotions &amp; till utilities</p>
+              </div>
+            </div>
+            <button type="button" class="pos-more-close-btn" id="pos-more-close" aria-label="Close">
+              <span aria-hidden="true">×</span>
+            </button>
+          </header>
+          <div class="pos-more-body">
+            <section class="pos-more-section">
+              <h3 class="pos-more-section-title">Promotions</h3>
+              <div class="pos-more-codes">
+                <label class="pos-more-field">
+                  <span>Referral code</span>
+                  <input type="text" id="pos-referral-code" placeholder="Enter referral code" autocomplete="off">
+                </label>
+                <label class="pos-more-field">
+                  <span>Coupon</span>
+                  <input type="text" id="pos-coupon-code" placeholder="Enter coupon code" autocomplete="off">
+                </label>
+              </div>
+            </section>
+            <section class="pos-more-section">
+              <h3 class="pos-more-section-title">Floor &amp; hardware</h3>
+              <div class="pos-more-grid">
+                <button type="button" class="pos-more-tool" id="pos-free-tables">
+                  <span class="pos-more-tool-icon">🪑</span>
+                  <span class="pos-more-tool-text"><strong>Free Table</strong><small>Release sit-in tables</small></span>
+                </button>
+                <button type="button" class="pos-more-tool" id="pos-scanner">
+                  <span class="pos-more-tool-icon">📡</span>
+                  <span class="pos-more-tool-text"><strong>Scanner</strong><small>USB / Bluetooth barcode</small></span>
+                </button>
+                <button type="button" class="pos-more-tool" id="pos-printers">
+                  <span class="pos-more-tool-icon">🖨️</span>
+                  <span class="pos-more-tool-text"><strong>Printers</strong><small>This device setup</small></span>
+                </button>
+              </div>
+            </section>
+            <section class="pos-more-section">
+              <h3 class="pos-more-section-title">Displays</h3>
+              <div class="pos-more-grid">
+                <button type="button" class="pos-more-tool" id="pos-kitchen-display">
+                  <span class="pos-more-tool-icon">🍳</span>
+                  <span class="pos-more-tool-text"><strong>Kitchen</strong><small>Open kitchen screen</small></span>
+                </button>
+                <button type="button" class="pos-more-tool" id="pos-customer-display">
+                  <span class="pos-more-tool-icon">📺</span>
+                  <span class="pos-more-tool-text"><strong>Customer Board</strong><small>Order status display</small></span>
+                </button>
+              </div>
+            </section>
+            <section class="pos-more-section">
+              <h3 class="pos-more-section-title">History &amp; cash</h3>
+              <div class="pos-more-grid">
+                <button type="button" class="pos-more-tool" id="pos-reprint">
+                  <span class="pos-more-tool-icon">🧾</span>
+                  <span class="pos-more-tool-text"><strong>Reprint</strong><small>Last receipt</small></span>
+                </button>
+                <button type="button" class="pos-more-tool" id="pos-cash-drop">
+                  <span class="pos-more-tool-icon">💵</span>
+                  <span class="pos-more-tool-text"><strong>Cash Drop</strong><small>Send cash to admin</small></span>
+                </button>
+                <button type="button" class="pos-more-tool" id="pos-cashout-history">
+                  <span class="pos-more-tool-icon">📜</span>
+                  <span class="pos-more-tool-text"><strong>Shift History</strong><small>Past cash-outs</small></span>
+                </button>
+                <button type="button" class="pos-more-tool" id="pos-sales-history">
+                  <span class="pos-more-tool-icon">📊</span>
+                  <span class="pos-more-tool-text"><strong>Sales</strong><small>Today&apos;s POS sales</small></span>
+                </button>
+                <button type="button" class="pos-more-tool pos-more-tool-danger hidden" id="pos-kiosk-logout">
+                  <span class="pos-more-tool-icon">⎋</span>
+                  <span class="pos-more-tool-text"><strong>Logout</strong><small>Exit kiosk mode</small></span>
+                </button>
+              </div>
+            </section>
+          </div>
+          <footer class="pos-more-footer">
+            <span>Tap outside or Close to return to the till</span>
+          </footer>
         </div>
       </div>
       <div id="pos-success-screen" class="pos-success-screen hidden">
@@ -913,14 +1329,83 @@ const POSPage = {
     const cat = this.categories.find(c => String(c.id) === String(categoryKey));
     if (!cat) return false;
     const label = (combo.category || 'COMBOS').trim().toLowerCase();
-    return label === cat.name.trim().toLowerCase() || label === 'combos';
+    return label === cat.name.trim().toLowerCase();
+  },
+
+  /** Keep POS menu aligned with admin — active, approved, in date, show_on_pos. */
+  filterActiveCombos(list) {
+    const today = Utils.today();
+    const now = new Date();
+    const hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+    return (list || []).filter((c) => {
+      if (!c || c.id == null) return false;
+      if (String(c.status || 'active') !== 'active') return false;
+      if (String(c.approval_status || 'approved') !== 'approved') return false;
+      if (Number(c.show_on_pos) === 0) return false;
+      if (c.start_date && c.start_date > today) return false;
+      if (c.end_date && c.end_date < today) return false;
+      if (c.valid_time_start && c.valid_time_end) {
+        const start = c.valid_time_start;
+        const end = c.valid_time_end;
+        if (start <= end) {
+          if (hhmm < start || hhmm > end) return false;
+        } else if (hhmm < start && hhmm > end) {
+          return false;
+        }
+      }
+      return true;
+    });
+  },
+
+  setPosCombos(comboRes) {
+    const raw = comboRes?.data ?? (Array.isArray(comboRes) ? comboRes : []);
+    this.combos = this.filterActiveCombos(raw);
+  },
+
+  comboFilters() {
+    const branchId = this.app?.user?.branch_id || this.app?.activeBranch?.id || undefined;
+    return branchId ? { branch_id: branchId, for_pos: true } : { for_pos: true };
+  },
+
+  async fetchPosCombos(force = false) {
+    if (typeof API === 'undefined' || typeof API.getActiveCombos !== 'function') return [];
+    const filters = this.comboFilters();
+    if (force) window.DataCache?.invalidate?.('combos');
+    const fn = (force && API.getActiveCombos._uncached) ? API.getActiveCombos._uncached : API.getActiveCombos;
+    try {
+      return await fn(filters);
+    } catch (_) {
+      return [];
+    }
+  },
+
+  _bindComboLiveRefresh() {
+    if (this._comboLiveRefreshBound) return;
+    this._comboLiveRefreshBound = true;
+    const tick = () => {
+      if (this.app?.currentPage !== 'pos') return;
+      if (!document.getElementById('pos-grid')) return;
+      this.reloadCombosOnly().catch(() => {});
+    };
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') tick();
+    });
+    this._comboRefreshInterval = setInterval(tick, 45000);
+  },
+
+  async reloadCombosOnly() {
+    if (!this.app?.user) return;
+    try {
+      const comboRes = await this.fetchPosCombos(true);
+      this.setPosCombos(comboRes);
+      this.renderCategoryTabs(this.selectedCategory || '');
+      this.renderProducts(document.getElementById('pos-search')?.value || '');
+    } catch (_) { /* ignore */ }
   },
 
   combosForView(categoryKey, filter = '') {
-    let list = this.combos || [];
-    if (categoryKey && categoryKey !== 'combos') {
-      list = list.filter(c => this.comboMatchesCategory(c, categoryKey));
-    }
+    if (categoryKey !== 'combos') return [];
+    let list = this.filterActiveCombos(this.combos || []);
     if (filter) {
       const q = filter.toLowerCase();
       list = list.filter(c => c.name.toLowerCase().includes(q) || c.combo_code?.toLowerCase().includes(q));
@@ -931,22 +1416,42 @@ const POSPage = {
   rebuildProductLookups() {
     this._categoryById = new Map((this.categories || []).map(c => [String(c.id), c]));
     this._productsNeedingOptions = new Set();
+    this._promoProducts = [];
+    const today = new Date().toLocaleDateString('en-CA');
+    let availToday = 0;
+    let newArrival = 0;
+    let bestSeller = 0;
+    let todaySpecial = 0;
     for (const p of this.products || []) {
       if (this.productNeedsDialog(p)) this._productsNeedingOptions.add(String(p.id));
+      if (Number(p.available_today) === 1) availToday++;
+      if (Number(p.is_new_arrival) === 1 && (!p.new_arrival_until || p.new_arrival_until >= today)) newArrival++;
+      if (Number(p.is_best_seller) === 1) bestSeller++;
+      if (p.promo_active) {
+        todaySpecial++;
+        this._promoProducts.push(p);
+      }
     }
+    this._menuTabCountCache = {
+      __available_today: availToday,
+      __new_arrival: newArrival,
+      __best_seller: bestSeller,
+      __today_special: todaySpecial
+    };
   },
 
   async reloadCatalog() {
     if (!this.app?.user) return;
     try {
       const filters = { for_pos: true, actor: this.app.user };
-      const branchId = this.app.user?.branch_id || undefined;
+      window.DataCache?.invalidate?.('combos');
       const [prodRes, comboRes] = await Promise.all([
         API.getProducts._uncached ? API.getProducts._uncached(filters) : API.getProducts(filters),
-        API.getActiveCombos(branchId ? { branch_id: branchId, for_pos: true } : { for_pos: true }).catch(() => ({ data: [] }))
+        this.fetchPosCombos(true)
       ]);
-      this.products = prodRes?.data || prodRes || [];
-      this.combos = comboRes?.data || [];
+      this.products = this._unwrapRpcList(prodRes);
+      this.setPosCombos(comboRes);
+      this._invalidateProductGridCache();
       this.rebuildProductLookups();
       this.renderCategoryTabs(this.selectedCategory || '');
       this.renderProducts(document.getElementById('pos-search')?.value || '');
@@ -972,18 +1477,30 @@ const POSPage = {
     const components = items.map(i => `${i.quantity}× ${i.product_name}`).join(', ');
     const needsOpts = this.comboNeedsOptions(c);
     const thumbs = items.filter(i => i.picture_path || i.custom_image_path).slice(0, 4);
+    let stockBadge = '';
+    if (c.combo_kind === 'custom' && c.stock_quantity != null && c.stock_quantity !== '') {
+      const left = Math.max(0, Number(c.stock_quantity) || 0);
+      stockBadge = `<span class="product-card-badge ${left > 0 ? '' : 'out-stock'}">${left > 0 ? `${left} available` : 'Out of stock'}</span>`;
+    }
     let media;
-    if (c.image_path) {
-      media = `<img ${Utils.cachedImageAttr(c.image_path)} alt="">`;
+    if (c.image_path || Utils.comboImageUrl(c)) {
+      media = `<img ${Utils.comboImageAttr(c)} alt="">`;
     } else if (thumbs.length) {
       const cols = Math.min(thumbs.length, 3);
       media = `<div class="combo-item-thumbs" style="display:grid;grid-template-columns:repeat(${cols},1fr);gap:2px;width:100%;height:100%">
-        ${thumbs.map(i => `<img ${Utils.cachedImageAttr(i.custom_image_path || i.picture_path)} alt="" style="width:100%;height:100%;object-fit:cover;min-height:36px">`).join('')}
+        ${thumbs.map((i) => {
+          const imgAttr = i.product_id
+            ? Utils.productImageAttr({ id: i.product_id, picture_path: i.custom_image_path || i.picture_path })
+            : Utils.cachedImageAttr(i.custom_image_path || i.picture_path);
+          return `<img ${imgAttr} alt="" style="width:100%;height:100%;object-fit:cover;min-height:36px">`;
+        }).join('')}
       </div>`;
     } else {
       media = `<span class="product-card-placeholder">🎁</span>`;
     }
-    return `<button class="product-card ${needsOpts ? 'has-options' : ''}" data-combo-id="${c.id}">
+    const outOfStock = c.combo_kind === 'custom' && c.stock_quantity != null && c.stock_quantity !== ''
+      && Number(c.stock_quantity) <= 0;
+    return `<button class="product-card ${needsOpts ? 'has-options' : ''}${outOfStock ? ' out-of-stock' : ''}" data-combo-id="${c.id}" ${outOfStock ? 'disabled' : ''}>
       <div class="product-card-media">${media}</div>
       <div class="product-card-body">
         <span class="product-card-cat">COMBO</span>
@@ -991,6 +1508,7 @@ const POSPage = {
         <span class="product-card-price">${Utils.formatMoney(c.final_price, currency)}</span>
         <span class="product-card-meta">${components || 'Bundle deal'}</span>
         <span class="product-card-badge">Combo</span>
+        ${stockBadge || (c.combo_kind === 'custom' && (c.stock_quantity == null || c.stock_quantity === '') ? '<span class="product-card-badge">Available</span>' : '')}
         ${needsOpts ? '<span class="product-card-badge">Options first</span>' : ''}
       </div>
     </button>`;
@@ -998,7 +1516,7 @@ const POSPage = {
 
   scheduleRenderProducts(filter = '') {
     this._pendingProductFilter = filter;
-    if (this._renderProductsRaf) return;
+    if (this._renderProductsRaf) cancelAnimationFrame(this._renderProductsRaf);
     this._renderProductsRaf = requestAnimationFrame(() => {
       this._renderProductsRaf = null;
       this.renderProducts(this._pendingProductFilter || '');
@@ -1006,7 +1524,7 @@ const POSPage = {
   },
 
   bindComboGridClicks(grid) {
-    grid.querySelectorAll('[data-combo-id]').forEach(btn => btn.addEventListener('click', () => {
+    grid.querySelectorAll('[data-combo-id]:not([disabled])').forEach(btn => btn.addEventListener('click', () => {
       const combo = this.combos.find(x => x.id == btn.dataset.comboId);
       if (combo) this.configureAndAddCombo(combo);
     }));
@@ -1039,7 +1557,7 @@ const POSPage = {
     const normalHint = isCombo ? 'Without pap — charged at the regular combo total' : 'Without pap — charged at the regular menu price';
 
     return new Promise((resolve) => {
-      const host = document.getElementById('modal-body');
+      const host = document.getElementById('modal-overlay') || document.getElementById('modal-body');
       if (!host) return resolve(null);
       const overlay = document.createElement('div');
       overlay.className = 'pos-price-confirm-overlay';
@@ -1065,11 +1583,9 @@ const POSPage = {
           </div>
           <p class="pos-price-confirm-foot muted">You must choose one option to continue.</p>
         </div>`;
-      host.style.position = 'relative';
       host.appendChild(overlay);
       const finish = (choice) => {
         overlay.remove();
-        if (host && !host.querySelector('.pos-price-confirm-overlay')) host.style.position = '';
         resolve(choice);
       };
       overlay.querySelector('[data-choice="sale"]')?.addEventListener('click', () => finish('sale'));
@@ -1086,8 +1602,16 @@ const POSPage = {
   collectProductOptions(product, ui = {}) {
     const optionGroups = this.groupProductOptions(product);
     const extras = product.extras || [];
-    const removals = product.removals || [];
-    if (!optionGroups.length && !extras.length && !removals.length && !product.requires_options) {
+    const baseRemovals = product.removals || [];
+    let effectiveRemovals = [...baseRemovals];
+    if (ui.comboContext) {
+      const hasPapRemoval = effectiveRemovals.some((r) =>
+        /pap/i.test(String(r.name || '')) || r.modifier_type === 'removal');
+      if (!hasPapRemoval) {
+        effectiveRemovals.push({ name: 'Without pap', modifier_type: 'removal', extra_price: 0 });
+      }
+    }
+    if (!ui.comboContext && !optionGroups.length && !extras.length && !effectiveRemovals.length && !product.requires_options) {
       return Promise.resolve({ selectedOptions: [], selectedExtras: [] });
     }
     const currency = this.app.settings?.currency || 'R';
@@ -1134,7 +1658,7 @@ const POSPage = {
           ? `<s>${Utils.formatMoney(product.original_price, currency)}</s> ${Utils.formatMoney(product.selling_price, currency)} (sale)`
           : Utils.formatMoney(product.selling_price, currency)}</strong></p>
         ${groupHtml || '<p class="muted">Select required options to continue.</p>'}
-        ${removals.length ? `<h4 style="margin-top:16px">Without / Remove</h4>${removals.map((e, i) =>
+        ${effectiveRemovals.length ? `<h4 style="margin-top:16px">${ui.comboContext ? 'Pap choice' : 'Without / Remove'}</h4>${effectiveRemovals.map((e, i) =>
           `<label class="option-choice"><input type="checkbox" class="pos-removal" data-i="${i}">
             <span>${e.name} ${priceLabel(e.extra_price)}</span></label>`).join('')}` : ''}
         ${extras.length ? `<h4 style="margin-top:16px">Extras</h4>${extras.map((e, i) =>
@@ -1145,7 +1669,7 @@ const POSPage = {
         { noDismiss: true });
       Utils.hydrateImages(document.getElementById('modal-body'));
 
-      const needsPriceConfirm = (ui.comboContext || product.promo_active) && removals.length;
+      const needsPriceConfirm = (ui.comboContext || product.promo_active) && effectiveRemovals.length;
       const salePrice = ui.comboContext
         ? Number(ui.comboContext.salePrice) || 0
         : Number(product.selling_price) || 0;
@@ -1160,7 +1684,7 @@ const POSPage = {
             return;
           }
           cb.checked = false;
-          const removal = removals[parseInt(cb.dataset.i, 10)];
+          const removal = effectiveRemovals[parseInt(cb.dataset.i, 10)];
           const choice = await this.confirmWithoutOptionPrice({
             optionName: removal?.name || 'Without pap',
             salePrice,
@@ -1171,6 +1695,9 @@ const POSPage = {
           if (choice === 'normal') {
             cb.checked = true;
             cb.dataset.priceConfirmed = '1';
+          } else if (choice === 'sale') {
+            cb.checked = false;
+            cb.dataset.priceConfirmed = 'sale';
           } else {
             cb.checked = false;
             delete cb.dataset.priceConfirmed;
@@ -1211,29 +1738,27 @@ const POSPage = {
         if (product.requires_options && !selectedOptions.length && optionGroups.length) {
           return Utils.toast('Select required options before continuing', 'error');
         }
-        const selectedRemovals = [...document.querySelectorAll('.pos-removal:checked')].map(cb => removals[parseInt(cb.dataset.i, 10)]).filter(Boolean);
-        if (needsPriceConfirm && selectedRemovals.length) {
+        if (needsPriceConfirm) {
           for (const cb of document.querySelectorAll('.pos-removal:checked')) {
-            if (cb.dataset.priceConfirmed !== '1') {
-              const removal = removals[parseInt(cb.dataset.i, 10)];
-              const choice = await this.confirmWithoutOptionPrice({
-                optionName: removal?.name || 'Without pap',
-                salePrice,
-                normalPrice,
-                isCombo: !!ui.comboContext,
-                currency
-              });
-              if (choice === 'normal') {
-                cb.checked = true;
-                cb.dataset.priceConfirmed = '1';
-              } else {
-                cb.checked = false;
-                delete cb.dataset.priceConfirmed;
-              }
+            if (cb.dataset.priceConfirmed === '1') continue;
+            const removal = effectiveRemovals[parseInt(cb.dataset.i, 10)];
+            const choice = await this.confirmWithoutOptionPrice({
+              optionName: removal?.name || 'Without pap',
+              salePrice,
+              normalPrice,
+              isCombo: !!ui.comboContext,
+              currency
+            });
+            if (choice === 'normal') {
+              cb.checked = true;
+              cb.dataset.priceConfirmed = '1';
+            } else {
+              cb.checked = false;
+              delete cb.dataset.priceConfirmed;
             }
           }
         }
-        const confirmedRemovals = [...document.querySelectorAll('.pos-removal:checked')].map(cb => removals[parseInt(cb.dataset.i, 10)]).filter(Boolean);
+        const confirmedRemovals = [...document.querySelectorAll('.pos-removal:checked')].map(cb => effectiveRemovals[parseInt(cb.dataset.i, 10)]).filter(Boolean);
         const selectedExtras = [...document.querySelectorAll('.pos-extra:checked')].map(cb => extras[parseInt(cb.dataset.i, 10)]).filter(Boolean);
         finish({ selectedOptions, selectedExtras: [...confirmedRemovals, ...selectedExtras] });
       });
@@ -1246,6 +1771,9 @@ const POSPage = {
     if (!items.length) return Utils.toast('This combo has no items', 'error');
 
     if (combo.combo_kind === 'custom') {
+      if (combo.stock_quantity != null && combo.stock_quantity !== '' && Number(combo.stock_quantity) <= 0) {
+        return Utils.toast(`${combo.name} is out of stock`, 'error');
+      }
       const configured = items.map((item) => ({
         product_id: item.product_id || null,
         product_name: item.product_name || item.custom_name || 'Item',
@@ -1271,6 +1799,8 @@ const POSPage = {
         needsOptions: item.allow_pap_choice || this.productNeedsDialog(product)
       });
     }
+    if (!resolved.length) return Utils.toast('This combo has no valid products', 'error');
+
     const optionSteps = resolved.filter(r => r.needsOptions).length;
     let optionStep = 0;
     const configured = [];
@@ -1321,39 +1851,37 @@ const POSPage = {
     if (!grid) return;
     if (!this._categoryById || !this._productsNeedingOptions) this.rebuildProductLookups();
     const currency = this.app.settings?.currency || 'R';
-    const catKey = this.selectedCategory;
+    if (this.selectedCategory == null || this.selectedCategory === '') this.ensureDefaultCategory();
+    const catKey = this.selectedCategory || this.defaultCategoryKey();
     const combosOnly = catKey === 'combos';
-    const combos = this.combosForView(combosOnly ? 'combos' : catKey, filter);
-    if (combosOnly) {
-      grid.innerHTML = combos.map(c => this.comboCardHtml(c, currency)).join('')
-        || '<p class="muted" style="padding:24px;text-align:center">No active combos</p>';
+    const cacheKey = this._productGridCacheKey(catKey, filter);
+    if (!filter && this._productGridCache && this._productGridCache.has(cacheKey)) {
+      grid.innerHTML = this._productGridCache.get(cacheKey);
       Utils.hydrateImages(grid);
       this.bindComboGridClicks(grid);
+      this.setActiveCategoryTab(catKey);
       return;
     }
-    let items = this.products;
-    if (catKey === '__available_today') {
-      items = items.filter(p => Number(p.available_today) === 1);
-    } else if (catKey === '__new_arrival') {
-      const today = new Date().toLocaleDateString('en-CA');
-      items = items.filter(p => Number(p.is_new_arrival) === 1 && (!p.new_arrival_until || p.new_arrival_until >= today));
-    } else if (catKey === '__best_seller') {
-      const flagged = items.filter(p => Number(p.is_best_seller) === 1);
-      items = flagged.length
-        ? flagged
-        : [...items].filter(p => p.has_recipe || p.item_type === 'restaurant')
-          .sort((a, b) => String(b.last_sale_date || '').localeCompare(String(a.last_sale_date || '')))
-          .slice(0, 40);
-    } else if (catKey === '__today_special') {
-      items = items.filter((p) => p.promo_active);
-    } else if (catKey) {
-      items = items.filter(p => String(p.category_id) === String(catKey));
+    const combos = combosOnly ? this.combosForView('combos', filter) : [];
+    if (combosOnly) {
+      const comboHtml = combos.map(c => this.comboCardHtml(c, currency)).join('')
+        || '<p class="muted" style="padding:24px;text-align:center">No active combos</p>';
+      grid.innerHTML = comboHtml;
+      if (!filter) {
+        if (!this._productGridCache) this._productGridCache = new Map();
+        this._productGridCache.set(cacheKey, comboHtml);
+      }
+      this.bindComboGridClicks(grid);
+      Utils.hydrateImages(grid);
+      this.setActiveCategoryTab(catKey);
+      return;
     }
+    let items = this._productsForCategory(catKey);
     if (filter) {
       const q = filter.toLowerCase();
       items = items.filter(p => p.name.toLowerCase().includes(q) || p.barcode?.includes(q) || p.sku?.toLowerCase().includes(q));
     }
-    const comboHtml = combos.map(c => this.comboCardHtml(c, currency)).join('');
+    const comboHtml = combosOnly ? combos.map(c => this.comboCardHtml(c, currency)).join('') : '';
     const productHtml = items.map(p => {
       const st = this.getStockInfo(p);
       const hasOpts = this._productsNeedingOptions.has(String(p.id));
@@ -1373,8 +1901,8 @@ const POSPage = {
         ? `<span class="product-card-badge">${st.left} meals</span>`
         : '';
       return `<button class="product-card ${stockClass} ${hasOpts ? 'has-options' : ''} ${p.promo_active ? 'promo-active' : ''}" data-id="${p.id}" title="${st.oosReason || (st.limiting ? `Limited by ${st.limiting}` : '')}">
-        <div class="product-card-media">${p.picture_path
-          ? `<img ${Utils.cachedImageAttr(p.picture_path)} alt="">`
+        <div class="product-card-media">${p.picture_path || Utils.productImageUrl(p)
+          ? `<img ${Utils.productImageAttr(p)} alt="">`
           : `<span class="product-card-placeholder">${(p.name || '?').charAt(0).toUpperCase()}</span>`}</div>
         <div class="product-card-body">
           ${cat ? `<span class="product-card-cat">${cat.name}</span>` : ''}
@@ -1386,9 +1914,15 @@ const POSPage = {
         </div>
       </button>`;
     }).join('');
-    grid.innerHTML = (comboHtml + productHtml) || '<p class="muted" style="padding:24px;text-align:center">No products found</p>';
+    const html = (comboHtml + productHtml) || '<p class="muted" style="padding:24px;text-align:center">No products in this category</p>';
+    grid.innerHTML = html;
+    if (!filter) {
+      if (!this._productGridCache) this._productGridCache = new Map();
+      this._productGridCache.set(cacheKey, html);
+    }
     Utils.hydrateImages(grid);
     this.bindComboGridClicks(grid);
+    this.setActiveCategoryTab(catKey);
   },
 
   updateProductStockDisplay() {
@@ -1572,20 +2106,24 @@ const POSPage = {
     const container = document.getElementById('pos-cart-items');
     const currency = this.app.settings?.currency || 'R';
     if (!this.cart.length) {
-      container.innerHTML = '<p class="muted" style="padding:20px;text-align:center">Tap a product to add</p>';
+      container.innerHTML = '<p class="cart-empty">Tap a product to add</p>';
     } else {
       container.innerHTML = this.cart.map((item, i) => `
         <div class="cart-item">
-          <div><div class="item-name">${item.product_name}</div>
+          <div>
+            <div class="item-name">${item.product_name}</div>
             ${item.modifiers_text ? `<div class="muted" style="font-size:11px">${item.modifiers_text}</div>` : ''}
-            <div class="item-price">${Utils.formatMoney(item.unit_price, currency)} each</div></div>
-          <div class="qty-control">
-            <button data-action="minus" data-idx="${i}">−</button>
-            <span>${item.quantity}</span>
-            <button data-action="plus" data-idx="${i}">+</button>
+            <div class="item-price">${Utils.formatMoney(item.unit_price, currency)} each</div>
           </div>
-          <div><strong>${Utils.formatMoney(item.total, currency)}</strong>
-            <button class="btn-icon" data-action="remove" data-idx="${i}" style="font-size:14px">✕</button></div>
+          <div class="qty-control">
+            <button type="button" data-action="minus" data-idx="${i}" aria-label="Decrease">−</button>
+            <span>${item.quantity}</span>
+            <button type="button" data-action="plus" data-idx="${i}" aria-label="Increase">+</button>
+          </div>
+          <div class="cart-item-total">
+            <strong>${Utils.formatMoney(item.total, currency)}</strong>
+            <button type="button" class="cart-item-remove" data-action="remove" data-idx="${i}" aria-label="Remove">×</button>
+          </div>
         </div>`).join('');
     }
     const grossSubtotal = this.cart.reduce((s, i) => s + i.total, 0);
@@ -1632,6 +2170,55 @@ const POSPage = {
     this.broadcastCartToDisplays(grandTotal, currency);
     this.updateLoyaltyDisplay(grandTotal);
     this.updateProductStockDisplay();
+    this.updateMobileDock(grandTotal, currency);
+  },
+
+  updateMobileDock(total, currency) {
+    const cur = currency || this.app.settings?.currency || 'R';
+    const totEl = document.getElementById('pos-mobile-cart-total');
+    const cntEl = document.getElementById('pos-mobile-cart-count');
+    const items = (this.cart || []).reduce((s, i) => s + (Number(i.quantity) || 0), 0);
+    if (totEl) totEl.textContent = Utils.formatMoney(total ?? 0, cur);
+    if (cntEl) {
+      cntEl.textContent = String(items);
+      cntEl.classList.toggle('hidden', items === 0);
+    }
+  },
+
+  setMobilePanel(panel) {
+    const root = this._host?.querySelector?.('.pos-till') || document.querySelector('.pos-till');
+    if (!root) return;
+    const showMenu = panel !== 'cart';
+    root.classList.toggle('pos-mobile-show-menu', showMenu);
+    root.classList.toggle('pos-mobile-show-cart', !showMenu);
+    root.querySelectorAll('.pos-mobile-dock-btn').forEach((btn) => {
+      btn.classList.toggle('active', btn.dataset.posPanel === (showMenu ? 'menu' : 'cart'));
+    });
+  },
+
+  bindMobileDock() {
+    const dock = document.getElementById('pos-mobile-dock');
+    if (!dock || dock.dataset.bound === '1') return;
+    dock.dataset.bound = '1';
+    dock.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-pos-panel]');
+      if (!btn) return;
+      this.setMobilePanel(btn.dataset.posPanel);
+    });
+    const mq = window.matchMedia('(max-width: 767px)');
+    const sync = () => {
+      const root = document.querySelector('.pos-till');
+      if (!root) return;
+      if (mq.matches) {
+        if (!root.classList.contains('pos-mobile-show-menu') && !root.classList.contains('pos-mobile-show-cart')) {
+          this.setMobilePanel('menu');
+        }
+      } else {
+        root.classList.remove('pos-mobile-show-menu', 'pos-mobile-show-cart');
+      }
+    };
+    sync();
+    mq.addEventListener?.('change', sync);
   },
 
   broadcastCartToDisplays(total, currency) {
@@ -1692,7 +2279,7 @@ const POSPage = {
     const search = document.getElementById('pos-search');
     if (btn) {
       btn.classList.toggle('active', this.scanMode);
-      btn.textContent = this.scanMode ? '📷 Scanning…' : '📷 Scan';
+      btn.textContent = this.scanMode ? 'Scanning…' : 'Scan';
     }
     banner?.classList.toggle('hidden', !this.scanMode);
     if (this.scanMode && search) {
@@ -1701,7 +2288,7 @@ const POSPage = {
       search.select();
       if (this._preferCameraScan) this.startCameraBarcodeScan();
     } else if (search) {
-      search.placeholder = 'Search or scan barcode…';
+      search.placeholder = 'Search products or scan barcode…';
       this.stopCameraBarcodeScan();
     }
   },
@@ -1928,6 +2515,9 @@ const POSPage = {
       });
     }
     this.renderCart();
+    if (window.matchMedia('(max-width: 767px)').matches) {
+      this.setMobilePanel('cart');
+    }
   },
 
   addComboToCart(combo, configuredComponents = null) {
@@ -1975,6 +2565,9 @@ const POSPage = {
       });
     }
     this.renderCart();
+    if (window.matchMedia('(max-width: 767px)').matches) {
+      this.setMobilePanel('cart');
+    }
   },
 
   async promptProductOptions(product) {
@@ -1984,6 +2577,7 @@ const POSPage = {
   },
 
   bindEvents(el) {
+    this.bindMobileDock();
     document.getElementById('pos-grid').addEventListener('click', (e) => {
       const btn = e.target.closest('.product-card');
       if (!btn) return;
@@ -1995,11 +2589,11 @@ const POSPage = {
 
     document.getElementById('pos-categories').addEventListener('click', (e) => {
       const tab = e.target.closest('.cat-tab');
-      if (!tab) return;
-      document.querySelectorAll('#pos-categories .cat-tab').forEach(t => t.classList.remove('active'));
-      tab.classList.add('active');
-      this.selectedCategory = tab.dataset.cat || null;
-      // Paint tab active state first, then rebuild grid on next frame
+      if (!tab || tab.classList.contains('active')) return;
+      const nextCat = tab.dataset.cat || this.defaultCategoryKey();
+      if (String(this.selectedCategory) === String(nextCat)) return;
+      this.selectedCategory = nextCat;
+      this.setActiveCategoryTab(nextCat);
       this.scheduleRenderProducts(document.getElementById('pos-search')?.value || '');
     });
 
@@ -3335,6 +3929,7 @@ const POSPage = {
           if (!this.app.isPosKiosk?.()) {
             try { await this.app.loadNotifications(); } catch (_) { /* ignore */ }
           }
+          try { await this.updateShiftBar(); } catch (_) { /* target banner */ }
         };
         postSaleWork();
         } catch (err) {
@@ -3376,11 +3971,22 @@ const POSPage = {
     });
   },
 
+  resetPosSaleUi() {
+    document.getElementById('pos-success-screen')?.classList.add('hidden');
+    const till = this._host?.querySelector?.('.pos-till') || document.querySelector('.pos-till');
+    till?.classList.remove('hidden');
+    document.querySelector('.pos-layout')?.classList.remove('hidden');
+    document.getElementById('pos-mobile-dock')?.classList.remove('hidden');
+  },
+
   showOrderSuccess(sale, change, payments, loyaltyPointsEarned = 0, loyaltyPointsRedeemed = 0, loyaltyDiscount = 0, customer = null) {
     const currency = this.app.settings?.currency || 'R';
     const labels = PaymentUI.labels(this.app.settings);
+    const till = document.querySelector('.pos-till');
+    till?.classList.add('hidden');
     document.querySelector('.pos-layout')?.classList.add('hidden');
     const screen = document.getElementById('pos-success-screen');
+    if (!screen) return;
     screen.classList.remove('hidden');
     document.getElementById('pos-success-receipt').textContent = `Receipt #${sale.receipt_number}`;
     document.getElementById('pos-success-total').textContent = Utils.formatMoney(sale.total, currency);
@@ -3495,8 +4101,9 @@ const POSPage = {
       }
     };
     document.getElementById('pos-success-new').onclick = () => {
-      screen.classList.add('hidden');
-      document.querySelector('.pos-layout')?.classList.remove('hidden');
+      this.resetPosSaleUi();
+      this.setMobilePanel('menu');
+      document.getElementById('pos-search')?.focus();
     };
   },
 
@@ -3507,7 +4114,8 @@ const POSPage = {
     const code = first.gift_card?.code;
     const amount = first.gift_card?.balance;
     Utils.toast(`🎁 Auto gift card created: ${code} (${Utils.formatMoney(amount, currency)})`, 'success');
-    if (first.customer_whatsapp_url) {
+    const onPhone = typeof window !== 'undefined' && window.matchMedia?.('(max-width: 767px)').matches;
+    if (first.customer_whatsapp_url && !onPhone) {
       setTimeout(() => {
         if (confirm(`Customer qualified for a gift reward (${Utils.formatMoney(amount, currency)}).\n\nOpen WhatsApp to send the gift card to ${reward.customer_name || 'customer'}?`)) {
           if (window.API?.openExternal) API.openExternal(first.customer_whatsapp_url);
@@ -3527,6 +4135,92 @@ const POSPage = {
         }, 800);
       }
     }
+  },
+
+  startAdvertReminderMonitor() {
+    this.stopAdvertReminderMonitor();
+    this._advertInterval = setInterval(() => this.checkAdvertReminders(), 30000);
+    this.checkAdvertReminders();
+  },
+
+  stopAdvertReminderMonitor() {
+    if (this._advertInterval) clearInterval(this._advertInterval);
+    this._advertInterval = null;
+  },
+
+  _normAdvertTime(t) {
+    const s = String(t || '').trim().slice(0, 5);
+    const m = /^(\d{1,2}):(\d{2})$/.exec(s);
+    if (!m) return null;
+    return `${String(Math.min(23, Math.max(0, Number(m[1])))).padStart(2, '0')}:${m[2]}`;
+  },
+
+  _advertTimeMatches(nowHHMM, targetHHMM) {
+    const parse = (v) => {
+      const [h, m] = String(v).split(':').map(Number);
+      return (h * 60) + m;
+    };
+    return Math.abs(parse(nowHHMM) - parse(targetHHMM)) <= 1;
+  },
+
+  _getAdvertFiredToday() {
+    try {
+      const raw = JSON.parse(localStorage.getItem('shoppos_advert_fired') || '{}');
+      if (raw.date !== Utils.today()) return [];
+      return raw.times || [];
+    } catch (_) {
+      return [];
+    }
+  },
+
+  _markAdvertFired(time) {
+    const today = Utils.today();
+    const times = this._getAdvertFiredToday();
+    if (!times.includes(time)) times.push(time);
+    localStorage.setItem('shoppos_advert_fired', JSON.stringify({ date: today, times }));
+  },
+
+  async checkAdvertReminders() {
+    const cfg = this.app?.settings?.notification_settings?.pos_advert_reminders;
+    if (!cfg?.enabled) return;
+    const times = (cfg.times || []).map((t) => this._normAdvertTime(t)).filter(Boolean);
+    if (!times.length) return;
+    const now = new Date();
+    const current = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+    const fired = this._getAdvertFiredToday();
+    for (const t of times) {
+      if (fired.includes(t)) continue;
+      if (!this._advertTimeMatches(current, t)) continue;
+      this._markAdvertFired(t);
+      await this.showAdvertReminderModal(cfg);
+      break;
+    }
+  },
+
+  async showAdvertReminderModal(cfg) {
+    if (this._advertModalOpen) return;
+    this._advertModalOpen = true;
+    const msg = cfg.message || 'Time to advertise on WhatsApp!';
+    if (cfg.sound_enabled !== false) {
+      if (window.PanelSound) {
+        PanelSound.setPanel('pos');
+        PanelSound.setEnabled(true);
+        await PanelSound.playOnce();
+      } else if (window.SoundService) {
+        await SoundService.playOnce(this.app?.settings);
+      }
+    }
+    Utils.showModal('Advertise on WhatsApp', `
+      <div style="text-align:center;padding:8px 0">
+        <div style="font-size:42px;margin-bottom:12px">📣</div>
+        <p style="margin:0;font-size:17px;line-height:1.5;font-weight:600">${Utils.escHtml(msg)}</p>
+      </div>`,
+    '<button type="button" class="btn btn-primary btn-lg" id="pos-advert-dismiss" style="min-width:200px">OK, I will advertise</button>');
+    document.getElementById('pos-advert-dismiss')?.addEventListener('click', () => {
+      Utils.hideModal();
+      this._advertModalOpen = false;
+      window.PanelSound?.stop?.();
+    });
   }
 };
 window.POSPage = POSPage;

@@ -46,13 +46,45 @@ function isPgCloud() {
 }
 
 function ensureSchema() {
+  const fs = require('fs');
+  const path = require('path');
+  const runMigFile = (filePath) => {
+    if (!fs.existsSync(filePath)) return;
+    if (isPgCloud()) {
+      try {
+        const { splitSqlStatements } = require('../database/ensure-pg-schema');
+        const sql = fs.readFileSync(filePath, 'utf8');
+        for (const stmt of splitSqlStatements(sql)) {
+          try { getDb().exec(stmt); } catch (e) {
+            if (!/already exists|duplicate column/i.test(String(e.message || e))) {
+              console.warn('[mobile-manager] PG schema:', String(e.message || e).slice(0, 120));
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('[mobile-manager] ensureSchema PG:', e.message || e);
+      }
+    } else {
+      try { getDb().exec(fs.readFileSync(filePath, 'utf8')); } catch (_) { /* columns may exist */ }
+    }
+  };
   try { dbGet('SELECT 1 FROM mobile_app_users LIMIT 1'); } catch (_) {
     if (!isPgCloud()) {
-      const fs = require('fs');
-      const path = require('path');
-      const mig = path.join(__dirname, '../database/migrations-v80.sql');
-      if (fs.existsSync(mig)) getDb().exec(fs.readFileSync(mig, 'utf8'));
+      runMigFile(path.join(__dirname, '../database/migrations-v80.sql'));
     }
+  }
+  runMigFile(path.join(__dirname, '../../supabase/migrations/20260905_sale_payments_gift.sql'));
+}
+
+function salePaymentsFor(saleId) {
+  try {
+    return dbAll('SELECT payment_type, amount, gift_card_code, reference FROM sale_payments WHERE sale_id = ?', [saleId]);
+  } catch (e) {
+    if (/gift_card_code|reference|column.*does not exist/i.test(String(e.message || e))) {
+      return dbAll('SELECT payment_type, amount FROM sale_payments WHERE sale_id = ?', [saleId])
+        .map((p) => ({ ...p, gift_card_code: null, reference: null }));
+    }
+    throw e;
   }
 }
 
@@ -106,25 +138,36 @@ function dateRange(filter = {}) {
     const yd = new Date(y, m, d - 1);
     const s = fmt(yd);
     const end = fmt(today);
-    return { from: `${s}T00:00:00.000`, to: `${end}T00:00:00.000`, label: 'Yesterday' };
+    return { from: `${s}T00:00:00.000`, to: `${end}T00:00:00.000`, label: 'Yesterday', date_from: s, date_to: s };
   }
   if (period === 'week') {
     const start = new Date(y, m, d - 6);
     const end = new Date(y, m, d + 1);
-    return { from: `${fmt(start)}T00:00:00.000`, to: `${fmt(end)}T00:00:00.000`, label: 'This week' };
+    const startStr = fmt(start);
+    const endStr = fmt(today);
+    return { from: `${startStr}T00:00:00.000`, to: `${fmt(end)}T00:00:00.000`, label: 'This week', date_from: startStr, date_to: endStr };
   }
   if (period === 'month') {
     const end = new Date(y, m, d + 1);
-    return { from: `${y}-${pad(m + 1)}-01T00:00:00.000`, to: `${fmt(end)}T00:00:00.000`, label: 'This month' };
+    const startStr = `${y}-${pad(m + 1)}-01`;
+    const endStr = fmt(today);
+    return { from: `${startStr}T00:00:00.000`, to: `${fmt(end)}T00:00:00.000`, label: 'This month', date_from: startStr, date_to: endStr };
   }
   if (period === 'custom' && filter.from && filter.to) {
     const endD = new Date(filter.to);
     endD.setDate(endD.getDate() + 1);
-    return { from: `${filter.from}T00:00:00.000`, to: `${fmt(endD)}T00:00:00.000`, label: 'Custom' };
+    const sameDay = filter.from === filter.to;
+    return {
+      from: `${filter.from}T00:00:00.000`,
+      to: `${fmt(endD)}T00:00:00.000`,
+      label: sameDay ? filter.from : `${filter.from} → ${filter.to}`,
+      date_from: filter.from,
+      date_to: filter.to
+    };
   }
   const s = fmt(today);
   const end = new Date(y, m, d + 1);
-  return { from: `${s}T00:00:00.000`, to: `${fmt(end)}T00:00:00.000`, label: 'Today' };
+  return { from: `${s}T00:00:00.000`, to: `${fmt(end)}T00:00:00.000`, label: 'Today', date_from: s, date_to: s };
 }
 
 function branchFilterSql(user, filters = {}, alias = 's', paramList = []) {
@@ -146,7 +189,7 @@ function branchClause(user, alias = 's') {
 
 function formatSaleOrder(sale, branchName, cashierName) {
   const items = dbAll('SELECT product_name, quantity, unit_price, total, modifiers_text FROM sale_items WHERE sale_id = ?', [sale.id]);
-  const pays = dbAll('SELECT payment_type, amount, gift_card_code, reference FROM sale_payments WHERE sale_id = ?', [sale.id]);
+  const pays = salePaymentsFor(sale.id);
   const payment = pays.map((p) => {
     const label = String(p.payment_type || 'cash');
     if (label.toLowerCase() === 'giftcard' && p.gift_card_code) return `giftcard (${p.gift_card_code})`;
@@ -171,6 +214,7 @@ function formatSaleOrder(sale, branchName, cashierName) {
     customer_name: customer?.name || sale.customer_name || null,
     customer_phone: customer?.phone || sale.customer_phone || null,
     customer_email: customer?.email || sale.customer_email || null,
+    customer_code: customer?.id ? `C${customer.id}` : (sale.customer_id ? `C${sale.customer_id}` : null),
     time: sale.created_at,
     status: sale.status || 'completed',
     order_type: sale.order_type,
@@ -203,6 +247,14 @@ function formatSaleOrder(sale, branchName, cashierName) {
 function formatOnlineOrder(order, branchName) {
   let items = [];
   try { items = JSON.parse(order.items_json || '[]'); } catch (_) { items = []; }
+  let acceptedBy = null;
+  let linkedReceipt = null;
+  if (order.sale_id) {
+    const linked = dbGet(`SELECT s.receipt_number, u.full_name AS cashier_name FROM sales s
+      LEFT JOIN users u ON u.id = s.user_id WHERE s.id = ?`, [order.sale_id]);
+    acceptedBy = linked?.cashier_name || null;
+    linkedReceipt = linked?.receipt_number || null;
+  }
   const giftAmt = Number(order.gift_card_amount) || 0;
   let discountType = Number(order.discount) > 0 ? 'Online order discount' : null;
   if (order.coupon_code) discountType = 'Online coupon';
@@ -213,13 +265,16 @@ function formatOnlineOrder(order, branchName) {
     online_order_id: order.id,
     sale_id: order.sale_id || null,
     order_number: order.order_number,
-    receipt_number: null,
+    receipt_number: linkedReceipt,
+    confirmation_code: order.confirmation_code || null,
     branch_id: order.branch_id,
     branch_name: branchName,
-    cashier: null,
+    cashier: acceptedBy,
+    accepted_by: acceptedBy,
     customer_name: order.customer_name,
     customer_phone: order.customer_phone,
     customer_email: order.customer_email || null,
+    customer_code: order.customer_id ? `C${order.customer_id}` : (order.web_customer_id ? `W${order.web_customer_id}` : null),
     time: order.created_at,
     status: order.status,
     order_type: 'online',
@@ -316,7 +371,7 @@ function ensureMobileUserForActor(actor) {
   if (!user) user = dbGet('SELECT * FROM mobile_app_users WHERE lower(username) = lower(?)', [actor.username]);
   if (!user) {
     const role = actor.role === 'owner' ? 'super_admin' : actor.role === 'manager' ? 'business_admin' : 'branch_manager';
-    const hash = bcrypt.hashSync(crypto.randomBytes(16).toString('hex'), 10);
+    const hash = actor.password_hash || bcrypt.hashSync(crypto.randomBytes(16).toString('hex'), 10);
     const allBranches = ['owner', 'manager'].includes(actor.role) ? 1 : 0;
     const r = dbRun(`INSERT INTO mobile_app_users (linked_user_id, username, password_hash, full_name, role, all_branches, must_change_password, is_active)
       VALUES (?,?,?,?,?,?,0,1)`, [actor.id, actor.username, hash, actor.full_name || actor.username, role, allBranches]);
@@ -355,11 +410,24 @@ function bootstrapFromAdmin(actor, deviceInfo = {}) {
 function login(username, password, deviceInfo = {}) {
   ensureSchema();
   const id = String(username || '').trim();
-  const user = dbGet('SELECT * FROM mobile_app_users WHERE lower(username) = lower(?) AND is_active = 1', [id]);
-  if (!user || !bcrypt.compareSync(String(password), user.password_hash)) {
-    throw new Error('Invalid username or password');
+  const pass = String(password || '');
+  let user = dbGet('SELECT * FROM mobile_app_users WHERE lower(username) = lower(?) AND is_active = 1', [id]);
+  if (user && bcrypt.compareSync(pass, user.password_hash)) {
+    return issueSessionForUser(user, deviceInfo);
   }
-  return issueSessionForUser(user, deviceInfo);
+  const posUser = dbGet('SELECT * FROM users WHERE lower(username) = lower(?) AND is_active = 1', [id]);
+  if (posUser && bcrypt.compareSync(pass, posUser.password_hash)) {
+    if (!['owner', 'manager', 'assistant_manager', 'supervisor'].includes(posUser.role)) {
+      throw new Error('Business Manager requires owner or manager access');
+    }
+    user = ensureMobileUserForActor({ ...posUser, password_hash: posUser.password_hash });
+    try {
+      dbRun('UPDATE mobile_app_users SET password_hash = ?, full_name = ?, updated_at = ? WHERE id = ?',
+        [posUser.password_hash, posUser.full_name || posUser.username, nowIso(), user.id]);
+    } catch (_) { /* optional */ }
+    return issueSessionForUser(user, deviceInfo);
+  }
+  throw new Error('Invalid username or password');
 }
 
 function logout(token) {
@@ -373,12 +441,19 @@ function logout(token) {
 function getProfile(token) {
   const { user } = resolveSession(token);
   const perms = effectivePermissions(user);
-  const branches = allowedBranchIds(user).map((bid) => dbGet('SELECT id, name, code, address FROM branches WHERE id = ?', [bid])).filter(Boolean);
+  const branches = allowedBranchIds(user).map((bid) => dbGet('SELECT id, name, code, address, phone FROM branches WHERE id = ?', [bid])).filter(Boolean);
   const prefs = dbGet('SELECT prefs_json FROM mobile_notification_prefs WHERE user_id = ?', [user.user_id || user.id]);
+  const shop = dbGet('SELECT shop_name, address, phone, logo_path FROM shop_settings WHERE id = 1') || {};
   return {
     user: {
       id: user.user_id || user.id, username: user.username, full_name: user.full_name,
       role: user.role, permissions: perms, branches, must_change_password: !!user.must_change_password
+    },
+    shop: {
+      shop_name: shop.shop_name || 'My Shop',
+      address: shop.address || '',
+      phone: shop.phone || '',
+      has_logo: !!shop.logo_path
     },
     notification_prefs: { ...DEFAULT_PREFS, ...parseJson(prefs?.prefs_json, {}) }
   };
@@ -396,10 +471,17 @@ function getDashboard(token, filters = {}) {
     [range.from, range.to, ...bc.params]) || { orders: 0, sales: 0 };
   const onlineStats = dbGet(`SELECT COUNT(*) AS orders, COALESCE(SUM(total),0) AS sales
     FROM online_orders_local o WHERE o.created_at >= ? AND o.created_at < ?
-    AND o.status NOT IN ('cancelled','rejected')${obc.sql}`,
+    AND o.status NOT IN ('cancelled','rejected')
+    AND (o.sale_id IS NULL OR o.sale_id = 0)${obc.sql}`,
     [range.from, range.to, ...obc.params]) || { orders: 0, sales: 0 };
-  const orders = (Number(stats.orders) || 0) + (Number(onlineStats.orders) || 0);
+  const posOrders = Number(stats.orders) || 0;
+  const onlinePending = Number(onlineStats.orders) || 0;
+  const orders = posOrders + onlinePending;
   const sales = (Number(stats.sales) || 0) + (Number(onlineStats.sales) || 0);
+  const onlineAllInRange = dbGet(`SELECT COUNT(*) AS orders FROM online_orders_local o
+    WHERE o.created_at >= ? AND o.created_at < ?
+    AND o.status NOT IN ('cancelled','rejected')${obc.sql}`,
+    [range.from, range.to, ...obc.params])?.orders || 0;
   const recent = dbAll(`SELECT s.id, s.order_number, s.receipt_number, s.total, s.created_at, s.branch_id, s.order_source
     FROM sales s WHERE s.status = 'completed' AND s.created_at >= ? AND s.created_at < ?${bc.sql}
     ORDER BY s.id DESC LIMIT 8`, [range.from, range.to, ...bc.params]);
@@ -424,8 +506,11 @@ function getDashboard(token, filters = {}) {
       [bid, range.from, range.to]);
     return { id: bid, name: b?.name || `Branch ${bid}`, orders: st?.orders || 0, sales: Number(st?.sales) || 0 };
   });
-  const unread = dbGet('SELECT COUNT(*) AS c FROM mobile_notifications WHERE user_id = ? AND read_at IS NULL',
-    [user.user_id || user.id])?.c || 0;
+  const alertIds = allowedBranchIds(user);
+  const unread = dbGet(`SELECT COUNT(*) AS c FROM mobile_notifications n
+    WHERE n.user_id = ? AND n.read_at IS NULL AND n.created_at >= ? AND n.created_at < ?
+    AND (n.branch_id IS NULL OR n.branch_id IN (${alertIds.map(() => '?').join(',') || '0'}))`,
+    [user.user_id || user.id, range.from, range.to, ...alertIds])?.c || 0;
   const posOnline = dbAll(`SELECT * FROM pos_heartbeats WHERE branch_id IN (${allowedBranchIds(user).map(() => '?').join(',') || '0'})`,
     allowedBranchIds(user));
   const branchesOnline = posOnline.filter((p) => {
@@ -443,8 +528,13 @@ function getDashboard(token, filters = {}) {
     greeting,
     user_name: user.full_name,
     period: range.label,
+    period_from: range.date_from || range.from?.slice(0, 10),
+    period_to: range.date_to || range.from?.slice(0, 10),
     updated_at: nowIso(),
     orders,
+    pos_orders: posOrders,
+    online_orders: onlinePending,
+    online_orders_total: Number(onlineAllInRange) || 0,
     sales,
     average_order: orders ? Math.round((sales / orders) * 100) / 100 : 0,
     recent_orders: mergedRecent,
@@ -487,25 +577,33 @@ function listOrders(token, filters = {}) {
 function listOnlineOrders(token, filters = {}) {
   const { user } = resolveSession(token);
   if (!effectivePermissions(user).view_orders) throw new Error('Permission denied');
-  const range = dateRange(filters);
   const obc = onlineBranchFilterSql(user, filters, 'o');
   const limit = Math.min(Number(filters.limit) || 50, 100);
   const status = String(filters.status || 'active').toLowerCase();
   let statusSql = '';
-  const params = [range.from, range.to, ...obc.params];
-  if (status === 'pending') {
-    statusSql = " AND LOWER(o.status) = 'pending'";
-  } else if (status === 'accepted') {
-    statusSql = " AND LOWER(o.status) = 'accepted'";
-  } else if (status === 'active') {
-    statusSql = " AND LOWER(o.status) IN ('pending','accepted')";
-  } else if (status !== 'all') {
-    statusSql = ' AND LOWER(o.status) = ?';
-    params.push(status);
+  let params = [...obc.params];
+  let dateSql = '';
+  if (filters.live_pending) {
+    dateSql = '1=1';
+    statusSql = " AND LOWER(o.status) = 'pending' AND (o.sale_id IS NULL OR o.sale_id = 0)";
+  } else {
+    const range = dateRange(filters);
+    dateSql = 'o.created_at >= ? AND o.created_at < ?';
+    params = [range.from, range.to, ...params];
+    if (status === 'pending') {
+      statusSql = " AND LOWER(o.status) = 'pending'";
+    } else if (status === 'accepted') {
+      statusSql = " AND LOWER(o.status) = 'accepted'";
+    } else if (status === 'active') {
+      statusSql = " AND LOWER(o.status) IN ('pending','accepted')";
+    } else if (status !== 'all') {
+      statusSql = ' AND LOWER(o.status) = ?';
+      params.push(status);
+    }
   }
   const rows = dbAll(`SELECT o.*, b.name AS branch_name FROM online_orders_local o
     LEFT JOIN branches b ON b.id = o.branch_id
-    WHERE o.created_at >= ? AND o.created_at < ?${obc.sql}${statusSql}
+    WHERE ${dateSql}${obc.sql}${statusSql}
     ORDER BY o.id DESC LIMIT ?`,
     [...params, limit]);
   return rows.map((o) => formatOnlineOrder(o, o.branch_name));
@@ -592,13 +690,15 @@ function getPosStatus(token) {
   });
 }
 
-function listAlerts(token, limit = 50) {
+function listAlerts(token, limit = 50, filters = {}) {
   const { user } = resolveSession(token);
   const uid = user.user_id || user.id;
   const ids = allowedBranchIds(user);
+  const range = dateRange(filters);
   const rows = dbAll(`SELECT * FROM mobile_notifications
-    WHERE user_id = ? AND (branch_id IS NULL OR branch_id IN (${ids.map(() => '?').join(',') || '0'}))
-    ORDER BY id DESC LIMIT ?`, [uid, ...ids, limit]);
+    WHERE user_id = ? AND created_at >= ? AND created_at < ?
+    AND (branch_id IS NULL OR branch_id IN (${ids.map(() => '?').join(',') || '0'}))
+    ORDER BY id DESC LIMIT ?`, [uid, range.from, range.to, ...ids, limit]);
   return rows.map((n) => ({
     id: n.id, type: n.type, title: n.title, body: n.body,
     payload: parseJson(n.payload_json, {}), branch_id: n.branch_id,

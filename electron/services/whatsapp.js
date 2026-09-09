@@ -76,7 +76,8 @@ const MANAGER_TYPES = new Set(['promotion', 'announcement']);
 const STAFF_SEND_TYPES = new Set([
   'sale_receipt', 'review_request', 'gift_card', 'giftcard', 'flyer_share', 'campaign', 'quotation', 'supplier_payment',
   'recruitment_hire', 'recruitment_reject', 'recruitment_interview', 'custom',
-  'layby', 'cashout', 'checklist', 'account_receipt', 'thank_you'
+  'layby', 'cashout', 'checklist', 'account_receipt', 'thank_you',
+  'delivery_update', 'password_recovery'
 ]);
 const CASHIER_ALLOWED_TYPES = new Set([
   'sale_receipt', 'review_request', 'gift_card', 'giftcard', 'flyer_share', 'campaign', 'quotation',
@@ -171,6 +172,8 @@ function getWhatsAppSettings() {
     business_account_id: parsed.business_account_id || '',
     default_branch_phone: parsed.default_branch_phone || row.phone || '',
     default_branch_id: parsed.default_branch_id ?? row.branch_id ?? null,
+    business_group_link: parsed.business_group_link || parsed.whatsapp_business_group_link || '',
+    whatsapp_business_group_link: parsed.whatsapp_business_group_link || parsed.business_group_link || '',
     enabled: parsed.enabled,
     provider: parsed.provider
   };
@@ -483,7 +486,9 @@ async function sendMessage(data, actor) {
   const msgType = data.message_type || 'custom';
   const slug = data.template_slug || msgType;
   let user;
-  if (OWNER_ONLY_TYPES.has(msgType) || OWNER_ONLY_TYPES.has(slug)) {
+  if (actor?.role === 'system') {
+    user = { id: 0, username: 'system', full_name: 'System', role: 'system' };
+  } else if (OWNER_ONLY_TYPES.has(msgType) || OWNER_ONLY_TYPES.has(slug)) {
     user = requireOwner(actor);
   } else if (HR_TYPES.has(msgType) || HR_TYPES.has(slug)) {
     user = requireRole(actor, ['owner', 'manager', 'supervisor', 'assistant_manager']);

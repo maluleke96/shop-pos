@@ -1,0 +1,9 @@
+node_modules/
+.git/
+android/
+www/
+data/
+*.log
+.DS_Store
+public/android-downloads/*.apk
+cloud-data/android-downloads/*.apk

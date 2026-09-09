@@ -15,10 +15,18 @@ const http = require('http');
 const ROOT = path.join(__dirname);
 process.chdir(ROOT);
 
+process.on('unhandledRejection', (reason) => {
+  console.error('[process] unhandledRejection:', reason?.message || reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[process] uncaughtException:', err?.message || err);
+});
+
 const CUSTOMER_WEB = path.join(ROOT, 'customer-web');
 const MANAGER_WEB = path.join(ROOT, 'manager-web');
 const REFERRAL_WEB = path.join(ROOT, 'referral-web');
 const DRIVER_WEB = path.join(ROOT, 'driver-web');
+const EXPENSE_WEB = path.join(ROOT, 'expense-web');
 const INVESTOR_WEB = path.join(ROOT, 'investor-web');
 const RELEASE_WEB = path.join(ROOT, 'release-web');
 const MEETING_WEB = path.join(ROOT, 'meeting-web');
@@ -26,6 +34,7 @@ const SIGNAGE_WEB = path.join(ROOT, 'signage-web');
 const SIGNAGE_PLAYER = path.join(ROOT, 'signage-player');
 const KIOSK_WEB = path.join(ROOT, 'kiosk-web');
 const DRIVE_THRU_WEB = path.join(ROOT, 'drive-thru-web');
+const COMMUNICATION_WEB = path.join(ROOT, 'communication-web');
 
 const { loadProjectEnv } = require('./lib/load-env');
 loadProjectEnv(ROOT);
@@ -170,6 +179,66 @@ function syncReferralWebConfig() {
   }
 }
 
+function syncExpenseWebConfig() {
+  const railwayDomain = process.env.RAILWAY_PUBLIC_DOMAIN || '';
+  const apiBase = (
+    process.env.SHOP_POS_PUBLIC_URL ||
+    process.env.SHOP_POS_SYNC_URL ||
+    (railwayDomain ? `https://${railwayDomain}` : '') ||
+    'https://chisafood.up.railway.app'
+  ).replace(/\/$/, '');
+  const rpc = (
+    process.env.SHOP_POS_PUBLIC_RPC_URL ||
+    process.env.SHOP_POS_RPC_URL ||
+    `${apiBase}/rpc`
+  ).replace(/\/$/, '');
+  const out = `window.__EXPENSE_CONFIG__ = {
+  rpcUrl: ${JSON.stringify(rpc)},
+  apiBase: ${JSON.stringify(apiBase)},
+  expensePath: "/expenses/"
+};
+`;
+  try {
+    fs.mkdirSync(path.join(EXPENSE_WEB, 'js'), { recursive: true });
+    fs.writeFileSync(path.join(EXPENSE_WEB, 'js', 'config.js'), out, 'utf8');
+  } catch (e) {
+    console.warn('[expense-web] config write failed:', e.message);
+  }
+}
+
+function serveExpenseWeb(req, res) {
+  let urlPath = (req.url || '/').split('?')[0];
+  if (urlPath === '/expenses') urlPath = '/';
+  else if (urlPath.startsWith('/expenses/')) urlPath = urlPath.slice('/expenses'.length);
+  if (urlPath === '/') urlPath = '/index.html';
+  const filePath = safeJoin(EXPENSE_WEB, urlPath);
+  if (!filePath) {
+    res.writeHead(403);
+    return res.end('Forbidden');
+  }
+  fs.stat(filePath, (err, st) => {
+    if (err || !st.isFile()) {
+      const index = path.join(EXPENSE_WEB, 'index.html');
+      return fs.readFile(index, (e2, buf) => {
+        if (e2) { res.writeHead(404); return res.end('Not found'); }
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...corsHeaders() });
+        res.end(buf);
+      });
+    }
+    const ext = path.extname(filePath).toLowerCase();
+    const type = MIME[ext] || 'application/octet-stream';
+    fs.readFile(filePath, (e2, buf) => {
+      if (e2) { res.writeHead(500); return res.end('Read error'); }
+      res.writeHead(200, {
+        'Content-Type': type,
+        'Cache-Control': (ext === '.html' || ext === '.js' || ext === '.css') ? 'no-cache' : 'public, max-age=3600',
+        ...corsHeaders()
+      });
+      res.end(buf);
+    });
+  });
+}
+
 function syncDriverWebConfig() {
   const railwayDomain = process.env.RAILWAY_PUBLIC_DOMAIN || '';
   const apiBase = (
@@ -260,6 +329,13 @@ function syncDriveThruWebConfig() {
     fs.mkdirSync(path.join(DRIVE_THRU_WEB, 'js'), { recursive: true });
     fs.writeFileSync(path.join(DRIVE_THRU_WEB, 'js', 'config.js'), portalConfig('__DRIVE_THRU_CONFIG__', '/drive-thru/'), 'utf8');
   } catch (e) { console.warn('[drive-thru-web] config write failed:', e.message); }
+}
+
+function syncCommunicationWebConfig() {
+  try {
+    fs.mkdirSync(path.join(COMMUNICATION_WEB, 'js'), { recursive: true });
+    fs.writeFileSync(path.join(COMMUNICATION_WEB, 'js', 'config.js'), portalConfig('__COMM_CONFIG__', '/communications/'), 'utf8');
+  } catch (e) { console.warn('[communication-web] config write failed:', e.message); }
 }
 
 function servePortalWeb(req, res, baseDir, mount) {
@@ -516,14 +592,17 @@ function syncPublicEnvJs() {
     process.env.SHOP_POS_SUPABASE_ANON_KEY ||
     process.env.SUPABASE_ANON_KEY ||
     '';
-  // Same-origin /rpc on Railway — leave empty unless overridden
   const rpc =
     process.env.SHOP_POS_PUBLIC_RPC_URL ||
     process.env.SHOP_POS_RPC_URL ||
     process.env.RPC_URL ||
     '';
+  let deployVersion = '';
+  try {
+    deployVersion = fs.readFileSync(path.join(__dirname, 'deploy-version.txt'), 'utf8').trim();
+  } catch (_) { /* optional */ }
 
-  if (!url && !anon) return;
+  if (!url && !anon && !deployVersion) return;
 
   const out = `/* Auto-synced public env at server start — no secrets */
 window.__SHOP_POS_ENV__ = {
@@ -535,6 +614,7 @@ window.__SHOP_POS_ENV__ = {
   SHOP_POS_RPC_URL: ${JSON.stringify(rpc)}
 };
 window.__SHOP_POS_USE_SUPABASE__ = true;
+window.__SHOP_POS_DEPLOY__ = ${JSON.stringify(deployVersion)};
 `;
   try {
     fs.writeFileSync(path.join(SRC, 'js', 'env.js'), out, 'utf8');
@@ -549,12 +629,14 @@ async function main() {
   syncManagerWebConfig();
   syncReferralWebConfig();
   syncDriverWebConfig();
+  syncExpenseWebConfig();
   syncInvestorWebConfig();
   syncReleaseWebConfig();
   syncMeetingWebConfig();
   syncSignageWebConfig();
   syncKioskWebConfig();
   syncDriveThruWebConfig();
+  syncCommunicationWebConfig();
   syncPublicEnvJs();
 
   console.log('Connecting to Supabase Postgres…');
@@ -593,6 +675,124 @@ async function main() {
       });
     }
 
+    if (urlPath === '/api/mobile-releases.json') {
+      try {
+        const manifestPath = path.join(ROOT, 'mobile-releases.json');
+        if (!fs.existsSync(manifestPath)) {
+          require('./scripts/write-mobile-releases.js').writeMobileReleases();
+        }
+        const body = fs.readFileSync(manifestPath, 'utf8');
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-cache', ...corsHeaders() });
+        return res.end(body);
+      } catch (e) {
+        res.writeHead(500);
+        return res.end(JSON.stringify({ error: e.message || 'Could not load releases' }));
+      }
+    }
+
+    if (urlPath === '/api/mobile-apk-status') {
+      try {
+        const { listStatus } = require('./lib/mobile-apk-store');
+        return writeJson(res, 200, { success: true, data: listStatus() });
+      } catch (e) {
+        return writeJson(res, 500, { success: false, error: e.message || 'Could not read APK status' });
+      }
+    }
+
+    if (urlPath.startsWith('/communication/webhooks/') && req.method === 'POST') {
+      const provider = urlPath.split('/').pop() || 'unknown';
+      try {
+        const chunks = [];
+        for await (const c of req) chunks.push(c);
+        const raw = Buffer.concat(chunks).toString('utf8') || '{}';
+        let payload = {};
+        try { payload = JSON.parse(raw); } catch { payload = { raw }; }
+        const comm = require('./electron/services/communication-centre');
+        const result = comm.handleWebhook(provider, payload);
+        return writeJson(res, 200, { success: true, data: result });
+      } catch (e) {
+        return writeJson(res, 500, { success: false, error: e.message || 'Webhook failed' });
+      }
+    }
+
+    if (urlPath === '/api/admin/mobile-apk-upload' && req.method === 'POST') {
+      const token = String(req.headers['x-session-token'] || '');
+      const snap = token && rpc.sessions.has(token) ? rpc.sessions.get(token) : null;
+      const user = snap?.userSession;
+      if (!user || !['owner', 'manager'].includes(user.role)) {
+        res.writeHead(403);
+        return res.end('Owner or manager sign-in required');
+      }
+      const fileName = String(req.headers['x-apk-filename'] || '');
+      const { isAllowedFileName, saveApk } = require('./lib/mobile-apk-store');
+      if (!isAllowedFileName(fileName)) {
+        res.writeHead(400);
+        return res.end('Invalid APK file name');
+      }
+      try {
+        const chunks = [];
+        for await (const c of req) chunks.push(c);
+        const buf = Buffer.concat(chunks);
+        const info = saveApk(fileName, buf);
+        return writeJson(res, 200, { success: true, data: info });
+      } catch (e) {
+        return writeJson(res, 400, { success: false, error: e.message || 'Upload failed' });
+      }
+    }
+
+    if (urlPath.startsWith('/downloads/')) {
+      const fileName = path.basename(urlPath);
+      if (!/^ShopPOS-[-A-Za-z0-9_.]+\.apk$/i.test(fileName)) {
+        res.writeHead(403);
+        return res.end('Forbidden');
+      }
+      const { resolveApkPath } = require('./lib/mobile-apk-store');
+      const apkPath = resolveApkPath(fileName);
+      if (!apkPath) {
+        res.writeHead(404);
+        return res.end('APK not uploaded yet — open Admin → Security → Android app installers and upload the latest APK.');
+      }
+      res.writeHead(200, {
+        'Content-Type': 'application/vnd.android.package-archive',
+        'Content-Disposition': `attachment; filename="${fileName}"`,
+        'Cache-Control': 'public, max-age=300',
+        ...corsHeaders()
+      });
+      return fs.createReadStream(apkPath).pipe(res);
+    }
+
+    if (urlPath.startsWith('/api/expense-grant-photo/')) {
+      const grantId = urlPath.replace('/api/expense-grant-photo/', '').split('?')[0];
+      try {
+        const { getGrantPhoto } = require('./lib/expense-permission-grants');
+        const file = getGrantPhoto(Number(grantId));
+        return fs.readFile(file.path, (err, buf) => {
+          if (err) { res.writeHead(404); return res.end('Not found'); }
+          res.writeHead(200, { 'Content-Type': file.mime, 'Cache-Control': 'private, max-age=3600', ...corsHeaders() });
+          res.end(buf);
+        });
+      } catch (e) {
+        res.writeHead(404);
+        return res.end(String(e.message || 'Not found'));
+      }
+    }
+
+    if (urlPath.startsWith('/api/expense-grant-recording/')) {
+      const grantId = urlPath.replace('/api/expense-grant-recording/', '').split('?')[0];
+      try {
+        const { getGrantRecording } = require('./lib/expense-permission-grants');
+        const file = getGrantRecording(Number(grantId));
+        return fs.readFile(file.path, (err, buf) => {
+          if (err) { res.writeHead(404); return res.end('Not found'); }
+          res.writeHead(200, { 'Content-Type': file.mime, 'Cache-Control': 'private, max-age=3600', ...corsHeaders() });
+          res.end(buf);
+        });
+      } catch (e) {
+        res.writeHead(404);
+        return res.end(String(e.message || 'Not found'));
+      }
+    }
+
     if (urlPath === '/api/logo') {
       try {
         const { getShopLogo } = require('./lib/product-images');
@@ -614,8 +814,10 @@ async function main() {
 
     if (urlPath === '/api/notification-sound') {
       try {
+        const q = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`).searchParams;
+        const panel = q.get('panel') || '';
         const { getNotificationSound } = require('./lib/product-images');
-        const file = getNotificationSound();
+        const file = getNotificationSound(panel);
         if (file.buffer) {
           res.writeHead(200, { 'Content-Type': file.mime, 'Cache-Control': 'public, max-age=60', ...corsHeaders() });
           return res.end(file.buffer);
@@ -638,6 +840,22 @@ async function main() {
       try {
         const { getDriverDocument } = require('./lib/driver-documents');
         const file = getDriverDocument(driverId, docKey);
+        return fs.readFile(file.path, (err, buf) => {
+          if (err) { res.writeHead(404); return res.end('Not found'); }
+          res.writeHead(200, { 'Content-Type': file.mime, 'Cache-Control': 'private, max-age=3600', ...corsHeaders() });
+          res.end(buf);
+        });
+      } catch (e) {
+        res.writeHead(404);
+        return res.end('Not found');
+      }
+    }
+
+    if (urlPath.startsWith('/api/expense-invoice/')) {
+      const expenseId = urlPath.replace('/api/expense-invoice/', '').split('?')[0];
+      try {
+        const { getExpenseInvoice } = require('./lib/expense-documents');
+        const file = getExpenseInvoice(expenseId);
         return fs.readFile(file.path, (err, buf) => {
           if (err) { res.writeHead(404); return res.end('Not found'); }
           res.writeHead(200, { 'Content-Type': file.mime, 'Cache-Control': 'private, max-age=3600', ...corsHeaders() });
@@ -830,6 +1048,10 @@ async function main() {
       return serveDriverWeb(req, res);
     }
 
+    if (urlPath === '/expenses' || urlPath.startsWith('/expenses/')) {
+      return serveExpenseWeb(req, res);
+    }
+
     if (urlPath === '/investor' || urlPath.startsWith('/investor/')) {
       return servePortalWeb(req, res, INVESTOR_WEB, '/investor');
     }
@@ -858,6 +1080,10 @@ async function main() {
       return servePortalWeb(req, res, DRIVE_THRU_WEB, '/drive-thru');
     }
 
+    if (urlPath === '/communications' || urlPath.startsWith('/communications/')) {
+      return servePortalWeb(req, res, COMMUNICATION_WEB, '/communications');
+    }
+
     if (urlPath === '/track' || urlPath.startsWith('/track/')) {
       return serveTrackingWeb(req, res);
     }
@@ -879,6 +1105,7 @@ async function main() {
     console.log(`  Manager: http://localhost:${PORT}/manager/`);
     console.log(`  Referral: http://localhost:${PORT}/r/CODE`);
     console.log(`  Driver:   http://localhost:${PORT}/driver/`);
+    console.log(`  Expenses: http://localhost:${PORT}/expenses/`);
     console.log(`  Investor: http://localhost:${PORT}/investor/`);
     console.log(`  Release:  http://localhost:${PORT}/release/`);
     console.log(`  Meeting:  http://localhost:${PORT}/meeting/`);
@@ -886,6 +1113,7 @@ async function main() {
     console.log(`  Player:   http://localhost:${PORT}/signage-player/`);
     console.log(`  Kiosk:    http://localhost:${PORT}/kiosk/`);
     console.log(`  Drive-Thru: http://localhost:${PORT}/drive-thru/`);
+    console.log(`  Communication Centre: http://localhost:${PORT}/communications/`);
     console.log(`  Track:    http://localhost:${PORT}/track/TOKEN`);
     console.log('');
   });

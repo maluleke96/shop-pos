@@ -53,6 +53,70 @@ function getSalesList(filters = {}) {
   return db.prepare(sql).all(...params);
 }
 
+function getPendingOnlineOrdersForSales(filters = {}) {
+  const db = getDb();
+  let sql = `
+    SELECT o.id, o.order_number, o.created_at, o.total, o.discount, o.tax_amount, o.status,
+      o.customer_name, o.customer_phone, o.payment_method, o.items_json, o.branch_id, o.fulfillment_type
+    FROM online_orders_local o
+    WHERE o.status NOT IN ('cancelled', 'rejected')
+      AND (o.sale_id IS NULL OR o.sale_id = 0)
+  `;
+  const params = [];
+  if (filters.from) { sql += " AND date(o.created_at, 'localtime') >= date(?)"; params.push(filters.from); }
+  if (filters.to) { sql += " AND date(o.created_at, 'localtime') <= date(?)"; params.push(filters.to); }
+  if (filters.branch_id != null && filters.branch_id !== '' && filters.branch_id !== 'all') {
+    sql += ' AND o.branch_id = ?';
+    params.push(Number(filters.branch_id));
+  }
+  sql += ' ORDER BY o.created_at DESC';
+  if (filters.limit) { sql += ' LIMIT ?'; params.push(filters.limit); }
+  return db.prepare(sql).all(...params);
+}
+
+function mapOnlineOrderAsSaleRow(order) {
+  let itemSummary = '—';
+  try {
+    const items = JSON.parse(order.items_json || '[]');
+    itemSummary = items.slice(0, 5).map((i) => `${i.quantity || 1}× ${i.name || 'Item'}`).join(', ') || '—';
+  } catch (_) { /* ignore */ }
+  return {
+    id: `online-${order.id}`,
+    online_order_id: order.id,
+    order_number: order.order_number,
+    receipt_number: '—',
+    created_at: order.created_at,
+    subtotal: order.total,
+    discount: Number(order.discount) || 0,
+    tax_amount: Number(order.tax_amount) || 0,
+    total: Number(order.total) || 0,
+    status: order.status,
+    order_type: 'online',
+    order_source: 'ONLINE',
+    customer_name: order.customer_name || 'Online customer',
+    customer_phone: order.customer_phone || null,
+    primary_payment: order.payment_method || 'Online',
+    payment_methods: order.payment_method || 'Online',
+    cashier_name: '—',
+    item_summary: itemSummary,
+    gift_card_amount: 0,
+    loyalty_points_redeemed: 0,
+    is_online_pending: true,
+    branch_id: order.branch_id
+  };
+}
+
+function getUnifiedSalesList(filters = {}) {
+  const limit = filters.limit || 500;
+  const sales = getSalesList({ ...filters, limit });
+  if (filters.pos_only) return sales;
+  const pendingOnline = getPendingOnlineOrdersForSales({ ...filters, limit: Math.min(limit, 200) })
+    .map(mapOnlineOrderAsSaleRow);
+  return [...sales, ...pendingOnline]
+    .sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0))
+    .slice(0, limit);
+}
+
 function searchSalesExplorer(filters) {
   return getSalesList({ ...filters, limit: filters.limit || 500 });
 }
@@ -369,7 +433,26 @@ function getAdminDashboardFull(from, to, branchId) {
     GROUP BY ri.product_name ORDER BY qty DESC LIMIT 10
   `).all(), []);
 
-  const recentSales = soft('recentSales', () => getSalesList({
+  const onlinePendingStats = soft('onlinePendingStats', () => db.prepare(`
+    SELECT COALESCE(SUM(total),0) AS total, COUNT(*) AS count FROM online_orders_local
+    WHERE date(created_at, 'localtime') BETWEEN date(?) AND date(?)
+      AND status NOT IN ('cancelled','rejected') AND (sale_id IS NULL OR sale_id = 0)
+      ${canScopeSales ? 'AND branch_id = ?' : ''}
+  `).get(...(canScopeSales ? [rangeFrom, rangeTo, branchId] : [rangeFrom, rangeTo])), { total: 0, count: 0 });
+
+  const posChannelStats = soft('posChannelStats', () => db.prepare(`
+    SELECT COALESCE(SUM(total),0) AS total, COUNT(*) AS count FROM sales
+    WHERE ${saleDate} BETWEEN date(?) AND date(?) AND status='completed'${saleBranch}
+      AND COALESCE(order_type,'') != 'online' AND COALESCE(order_source,'') NOT IN ('ONLINE','WEB')
+  `).get(rangeFrom, rangeTo, ...saleBranchParams), { total: 0, count: 0 });
+
+  const onlineChannelStats = soft('onlineChannelStats', () => db.prepare(`
+    SELECT COALESCE(SUM(total),0) AS total, COUNT(*) AS count FROM sales
+    WHERE ${saleDate} BETWEEN date(?) AND date(?) AND status='completed'${saleBranch}
+      AND (COALESCE(order_type,'') = 'online' OR COALESCE(order_source,'') IN ('ONLINE','WEB'))
+  `).get(rangeFrom, rangeTo, ...saleBranchParams), { total: 0, count: 0 });
+
+  const recentSales = soft('recentSales', () => getUnifiedSalesList({
     from: rangeFrom,
     to: rangeTo,
     limit: 20,
@@ -415,6 +498,11 @@ function getAdminDashboardFull(from, to, branchId) {
     recentActivity,
     alerts,
     pendingLeave: pendingLeaveRow?.c || 0,
+    channels: {
+      pos: { sales: posChannelStats?.total || 0, orders: posChannelStats?.count || 0 },
+      online: { sales: onlineChannelStats?.total || 0, orders: onlineChannelStats?.count || 0 },
+      online_pending: { sales: onlinePendingStats?.total || 0, orders: onlinePendingStats?.count || 0 }
+    },
     widgetErrors: []
   };
 }
@@ -586,31 +674,56 @@ function getTopCustomers(from, to, limit = 50) {
   const rangeFrom = from || new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
   const rangeTo = to || new Date().toLocaleDateString('en-CA');
   const lim = Math.min(Number(limit) || 50, 200);
-  return db.prepare(`
-    SELECT id, name, phone, email, SUM(total_spent) AS total_spent, SUM(visits) AS visits FROM (
+  const rows = db.prepare(`
+    SELECT id, name, phone, email,
+      SUM(pos_spent) AS pos_spent,
+      SUM(online_spent) AS online_spent,
+      SUM(total_spent) AS total_spent,
+      SUM(visits) AS visits
+    FROM (
       SELECT c.id, c.name, c.phone, c.email,
-        COALESCE(SUM(s.total), 0) as total_spent,
-        COUNT(s.id) as visits
+        COALESCE(SUM(CASE WHEN COALESCE(s.order_type,'') = 'online' OR UPPER(COALESCE(s.order_source,'')) IN ('ONLINE','WEB') THEN 0 ELSE s.total END), 0) AS pos_spent,
+        COALESCE(SUM(CASE WHEN COALESCE(s.order_type,'') = 'online' OR UPPER(COALESCE(s.order_source,'')) IN ('ONLINE','WEB') THEN s.total ELSE 0 END), 0) AS online_spent,
+        COALESCE(SUM(s.total), 0) AS total_spent, COUNT(s.id) AS visits
       FROM customers c
       INNER JOIN sales s ON s.customer_id = c.id AND s.status = 'completed'
         AND date(s.created_at, 'localtime') BETWEEN date(?) AND date(?)
       GROUP BY c.id
       UNION ALL
       SELECT NULL AS id, COALESCE(s.customer_name, 'Walk-in') AS name, s.customer_phone AS phone, NULL AS email,
+        COALESCE(SUM(s.total), 0) AS pos_spent, 0 AS online_spent,
         COALESCE(SUM(s.total), 0) AS total_spent, COUNT(s.id) AS visits
       FROM sales s
       WHERE s.status = 'completed' AND s.customer_id IS NULL AND s.customer_phone IS NOT NULL AND TRIM(s.customer_phone) != ''
         AND date(s.created_at, 'localtime') BETWEEN date(?) AND date(?)
       GROUP BY s.customer_phone, s.customer_name
+      UNION ALL
+      SELECT NULL AS id, COALESCE(o.customer_name, 'Online customer') AS name, o.customer_phone AS phone, o.customer_email AS email,
+        0 AS pos_spent, COALESCE(SUM(o.total), 0) AS online_spent,
+        COALESCE(SUM(o.total), 0) AS total_spent, COUNT(o.id) AS visits
+      FROM online_orders_local o
+      WHERE o.status NOT IN ('cancelled', 'rejected')
+        AND (o.sale_id IS NULL OR o.sale_id = 0)
+        AND date(o.created_at, 'localtime') BETWEEN date(?) AND date(?)
+        AND o.customer_phone IS NOT NULL AND TRIM(o.customer_phone) != ''
+      GROUP BY o.customer_phone, o.customer_name, o.customer_email
     ) combined
     GROUP BY COALESCE(id, phone), name, phone, email
+    HAVING total_spent > 0
     ORDER BY total_spent DESC
     LIMIT ?
-  `).all(rangeFrom, rangeTo, rangeFrom, rangeTo, lim);
+  `).all(rangeFrom, rangeTo, rangeFrom, rangeTo, rangeFrom, rangeTo, lim);
+  return rows.map((r, i) => ({
+    ...r,
+    rank: i + 1,
+    pos_spent: Math.round((Number(r.pos_spent) || 0) * 100) / 100,
+    online_spent: Math.round((Number(r.online_spent) || 0) * 100) / 100,
+    total_spent: Math.round((Number(r.total_spent) || 0) * 100) / 100
+  }));
 }
 
 module.exports = {
-  getSalesList, searchSalesExplorer, voidSale,
+  getSalesList, getUnifiedSalesList, getPendingOnlineOrdersForSales, searchSalesExplorer, voidSale,
   getSoldProductsReport, getLowPerformanceProducts,
   getReturnDetail, getReturnsList, getReturnReasonsReport, reopenReturn, verifyManagerPin,
   getPriceChangeHistory, logPriceChange,

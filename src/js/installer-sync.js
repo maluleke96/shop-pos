@@ -14,8 +14,21 @@
     return !!(window.__SHOP_POS_CLOUD__);
   }
 
+  function isCloudShellCapacitor() {
+    try {
+      if (!window.Capacitor?.isNativePlatform?.()) return false;
+      if (window.__SHOP_POS_LOCAL_INSTALLER__) return false;
+      const proto = String(location.protocol || '');
+      const host = String(location.hostname || '');
+      return (proto === 'https:' || proto === 'http:') && host && host !== 'localhost' && host !== '127.0.0.1';
+    } catch (_) {
+      return false;
+    }
+  }
+
   function isInstaller() {
     if (isBrowserCloud()) return false;
+    if (isCloudShellCapacitor()) return false;
     try {
       if (window.__SHOP_POS_MOBILE__ || window.Capacitor?.isNativePlatform?.()) return true;
     } catch (_) { /* ignore */ }
@@ -317,6 +330,7 @@
   window.addEventListener('online', () => {
     setConn('online', 'Back online');
     flushQueue();
+    try { window.MobileUpdateCheck?.check?.(true); } catch (_) { /* ignore */ }
   });
   window.addEventListener('offline', () => setConn('offline', 'Offline'));
   window.addEventListener('posAPIReady', () => {

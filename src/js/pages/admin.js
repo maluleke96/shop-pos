@@ -62,6 +62,7 @@ const AdminPage = {
     { id: 'hrcontracts', label: '📄 Contracts & Probation', icon: 'hrcontracts' },
     { id: 'recruitment', label: '💼 Recruitment', icon: 'recruitment' },
     { id: 'marketing-mgmt', label: '📣 Marketing Command Centre', icon: 'marketing' },
+    { id: 'communication-centre', label: '📡 Communication Centre', icon: 'communication' },
     { id: 'delivery-dept', label: '🚚 Delivery Department', icon: 'delivery' },
     { id: 'payroll', label: '💼 Payroll & Compliance', icon: 'payroll' },
     { id: 'employee-of-month', label: '🏆 Employee of Month', icon: 'employee-of-month' }
@@ -114,18 +115,44 @@ const AdminPage = {
     this.toggleOpsComplianceLayout(this.section === 'opscompliance');
     this.renderSection(document.getElementById('admin-content'));
 
-    // Refresh settings in background; re-render active section if values changed
-    API.getSettingsParsed().then((res) => {
-      if (res?.data) {
-        this.settings = res.data;
-        if (app) app.settings = res.data;
-      }
-    }).catch(() => {});
+    this._prefetchAdmin();
   },
 
   toggleOpsComplianceLayout(opsOnly) {
     const layout = document.querySelector('.admin-layout');
     if (layout) layout.classList.toggle('admin-ops-full', !!opsOnly);
+  },
+
+  _prefetchAdmin() {
+    if (this._adminPrefetchStarted) return;
+    this._adminPrefetchStarted = true;
+    if (window.App?.ensurePageScripts) {
+      this._adminScriptsP = App.ensurePageScripts('admin').catch(() => {});
+    }
+    const today = Utils.today();
+    const actor = this.app?.user;
+    const warm = [
+      API.getProducts?.({ for_pos: true, actor }).catch(() => {}),
+      API.getCategories?.({ for_pos: true, actor }).catch(() => {}),
+      API.getAdminDashboard?.(today, today).catch(() => {}),
+      API.getSalesList?.({ from: today, to: today, limit: 500 }).catch(() => {}),
+      API.getPromoRequestHistory?.({ status: 'active' }).catch(() => {})
+    ];
+    Promise.all(warm).catch(() => {});
+    API.getSettingsParsed().then((res) => {
+      if (res?.data) {
+        this.settings = res.data;
+        if (this.app) this.app.settings = res.data;
+      }
+    }).catch(() => {});
+  },
+
+  async _ensureAdminScripts(checkFn) {
+    if (checkFn?.()) return;
+    if (!this._adminScriptsP && window.App?.ensurePageScripts) {
+      this._adminScriptsP = App.ensurePageScripts('admin').catch(() => {});
+    }
+    if (this._adminScriptsP) await this._adminScriptsP;
   },
 
   refreshAdminNav(containerEl) {
@@ -141,13 +168,13 @@ const AdminPage = {
 
   async renderSection(el) {
     const lazySections = new Set([
-      'hrcontracts', 'recruitment', 'marketing-mgmt', 'employee-of-month', 'staffhr', 'hr-workspace', 'hr-approvals', 'staffportal', 'payroll',
+      'hrcontracts', 'recruitment', 'marketing-mgmt', 'communication-centre', 'employee-of-month', 'staffhr', 'hr-workspace', 'hr-approvals', 'staffportal', 'payroll',
       'opscompliance', 'combos', 'recipe', 'quotes',
       'salesmgmt', 'saleexplorer', 'soldproducts', 'returnsmgmt', 'activity',
-      'exceptions', 'alerts', 'dailyclose', 'discount-report'
+      'exceptions', 'alerts', 'dailyclose', 'discount-report', 'delivery-dept'
     ]);
-    if (lazySections.has(this.section) && window.App?.ensurePageScripts) {
-      await App.ensurePageScripts('admin');
+    if (lazySections.has(this.section)) {
+      this._prefetchAdmin();
     }
 
     if (this.section === 'recipe') {
@@ -156,7 +183,7 @@ const AdminPage = {
 
     const tryModule = async (getPage, renderFn, label) => {
       if (getPage()) return renderFn();
-      if (window.App?.ensurePageScripts) await App.ensurePageScripts('admin');
+      await this._ensureAdminScripts(getPage);
       if (getPage()) return renderFn();
       el.innerHTML = `<div class="admin-section"><p class="muted">${label} module not loaded. Try refreshing the page.</p></div>`;
     };
@@ -235,6 +262,11 @@ const AdminPage = {
         () => window.AdminMarketingPage.render(el, this.app || this),
         'Marketing Management'
       ),
+      'communication-centre': async () => tryModule(
+        () => window.AdminCommunicationPage,
+        () => window.AdminCommunicationPage.render(el, this.app || this),
+        'Communication Centre'
+      ),
       'delivery-dept': async () => tryModule(
         () => window.AdminDeliveryPage,
         () => window.AdminDeliveryPage.render(el, this.app || this),
@@ -294,12 +326,12 @@ const AdminPage = {
         'On Account'
       ),
       combos: async () => {
-        if (window.App?.ensurePageScripts) await App.ensurePageScripts('admin');
+        await this._ensureAdminScripts(() => window.AdminCombosPage);
         if (window.AdminCombosPage) return window.AdminCombosPage.render(el, this);
         el.innerHTML = `<div class="admin-section"><p class="muted">Combos module loading…</p>
           <button type="button" class="btn btn-primary" id="admin-reload-combos">Reload</button></div>`;
         document.getElementById('admin-reload-combos')?.addEventListener('click', async () => {
-          if (window.App?.ensurePageScripts) await App.ensurePageScripts('admin');
+          await this._ensureAdminScripts(() => window.AdminCombosPage);
           if (window.AdminCombosPage) return window.AdminCombosPage.render(el, this);
           Utils.toast('Could not load combos module — hard refresh the page', 'error');
         });
@@ -310,18 +342,17 @@ const AdminPage = {
         'Operations & Compliance'
       )
     };
-    el.innerHTML = '<p class="muted">Loading…</p>';
     const renderer = renderers[this.section];
     if (renderer) {
-      await renderer();
-    } else {
-      el.innerHTML = `<div class="admin-section"><p class="muted">The "${Utils.escHtml(this.section)}" section could not load. Try reloading admin modules.</p>
-        <button type="button" class="btn btn-primary" id="admin-reload-ext">Reload</button></div>`;
-      document.getElementById('admin-reload-ext')?.addEventListener('click', async () => {
-        if (window.App?.ensurePageScripts) await App.ensurePageScripts('admin');
-        await AdminPage.renderSection(el);
-      });
+      return renderer();
     }
+    await this._ensureAdminScripts(() => false);
+    el.innerHTML = `<div class="admin-section"><p class="muted">The "${Utils.escHtml(this.section)}" section could not load. Try reloading admin modules.</p>
+        <button type="button" class="btn btn-primary" id="admin-reload-ext">Reload</button></div>`;
+    document.getElementById('admin-reload-ext')?.addEventListener('click', async () => {
+      await this._ensureAdminScripts(() => false);
+      await AdminPage.renderSection(el);
+    });
   },
 
   async renderOverview(el) {
@@ -817,7 +848,8 @@ const AdminPage = {
         ${(() => {
           const ns = this.settings.notification_settings || {};
           return `<div class="form-grid">
-            <div class="field full"><label><input type="checkbox" id="ns-enabled" ${ns.sound_enabled!==false?'checked':''}> Enable alert sounds</label></div>
+            <div class="field full"><label><input type="checkbox" id="ns-enabled" ${ns.sound_enabled!==false?'checked':''}> Enable alert sounds (shop-wide)</label></div>
+            <div class="field full">${window.PanelNotify ? PanelNotify.soundToggleHtml('admin', { id: 'ns-admin-device', label: 'This device: admin panel alert sounds' }) : ''}</div>
             <div class="field full"><label><input type="checkbox" id="ns-loop" ${ns.loop_until_read!==false?'checked':''}> Loop sound until attended</label></div>
             <div class="field full"><label>Current sound</label><span class="muted" id="ns-current-label">${ns.sound_path ? ns.sound_path.split(/[/\\]/).pop() : 'Demo sound (built-in)'}</span></div>
           </div>
@@ -829,9 +861,66 @@ const AdminPage = {
             <button type="button" class="btn btn-ghost" id="ns-demo">Use Demo Sound</button>
           </div>
           <p class="muted" style="margin-top:8px;font-size:12px">Test Sound plays an 8-second preview. You can also test from the bell icon (Notifications).</p>
-          <button type="button" class="btn btn-primary" id="save-notif-sound" style="margin-top:12px">Save Notification Settings</button>`;
+          <button type="button" class="btn btn-primary" id="save-notif-sound" style="margin-top:12px">Save Notification Settings</button>
+          <hr style="margin:20px 0;border-color:var(--border)">
+          <h4 style="margin:0 0 8px">Per-panel notification sounds</h4>
+          <p class="muted" style="margin:0 0 12px">Upload a custom sound for each app. If none is uploaded, a unique demo tone plays for that panel.</p>
+          <div class="form-grid" id="panel-sound-grid">${(() => {
+            const ps = ns.panel_sounds || {};
+            const panels = [
+              ['pos', 'POS'], ['admin', 'Admin'], ['driver', 'Driver app'], ['manager', 'Business Manager'],
+              ['online', 'Order Online'], ['delivery', 'Delivery dept'], ['staff', 'Staff portal'], ['recipe', 'Recipe & Production']
+            ];
+            return panels.map(([id, label]) => {
+              const row = ps[id] || {};
+              const file = row.sound_path ? row.sound_path.split(/[/\\\\]/).pop() : 'Demo tone';
+              return `<div class="field full" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)">
+                <strong style="min-width:140px">${label}</strong>
+                <span class="muted" id="ps-label-${id}">${file}</span>
+                <button type="button" class="btn btn-ghost btn-sm" data-ps-upload="${id}">Upload</button>
+                <button type="button" class="btn btn-ghost btn-sm" data-ps-demo="${id}">Demo</button>
+                <button type="button" class="btn btn-ghost btn-sm" data-ps-test="${id}">Test</button>
+              </div>`;
+            }).join('');
+          })()}</div>`;
         })()}
       </div></div>
+      <div class="card" style="margin-top:16px"><div class="card-body">
+        <h4>POS WhatsApp Advert Reminders</h4>
+        <p class="muted">Schedule times when the POS shows a popup and plays the POS alert sound, reminding staff to advertise on WhatsApp. Reminders only appear on the POS — not in Admin.</p>
+        ${(() => {
+          const par = (this.settings.notification_settings || {}).pos_advert_reminders || {};
+          const times = Array.isArray(par.times) && par.times.length ? par.times : ['12:30'];
+          const timesHtml = times.map((t, i) => `
+            <div class="field" style="display:flex;gap:8px;align-items:center;margin:0" data-advert-time-row="${i}">
+              <input type="time" class="advert-time-input" value="${Utils.escHtml(String(t || '').slice(0, 5))}" style="max-width:140px">
+              <button type="button" class="btn btn-ghost btn-sm advert-time-remove" ${times.length <= 1 ? 'disabled' : ''}>Remove</button>
+            </div>`).join('');
+          return `<div class="form-grid">
+            <div class="field full"><label><input type="checkbox" id="par-enabled" ${par.enabled !== false ? 'checked' : ''}> Enable advert reminders on POS</label></div>
+            <div class="field full"><label><input type="checkbox" id="par-sound" ${par.sound_enabled !== false ? 'checked' : ''}> Play POS alert sound with reminder</label></div>
+            <div class="field full"><label>Reminder message</label>
+              <textarea id="par-message" rows="2" placeholder="Time to advertise on WhatsApp!">${Utils.escHtml(par.message || 'Time to advertise on WhatsApp!')}</textarea></div>
+            <div class="field full"><label>Reminder times</label>
+              <div id="par-times-list" style="display:flex;flex-direction:column;gap:8px;margin-top:6px">${timesHtml}</div>
+              <button type="button" class="btn btn-ghost btn-sm" id="par-add-time" style="margin-top:8px">+ Add another time</button>
+            </div>
+          </div>
+          <div style="margin-top:12px;display:flex;flex-wrap:wrap;gap:8px">
+            <button type="button" class="btn btn-primary" id="save-advert-reminders">Save Advert Reminders</button>
+            <button type="button" class="btn btn-ghost" id="par-test-preview">Preview reminder</button>
+          </div>
+          <p class="muted" style="margin-top:8px;font-size:12px">Preview plays the POS demo tone only when reminders are enabled. Scheduled reminders fire once per day at each time on open POS tills.</p>`;
+        })()}
+      </div></div>
+      ${['owner', 'manager'].includes(this.app.user?.role) ? `<div class="card" style="margin-top:16px"><div class="card-body">
+        <h4>Android app installers (remote updates)</h4>
+        <p class="muted">When staff tap <strong>Install update</strong> on a tablet, the app downloads from your shop server. Upload each APK here after building a new version — otherwise phones show “APK not uploaded yet”.</p>
+        <p class="muted" style="font-size:12px">APK files are usually in <code>Downloads\\ShopPOS-Installers\\Android\\</code> on your PC after a build. Only owner/manager can upload.</p>
+        <div id="mobile-apk-status" class="muted" style="margin:12px 0">Loading installer status…</div>
+        <div id="mobile-apk-upload-grid" style="display:flex;flex-direction:column;gap:10px"></div>
+        <button type="button" class="btn btn-ghost btn-sm" id="mobile-apk-refresh" style="margin-top:12px">Refresh status</button>
+      </div></div>` : ''}
       <div class="card" style="margin-top:16px"><div class="card-body"><div class="form-grid">
         <div class="field"><label>Auto Logout (minutes)</label>
           <input type="number" id="sec-logout" min="0" value="${sec.auto_logout_minutes||30}"></div>
@@ -1003,6 +1092,8 @@ const AdminPage = {
       Utils.toast('Bookkeeping password saved', 'success');
     });
 
+    this.bindMobileApkUploads(el);
+
     document.getElementById('ns-upload')?.addEventListener('click', async () => {
       const r = await API.selectAudio('notification');
       if (r?.cancelled) return;
@@ -1027,6 +1118,9 @@ const AdminPage = {
         sound_path: this._pendingSoundPath ?? (this.settings.notification_settings || {}).sound_path
       }
     });
+
+    const adminDevNotify = document.getElementById('ns-admin-device');
+    if (adminDevNotify && window.PanelNotify) PanelNotify.bindSoundToggle(adminDevNotify, 'admin');
 
     document.getElementById('ns-test')?.addEventListener('click', async () => {
       const testSettings = getNotifTestSettings();
@@ -1064,14 +1158,120 @@ const AdminPage = {
       const ns = {
         ...(this.settings.notification_settings || {}),
         sound_enabled: document.getElementById('ns-enabled').checked,
-        loop_until_read: document.getElementById('ns-loop').checked
+        loop_until_read: document.getElementById('ns-loop').checked,
+        panel_sounds: { ...(this.settings.notification_settings?.panel_sounds || {}), ...(this._pendingPanelSounds || {}) },
+        pos_advert_reminders: (this.settings.notification_settings || {}).pos_advert_reminders
       };
       if (this._pendingSoundPath) ns.sound_path = this._pendingSoundPath;
       await API.saveJsonSetting('notification_settings', ns, this.app.user);
       this.settings.notification_settings = ns;
       this.app.settings = { ...this.app.settings, notification_settings: ns };
+      this._pendingPanelSounds = {};
       Utils.toast('Notification sound settings saved', 'success');
       this.renderSecurity(el);
+    });
+
+    const collectAdvertTimes = () => [...document.querySelectorAll('#par-times-list .advert-time-input')]
+      .map((inp) => String(inp.value || '').trim().slice(0, 5))
+      .filter(Boolean);
+
+    document.getElementById('par-add-time')?.addEventListener('click', () => {
+      const list = document.getElementById('par-times-list');
+      if (!list) return;
+      const row = document.createElement('div');
+      row.className = 'field';
+      row.style.cssText = 'display:flex;gap:8px;align-items:center;margin:0';
+      row.innerHTML = `<input type="time" class="advert-time-input" value="17:00" style="max-width:140px">
+        <button type="button" class="btn btn-ghost btn-sm advert-time-remove">Remove</button>`;
+      list.appendChild(row);
+      list.querySelectorAll('.advert-time-remove').forEach((b) => { b.disabled = list.querySelectorAll('.advert-time-input').length <= 1; });
+    });
+
+    document.getElementById('par-times-list')?.addEventListener('click', (e) => {
+      const btn = e.target.closest('.advert-time-remove');
+      if (!btn) return;
+      const list = document.getElementById('par-times-list');
+      const rows = list?.querySelectorAll('.advert-time-input') || [];
+      if (rows.length <= 1) return;
+      btn.closest('.field')?.remove();
+      list.querySelectorAll('.advert-time-remove').forEach((b) => { b.disabled = list.querySelectorAll('.advert-time-input').length <= 1; });
+    });
+
+    document.getElementById('save-advert-reminders')?.addEventListener('click', async () => {
+      const times = collectAdvertTimes();
+      if (!times.length) return Utils.toast('Add at least one reminder time', 'error');
+      const par = {
+        enabled: !!document.getElementById('par-enabled')?.checked,
+        sound_enabled: !!document.getElementById('par-sound')?.checked,
+        message: document.getElementById('par-message')?.value?.trim() || 'Time to advertise on WhatsApp!',
+        times: [...new Set(times)].sort()
+      };
+      const ns = {
+        ...(this.settings.notification_settings || {}),
+        pos_advert_reminders: par
+      };
+      await API.saveJsonSetting('notification_settings', ns, this.app.user);
+      this.settings.notification_settings = ns;
+      this.app.settings = { ...this.app.settings, notification_settings: ns };
+      Utils.toast('Advert reminder schedule saved', 'success');
+      this.renderSecurity(el);
+    });
+
+    document.getElementById('par-test-preview')?.addEventListener('click', async () => {
+      if (!document.getElementById('par-enabled')?.checked) {
+        return Utils.toast('Enable advert reminders first', 'error');
+      }
+      const msg = document.getElementById('par-message')?.value?.trim() || 'Time to advertise on WhatsApp!';
+      if (document.getElementById('par-sound')?.checked !== false) {
+        if (window.PanelSound) {
+          PanelSound.setPanel('pos');
+          PanelSound.setEnabled(true);
+          await PanelSound.playOnce();
+        } else {
+          await SoundService.testAlert(this.settings);
+        }
+      }
+      Utils.showModal('Advertise on WhatsApp', `<p style="font-size:16px;line-height:1.5">${Utils.escHtml(msg)}</p>`,
+        '<button type="button" class="btn btn-primary" id="par-preview-ok">OK, I will advertise</button>');
+      document.getElementById('par-preview-ok')?.addEventListener('click', () => {
+        Utils.hideModal();
+        window.PanelSound?.stop?.();
+      });
+    });
+
+    this._pendingPanelSounds = this._pendingPanelSounds || {};
+    document.querySelectorAll('[data-ps-upload]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const panel = btn.dataset.psUpload;
+        const r = await API.selectAudio(`notification-${panel}`);
+        if (r?.cancelled) return;
+        if (!r?.success) return Utils.toast(r?.error || 'Upload failed', 'error');
+        this._pendingPanelSounds[panel] = { ...(this.settings.notification_settings?.panel_sounds?.[panel] || {}), sound_path: r.path, enabled: true };
+        const lbl = document.getElementById(`ps-label-${panel}`);
+        if (lbl) lbl.textContent = r.path.split(/[/\\]/).pop();
+        Utils.toast(`${panel} sound uploaded — click Save`, 'success');
+      });
+    });
+    document.querySelectorAll('[data-ps-demo]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const panel = btn.dataset.psDemo;
+        this._pendingPanelSounds[panel] = { ...(this.settings.notification_settings?.panel_sounds?.[panel] || {}), sound_path: null, enabled: true };
+        const lbl = document.getElementById(`ps-label-${panel}`);
+        if (lbl) lbl.textContent = 'Demo tone';
+        Utils.toast(`${panel} will use demo tone`, 'success');
+      });
+    });
+    document.querySelectorAll('[data-ps-test]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const panel = btn.dataset.psTest;
+        if (window.PanelSound) {
+          PanelSound.setPanel(panel);
+          PanelSound.setEnabled(true);
+          await PanelSound.playOnce();
+        } else {
+          Utils.toast('Open a web panel to test panel sounds', 'info');
+        }
+      });
     });
 
     document.getElementById('save-recovery')?.addEventListener('click', async () => {
@@ -1091,6 +1291,59 @@ const AdminPage = {
       }
       Utils.toast('Private recovery phrase saved. Keep it secret — write it down somewhere safe. It will not be shown again.', 'success');
       this.renderSecurity(el);
+    });
+  },
+
+  async refreshMobileApkStatus() {
+    const statusEl = document.getElementById('mobile-apk-status');
+    const grid = document.getElementById('mobile-apk-upload-grid');
+    if (!statusEl || !grid) return;
+    statusEl.textContent = 'Loading installer status…';
+    const res = await API.getMobileApkStatus();
+    const rows = res?.data || [];
+    if (!rows.length) {
+      statusEl.textContent = 'Could not load installer status.';
+      return;
+    }
+    const uploaded = rows.filter((r) => r.uploaded).length;
+    statusEl.innerHTML = uploaded === rows.length
+      ? `<span style="color:var(--success,#22c55e)">All ${rows.length} installers are on the server — tablets can download updates.</span>`
+      : `<span style="color:var(--warning,#f59e0b)">${uploaded} of ${rows.length} installers uploaded. Upload the missing APK files below.</span>`;
+    grid.innerHTML = rows.map((row) => {
+      const mb = row.uploaded ? `${(row.size / (1024 * 1024)).toFixed(1)} MB` : 'Missing';
+      const when = row.updatedAt ? new Date(row.updatedAt).toLocaleString() : '—';
+      return `<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:10px 0;border-bottom:1px solid var(--border)">
+        <strong style="min-width:160px">${Utils.escHtml(row.label)}</strong>
+        <span class="muted" style="min-width:120px">${row.uploaded ? '✓ Ready' : '✗ Not uploaded'}</span>
+        <span class="muted" style="min-width:80px">${mb}</span>
+        <span class="muted" style="font-size:12px">${when}</span>
+        <label class="btn btn-ghost btn-sm" style="margin:0;cursor:pointer">
+          Upload ${Utils.escHtml(row.file.replace('ShopPOS-', '').replace('.apk', ''))}
+          <input type="file" accept=".apk,application/vnd.android.package-archive" data-apk-file="${Utils.escHtml(row.file)}" hidden>
+        </label>
+      </div>`;
+    }).join('');
+    grid.querySelectorAll('input[data-apk-file]').forEach((input) => {
+      input.addEventListener('change', async () => {
+        const file = input.files?.[0];
+        input.value = '';
+        if (!file) return;
+        const apkFile = input.dataset.apkFile;
+        if (!file.name.toLowerCase().endsWith('.apk')) return Utils.toast('Please choose an .apk file', 'error');
+        Utils.toast(`Uploading ${file.name}…`, 'info');
+        const up = await API.uploadMobileApk(apkFile, file);
+        if (!up?.success) return Utils.toast(up?.error || 'Upload failed', 'error');
+        Utils.toast(`${apkFile} uploaded — tablets can install updates now`, 'success');
+        await this.refreshMobileApkStatus();
+      });
+    });
+  },
+
+  bindMobileApkUploads(el) {
+    if (!document.getElementById('mobile-apk-status')) return;
+    this.refreshMobileApkStatus().catch(() => {});
+    document.getElementById('mobile-apk-refresh')?.addEventListener('click', () => {
+      this.refreshMobileApkStatus().catch(() => {});
     });
   },
 
@@ -1727,6 +1980,7 @@ const AdminPage = {
       const r = await API.saveSalesTargets(payload, this.app.user);
       if (!r.success) return Utils.toast(r.error, 'error');
       Utils.toast('Sales targets saved', 'success');
+      try { window.dispatchEvent(new CustomEvent('shop-pos-targets-updated')); } catch (_) { /* */ }
     });
   },
 

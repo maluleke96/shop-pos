@@ -1,7 +1,7 @@
 const { getDb } = require('../database/db');
 const adminOverride = require('./admin-override');
 
-const PROPOSER_ROLES = ['manager', 'assistant_manager'];
+const PROPOSER_ROLES = ['owner', 'manager', 'assistant_manager'];
 const ADMIN_ROLES = ['owner'];
 
 function audit(actorId, actorName, action, entityId, details) {
@@ -76,7 +76,7 @@ function mapRequestRow(row) {
 
 function getPromoRequest(id) {
   const row = getDb().prepare(`
-    SELECT pr.*, p.name AS product_name, p.sku, p.barcode,
+    SELECT pr.*, p.name AS product_name, p.sku, p.barcode, p.picture_path,
       u1.full_name AS proposed_by_name, u2.full_name AS approved_by_name
     FROM product_promo_requests pr
     JOIN products p ON p.id = pr.product_id
@@ -142,7 +142,7 @@ function applyPromoPricesToProducts(products, preloadedMap) {
 function proposeProductPromo(productId, data, actor) {
   requireRole(actor, PROPOSER_ROLES);
   const db = getDb();
-  const product = db.prepare('SELECT id, name, selling_price, is_active FROM products WHERE id = ?').get(productId);
+  const product = db.prepare('SELECT id, name, selling_price, buying_price, is_active FROM products WHERE id = ?').get(productId);
   if (!product || !product.is_active) throw new Error('Product not found or inactive');
 
   const proposedPrice = Number(data.proposed_price);
@@ -151,6 +151,22 @@ function proposeProductPromo(productId, data, actor) {
   const notes = data.notes?.trim() || null;
 
   if (!proposedPrice || proposedPrice <= 0) throw new Error('Proposed sale price must be greater than 0');
+  const cost = Math.max(0, Number(product.buying_price) || 0);
+  const targetProfit = Math.max(0, Number(data.target_profit_pct) || 40);
+  if (cost > 0 && proposedPrice < cost && !data.force_below_cost) {
+    throw new Error(`Sale price cannot go below cost (${cost}). Reduce discount or enable force override.`);
+  }
+  const margin = proposedPrice > 0 ? Math.round(((proposedPrice - cost) / proposedPrice) * 10000) / 100 : 0;
+  if (cost > 0 && margin + 0.01 < targetProfit && !data.force_below_profit) {
+    const suggested = Math.round((cost / (1 - Math.min(targetProfit, 95) / 100)) * 100) / 100;
+    return {
+      needs_confirm: true,
+      error: `Price is below ${targetProfit}% profit (margin ${margin}%). Suggested: ${suggested}`,
+      suggested_price: suggested,
+      cost,
+      margin
+    };
+  }
   if (!startDate || !endDate) throw new Error('Start date and end date are required');
   if (endDate < startDate) throw new Error('End date must be on or after start date');
   if (endDate < today()) throw new Error('End date cannot be in the past');
@@ -185,6 +201,9 @@ function proposeProductPromo(productId, data, actor) {
     `Promo proposed: ${proposedPrice} (${startDate} to ${endDate})`, productId
   );
 
+  if (ADMIN_ROLES.includes(actor?.role)) {
+    return approvePromoRequest(requestId, actor);
+  }
   return getPromoRequest(requestId);
 }
 
@@ -330,12 +349,77 @@ function deletePromoRequest(id, actor) {
     });
   }
   db.prepare('DELETE FROM product_promo_requests WHERE id = ?').run(id);
+  db.prepare('UPDATE products SET promo_flag = 0, promo_notes = NULL WHERE id = ?').run(req.product_id);
   audit(actor?.id, actor?.username, 'delete_product_promo', id, {
     product_id: req.product_id,
     status: req.status,
     override: overrideMeta.override || false
   });
   return { success: true };
+}
+
+function updatePromoRequest(id, data, actor) {
+  requireRole(actor, ADMIN_ROLES);
+  const db = getDb();
+  const req = db.prepare('SELECT * FROM product_promo_requests WHERE id = ?').get(id);
+  if (!req) throw new Error('Promo request not found');
+  if (!['pending', 'approved', 'active'].includes(req.status)) {
+    throw new Error('Only pending or active promos can be edited');
+  }
+
+  const proposedPrice = data.proposed_price != null ? Number(data.proposed_price) : Number(req.proposed_price);
+  const startDate = data.start_date != null ? String(data.start_date).trim() : req.start_date;
+  const endDate = data.end_date != null ? String(data.end_date).trim() : req.end_date;
+  const notes = data.notes != null ? (String(data.notes).trim() || null) : req.notes;
+
+  if (!proposedPrice || proposedPrice <= 0) throw new Error('Sale price must be greater than 0');
+  if (!startDate || !endDate) throw new Error('Start date and end date are required');
+  if (endDate < startDate) throw new Error('End date must be on or after start date');
+
+  const product = db.prepare('SELECT id, name, selling_price, buying_price FROM products WHERE id = ?').get(req.product_id);
+  const cost = Math.max(0, Number(product?.buying_price) || 0);
+  if (cost > 0 && proposedPrice < cost && !data.force_below_cost) {
+    throw new Error(`Sale price cannot go below cost (${cost})`);
+  }
+
+  const todayStr = today();
+  let newStatus = req.status;
+  if (endDate < todayStr) newStatus = 'expired';
+  else if (startDate <= todayStr && endDate >= todayStr) newStatus = 'active';
+  else if (req.status !== 'pending') newStatus = 'approved';
+
+  db.prepare(`
+    UPDATE product_promo_requests
+    SET proposed_price = ?, start_date = ?, end_date = ?, notes = ?, status = ?, updated_at = datetime('now')
+    WHERE id = ?
+  `).run(proposedPrice, startDate, endDate, notes, newStatus, id);
+
+  db.prepare('UPDATE products SET promo_flag = 1, promo_notes = ? WHERE id = ?').run(
+    `Promo: ${proposedPrice} (${startDate} to ${endDate})`, req.product_id
+  );
+
+  audit(actor?.id, actor?.username, 'update_product_promo', id, {
+    product_id: req.product_id, proposed_price: proposedPrice, start_date: startDate, end_date: endDate, status: newStatus
+  });
+
+  return getPromoRequest(id);
+}
+
+function buildPromoWhatsAppMessage(promo, shopName) {
+  const name = shopName || 'Our store';
+  const product = promo.product_name || 'Product';
+  const oldPrice = Number(promo.original_price) || 0;
+  const newPrice = Number(promo.proposed_price) || 0;
+  const lines = [
+    `🔥 *SALE — ${name}*`,
+    '',
+    `*${product}*`,
+    oldPrice > newPrice ? `Was ${oldPrice.toFixed(2)} → Now *${newPrice.toFixed(2)}*` : `Special price: *${newPrice.toFixed(2)}*`,
+    `Valid: ${promo.start_date} to ${promo.end_date}`,
+    '',
+    'Order in-store or online today!'
+  ];
+  return lines.join('\n');
 }
 
 function getPromoSalesLog(filters = {}) {
@@ -376,6 +460,8 @@ module.exports = {
   rejectPromoRequest,
   cancelPromoRequest,
   deletePromoRequest,
+  updatePromoRequest,
+  buildPromoWhatsAppMessage,
   getPromoSalesLog,
   getActivePromosMap
 };

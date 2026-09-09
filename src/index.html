@@ -2,10 +2,12 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https: http:; connect-src 'self' https: http: ws: wss:; media-src 'self' data: blob:; font-src 'self' data:">
   <title>Shop POS</title>
   <link rel="stylesheet" href="css/app.css">
+  <link rel="stylesheet" href="css/delivery-dept.css">
+  <link rel="stylesheet" href="css/pos-till.css">
   <link rel="preload" href="js/app.js" as="script">
   <link rel="preload" href="js/api.js" as="script">
   <!-- Heavy feature CSS loads on demand when those screens open -->
@@ -60,7 +62,7 @@
           </div>
           <label class="field hidden" id="login-branch-wrap">
             <span>Branch</span>
-            <select id="login-branch" required></select>
+            <select id="login-branch"></select>
           </label>
           <p id="login-error" class="error-msg hidden"></p>
           <button type="submit" class="btn btn-primary btn-lg btn-block">Sign In</button>
@@ -97,6 +99,24 @@
     <!-- HR, Payroll & Documents workspace -->
     <div id="screen-hr" class="screen hidden">
       <div id="hr-root" style="height:100vh;overflow:hidden;background:var(--bg)"></div>
+    </div>
+
+    <!-- POS branch welcome (after login — optional screen) -->
+    <div id="screen-pos-welcome" class="screen hidden">
+      <div class="login-card">
+        <div class="login-logo">💳</div>
+        <h1>Point of Sale</h1>
+        <p class="login-sub">Confirm your branch before opening the till</p>
+        <p style="margin:8px 0">Signed in as <strong id="pos-welcome-cashier">—</strong></p>
+        <p class="muted" id="pos-welcome-till-note" style="font-size:13px;margin-bottom:16px"></p>
+        <label class="field" id="pos-welcome-branch-wrap">
+          <span>Your branch</span>
+          <select id="pos-welcome-branch"></select>
+        </label>
+        <p id="pos-welcome-error" class="error-msg hidden"></p>
+        <button type="button" class="btn btn-primary btn-lg btn-block" id="pos-welcome-continue">Continue to POS</button>
+        <button type="button" class="btn btn-ghost btn-block" id="pos-welcome-logout" style="margin-top:10px">Sign out</button>
+      </div>
     </div>
 
     <!-- Setup Wizard -->
@@ -140,6 +160,18 @@
           <button type="submit" class="btn btn-primary btn-lg">Complete Setup</button>
         </form>
       </div>
+    </div>
+
+    <!-- Standalone Delivery Department -->
+    <div id="screen-delivery-dept" class="screen hidden">
+      <header class="delivery-dept-header">
+        <div class="delivery-dept-brand">
+          <span id="delivery-dept-title">Delivery Department</span>
+          <span id="delivery-dept-user" class="muted"></span>
+        </div>
+        <button type="button" class="btn btn-ghost btn-sm" id="delivery-dept-logout">Sign out</button>
+      </header>
+      <div id="delivery-dept-root" class="delivery-dept-root"></div>
     </div>
 
     <!-- Main App -->
@@ -226,6 +258,10 @@
   <script defer src="js/printer-ui.js"></script>
   <script defer src="js/receipt.js"></script>
   <script defer src="js/export.js"></script>
+  <script defer src="/shared/panel-exit-guard.js"></script>
+  <script defer src="/shared/panel-sound.js"></script>
+  <script defer src="/shared/panel-notify.js"></script>
+  <script defer src="js/panel-notify-hub.js"></script>
   <script defer src="js/app.js"></script>
 </body>
 </html>

@@ -77,7 +77,8 @@
     function renderLinks(BASE) {
       const panels = [
         { title: 'Admin Panel', desc: 'Owner & managers — shop setup, reports, delivery, HR approvals', path: '/admin-app.html' },
-        { title: 'POS Till', desc: 'Cashiers — sales, delivery orders, payments', path: '/index.html?app=pos' },
+        { title: 'POS Till', desc: 'Cashiers — login, choose branch, sales & payments', path: '/pos-app.html' },
+        { title: 'Delivery Department', desc: 'Delivery staff — manage drivers, orders & payouts', path: '/delivery-app.html' },
         { title: 'Staff Portal', desc: 'Employees — clocking, payslips, salary claims', path: '/staff-app.html' },
         { title: 'Business Accounting', desc: 'Bookkeeping, journals, financial reports', path: '/accounting-app.html' },
         { title: 'Recipe & Production', desc: 'Kitchen recipes, production, approvals', path: '/recipe-app.html' },
@@ -88,7 +89,8 @@
         { title: 'Driver Registration', desc: 'New drivers apply here', path: '/driver/register.html' },
         { title: 'Kiosk', desc: 'Self-service ordering kiosk', path: '/kiosk/' },
         { title: 'Drive-Thru', desc: 'Drive-thru order screen', path: '/drive-thru/' },
-        { title: 'Digital Signage', desc: 'Manage menu boards & screens', path: '/signage/' }
+        { title: 'Digital Signage', desc: 'Manage menu boards & screens', path: '/signage/' },
+        { title: 'Communication Centre', desc: 'SMS, WhatsApp, email & push — campaigns & automations', path: '/communications/' }
       ];
       document.getElementById('links').innerHTML = panels.map((p) => `
         <div class="card">

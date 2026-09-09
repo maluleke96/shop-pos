@@ -227,7 +227,8 @@ async function checkPage(path, mustContain = []) {
 
   // ── Manager panel ──
   const mgrLogin = await rpc('mobile:login', [user, pass, { platform: 'e2e-test', device_name: 'audit' }]);
-  const mgrToken = unwrap(mgrLogin.json) || mgrLogin.json?.token;
+  const mgrData = unwrap(mgrLogin.json) || mgrLogin.json;
+  const mgrToken = (typeof mgrData === 'object' && mgrData?.token) ? mgrData.token : (mgrLogin.json?.token || null);
   const mgrOk = mgrLogin.json?.success !== false && mgrToken;
   record('manager:login', { ok: mgrOk, ms: mgrLogin.ms, error: mgrOk ? undefined : (mgrLogin.json?.error || 'no token') });
 

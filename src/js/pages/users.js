@@ -1,7 +1,8 @@
 const USER_PERM_KEYS = [
   'sell', 'void_sales', 'refunds', 'discounts', 'change_prices', 'view_reports', 'manage_stock',
   'customers', 'suppliers', 'gift_cards', 'cash_up', 'products', 'reports', 'operations',
-  'delete_sales', 'system_settings', 'kitchen', 'quotes', 'layby', 'owner_salary', 'owner_salary_only'
+  'delete_sales', 'system_settings', 'kitchen', 'quotes', 'layby', 'owner_salary', 'owner_salary_only',
+  'expense_capture'
 ];
 const USER_PERM_LABELS = {
   sell: 'Make sales on POS', void_sales: 'Void sales (with supervisor code)', refunds: 'Process returns',
@@ -11,7 +12,8 @@ const USER_PERM_LABELS = {
   reports: 'Full reports access', operations: 'Stock count & waste', delete_sales: 'Delete sales records',
   system_settings: 'System / admin settings', kitchen: 'Kitchen display', quotes: 'Quotes & lay-bye', layby: 'Lay-bye',
   owner_salary: 'Owner salary — pay & view under Staff tab',
-  owner_salary_only: 'Staff tab — Owner Salary only (hide employee portal)'
+  owner_salary_only: 'Staff tab — Owner Salary only (hide employee portal)',
+  expense_capture: 'Capture expenses (mobile Expenses app)'
 };
 
 function renderUserTableRows(users, app, onAction) {
@@ -111,11 +113,12 @@ const UsersPage = {
             <option value="assistant_manager" ${user?.role === 'assistant_manager' ? 'selected' : ''}>Assistant Manager</option>
             <option value="supervisor" ${user?.role === 'supervisor' ? 'selected' : ''}>Supervisor</option>
             <option value="marketing_agent" ${user?.role === 'marketing_agent' ? 'selected' : ''}>Marketing Agent</option>
+            <option value="delivery_manager" ${user?.role === 'delivery_manager' ? 'selected' : ''}>Delivery Department</option>
             <option value="cashier" ${user?.role === 'cashier' ? 'selected' : ''}>Cashier</option>
           </select></div>
-        <div class="field"><label>Branch ${['manager', 'supervisor', 'cashier', 'assistant_manager'].includes(user?.role) || !user ? '*' : ''}</label>
+        <div class="field"><label>Branch ${['manager', 'supervisor', 'cashier', 'assistant_manager', 'delivery_manager'].includes(user?.role) || !user ? '*' : ''}</label>
           <select id="uf-branch">
-            <option value="">— ${user?.role === 'marketing_agent' || (!user) ? 'Shared / all branches' : 'Select branch'} —</option>
+            <option value="">— ${user?.role === 'marketing_agent' || user?.role === 'delivery_manager' || (!user) ? 'All branches / shared' : 'Select branch'} —</option>
             ${branches.map(b => `<option value="${b.id}" ${user?.branch_id == b.id ? 'selected' : ''}>${b.name}</option>`).join('')}
           </select>
           <small class="muted">1 manager + 1 supervisor per branch. Many cashiers allowed. Marketing agents can be shared.</small>

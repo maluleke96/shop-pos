@@ -12,6 +12,7 @@
       if (a === 'recipe' || a === 'recipe-production') return 'recipe';
       if (a === 'accounting' || a === 'bookkeeping' || a === 'finance') return 'accounting';
       if (a === 'hr' || a === 'hr-workspace') return 'hr';
+      if (a === 'delivery' || a === 'delivery-dept' || a === 'delivery-department') return 'delivery';
       if (a === 'pos' || a === 'till') return 'pos';
       if (a === 'admin') return 'admin';
     } catch (_) { /* ignore */ }
@@ -29,6 +30,7 @@
       if (a === 'recipe' || a === 'recipe-production') return 'recipe';
       if (a === 'accounting' || a === 'bookkeeping' || a === 'finance') return 'accounting';
       if (a === 'hr' || a === 'hr-workspace') return 'hr';
+      if (a === 'delivery' || a === 'delivery-dept' || a === 'delivery-department') return 'delivery';
       if (a === 'pos' || a === 'till') return 'pos';
       if (a === 'admin') return 'admin';
     } catch (_) { /* ignore */ }

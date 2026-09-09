@@ -618,15 +618,28 @@ const ProductsPage = {
       Utils.hideModal();
       Utils.sessionCacheClear('products_page');
       window.DataCache?.invalidate?.('products', 'stockReport', 'stockHistory', 'dashboard', 'pos', 'categories');
-      // Force a fresh list load — never reuse a pre-save in-flight response
-      if (API.getProducts?._uncached) {
-        const fresh = await API.getProducts._uncached({});
-        if (fresh && fresh.success !== false) {
-          this.products = Array.isArray(fresh.data) ? fresh.data : [];
-          window.DataCache?.set?.('products', [{}], fresh, 90000);
-        }
-      }
       const host = document.getElementById('page-content') || this._host;
+      const table = document.getElementById('prod-table');
+      if (productId && table && host) {
+        const saved = result.data || {};
+        const catName = this.categories.find((c) => c.id === data.category_id)?.name || '';
+        const row = { ...prev, ...data, id: productId, ...(typeof saved === 'object' ? saved : {}), category_name: catName };
+        const idx = this.products.findIndex((p) => p.id === productId);
+        if (idx >= 0) this.products[idx] = { ...this.products[idx], ...row };
+        else this.products.unshift(row);
+        const currency = this.app.settings?.currency || 'R';
+        table.innerHTML = this.renderRows(currency);
+        this.bindTableEvents();
+        Utils.hydrateImages(table);
+        Utils.sessionCacheSet('products_page', {
+          products: this.products,
+          categories: this.categories,
+          suppliers: this.suppliers || []
+        });
+        window.DataCache?.set?.('products', [{}], { success: true, data: this.products }, 90000);
+        Utils.toast('Product saved successfully', 'success');
+        return;
+      }
       await ProductsPage.render(host, this.app);
       Utils.toast('Product saved successfully', 'success');
     } catch (err) {

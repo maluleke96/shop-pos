@@ -1650,10 +1650,10 @@ function getStaffNotifications() {
   return notes;
 }
 
-function buildPayslipPdf(payrollId, shopName, currency) {
+function buildPayslipPdf(payrollId, shopName, currency, opts = {}) {
   const owner = getDb().prepare('SELECT employee_id FROM employee_payroll WHERE id = ?').get(payrollId);
   if (!owner) throw new Error('Payroll record not found');
-  assertSessionCanAccessEmployee(owner.employee_id);
+  if (!opts.skipAuth) assertSessionCanAccessEmployee(owner.employee_id);
   const row = getDb().prepare(`
     SELECT p.*, e.full_name, e.employee_code, e.position, e.department,
       e.paye_registered, e.uif_registered, e.pension_registered, e.medical_registered, e.sdl_registered

@@ -1,0 +1,65 @@
+{
+  "com.shoppos.pos": {
+    "versionName": "2.10.33",
+    "versionCode": 21033,
+    "apkFile": "ShopPOS-POS.apk",
+    "apkUrl": "https://chisafood.up.railway.app/downloads/ShopPOS-POS.apk",
+    "label": "Shop POS",
+    "force": false,
+    "notes": "Shop POS update v2.10.33 — install the latest APK for bug fixes and new features."
+  },
+  "com.shoppos.staff": {
+    "versionName": "2.10.33",
+    "versionCode": 21033,
+    "apkFile": "ShopPOS-StaffPortal.apk",
+    "apkUrl": "https://chisafood.up.railway.app/downloads/ShopPOS-StaffPortal.apk",
+    "label": "Staff Portal",
+    "force": false,
+    "notes": "Shop POS update v2.10.33 — install the latest APK for bug fixes and new features."
+  },
+  "com.shoppos.recipe": {
+    "versionName": "2.10.33",
+    "versionCode": 21033,
+    "apkFile": "ShopPOS-Recipe.apk",
+    "apkUrl": "https://chisafood.up.railway.app/downloads/ShopPOS-Recipe.apk",
+    "label": "Recipe & Production",
+    "force": false,
+    "notes": "Shop POS update v2.10.33 — install the latest APK for bug fixes and new features."
+  },
+  "com.shoppos.expense": {
+    "versionName": "2.10.33",
+    "versionCode": 21033,
+    "apkFile": "ShopPOS-Expenses.apk",
+    "apkUrl": "https://chisafood.up.railway.app/downloads/ShopPOS-Expenses.apk",
+    "label": "Expenses",
+    "force": false,
+    "notes": "Shop POS update v2.10.33 — install the latest APK for bug fixes and new features."
+  },
+  "com.shoppos.driver": {
+    "versionName": "2.10.33",
+    "versionCode": 21033,
+    "apkFile": "ShopPOS-Driver.apk",
+    "apkUrl": "https://chisafood.up.railway.app/downloads/ShopPOS-Driver.apk",
+    "label": "Driver App",
+    "force": false,
+    "notes": "Shop POS update v2.10.33 — install the latest APK for bug fixes and new features."
+  },
+  "com.shoppos.manager": {
+    "versionName": "2.10.33",
+    "versionCode": 21033,
+    "apkFile": "ShopPOS-Manager.apk",
+    "apkUrl": "https://chisafood.up.railway.app/downloads/ShopPOS-Manager.apk",
+    "label": "Business Manager",
+    "force": false,
+    "notes": "Shop POS update v2.10.33 — install the latest APK for bug fixes and new features."
+  },
+  "com.shoppos.order": {
+    "versionName": "2.10.33",
+    "versionCode": 21033,
+    "apkFile": "ShopPOS-OnlineOrdering.apk",
+    "apkUrl": "https://chisafood.up.railway.app/downloads/ShopPOS-OnlineOrdering.apk",
+    "label": "Online Ordering",
+    "force": false,
+    "notes": "Shop POS update v2.10.33 — install the latest APK for bug fixes and new features."
+  }
+}

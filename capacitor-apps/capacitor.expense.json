@@ -1,0 +1,8 @@
+{
+  "appId": "com.shoppos.expense",
+  "appName": "Expenses",
+  "webDir": "www",
+  "android": {
+    "allowMixedContent": false
+  }
+}

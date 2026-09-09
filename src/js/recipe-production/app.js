@@ -226,7 +226,12 @@ const RecipeProductionApp = {
     this.settings = app?.settings || null;
     this.fromApp = !!opts.fromApp;
     this.user = null;
-    this.page = 'dashboard';
+    try {
+      const saved = sessionStorage.getItem('shoppos_rp_page');
+      this.page = saved && saved !== 'null' ? saved : 'dashboard';
+    } catch (_) {
+      this.page = 'dashboard';
+    }
     this.pageHistory = [];
     this._open = true;
     const root = document.getElementById('recipe-production-root');
@@ -236,6 +241,7 @@ const RecipeProductionApp = {
         const r = await API.recipeSessionFromPos(opts.posUser);
         if (r.success && r.data) {
           this.user = r.data;
+          this.startNotifyPolling();
           this.render();
           return;
         }
@@ -249,6 +255,7 @@ const RecipeProductionApp = {
   },
 
   close() {
+    window.PanelNotifyHub?.stop('recipe');
     this.user = null;
     this._open = false;
     this.pageHistory = [];
@@ -298,7 +305,14 @@ const RecipeProductionApp = {
       return;
     }
     this.user = r.data;
+    this.startNotifyPolling();
     this.render();
+  },
+
+  startNotifyPolling() {
+    if (!window.PanelNotifyHub || !this.user) return;
+    PanelNotifyHub.initPanel('recipe', () => !!this.user);
+    PanelNotifyHub.startPoll('recipe', () => PanelNotifyHub.pollRecipe(this.user), 22000);
   },
 
   navItems() {
@@ -380,6 +394,7 @@ const RecipeProductionApp = {
         if (this.pageHistory.length > 30) this.pageHistory.shift();
       }
       this.page = b.dataset.page;
+      try { sessionStorage.setItem('shoppos_rp_page', this.page); } catch (_) { /* ignore */ }
       if (this.page === 'restock' || this.page === 'ingredients') this._ingredients = [];
       // Fast nav: update active state + content only (avoid full shell rebuild)
       root.querySelectorAll('.rp-nav-btn[data-page]').forEach(x =>
@@ -3281,6 +3296,11 @@ const RecipeProductionApp = {
     })).filter(m => m.id);
     el.innerHTML = `
       <div class="rp-panel">
+        <h3>Notifications</h3>
+        <p class="rp-muted">Alert sounds for pending recipe approvals (uses Admin → Security custom sound or demo tone).</p>
+        ${window.PanelNotify ? PanelNotify.soundToggleHtml('recipe', { id: 'rp-notify-sound', label: 'Enable approval alerts' }) : ''}
+      </div>
+      <div class="rp-panel">
         <h3>POS menu tabs (Available Today · New Arrival · Best Seller · Sell)</h3>
         <p class="rp-muted">Control which meals appear in POS special categories and whether they can be sold.</p>
         <div style="max-height:320px;overflow:auto">
@@ -3369,6 +3389,10 @@ const RecipeProductionApp = {
           <li>All mutating actions are written to the Recipe activity log (user, action, old/new, branch, device).</li>
         </ul>
       </div>`;
+    if (window.PanelNotify) {
+      const rpNotify = document.getElementById('rp-notify-sound');
+      if (rpNotify) PanelNotify.bindSoundToggle(rpNotify, 'recipe');
+    }
     document.getElementById('rp-save-pos-flags')?.addEventListener('click', async () => {
       const available_today = [];
       const new_arrival = [];

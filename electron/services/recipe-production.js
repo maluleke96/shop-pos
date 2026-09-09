@@ -493,6 +493,48 @@ function setPosMenuFlags(data, actor) {
   const neu = new Set((data.new_arrival || []).map(Number).filter(Boolean));
   const best = new Set((data.best_seller || []).map(Number).filter(Boolean));
   const sell = data.show_on_pos || {};
+
+  if (data.all_products) {
+    const store = require('./store');
+    const cfg = require('../../lib/menu-highlights').parseSettings(store.getSettingsParsed());
+    const defaultUntil = require('../../lib/menu-highlights').resolveNewArrivalUntil(store.getSettingsParsed());
+    const newDates = data.new_arrival_dates || {};
+    db.prepare(`
+      UPDATE products SET available_today = 0
+      WHERE is_active = 1 AND (item_type IS NULL OR item_type != 'ingredient')
+    `).run();
+    db.prepare(`
+      UPDATE products SET is_new_arrival = 0
+      WHERE is_active = 1 AND (item_type IS NULL OR item_type != 'ingredient')
+    `).run();
+    for (const id of avail) {
+      db.prepare('UPDATE products SET available_today = 1 WHERE id = ?').run(id);
+      try { db.prepare('UPDATE recipe_profiles SET available_today = 1 WHERE product_id = ?').run(id); } catch (_) { /* */ }
+    }
+    for (const id of neu) {
+      const untilStr = newDates[id] || defaultUntil;
+      db.prepare('UPDATE products SET is_new_arrival = 1, new_arrival_until = ? WHERE id = ?').run(untilStr, id);
+    }
+    if (!cfg.auto_best_seller && best.size) {
+      db.prepare(`
+        UPDATE products SET is_best_seller = 0
+        WHERE is_active = 1 AND (item_type IS NULL OR item_type != 'ingredient')
+      `).run();
+      for (const id of best) {
+        try { db.prepare('UPDATE products SET is_best_seller = 1 WHERE id = ?').run(id); } catch (_) { /* */ }
+      }
+    }
+    for (const [pid, on] of Object.entries(sell)) {
+      try {
+        db.prepare('UPDATE products SET show_on_pos = ? WHERE id = ?').run(on ? 1 : 0, Number(pid));
+      } catch (_) { /* ignore */ }
+    }
+    logActivity(actor, 'set_pos_menu_flags', 'product', null, null, {
+      available_today: [...avail], new_arrival: [...neu], scope: 'all_products'
+    });
+    return true;
+  }
+
   // Reset flags on recipe meals, then apply selections
   db.prepare(`
     UPDATE products SET available_today = 0

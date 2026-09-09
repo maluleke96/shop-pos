@@ -178,18 +178,23 @@ function installApiReadCache() {
   wrap('getSalesReport', 'salesReport', 60000, (a) => [a[0], a[1]]);
   wrap('getEmployees', 'employees', 120000, (a) => [a[0] || {}, a[1]?.id || null]);
   wrap('getOpenShift', 'openShift', 20000, (a) => [a[0]?.id || a[0] || null]);
-  wrap('getActiveCombos', 'combos', 60000, (a) => [a[0] || {}]);
+  wrap('getActiveCombos', 'combos', 8000, (a) => [a[0] || {}]);
   wrap('getActiveCampaigns', 'campaigns', 60000, (a) => [a[0] ?? null]);
   wrap('getKitchenOrders', 'kitchen', 15000, (a) => [a[0] ?? null]);
   wrap('getSettingsParsed', 'settings', 300000, () => []);
   wrap('getNotifications', 'notifications', 20000, (a) => [a?.id || a?.role || a || null]);
+  wrap('getAdminDashboard', 'adminDashboard', 45000, (a) => [a[0], a[1]]);
+  wrap('getSalesList', 'salesList', 30000, (a) => [a[0] || {}]);
+  wrap('getSoldProductsReport', 'soldProductsReport', 60000, (a) => [a[0], a[1]]);
 
   const invalidateProducts = () => {
     DataCache.invalidate('products', 'stockReport', 'stockHistory', 'dashboard', 'pos', 'categories');
     try { window.dispatchEvent(new CustomEvent('shop-pos-stock-updated')); } catch (_) { /* */ }
   };
-  const invalidateSales = () =>
+  const invalidateSales = () => {
     DataCache.invalidate('dashboard', 'salesReport', 'stockReport', 'products', 'kitchen');
+    try { window.dispatchEvent(new CustomEvent('shop-pos-sales-updated')); } catch (_) { /* */ }
+  };
 
   const after = (name, fn) => {
     const orig = API[name];
@@ -205,6 +210,14 @@ function installApiReadCache() {
 
   after('completeSale', (res) => {
     if (res?.success !== false) invalidateSales();
+  });
+  after('acceptOnlineOrderAsSale', (res) => {
+    if (res?.success !== false && !res?.error) invalidateSales();
+  });
+  after('saveSalesTargets', (res) => {
+    if (res?.success !== false) {
+      try { window.dispatchEvent(new CustomEvent('shop-pos-targets-updated')); } catch (_) { /* */ }
+    }
   });
   after('saveProduct', (res) => {
     if (res?.success !== false) invalidateProducts();
@@ -242,6 +255,16 @@ function installApiReadCache() {
   after('markAllNotificationsRead', (res) => {
     if (res?.success !== false) DataCache.invalidate('notifications');
   });
+
+  const invalidateCombos = () => {
+    DataCache.invalidate('combos');
+    try { window.dispatchEvent(new CustomEvent('shop-pos-combos-updated')); } catch (_) { /* */ }
+  };
+  after('saveCombo', (res) => { if (res?.success !== false) invalidateCombos(); });
+  after('deleteCombo', (res) => { if (res?.success !== false) invalidateCombos(); });
+  after('setComboStatus', (res) => { if (res?.success !== false) invalidateCombos(); });
+  after('approveCombo', (res) => { if (res?.success !== false) invalidateCombos(); });
+  after('rejectCombo', (res) => { if (res?.success !== false) invalidateCombos(); });
 }
 
 whenPosAPIReady?.(() => installApiReadCache());

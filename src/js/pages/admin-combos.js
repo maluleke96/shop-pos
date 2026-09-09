@@ -12,9 +12,6 @@
     async render(el, admin) {
       this.admin = admin;
       this.app = admin.app;
-      if (window.App?.ensurePageScripts) {
-        await App.ensurePageScripts('admin');
-      }
       this.tab = this.tab || 'list';
       const tabs = [
         ['list', 'Combos'],
@@ -23,16 +20,31 @@
         ['recipe-promos', 'Recipe Promotions'],
         ['reports', 'Reports']
       ];
-      el.innerHTML = `<div class="admin-section"><h3>Combos & Promotional Products</h3>
+      const existing = el.querySelector('#combo-content');
+      if (!existing) {
+        if (window.App?.ensurePageScripts) {
+          await App.ensurePageScripts('admin');
+        }
+        el.innerHTML = `<div class="admin-section"><h3>Combos & Promotional Products</h3>
         <p class="muted">Managers and supervisors can create combos; admin must approve before they appear on POS. Recipe meal promotions are managed here too.</p>
-        <div class="form-tabs">${tabs.map(([id, label]) =>
+        <div class="form-tabs" id="combo-tabs">${tabs.map(([id, label]) =>
           `<button type="button" class="form-tab ${this.tab === id ? 'active' : ''}" data-tab="${id}">${label}</button>`).join('')}</div>
         <div id="combo-content"><p class="muted">Loading…</p></div></div>`;
-      el.querySelectorAll('[data-tab]').forEach(b => b.addEventListener('click', () => {
-        this.tab = b.dataset.tab;
-        this.render(el, admin);
-      }));
-      const content = document.getElementById('combo-content');
+        el.querySelector('#combo-tabs')?.addEventListener('click', (e) => {
+          const b = e.target.closest('[data-tab]');
+          if (!b || b.dataset.tab === this.tab) return;
+          this.tab = b.dataset.tab;
+          el.querySelectorAll('#combo-tabs .form-tab').forEach((x) => x.classList.toggle('active', x.dataset.tab === this.tab));
+          this.renderTabContent(document.getElementById('combo-content'));
+        });
+      } else {
+        el.querySelectorAll('#combo-tabs .form-tab').forEach((x) => x.classList.toggle('active', x.dataset.tab === this.tab));
+      }
+      return this.renderTabContent(document.getElementById('combo-content'));
+    },
+
+    async renderTabContent(content) {
+      if (!content) return;
       if (this.tab === 'approvals') return this.renderComboApprovals(content);
       if (this.tab === 'promos') return this.renderPromoApprovals(content);
       if (this.tab === 'recipe-promos') return this.renderRecipePromos(content);
@@ -92,6 +104,7 @@
             <button class="btn btn-sm btn-ghost combo-edit" data-id="${c.id}">Edit</button>
             ${isOwner && c.status === 'active' ? `<button class="btn btn-sm btn-warning combo-deact" data-id="${c.id}">Deactivate</button>` : ''}
             ${isOwner && c.status !== 'active' && (c.approval_status || 'approved') === 'approved' ? `<button class="btn btn-sm btn-success combo-act" data-id="${c.id}">Activate</button>` : ''}
+            ${isOwner ? `<button class="btn btn-sm btn-danger combo-del" data-id="${c.id}" data-name="${Utils.escHtml(c.name)}">Delete</button>` : ''}
             </td></tr>`).join('') || '<tr><td colspan="8" class="muted">No combos yet</td></tr>'}
           </tbody></table></div>`;
       document.getElementById('combo-new').addEventListener('click', () => this.showForm(null, { mode: 'standard' }));
@@ -111,6 +124,14 @@
       el.querySelectorAll('.combo-deact').forEach(b => b.addEventListener('click', async () => {
         await API.setComboStatus(parseInt(b.dataset.id, 10), 'inactive', this.app.user);
         Utils.toast('Combo deactivated', 'success'); this.renderList(el);
+      }));
+      el.querySelectorAll('.combo-del').forEach(b => b.addEventListener('click', async () => {
+        const name = b.dataset.name || 'this combo';
+        if (!confirm(`Permanently delete "${name}"? This cannot be undone.`)) return;
+        const r = await API.deleteCombo(parseInt(b.dataset.id, 10), this.app.user);
+        if (r?.success === false) return Utils.toast(r.error || 'Could not delete combo', 'error');
+        Utils.toast('Combo deleted', 'success');
+        this.renderList(el);
       }));
     },
 
@@ -301,15 +322,24 @@
           <div class="field combo-item-preview">${item.custom_image_path ? `<img src="${item.custom_image_path.startsWith('data:') ? item.custom_image_path : ''}" class="combo-item-thumb ci-custom-img" data-path="${Utils.escHtml(item.custom_image_path || '')}" alt="">` : '<span class="combo-item-thumb ph">📷</span>'}</div>
           <div class="field"><label>Item name</label><input class="ci-custom-name" value="${Utils.escHtml(item.custom_name || item.product_name || '')}" placeholder="e.g. Pap & wors"></div>
           <div class="field"><label>Qty</label><input type="number" class="ci-qty" step="0.01" value="${item.quantity || 1}"></div>
-          <div class="field"><label>Photo</label><button type="button" class="btn btn-ghost btn-sm ci-upload">Upload</button></div>
+          <div class="field"><label>Photo</label>
+            <div class="combo-photo-actions">
+              <button type="button" class="btn btn-ghost btn-sm ci-upload">Upload</button>
+              <button type="button" class="btn btn-ghost btn-sm ci-remove-photo" ${item.custom_image_path ? '' : 'hidden'}>Remove</button>
+            </div></div>
         </div>`;
 
       const itemRows = (c.items || []).length
         ? (c.items || []).map((item, i) => isCustom ? customItemRow(item, i) : standardItemRow(item, i)).join('')
         : (isCustom ? customItemRow({}, 0) : standardItemRow({}, 0));
 
-      const galleryHtml = this._comboGallery.map((g, i) =>
-        `<img src="${g.startsWith('data:') ? g : ''}" class="combo-gallery-thumb" data-i="${i}" alt="">`).join('');
+      const galleryThumbHtml = (g, i) =>
+        `<span class="combo-gallery-slot" data-i="${i}">
+          <img src="${g.startsWith('data:') ? g : ''}" class="combo-gallery-thumb" data-i="${i}" alt="">
+          <button type="button" class="combo-img-remove" data-gallery-i="${i}" title="Remove photo">×</button>
+        </span>`;
+
+      const galleryHtml = this._comboGallery.map((g, i) => galleryThumbHtml(g, i)).join('');
 
       Utils.showModal(combo ? `Edit ${c.name}` : (isCustom ? 'Custom Combo (from scratch)' : 'New Combo'), `
         ${!combo ? `<div class="combo-mode-tabs">
@@ -322,11 +352,14 @@
           ${isCustom ? `
           <div class="field"><label>Normal price (${currency})</label><input type="number" id="cb-normal" step="0.01" value="${c.normal_price || ''}"></div>
           <div class="field"><label>Sale price (${currency}) *</label><input type="number" id="cb-final" step="0.01" value="${c.final_price || ''}"></div>
+          <div class="field"><label>Stock quantity</label><input type="number" id="cb-stock" min="0" step="1" value="${c.stock_quantity != null ? c.stock_quantity : ''}" placeholder="Unlimited if blank">
+            <p class="muted" style="font-size:12px;margin:4px 0 0">How many of this custom combo can be sold.</p></div>
           ` : `
           <div class="field"><label>Pricing Type</label><select id="cb-ptype">
             ${['fixed', 'percent', 'fixed_discount'].map(t => `<option value="${t}" ${c.pricing_type === t ? 'selected' : ''}>${t}</option>`).join('')}
           </select></div>
           <div class="field"><label>Discount / Fixed Price</label><input type="number" id="cb-disc" step="0.01" value="${c.discount_value || c.final_price || 0}"></div>
+          <p class="muted" style="font-size:12px;margin-top:4px">Standard combos use stock from included products automatically.</p>
           `}
           <div class="field"><label>Start Date</label><input type="date" id="cb-start" value="${c.start_date || ''}"></div>
           <div class="field"><label>End Date</label><input type="date" id="cb-end" value="${c.end_date || ''}"></div>
@@ -340,7 +373,10 @@
           </div>
           <div class="field full"><label>Description</label><textarea id="cb-desc" rows="2">${Utils.escHtml(c.description || '')}</textarea></div>
           <div class="field full"><label>Combo poster photo</label>
-            <button type="button" class="btn btn-ghost btn-sm" id="cb-hero-upload">Upload main photo</button>
+            <div class="combo-photo-actions">
+              <button type="button" class="btn btn-ghost btn-sm" id="cb-hero-upload">Upload main photo</button>
+              <button type="button" class="btn btn-ghost btn-sm" id="cb-hero-remove" ${this._comboHero ? '' : 'hidden'}>Remove</button>
+            </div>
             <div id="cb-hero-preview" style="margin-top:6px"></div></div>
           <div class="field full"><label>Extra poster photos</label>
             <button type="button" class="btn btn-ghost btn-sm" id="cb-gallery-add">+ Add photo</button>
@@ -357,6 +393,32 @@
       document.getElementById('cb-save')?.addEventListener('click', () => cleanupComboModal(), { once: true });
       document.getElementById('modal-close')?.addEventListener('click', cleanupComboModal, { once: true });
 
+      const renderGallery = () => {
+        const gal = document.getElementById('cb-gallery');
+        if (!gal) return;
+        gal.innerHTML = this._comboGallery.map((g, i) => galleryThumbHtml(g, i)).join('');
+        gal.querySelectorAll('.combo-img-remove').forEach((btn) => {
+          btn.addEventListener('click', () => {
+            const idx = Number(btn.dataset.galleryI);
+            if (!Number.isFinite(idx)) return;
+            this._comboGallery.splice(idx, 1);
+            renderGallery();
+            hydrateGallery();
+          });
+        });
+      };
+
+      const renderHeroPreview = (url) => {
+        const prev = document.getElementById('cb-hero-preview');
+        const removeBtn = document.getElementById('cb-hero-remove');
+        if (prev) {
+          prev.innerHTML = url
+            ? `<img src="${url}" style="max-height:64px;border-radius:8px;border:1px solid #e2e8f0">`
+            : '';
+        }
+        if (removeBtn) removeBtn.hidden = !url;
+      };
+
       const hydrateGallery = async () => {
         const gal = document.getElementById('cb-gallery');
         if (!gal) return;
@@ -369,18 +431,19 @@
           } else if (path) img.src = path;
         }
         if (this._comboHero) {
-          const prev = document.getElementById('cb-hero-preview');
-          if (prev) {
-            const url = this._comboHero.startsWith('data:') ? this._comboHero : await this.comboImageSrc(this._comboHero, false);
-            if (url) prev.innerHTML = `<img src="${url}" style="max-height:64px;border-radius:8px">`;
-          }
+          const url = this._comboHero.startsWith('data:') ? this._comboHero : await this.comboImageSrc(this._comboHero, false);
+          renderHeroPreview(url);
+        } else {
+          renderHeroPreview('');
         }
-        for (const row of document.querySelectorAll('.combo-custom-row .ci-custom-img')) {
-          const path = row.dataset.path;
-          if (path && !path.startsWith('data:')) {
+        for (const row of document.querySelectorAll('.combo-custom-row')) {
+          const img = row.querySelector('.ci-custom-img');
+          const path = row.dataset.imagePath || img?.dataset.path;
+          if (path && !path.startsWith('data:') && img) {
             const url = await this.comboImageSrc(path, false);
-            if (url) row.src = url;
+            if (url) img.src = url;
           }
+          if (path) row.dataset.imagePath = path;
         }
       };
 
@@ -388,7 +451,7 @@
         if (isCustom) {
           return [...document.querySelectorAll('.combo-custom-row')].map((row, idx) => ({
             custom_name: row.querySelector('.ci-custom-name')?.value?.trim() || `Item ${idx + 1}`,
-            custom_image_path: row.dataset.imagePath || null,
+            custom_image_path: row.dataset.imagePath || row.querySelector('.ci-custom-img')?.dataset.path || null,
             quantity: parseFloat(row.querySelector('.ci-qty')?.value) || 1
           }));
         }
@@ -426,21 +489,23 @@
         const r = await API.selectImage('combo-hero');
         if (r?.cancelled || !r?.success || !r.path) return;
         this._comboHero = r.path;
-        const prev = document.getElementById('cb-hero-preview');
-        if (prev) prev.innerHTML = `<img src="${r.dataUrl || r.path}" style="max-height:64px;border-radius:8px">`;
+        renderHeroPreview(r.dataUrl || r.path);
+      });
+
+      document.getElementById('cb-hero-remove')?.addEventListener('click', () => {
+        this._comboHero = null;
+        renderHeroPreview('');
       });
 
       document.getElementById('cb-gallery-add')?.addEventListener('click', async () => {
         const r = await API.selectImage('combo-gallery');
         if (r?.cancelled || !r?.success || !r.path) return;
         this._comboGallery.push(r.path);
-        const gal = document.getElementById('cb-gallery');
-        const img = document.createElement('img');
-        img.className = 'combo-gallery-thumb';
-        img.src = r.dataUrl || r.path;
-        img.dataset.i = String(this._comboGallery.length - 1);
-        gal?.appendChild(img);
+        renderGallery();
+        hydrateGallery();
       });
+
+      renderGallery();
 
       const bindRow = (row) => {
         row.querySelector('.ci-prod')?.addEventListener('change', (e) => {
@@ -454,7 +519,16 @@
           if (r?.cancelled || !r?.success || !r.path) return;
           row.dataset.imagePath = r.path;
           const preview = row.querySelector('.combo-item-preview');
-          if (preview) preview.innerHTML = `<img src="${r.dataUrl || r.path}" class="combo-item-thumb" alt="">`;
+          if (preview) preview.innerHTML = `<img src="${r.dataUrl || r.path}" class="combo-item-thumb ci-custom-img" alt="">`;
+          const removeBtn = row.querySelector('.ci-remove-photo');
+          if (removeBtn) removeBtn.hidden = false;
+        });
+        row.querySelector('.ci-remove-photo')?.addEventListener('click', () => {
+          delete row.dataset.imagePath;
+          const preview = row.querySelector('.combo-item-preview');
+          if (preview) preview.innerHTML = '<span class="combo-item-thumb ph">📷</span>';
+          const removeBtn = row.querySelector('.ci-remove-photo');
+          if (removeBtn) removeBtn.hidden = true;
         });
       };
 
@@ -479,7 +553,11 @@
           div.innerHTML = `<div class="field combo-item-preview"><span class="combo-item-thumb ph">📷</span></div>
             <div class="field"><label>Item name</label><input class="ci-custom-name" placeholder="Item name"></div>
             <div class="field"><label>Qty</label><input type="number" class="ci-qty" step="0.01" value="1"></div>
-            <div class="field"><label>Photo</label><button type="button" class="btn btn-ghost btn-sm ci-upload">Upload</button></div>`;
+            <div class="field"><label>Photo</label>
+              <div class="combo-photo-actions">
+                <button type="button" class="btn btn-ghost btn-sm ci-upload">Upload</button>
+                <button type="button" class="btn btn-ghost btn-sm ci-remove-photo" hidden>Remove</button>
+              </div></div>`;
         } else {
           div.className = 'form-grid combo-item-row';
           div.dataset.idx = idx;
@@ -512,8 +590,9 @@
           show_on_pos: document.getElementById('cb-pos')?.checked ? 1 : 0,
           show_on_online: document.getElementById('cb-online')?.checked ? 1 : 0,
           description: document.getElementById('cb-desc').value.trim(),
-          image_path: this._comboHero || c.image_path || null,
+          image_path: this._comboHero ?? null,
           gallery_paths: this._comboGallery || [],
+          stock_quantity: isCustom ? (document.getElementById('cb-stock')?.value ?? '') : null,
           items,
           status: this.app.user?.role === 'owner' ? 'active' : (c.status || 'draft')
         };
@@ -629,13 +708,40 @@
           <button class="btn btn-ghost" id="combo-rpt-xlsx">Export Excel</button>
         </div>
         <div class="table-wrap"><table>
-          <thead><tr><th>Code</th><th>Name</th><th>Sold</th><th>Revenue</th><th>Profit</th></tr></thead>
+          <thead><tr><th>Code</th><th>Name</th><th>Sold</th><th>Revenue</th><th>Profit</th><th></th></tr></thead>
           <tbody>${(report.combos || []).map(c => `<tr>
             <td>${c.combo_code}</td><td>${c.name}</td><td>${c.sold_count}</td>
             <td>${Utils.formatMoney(c.revenue, currency)}</td><td>${Utils.formatMoney(c.profit, currency)}</td>
-          </tr>`).join('') || '<tr><td colspan="5" class="muted">No combo sales in period</td></tr>'}
+            <td class="actions" style="white-space:nowrap">
+              <button class="btn btn-sm btn-ghost combo-rpt-edit" data-id="${c.id || c.combo_id || ''}">Edit</button>
+              <button class="btn btn-sm btn-danger combo-rpt-del" data-id="${c.id || c.combo_id || ''}" data-name="${Utils.escHtml(c.name || '')}">Delete</button>
+            </td>
+          </tr>`).join('') || '<tr><td colspan="6" class="muted">No combo sales in period</td></tr>'}
           </tbody></table></div>`;
       Utils.bindDateFilter('combo-date', (f, t) => { this._from = f; this._to = t; this.renderReports(el); });
+      el.querySelectorAll('.combo-rpt-edit').forEach((b) => {
+        b.addEventListener('click', async () => {
+          const id = Number(b.dataset.id);
+          if (!id) return Utils.toast('Combo ID not found in report row', 'error');
+          const r = await API.getCombo(id);
+          if (!r.success) return Utils.toast(r.error || 'Could not load combo', 'error');
+          this.tab = 'list';
+          const shell = document.getElementById('admin-content');
+          if (shell) await this.render(shell, this.admin);
+          this.showForm(r.data);
+        });
+      });
+      el.querySelectorAll('.combo-rpt-del').forEach((b) => {
+        b.addEventListener('click', async () => {
+          const id = Number(b.dataset.id);
+          if (!id) return Utils.toast('Combo ID not found', 'error');
+          if (!confirm(`Delete combo "${b.dataset.name || id}"?`)) return;
+          const r = await API.deleteCombo(id, this.app.user);
+          if (r?.success === false) return Utils.toast(r.error || 'Could not delete', 'error');
+          Utils.toast('Combo deleted', 'success');
+          this.renderReports(el);
+        });
+      });
       document.getElementById('combo-rpt-pdf').addEventListener('click', async () => {
         await Utils.savePdfBuffer(`combo-report-${from}-${to}.pdf`, await API.getComboReportPdf({ from, to }));
       });

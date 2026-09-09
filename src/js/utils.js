@@ -212,6 +212,24 @@ const Utils = {
     setTimeout(() => el.remove(), 3500);
   },
 
+  /** Short popup — works on POS too (2–3 s). */
+  briefNotice(msg, type = 'info', ms = 2600) {
+    let container = document.getElementById('toast-container');
+    if (!container) {
+      container = document.createElement('div');
+      container.id = 'toast-container';
+      document.body.appendChild(container);
+    }
+    const el = document.createElement('div');
+    el.className = `toast brief-notice ${type}`;
+    el.textContent = msg;
+    container.appendChild(el);
+    setTimeout(() => {
+      el.classList.add('fade-out');
+      setTimeout(() => el.remove(), 280);
+    }, Math.max(1500, ms - 280));
+  },
+
   showModal(title, bodyHtml, footerHtml = '', options = {}) {
     const overlay = document.getElementById('modal-overlay');
     // Never replace a blocking modal (e.g. open-shift) unless explicitly forced.
@@ -258,6 +276,12 @@ const Utils = {
 
   canAccess(user, page) {
     if (!user) return false;
+    // Delivery Department portal — admin panel (delivery section) only
+    if (typeof window !== 'undefined' && window.__SHOP_POS_APP_MODE__ === 'delivery') {
+      if (user.role === 'delivery_manager') return page === 'admin';
+      if (['owner', 'manager', 'supervisor'].includes(user.role)) return page === 'admin' || page === 'dashboard';
+      return false;
+    }
     // POS-only installer: till screen only — no sidebar pages, no cash-up/ops
     if (typeof window !== 'undefined' && window.__SHOP_POS_APP_MODE__ === 'pos') {
       return page === 'pos' && ['owner', 'manager', 'cashier', 'supervisor', 'assistant_manager'].includes(user.role);
@@ -299,9 +323,12 @@ const Utils = {
 
   /** Sections managers/supervisors should always see when they have admin access */
   adminManagerSections: new Set([
-    'overview', 'staffhr', 'staffportal', 'hrcontracts', 'recruitment', 'marketing-mgmt', 'employee-of-month', 'opscompliance', 'combos',
+    'overview', 'staffhr', 'staffportal', 'hrcontracts', 'recruitment', 'marketing-mgmt', 'communication-centre', 'employee-of-month', 'opscompliance', 'combos',
     'quotes', 'approvals', 'recipe', 'tax', 'tax-hub', 'cashiers', 'branches',
-    'mobile-app', 'business-manager', 'business-modules', 'digital-signage', 'online-orders', 'hr-workspace', 'hr-approvals', 'accounting-workspace'
+    'mobile-app', 'business-manager', 'business-modules', 'digital-signage', 'online-orders', 'hr-workspace', 'hr-approvals', 'accounting-workspace',
+    'delivery-dept', 'deliveries', 'loyalty', 'discounts', 'payments', 'inventory', 'shifts', 'operating', 'cashdrawer', 'customize', 'onaccount',
+    'printer', 'receipt', 'security', 'permissions', 'sales-targets', 'top-customers',
+    'salesmgmt', 'pos-menu', 'saleexplorer', 'soldproducts', 'returnsmgmt', 'activity', 'exceptions', 'alerts', 'dailyclose', 'discount-report'
   ]),
 
   canAccessAdmin(user) {
@@ -309,12 +336,16 @@ const Utils = {
     if (user.role === 'owner') return true;
     if (user.role === 'manager') return true;
     if (user.role === 'supervisor') return true;
+    if (user.role === 'delivery_manager') return true;
     if (user.role === 'assistant_manager') return Utils.hasPermission(user, 'system_settings');
     return false;
   },
 
   canAccessAdminSection(user, sectionId) {
     if (!Utils.canAccessAdmin(user)) return false;
+    if (user.role === 'delivery_manager') {
+      return ['delivery-dept', 'deliveries', 'online-orders'].includes(sectionId);
+    }
     if (user.role === 'owner') return true;
     if (sectionId === 'permissions' && user.role === 'manager') return true;
     if (user.role === 'supervisor') {
@@ -326,13 +357,14 @@ const Utils = {
 
   roleDefaults: {
     owner: { sell: true, void_sales: true, refunds: true, discounts: true, change_prices: true, view_reports: true, manage_stock: true, system_settings: true, customers: true, suppliers: true, gift_cards: true, cash_up: true, products: true, reports: true, operations: true, kitchen: true, quotes: true, layby: true, delete_sales: true, bookkeeping: true, staff_portal: true },
-    manager: { sell: true, void_sales: true, refunds: true, discounts: true, change_prices: true, view_reports: true, manage_stock: true, customers: true, suppliers: true, gift_cards: true, cash_up: true, products: true, reports: true, operations: true, kitchen: true, quotes: true, layby: true, owner_salary: true, owner_salary_only: false, bookkeeping: true, staff_portal: false, delivery: true },
+    manager: { sell: true, void_sales: true, refunds: true, discounts: true, change_prices: true, view_reports: true, manage_stock: true, customers: true, suppliers: true, gift_cards: true, cash_up: true, products: true, reports: true, operations: true, kitchen: true, quotes: true, layby: true, owner_salary: true, owner_salary_only: false, bookkeeping: true, staff_portal: false, delivery: true, expense_capture: true },
     supervisor: { sell: true, void_sales: true, refunds: true, discounts: true, cash_up: true, operations: true, kitchen: true, gift_cards: true, layby: true, quotes: true, staff_portal: false, delivery: true },
     assistant_manager: {
       sell: true, void_sales: true, refunds: true, discounts: true, cash_up: true, operations: true,
       kitchen: true, gift_cards: true, layby: true, quotes: true, view_reports: true, customers: true, products: true, staff_portal: false, delivery: true
     },
     marketing_agent: {},
+    delivery_manager: { delivery: true, view_reports: true, manage_stock: false, sell: false },
     cashier: { sell: true, refunds: false, owner_salary: false, owner_salary_only: false, staff_portal: false, delivery: true }
   },
 
@@ -552,28 +584,133 @@ const Utils = {
 
   _imageUrlCache: new Map(),
 
-  async resolveImageUrl(filePath) {
-    if (!filePath) return '';
-    const key = String(filePath);
-    if (Utils._imageUrlCache.has(key)) return Utils._imageUrlCache.get(key);
-    if (key.startsWith('data:')) return key;
-    const data = await API.getImageDataUrl(key);
-    if (data?.success && data.dataUrl) {
-      Utils._imageUrlCache.set(key, data.dataUrl);
-      return data.dataUrl;
+  syncBaseUrl() {
+    const cfg = window.__EXPENSE_CONFIG__ || window.__DRIVER_CONFIG__ || window.__ORDER_CONFIG__ || {};
+    const env = window.__SHOP_POS_ENV__ || {};
+    return String(
+      cfg.apiBase || env.SHOP_POS_SYNC_URL || env.SHOP_POS_CLOUD_URL || env.SHOP_POS_PUBLIC_URL || 'https://chisafood.up.railway.app'
+    ).replace(/\/$/, '');
+  },
+
+  isCloudPos() {
+    return !!(typeof window !== 'undefined' && window.__SHOP_POS_CLOUD__);
+  },
+
+  isNativePos() {
+    return !!(window.__SHOP_POS_MOBILE__ || window.__SHOP_POS_LOCAL_INSTALLER__ || window.Capacitor?.isNativePlatform?.());
+  },
+
+  productImageUrl(product) {
+    if (!product?.id) return '';
+    const path = String(product.picture_path || product.image_path || '');
+    if (path.startsWith('data:')) return path;
+    if (path.startsWith('mobile-asset://') || path.startsWith('mobile-doc://')) return '';
+    if (Utils.isCloudPos()) return `/api/product-image/${product.id}`;
+    if (Utils.isNativePos() && typeof navigator !== 'undefined' && navigator.onLine !== false) {
+      return `${Utils.syncBaseUrl()}/api/product-image/${product.id}`;
     }
-    const fallback = Utils.fileUrl(key);
-    Utils._imageUrlCache.set(key, fallback);
-    return fallback;
+    return '';
+  },
+
+  categoryImageUrl(category) {
+    const path = String(category?.image_path || '');
+    if (!path) return '';
+    if (path.startsWith('data:')) return path;
+    if (Utils.isCloudPos()) return `/api/app-image?p=${encodeURIComponent(path)}`;
+    if (Utils.isNativePos() && typeof navigator !== 'undefined' && navigator.onLine !== false) {
+      return `${Utils.syncBaseUrl()}/api/app-image?p=${encodeURIComponent(path)}`;
+    }
+    return '';
+  },
+
+  comboImageUrl(combo) {
+    if (!combo?.id) return '';
+    const path = String(combo.image_path || combo.picture_path || '');
+    if (path.startsWith('data:')) return path;
+    if (Utils.isCloudPos()) return `/api/combo-image/${combo.id}`;
+    if (Utils.isNativePos() && typeof navigator !== 'undefined' && navigator.onLine !== false) {
+      return `${Utils.syncBaseUrl()}/api/combo-image/${combo.id}`;
+    }
+    return '';
+  },
+
+  comboImageAttr(combo) {
+    if (!combo) return '';
+    const cloudUrl = Utils.comboImageUrl(combo);
+    if (cloudUrl) return `src="${cloudUrl}" data-combo-id="${combo.id}" data-image-loaded="1"`;
+    return Utils.cachedImageAttr(combo.image_path || combo.picture_path);
+  },
+
+  productImageAttr(product) {
+    if (!product) return '';
+    const cloudUrl = Utils.productImageUrl(product);
+    const path = product.picture_path || product.image_path || '';
+    if (cloudUrl) {
+      return `src="${cloudUrl}" data-product-id="${product.id}" data-image-loaded="1"`;
+    }
+    if (!path) return '';
+    return `${Utils.cachedImageAttr(path)} data-product-id="${product.id}"`;
+  },
+
+  categoryImageAttr(category) {
+    if (!category) return '';
+    const cloudUrl = Utils.categoryImageUrl(category);
+    if (cloudUrl) return `src="${cloudUrl}" data-image-loaded="1"`;
+    return Utils.cachedImageAttr(category.image_path);
+  },
+
+  async resolveImageUrl(filePath, opts = {}) {
+    if (!filePath && !opts?.productId) return '';
+    const key = String(filePath || '');
+    if (key && Utils._imageUrlCache.has(key)) return Utils._imageUrlCache.get(key);
+    if (key.startsWith('data:')) return key;
+    if (opts?.productId) {
+      const cloud = Utils.productImageUrl({ id: opts.productId, picture_path: key });
+      if (cloud) {
+        if (key) Utils._imageUrlCache.set(key, cloud);
+        return cloud;
+      }
+    }
+    if (key) {
+      const data = await API.getImageDataUrl(key);
+      if (data?.success && data.dataUrl) {
+        Utils._imageUrlCache.set(key, data.dataUrl);
+        return data.dataUrl;
+      }
+      if (Utils.isCloudPos()) {
+        const appImg = `/api/app-image?p=${encodeURIComponent(key)}`;
+        Utils._imageUrlCache.set(key, appImg);
+        return appImg;
+      }
+      if (Utils.isNativePos() && typeof navigator !== 'undefined' && navigator.onLine !== false) {
+        const appImg = `${Utils.syncBaseUrl()}/api/app-image?p=${encodeURIComponent(key)}`;
+        Utils._imageUrlCache.set(key, appImg);
+        return appImg;
+      }
+      const fallback = Utils.fileUrl(key);
+      Utils._imageUrlCache.set(key, fallback);
+      return fallback;
+    }
+    return '';
   },
 
   async hydrateImages(root) {
     const scope = root && root.querySelectorAll ? root : document;
-    const imgs = [...scope.querySelectorAll('img[data-image-path]')];
+    const imgs = [...scope.querySelectorAll('img[data-image-path], img[data-product-id]')];
     const pending = [];
     for (const img of imgs) {
+      if (img.dataset.imageLoaded === '1') continue;
+      const productId = img.dataset.productId;
+      if (productId) {
+        const cloud = Utils.productImageUrl({ id: productId, picture_path: img.dataset.imagePath || '' });
+        if (cloud) {
+          img.src = cloud;
+          img.dataset.imageLoaded = '1';
+          continue;
+        }
+      }
       const path = img.dataset.imagePath;
-      if (!path || img.dataset.imageLoaded === '1') continue;
+      if (!path) continue;
       if (Utils._imageUrlCache.has(path)) {
         img.src = Utils._imageUrlCache.get(path);
         img.dataset.imageLoaded = '1';
@@ -581,21 +718,18 @@ const Utils = {
         pending.push(img);
       }
     }
-    // Load uncached images in small chunks so category/product tab switches stay responsive
-    for (let i = 0; i < pending.length; i += 6) {
-      const chunk = pending.slice(i, i + 6);
+    const chunkSize = 16;
+    for (let i = 0; i < pending.length; i += chunkSize) {
+      const chunk = pending.slice(i, i + chunkSize);
       await Promise.all(chunk.map(async (img) => {
         const path = img.dataset.imagePath;
         if (!path || img.dataset.imageLoaded === '1') return;
-        const src = await Utils.resolveImageUrl(path);
+        const src = await Utils.resolveImageUrl(path, { productId: img.dataset.productId });
         if (src) {
           img.src = src;
           img.dataset.imageLoaded = '1';
         }
       }));
-      if (i + 6 < pending.length) {
-        await new Promise(r => requestAnimationFrame(r));
-      }
     }
   },
 
@@ -818,7 +952,24 @@ const Utils = {
     if (!phone) return { success: false, error: 'No phone number on employee record — ask admin to add your phone' };
     const currency = app.settings?.currency || 'R';
     const period = `${payrollRow.period_start} – ${payrollRow.period_end}`;
-    const message = `Hi ${employee.full_name}, your payslip for ${period}:\n\nGross: ${Utils.formatMoney(payrollRow.gross_salary || 0, currency)}\nPAYE: ${Utils.formatMoney(payrollRow.paye || 0, currency)}\nUIF: ${Utils.formatMoney(payrollRow.uif_employee || 0, currency)}\nNet: ${Utils.formatMoney(payrollRow.net_salary, currency)}\n\nContact ${app.settings?.shop_name || 'management'} for your full PDF payslip.`;
+    const lines = [
+      `Hi ${employee.full_name},`,
+      '',
+      `*Payslip — ${period}*`,
+      `Shop: ${app.settings?.shop_name || 'Management'}`,
+      '',
+      `Gross pay: ${Utils.formatMoney(payrollRow.gross_salary || 0, currency)}`,
+      payrollRow.paye != null ? `PAYE: ${Utils.formatMoney(payrollRow.paye || 0, currency)}` : null,
+      payrollRow.uif_employee != null ? `UIF (employee): ${Utils.formatMoney(payrollRow.uif_employee || 0, currency)}` : null,
+      payrollRow.pension_employee != null ? `Pension: ${Utils.formatMoney(payrollRow.pension_employee || 0, currency)}` : null,
+      payrollRow.medical_employee != null ? `Medical aid: ${Utils.formatMoney(payrollRow.medical_employee || 0, currency)}` : null,
+      payrollRow.other_deductions != null ? `Other deductions: ${Utils.formatMoney(payrollRow.other_deductions || 0, currency)}` : null,
+      `*Net pay: ${Utils.formatMoney(payrollRow.net_salary, currency)}*`,
+      payrollRow.status ? `Status: ${payrollRow.status}` : null,
+      '',
+      'Download your full PDF payslip from the Staff Portal or ask HR for a printed copy.'
+    ].filter(Boolean);
+    const message = lines.join('\n');
     if (['owner', 'manager', 'supervisor', 'assistant_manager'].includes(app.user?.role)) {
       const waRes = await API.sendWhatsAppMessage({
         phone,
@@ -962,19 +1113,27 @@ const Utils = {
   _loadedScripts: new Set(),
 
   loadScript(src) {
-    if (this._loadedScripts.has(src)) return Promise.resolve();
-    // Already in the document (Windows index preload) — do not inject twice
-    const existing = document.querySelector(`script[src="${src}"]`)
-      || document.querySelector(`script[src$="/${src}"]`);
-    if (existing) {
-      this._loadedScripts.add(src);
+    const base = String(src).split('?')[0];
+    const ver = window.__SHOP_POS_DEPLOY__ || '';
+    const busted = ver ? `${base}?v=${encodeURIComponent(ver)}` : base;
+    if (this._loadedScripts.has(busted)) return Promise.resolve();
+    const existing = document.querySelector(`script[src="${busted}"]`)
+      || document.querySelector(`script[src="${base}"]`)
+      || document.querySelector(`script[src$="/${base}"]`);
+    if (existing && !ver) {
+      this._loadedScripts.add(busted);
       return Promise.resolve();
+    }
+    if (existing && ver) {
+      existing.remove();
+      this._loadedScripts.delete(base);
+      this._loadedScripts.delete(busted);
     }
     return new Promise((resolve, reject) => {
       const s = document.createElement('script');
-      s.src = src;
-      s.onload = () => { this._loadedScripts.add(src); resolve(); };
-      s.onerror = () => reject(new Error(`Failed to load ${src}`));
+      s.src = busted;
+      s.onload = () => { this._loadedScripts.add(busted); resolve(); };
+      s.onerror = () => reject(new Error(`Failed to load ${busted}`));
       document.body.appendChild(s);
     });
   },

@@ -13,11 +13,30 @@ const OnlineOrdersWidget = {
 
   bind(app) {
     this._app = app;
+    if (window.PanelNotify && !this._notifyReady) {
+      this._notifyReady = true;
+      PanelNotify.init({
+        panel: 'pos',
+        loggedIn: () => !!this._app?.user && this.isAllowed(),
+        rpc: (method, args) => {
+          if (method === 'notifications:listAcked') {
+            return API.listAckedNotificationKeys(args[0], args[1]).then((r) => r?.data ?? r);
+          }
+          if (method === 'notifications:ackEvent') {
+            return API.ackNotificationEvent(args[0], args[1], args[2]);
+          }
+          return API.ackNotificationEvents(args[0], args[1], args[2]);
+        }
+      });
+    }
+  },
+
+  _eventKey(orderId) {
+    return `online_pending:${orderId}`;
   },
 
   isAllowed() {
-    const pos = window.POSPage;
-    return !!pos?.canShowOnlineOrders?.();
+    return !!window.POSPage?.canShowOnlineOrders?.();
   },
 
   reminderMinutes() {
@@ -62,6 +81,7 @@ const OnlineOrdersWidget = {
     if (this._timer) clearInterval(this._timer);
     this._timer = null;
     this.updateBadge(0);
+    this.syncAlertSound([]);
   },
 
   startPolling() {
@@ -86,18 +106,22 @@ const OnlineOrdersWidget = {
       const prevIds = new Set(prevPending.map((o) => String(o.id)));
       await this.refreshOrders();
       const pending = this.pendingOrders();
-      const newOnes = pending.filter((o) => !prevIds.has(String(o.id)) && !this._knownIds.has(String(o.id)));
+      const newOnes = pending.filter((o) => {
+        const id = String(o.id);
+        return !prevIds.has(id) && !this._knownIds.has(id)
+          && !(window.PanelNotify?.isAcked(this._eventKey(o.id)));
+      });
 
       for (const o of pending) this._knownIds.add(String(o.id));
 
       if (newOnes.length) {
-        this.playAlert();
         for (const order of newOnes) {
           this.showNewOrderPopup(order);
         }
         Utils.toast(`${newOnes.length} new online order(s)!`, 'info');
       }
 
+      this.syncAlertSound(pending);
       this.checkReminders(pending);
       this.updateBadge(pending.length);
 
@@ -127,25 +151,37 @@ const OnlineOrdersWidget = {
     const id = String(orderId);
     this._handledIds.add(id);
     delete this._quietUntil[id];
+    window.PanelNotify?.ack(this._eventKey(orderId), 'accepted');
     this.stopAlertSound();
   },
+  syncAlertSound(pending) {
+    const unacked = (pending || []).filter((o) =>
+      !window.PanelNotify?.isAcked(this._eventKey(o.id)) && !this.isQuiet(o.id)
+    );
+    const hasPending = unacked.length > 0;
+    const ns = this._app?.settings?.notification_settings || {};
+    if (window.PanelNotify) {
+      PanelNotify.panel = 'pos';
+      window.PanelSound?.setPanel('pos');
+      PanelNotify.syncPendingAlert(unacked, (o) => this._eventKey(o.id), ns.sound_enabled !== false && PanelNotify.isSoundEnabled('pos'));
+      return;
+    }
+    try {
+      if (typeof SoundService !== 'undefined' && SoundService.syncOrderAlert) {
+        SoundService.syncOrderAlert(this._app?.settings || {}, hasPending);
+        return;
+      }
+    } catch (_) { /* */ }
+    if (!hasPending) this.stopAlertSound();
+  },
+
   playAlert() {
     try {
       const ns = this._app?.settings?.notification_settings || {};
       if (ns.sound_enabled === false) return;
       if (typeof SoundService !== 'undefined' && SoundService.playOnlineOrderAlert) {
         SoundService.playOnlineOrderAlert(this._app?.settings || {});
-        return;
       }
-      const ctx = new (window.AudioContext || window.webkitAudioContext)();
-      const o = ctx.createOscillator();
-      const g = ctx.createGain();
-      o.connect(g);
-      g.connect(ctx.destination);
-      o.frequency.value = 880;
-      g.gain.value = 0.08;
-      o.start();
-      setTimeout(() => { o.stop(); ctx.close(); }, 180);
     } catch (_) { /* */ }
   },
 
@@ -303,6 +339,9 @@ const OnlineOrdersWidget = {
 
   showNewOrderPopup(order, isReminder = false) {
     if (!this.isAllowed() || !order) return;
+    if (!window.POSPage?._shiftFlowComplete) return;
+    const overlay = document.getElementById('modal-overlay');
+    if (overlay && !overlay.classList.contains('hidden') && overlay.dataset.noDismiss === '1') return;
     this._popupOpen = true;
     const items = this.parseItems(order);
     const title = isReminder ? '⏰ Online order needs attention' : '🛒 New online order';
@@ -393,7 +432,13 @@ const OnlineOrdersWidget = {
           ? rows.map((o) => this.renderOrderRow(o)).join('')
           : `<p class="muted" style="padding:16px 0;text-align:center">No orders in this list.</p>`}
       </div>`,
-      `<button type="button" class="btn btn-ghost" id="oo-close">Close</button>`);
+      `<label style="display:flex;align-items:center;gap:8px;margin-right:auto;font-size:13px">
+        ${window.PanelNotify ? PanelNotify.soundToggleHtml('pos', { id: 'oo-notify-sound', label: 'Alert sounds' }) : ''}
+      </label>
+      <button type="button" class="btn btn-ghost" id="oo-close">Close</button>`);
+
+    const ooNotify = document.getElementById('oo-notify-sound');
+    if (ooNotify && window.PanelNotify) PanelNotify.bindSoundToggle(ooNotify, 'pos');
 
     document.getElementById('oo-close')?.addEventListener('click', () => {
       this._panelOpen = false;

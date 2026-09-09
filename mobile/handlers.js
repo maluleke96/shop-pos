@@ -297,6 +297,8 @@ function buildHandlers(store) {
 
   add('settings:get', wrapSync(() => s.sanitizeSettingsResponse(s.getSettings())));
   add('settings:getParsed', wrapSync(() => s.getSettingsParsed()));
+  add('settings:getMenuHighlights', wrapSync(() => s.getMenuHighlightSettings()));
+  add('settings:saveMenuHighlights', wrapSync((d, a) => s.saveMenuHighlightSettings(d || {}, a?.id, a?.username || a?.full_name)));
   add('settings:detectExistingBusiness', wrapSync(() => s.detectExistingBusiness()));
   add('settings:adoptExistingBusiness', wrapSync(() => s.adoptExistingBusiness()));
   add('settings:save', wrapSync((d, a) => {
@@ -423,6 +425,16 @@ function buildHandlers(store) {
   add('returns:get', wrapSync((f) => { requireSession(); return s.getReturns(f || {}); }));
 
   add('expenses:get', wrapSync((f) => { requireSession(); return s.getExpenses(f || {}); }));
+  add('expenses:dashboardStats', wrapSync((f, a) => {
+    const user = s.requireActor(a, ['owner', 'manager', 'supervisor', 'assistant_manager', 'accountant', 'bookkeeper']);
+    return s.getExpenseDashboardStats(user, f || {});
+  }));
+  add('expenses:getOne', wrapSync((id) => { requireSession(); return s.getExpenseById(id); }));
+  add('expenses:getCategories', wrapSync(() => { requireSession(); return s.getExpenseCategories(); }));
+  add('expenses:saveCategories', wrapSync((cats, a) => {
+    const user = s.requireActor(a, ['owner', 'manager']);
+    return s.saveExpenseCategories(cats, user.id, user.username);
+  }));
   add('expenses:save', wrapSync((d, a) => {
     const user = s.requireActor(a, ['owner', 'manager', 'supervisor', 'assistant_manager']);
     return s.saveExpense(d, user.id, user.username);
@@ -486,7 +498,7 @@ function buildHandlers(store) {
     const branchId = scope.allBranches ? null : scope.branchId;
     return s.getDashboardStats(f, t, branchId);
   }));
-  add('inventory:stats', wrapSync(() => s.getInventoryStats()));
+  add('inventory:stats', wrapSync((branchId) => s.getInventoryStats(branchId)));
   add('analytics:sales', wrapSync((f, t) => s.getSalesAnalytics(f, t)));
 
   add('shifts:open', wrapSync((f, a) => {
@@ -571,6 +583,20 @@ function buildHandlers(store) {
   }));
   add('notifications:refreshPaymentDue', wrapSync(() => { s.refreshPaymentDueNotifications(); return true; }));
   add('notifications:ensureDemoSound', wrapSync(() => s.getSettingsParsed()?.notification_settings || {}));
+  add('notifications:ackEvent', wrapSync((panel, eventKey, meta) => {
+    const na = require('../electron/services/notification-acks');
+    const sess = s.getUserSession?.();
+    return na.ackEvent(panel, eventKey, { ...(meta || {}), user_id: sess?.id || meta?.user_id });
+  }));
+  add('notifications:ackEvents', wrapSync((panel, keys, meta) => {
+    const na = require('../electron/services/notification-acks');
+    const sess = s.getUserSession?.();
+    return na.ackEvents(panel, keys || [], { ...(meta || {}), user_id: sess?.id || meta?.user_id });
+  }));
+  add('notifications:listAcked', wrapSync((panel, limit) => {
+    const na = require('../electron/services/notification-acks');
+    return na.listAckedKeys(panel, limit || 500);
+  }));
   add('search:global', wrapSync(q => s.globalSearch(q)));
 
   add('deviceSettings:get', wrapSync(() => require('./shims/deviceSettings').load()));
@@ -1102,6 +1128,10 @@ function buildHandlers(store) {
     const empSess = s.getEmployeeSession?.();
     const sessEmpId = empSess ? Number(empSess.id || empSess.employee_id) : null;
     if (sessEmpId != null && sessEmpId === Number(d?.employee_id)) return s.saveStaffSelfie(d);
+    if (d?.pin && d?.employee_id) {
+      s.verifyEmployeePin(Number(d.employee_id), d.pin);
+      return s.saveStaffSelfie(d);
+    }
     s.requireActor(a || s.getUserSession?.(), ['owner', 'manager']);
     return s.saveStaffSelfie(d);
   }));
@@ -1359,9 +1389,15 @@ function buildHandlers(store) {
   }));
   add('staff:getPerformance', wrapSync((id, f, t) => s.getEmployeePerformance(id, f, t)));
   add('staff:getNotifications', wrapSync(() => s.getStaffNotifications()));
-  add('staff:payslipPdf', wrapSync(id => {
+  add('staff:payslipPdf', wrapSync((id, auth) => {
+    const pin = auth?.pin != null ? String(auth.pin) : null;
+    if (pin) {
+      const owner = s.getDb().prepare('SELECT employee_id FROM employee_payroll WHERE id = ?').get(id);
+      if (!owner) throw new Error('Payroll record not found');
+      s.verifyEmployeePin(owner.employee_id, pin);
+    }
     const st = s.getSettingsParsed();
-    return s.buildPayslipPdf(id, st?.shop_name, st?.currency || 'R');
+    return s.buildPayslipPdf(id, st?.shop_name, st?.currency || 'R', { skipAuth: !!pin });
   }));
   add('staff:schedulePdf', wrapSync((f, t) => {
     const st = s.getSettingsParsed();
@@ -1863,6 +1899,7 @@ function buildHandlers(store) {
   add('ops:rejectPromo', wrapSync((id, notes, a) => s.rejectPromoRequest(id, notes, a)));
   add('ops:cancelPromo', wrapSync((id, a) => s.cancelPromoRequest(id, a)));
   add('ops:deletePromo', wrapSync((id, a) => s.deletePromoRequest(id, a)));
+  add('ops:updatePromo', wrapSync((id, data, a) => s.updatePromoRequest(id, data || {}, a)));
   add('ops:promoSalesLog', wrapSync(f => s.getPromoSalesLog(f)));
   add('ops:syncPromoStatuses', wrapSync(() => { s.syncPromoStatuses(); return true; }));
 
@@ -2309,6 +2346,14 @@ function buildHandlers(store) {
     return dp.rejectDriver(id, reason, user);
   }));
   add('delivery:registerDriver', wrapSync((d) => dp.registerDriver(d || {})));
+  add('delivery:adminRegisterDriver', wrapSync((d, a) => {
+    const user = requireUserSession(['owner', 'manager', 'supervisor', 'delivery_manager']);
+    return dp.adminRegisterDriver(d || {}, user);
+  }));
+  add('delivery:releaseToPool', wrapSync((id, a) => {
+    const user = requireUserSession(['owner', 'manager', 'supervisor', 'assistant_manager', 'delivery_manager']);
+    return dp.releaseToDriverPool(id, user);
+  }));
   add('delivery:assign', wrapSync((id, driverId, a, opts) => {
     const user = requireUserSession(['owner', 'manager', 'supervisor', 'assistant_manager', 'delivery_manager']);
     return dp.assignDriver(id, driverId, user, opts || {});
@@ -2321,12 +2366,20 @@ function buildHandlers(store) {
     const user = requireUserSession(['owner', 'manager', 'supervisor', 'assistant_manager', 'cashier', 'delivery_manager']);
     return dp.updateDeliveryStatus(id, status, user, { notes });
   }));
+  add('delivery:updateDelivery', wrapSync((id, data, a) => {
+    const user = requireUserSession(['owner', 'manager', 'supervisor', 'delivery_manager']);
+    return dp.updateDeliveryAdmin(id, data || {}, user);
+  }));
+  add('delivery:cancelDelivery', wrapSync((id, a) => {
+    const user = requireUserSession(['owner', 'manager', 'supervisor', 'delivery_manager']);
+    return dp.cancelDeliveryAdmin(id, user);
+  }));
   add('delivery:settings', wrapSync((a) => {
     requireUserSession(['owner', 'manager', 'delivery_manager']);
     return dp.getSettings();
   }));
   add('delivery:saveSettings', wrapSync((d, a) => {
-    const user = requireUserSession(['owner', 'manager']);
+    const user = requireUserSession(['owner', 'manager', 'delivery_manager']);
     return dp.saveSettings(d || {}, user);
   }));
   add('delivery:branchSettings', wrapSync((branchId, a) => {
@@ -2373,11 +2426,51 @@ function buildHandlers(store) {
   add('driver:orders', wrapSync((token, f) => dp.driverListOrders(token, f || {})));
   add('driver:history', wrapSync((token, f) => dp.driverHistory(token, f || {})));
   add('driver:earnings', wrapSync((token, f) => dp.driverEarnings(token, f || {})));
-  add('driver:payments', wrapSync((token) => dp.driverPayments(token)));
+  add('driver:payments', wrapSync((token, f) => dp.driverPayments(token, f || {})));
+  add('driver:profile', wrapSync((token) => dp.driverGetProfile(token)));
+  add('driver:updateProfile', wrapSync((token, data) => dp.driverUpdateProfile(token, data || {})));
   add('delivery:driverPaymentSummary', wrapSync((actor) => dp.listDriverPaymentSummary(actor)));
   add('delivery:recordDriverPayout', wrapSync((driverId, data, actor) => dp.recordDriverPayout(driverId, data || {}, actor)));
+  add('delivery:driverPayoutHistory', wrapSync((driverId, filters, actor) => dp.getDriverPayoutHistory(driverId, filters || {}, actor)));
+  add('delivery:previewDriverPayout', wrapSync((driverId, data, actor) => {
+    requireUserSession(['owner', 'manager', 'supervisor', 'delivery_manager']);
+    const d = data || {};
+    return dp.previewDriverPayout(driverId, d.period_from || d.from, d.period_to || d.to, actor);
+  }));
+  add('delivery:driverPayoutDetail', wrapSync((payoutId, actor) => {
+    requireUserSession(['owner', 'manager', 'supervisor', 'delivery_manager']);
+    return dp.getDriverPayoutDetail(payoutId, actor);
+  }));
+  add('delivery:driverPayoutPdf', wrapSync((payoutId, actor) => {
+    requireUserSession(['owner', 'manager', 'supervisor', 'delivery_manager']);
+    const buf = dp.buildDriverPayoutPdf(payoutId, actor);
+    return { pdf: buf.toString('base64'), mime: 'application/pdf', filename: `driver-payment-${payoutId}.pdf` };
+  }));
+  add('driver:payoutDetail', wrapSync((token, payoutId) => dp.driverPayoutDetailForDriver(token, payoutId)));
+  add('driver:payoutPdf', wrapSync((token, payoutId) => {
+    const buf = dp.buildDriverPayoutPdfForDriver(token, payoutId);
+    return { pdf: buf.toString('base64'), mime: 'application/pdf', filename: `my-payment-${payoutId}.pdf` };
+  }));
+  add('delivery:driverOwed', wrapSync((driverId, filters, actor) => {
+    requireUserSession(['owner', 'manager', 'supervisor', 'delivery_manager']);
+    return dp.driverOwedAmount(driverId, filters || {});
+  }));
+  add('driver:submitClaim', wrapSync((token) => dp.submitPayoutClaim(token)));
+  add('delivery:listPayoutClaims', wrapSync((f, a) => {
+    const user = requireUserSession(['owner', 'manager', 'supervisor', 'delivery_manager']);
+    return dp.listPayoutClaims(f || {}, user);
+  }));
+  add('delivery:approvePayoutClaim', wrapSync((id, notes, a) => {
+    const user = requireUserSession(['owner', 'manager', 'supervisor']);
+    return dp.approvePayoutClaim(id, user, notes || '');
+  }));
+  add('delivery:rejectPayoutClaim', wrapSync((id, reason, a) => {
+    const user = requireUserSession(['owner', 'manager', 'supervisor']);
+    return dp.rejectPayoutClaim(id, user, reason || '');
+  }));
   add('driver:accept', wrapSync((token, id) => dp.driverAcceptDelivery(token, id)));
   add('driver:reject', wrapSync((token, id, reason) => dp.driverRejectDelivery(token, id, reason)));
+  add('driver:release', wrapSync((token, id, reason) => dp.driverReleaseDelivery(token, id, reason)));
   add('driver:updateStatus', wrapSync((token, id, status, notes) => dp.driverUpdateStatus(token, id, status, { notes })));
   add('driver:availability', wrapSync((token, availability) => dp.setDriverAvailability(token, availability)));
 
@@ -2460,7 +2553,7 @@ function buildHandlers(store) {
     return s.acceptOnlineOrderAsSale(id, user, opts || {});
   }));
 
-  add('audit:salesList', wrapSync(f => { requireSession(); return s.getSalesList(f); }));
+  add('audit:salesList', wrapSync(f => { requireSession(); return s.getUnifiedSalesList(f); }));
   add('audit:searchSales', wrapSync(f => s.searchSalesExplorer(f)));
   add('audit:voidSale', wrapSync((id, r, a, code) => {
     const user = s.requireActor(a, ['owner', 'manager', 'cashier', 'supervisor', 'assistant_manager']);
@@ -2534,9 +2627,22 @@ function buildHandlers(store) {
     requireUserSession(['owner', 'manager', 'supervisor']);
     return web.listAdminOrders(filters || {});
   }));
-  add('web:adminAnalytics', wrapSync((filters, actor) => {
+  
+add('web:adminAnalytics', wrapSync((filters, actor) => {
     requireUserSession(['owner', 'manager']);
     return web.getOnlineAnalytics(filters || {});
+  }));
+  add('web:rejectedOrdersReport', wrapSync((filters, actor) => {
+    requireUserSession(['owner', 'manager', 'supervisor']);
+    return web.listRejectedOrdersReport(filters || {});
+  }));
+  add('auth:recoverDriverPassword', wrapSync((identifier) => {
+    const recovery = require('../electron/services/panel-password-recovery');
+    return recovery.recoverDriverPassword(identifier);
+  }));
+  add('auth:recoverMarketingPassword', wrapSync((identifier) => {
+    const recovery = require('../electron/services/panel-password-recovery');
+    return recovery.recoverMarketingAgentPassword(identifier);
   }));
   add('web:saveGlobalSettings', wrapSync((data, actor) => {
     const user = requireUserSession(['owner', 'manager']);
@@ -2579,7 +2685,10 @@ function buildHandlers(store) {
   add('mobile:searchOrders', wrapSync((token, query) => mm.searchOrders(token, query || {})));
   add('mobile:staffActivity', wrapSync((token, filters) => mm.getStaffActivity(token, filters || {})));
   add('mobile:posStatus', wrapSync((token) => mm.getPosStatus(token)));
-  add('mobile:alerts', wrapSync((token, limit) => mm.listAlerts(token, limit)));
+  add('mobile:alerts', wrapSync((token, arg) => {
+    const opts = typeof arg === 'object' && arg !== null ? arg : { limit: arg || 50 };
+    return mm.listAlerts(token, opts.limit || 50, opts);
+  }));
   add('mobile:markRead', wrapSync((token, ids) => mm.markNotificationsRead(token, ids)));
   add('mobile:getPrefs', wrapSync((token) => mm.getNotificationPrefs(token)));
   add('mobile:savePrefs', wrapSync((token, prefs) => mm.saveNotificationPrefs(token, prefs)));
@@ -2767,6 +2876,7 @@ function buildHandlers(store) {
 
   // ─── Drive-Thru ─────────────────────────────────────────────────────────────
   const driveThruSvc = require('../electron/services/drive-thru-platform');
+  const expenseApp = require('../electron/services/expense-app-platform');
   add('driveThru:login', wrapSync((u, p) => driveThruSvc.driveThruLogin(u, p)));
   add('driveThru:logout', wrapSync((tok) => driveThruSvc.driveThruLogout(tok)));
   add('driveThru:dashboard', wrapSync((tok) => driveThruSvc.driveThruDashboard(tok)));
@@ -2796,6 +2906,101 @@ function buildHandlers(store) {
   add('driveThru:adminListStations', wrapSync((a) => { requireUserSession(['owner', 'manager']); return driveThruSvc.listStationsAdmin(); }));
   add('driveThru:adminSaveStation', wrapSync((data, a) => { requireUserSession(['owner', 'manager']); return driveThruSvc.saveStationAdmin(data || {}); }));
   add('driveThru:adminRegenerateStationToken', wrapSync((stationId, a) => { requireUserSession(['owner', 'manager']); return driveThruSvc.regenerateStationTokenAdmin(stationId); }));
+
+  // ─── Expenses mobile app ────────────────────────────────────────────────────
+  add('expenseApp:login', wrapSync((u, p, d) => expenseApp.expenseLogin(u, p, d || {})));
+  add('expenseApp:logout', wrapSync((tok) => expenseApp.expenseLogout(tok)));
+  add('expenseApp:profile', wrapSync((tok) => expenseApp.expenseProfile(tok)));
+  add('expenseApp:list', wrapSync((tok, f) => expenseApp.expenseList(tok, f || {})));
+  add('expenseApp:save', wrapSync((tok, d) => expenseApp.expenseSave(tok, d || {})));
+  add('expenseApp:get', wrapSync((tok, id) => expenseApp.expenseGet(tok, id)));
+  add('expenseApp:categories', wrapSync(() => expenseApp.expenseCategories()));
+  add('expenseApp:settings', wrapSync(() => expenseApp.expenseShopSettings()));
+  add('expenseApp:grantAccess', wrapSync((d) => expenseApp.expenseGrantAccess(d || {})));
+
+  const commSvc = require('../electron/services/communication-centre');
+  const commPortal = require('../electron/services/comm-portal');
+
+  add('commPortal:login', wrapSync((u, p, d) => commPortal.login(u, p, d || {})));
+  add('commPortal:logout', wrapSync((tok) => commPortal.logout(tok)));
+  add('commPortal:profile', wrapSync((tok) => commPortal.profile(tok)));
+  add('commPortal:dashboard', wrapSync((tok, f) => commSvc.getDashboard(f || {}, commPortal.resolveSession(tok))));
+  add('commPortal:analytics', wrapSync((tok, f) => commSvc.getAnalytics(f || {}, commPortal.resolveSession(tok))));
+  add('commPortal:settings', wrapSync((tok) => { commPortal.resolveSession(tok); return commSvc.getSettings(); }));
+  add('commPortal:saveSettings', wrapSync((tok, d) => commSvc.saveSettings(d || {}, commPortal.resolveSession(tok))));
+  add('commPortal:adminLogs', wrapSync((tok, f) => commSvc.getAdminLogs(f || {}, commPortal.resolveSession(tok))));
+  add('commPortal:providers', wrapSync((tok) => commSvc.getProviders(commPortal.resolveSession(tok))));
+  add('commPortal:testProvider', wrapAsync((tok, id) => commSvc.testProviderConnection(id, commPortal.resolveSession(tok))));
+  add('commPortal:templates', wrapSync((tok, f) => commSvc.getTemplates(f || {}, commPortal.resolveSession(tok))));
+  add('commPortal:saveTemplate', wrapSync((tok, d) => commSvc.saveTemplate(d || {}, commPortal.resolveSession(tok))));
+  add('commPortal:preview', wrapSync((tok, templateId, vars) => commSvc.previewMessage(templateId, vars || {}, commPortal.resolveSession(tok))));
+  add('commPortal:sendTest', wrapAsync((tok, d) => commSvc.sendTest(d || {}, commPortal.resolveSession(tok))));
+  add('commPortal:messages', wrapSync((tok, f) => commSvc.getMessages(f || {}, commPortal.resolveSession(tok))));
+  add('commPortal:campaigns', wrapSync((tok, f) => commSvc.getCampaigns(f || {}, commPortal.resolveSession(tok))));
+  add('commPortal:saveCampaign', wrapSync((tok, d) => commSvc.saveCampaign(d || {}, commPortal.resolveSession(tok))));
+  add('commPortal:startCampaign', wrapSync((tok, id) => commSvc.startCampaign(id, commPortal.resolveSession(tok))));
+  add('commPortal:pauseCampaign', wrapSync((tok, id) => { commSvc.pauseCampaign(id, commPortal.resolveSession(tok)); return true; }));
+  add('commPortal:cancelCampaign', wrapSync((tok, id) => { commSvc.cancelCampaign(id, commPortal.resolveSession(tok)); return true; }));
+  add('commPortal:automations', wrapSync((tok) => commSvc.getAutomations(commPortal.resolveSession(tok))));
+  add('commPortal:saveAutomation', wrapSync((tok, d) => commSvc.saveAutomation(d || {}, commPortal.resolveSession(tok))));
+  add('commPortal:setAutomationActive', wrapSync((tok, id, active) => commSvc.setAutomationActive(id, active, commPortal.resolveSession(tok))));
+  add('commPortal:runAutomation', wrapSync((tok, id) => {
+    const { getDb } = require('../electron/database/db');
+    const row = getDb().prepare('SELECT * FROM comm_automations WHERE id = ?').get(Number(id));
+    if (!row) throw new Error('Automation not found');
+    return commSvc.runAutomation(row, commPortal.resolveSession(tok));
+  }));
+  add('commPortal:listUsers', wrapSync((tok) => commPortal.listPortalUsers(commPortal.resolveSession(tok))));
+  add('commPortal:savePortalUser', wrapSync((tok, d) => commPortal.savePortalUser(d || {}, commPortal.resolveSession(tok))));
+  add('commPortal:setPortalUserActive', wrapSync((tok, id, active) => { commPortal.setPortalUserActive(id, active, commPortal.resolveSession(tok)); return true; }));
+  add('commPortal:segments', wrapSync((tok) => commSvc.getSegments(commPortal.resolveSession(tok))));
+  add('commPortal:saveSegment', wrapSync((tok, d) => commSvc.saveSegment(d || {}, commPortal.resolveSession(tok))));
+  add('commPortal:evaluateSegment', wrapSync((tok, id) => commSvc.evaluateSegment(id)));
+  add('commPortal:usage', wrapSync((tok, f) => commSvc.getUsage(f || {}, commPortal.resolveSession(tok))));
+  add('commPortal:saveProvider', wrapSync((tok, d) => commSvc.saveProvider(d || {}, commPortal.resolveSession(tok))));
+  add('commPortal:deleteTemplate', wrapSync((tok, id) => { commSvc.deleteTemplate(id, commPortal.resolveSession(tok)); return true; }));
+  add('comm:usage', wrapSync((f, a) => commSvc.getUsage(f || {}, a)));
+
+  add('comm:dashboard', wrapSync((f, a) => commSvc.getDashboard(f || {}, a)));
+  add('comm:analytics', wrapSync((f, a) => commSvc.getAnalytics(f || {}, a)));
+  add('comm:settings', wrapSync((a) => { requireUserSession(['owner', 'manager']); return commSvc.getSettings(); }));
+  add('comm:saveSettings', wrapSync((d, a) => commSvc.saveSettings(d || {}, a)));
+  add('comm:adminLogs', wrapSync((f, a) => commSvc.getAdminLogs(f || {}, a)));
+  add('comm:providers', wrapSync((a) => commSvc.getProviders(a)));
+  add('comm:saveProvider', wrapSync((d, a) => commSvc.saveProvider(d || {}, a)));
+  add('comm:testProvider', wrapAsync((id, a) => commSvc.testProviderConnection(id, a)));
+  add('comm:templates', wrapSync((f, a) => commSvc.getTemplates(f || {}, a)));
+  add('comm:saveTemplate', wrapSync((d, a) => commSvc.saveTemplate(d || {}, a)));
+  add('comm:deleteTemplate', wrapSync((id, a) => { commSvc.deleteTemplate(id, a); return true; }));
+  add('comm:preview', wrapSync((templateId, vars, a) => commSvc.previewMessage(templateId, vars || {}, a)));
+  add('comm:sendTest', wrapAsync((d, a) => commSvc.sendTest(d || {}, a)));
+  add('comm:messages', wrapSync((f, a) => commSvc.getMessages(f || {}, a)));
+  add('comm:campaigns', wrapSync((f, a) => commSvc.getCampaigns(f || {}, a)));
+  add('comm:getCampaign', wrapSync((id, a) => commSvc.getCampaign(id, a)));
+  add('comm:saveCampaign', wrapSync((d, a) => commSvc.saveCampaign(d || {}, a)));
+  add('comm:startCampaign', wrapSync((id, a) => commSvc.startCampaign(id, a)));
+  add('comm:pauseCampaign', wrapSync((id, a) => { commSvc.pauseCampaign(id, a); return true; }));
+  add('comm:cancelCampaign', wrapSync((id, a) => { commSvc.cancelCampaign(id, a); return true; }));
+  add('comm:automations', wrapSync((a) => commSvc.getAutomations(a)));
+  add('comm:saveAutomation', wrapSync((d, a) => commSvc.saveAutomation(d || {}, a)));
+  add('comm:setAutomationActive', wrapSync((id, active, a) => commSvc.setAutomationActive(id, active, a)));
+  add('comm:runAutomation', wrapSync((id, a) => {
+    requireUserSession(['owner', 'manager']);
+    const { getDb } = require('../electron/database/db');
+    const row = getDb().prepare('SELECT * FROM comm_automations WHERE id = ?').get(Number(id));
+    if (!row) throw new Error('Automation not found');
+    return commSvc.runAutomation(row, a);
+  }));
+  add('comm:segments', wrapSync((a) => commSvc.getSegments(a)));
+  add('comm:saveSegment', wrapSync((d, a) => commSvc.saveSegment(d || {}, a)));
+  add('comm:evaluateSegment', wrapSync((id) => commSvc.evaluateSegment(id)));
+  add('comm:customerProfile', wrapSync((id, a) => commSvc.getCustomerCommProfile(id, a)));
+  add('comm:preferences', wrapSync((id, a) => commSvc.getPreferences(id)));
+  add('comm:savePreferences', wrapSync((id, d, a) => commSvc.savePreferences(id, d || {}, a)));
+  add('comm:emitEvent', wrapSync((type, payload) => commSvc.emitEvent(type, payload || {})));
+  add('comm:portalUsers', wrapSync((a) => commPortal.listPortalUsers(a)));
+  add('comm:savePortalUser', wrapSync((d, a) => commPortal.savePortalUser(d || {}, a)));
+  add('comm:setPortalUserActive', wrapSync((id, active, a) => { commPortal.setPortalUserActive(id, active, a); return true; }));
 
   scheduleDailyBackup(store);
   return H;

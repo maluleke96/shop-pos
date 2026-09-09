@@ -26,7 +26,8 @@ function ensureComboColumns() {
     'ALTER TABLE combos ADD COLUMN gallery_paths TEXT',
     'ALTER TABLE combo_items ADD COLUMN custom_name TEXT',
     'ALTER TABLE combo_items ADD COLUMN custom_image_path TEXT',
-    'ALTER TABLE combo_items ADD COLUMN allow_pap_choice INTEGER DEFAULT 0'
+    'ALTER TABLE combo_items ADD COLUMN allow_pap_choice INTEGER DEFAULT 0',
+    'ALTER TABLE combos ADD COLUMN stock_quantity INTEGER'
   ]) {
     try { db.exec(sql); } catch (_) { /* exists */ }
   }
@@ -164,6 +165,49 @@ function isComboActive(combo) {
   return true;
 }
 
+function branchComponentStock(productId, branchId) {
+  const db = getDb();
+  if (branchId) {
+    const bs = db.prepare('SELECT quantity FROM branch_stock WHERE product_id = ? AND branch_id = ?').get(productId, branchId);
+    if (bs) return Number(bs.quantity) || 0;
+  }
+  const p = db.prepare('SELECT stock_quantity FROM products WHERE id = ?').get(productId);
+  return Number(p?.stock_quantity) || 0;
+}
+
+function comboHasRemovalInComponents(components) {
+  return (components || []).some((c) =>
+    (c.modifiers || []).some((m) =>
+      m.modifier_type === 'removal'
+      || (Number(m.extra_price) < 0 && m.modifier_type !== 'extra' && m.modifier_type !== 'option')
+    )
+  );
+}
+
+function comboSaleUnitPrice(combo, components) {
+  const sale = Number(combo.final_price) || 0;
+  const normal = Number(combo.normal_price) || sale;
+  return comboHasRemovalInComponents(components) ? normal : sale;
+}
+
+function comboAvailableUnits(combo, branchId) {
+  if (!combo || !isComboActive(combo)) return 0;
+  const items = combo.items || [];
+  if (!items.length) return 0;
+  if (combo.combo_kind === 'custom') {
+    if (combo.stock_quantity == null || combo.stock_quantity === '') return 99999;
+    return Math.max(0, Number(combo.stock_quantity) || 0);
+  }
+  let min = Infinity;
+  for (const ci of items) {
+    if (!ci.product_id) continue;
+    const stock = branchComponentStock(ci.product_id, branchId);
+    const per = Math.max(1, Number(ci.quantity) || 1);
+    min = Math.min(min, Math.floor(stock / per));
+  }
+  return min === Infinity ? 0 : Math.max(0, min);
+}
+
 function getCombos(filters = {}, actor) {
   ensureComboColumns();
   const db = getDb();
@@ -231,7 +275,12 @@ function saveCombo(data, actor) {
     show_on_pos: showOnPos,
     show_on_online: showOnOnline,
     combo_kind: isCustom ? 'custom' : 'standard',
-    gallery_paths: galleryJson
+    gallery_paths: galleryJson,
+    stock_quantity: isCustom
+      ? (data.stock_quantity === '' || data.stock_quantity == null
+        ? null
+        : Math.max(0, parseInt(data.stock_quantity, 10) || 0))
+      : null
   };
   if (data.id) {
     const existing = getCombo(data.id);
@@ -264,8 +313,10 @@ function saveCombo(data, actor) {
     items.forEach(item => insertComboItem(db, data.id, item));
     audit(actor?.id, actor?.username, 'update_combo', data.id, { name: payload.name, approval_status: keepApproval });
     try {
-      db.prepare('UPDATE combos SET show_on_pos=?, show_on_online=? WHERE id=?').run(showOnPos, showOnOnline, data.id);
-    } catch (_) { /* column may not exist yet */ }
+      db.prepare('UPDATE combos SET show_on_pos=?, show_on_online=?, stock_quantity=? WHERE id=?').run(showOnPos, showOnOnline, payload.stock_quantity, data.id);
+    } catch (_) {
+      try { db.prepare('UPDATE combos SET show_on_pos=?, show_on_online=? WHERE id=?').run(showOnPos, showOnOnline, data.id); } catch (_2) { /* */ }
+    }
     return getCombo(data.id);
   }
   const code = nextComboCode();
@@ -299,8 +350,10 @@ function saveCombo(data, actor) {
   items.forEach(item => insertComboItem(db, comboId, item));
   audit(actor?.id, actor?.username, 'create_combo', comboId, { combo_code: code, approval_status: payload.approval_status });
   try {
-    db.prepare('UPDATE combos SET show_on_pos=?, show_on_online=? WHERE id=?').run(showOnPos, showOnOnline, comboId);
-  } catch (_) { /* column may not exist yet */ }
+    db.prepare('UPDATE combos SET show_on_pos=?, show_on_online=?, stock_quantity=? WHERE id=?').run(showOnPos, showOnOnline, payload.stock_quantity, comboId);
+  } catch (_) {
+    try { db.prepare('UPDATE combos SET show_on_pos=?, show_on_online=? WHERE id=?').run(showOnPos, showOnOnline, comboId); } catch (_2) { /* */ }
+  }
   return getCombo(comboId);
 }
 
@@ -368,6 +421,13 @@ function processComboSale(comboId, quantity, saleId, saleItemId, adjustStockFn, 
     comboId, saleId, saleItemId, quantity, combo.final_price,
     (Number(combo.final_price) || 0) * quantity
   );
+  if (combo.combo_kind === 'custom') {
+    if (combo.stock_quantity != null && combo.stock_quantity !== '') {
+      db.prepare('UPDATE combos SET stock_quantity = CASE WHEN COALESCE(stock_quantity, 0) - ? < 0 THEN 0 ELSE COALESCE(stock_quantity, 0) - ? END WHERE id = ?')
+        .run(quantity, quantity, comboId);
+    }
+    return;
+  }
   for (const item of combo.items || []) {
     if (!item.product_id) continue;
     const qty = (Number(item.quantity) || 1) * quantity;
@@ -385,6 +445,12 @@ function processComboSale(comboId, quantity, saleId, saleItemId, adjustStockFn, 
 function restoreComboSale(comboId, quantity, note, actorId, refType, refId, adjustStockFn) {
   const combo = getCombo(comboId);
   if (!combo) return false;
+  if (combo.combo_kind === 'custom') {
+    if (combo.stock_quantity != null && combo.stock_quantity !== '') {
+      getDb().prepare('UPDATE combos SET stock_quantity = COALESCE(stock_quantity, 0) + ? WHERE id = ?').run(Number(quantity) || 1, comboId);
+    }
+    return true;
+  }
   for (const item of combo.items || []) {
     if (!item.product_id) continue;
     const qty = (Number(item.quantity) || 1) * (Number(quantity) || 1);
@@ -452,5 +518,6 @@ function buildComboReportExcel(filters) {
 
 module.exports = {
   getCombos, getCombo, saveCombo, setComboStatus, deleteCombo, approveCombo, rejectCombo, calcComboPrices,
-  isComboActive, processComboSale, restoreComboSale, getComboReports, buildComboReportPdf, buildComboReportExcel
+  isComboActive, processComboSale, restoreComboSale, getComboReports, buildComboReportPdf, buildComboReportExcel,
+  branchComponentStock, comboHasRemovalInComponents, comboSaleUnitPrice, comboAvailableUnits
 };

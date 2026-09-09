@@ -113,3 +113,43 @@ body {
 .btn-sm { border: 0; padding: 8px 12px; border-radius: 8px; font-weight: 600; cursor: pointer; font-size: 13px; }
 .btn-sm.btn-primary { background: var(--primary); color: #0f172a; width: auto; margin: 0; }
 .btn-sm.btn-ghost { background: var(--card2); color: var(--text); }
+.shop-header {
+  display: flex; align-items: center; gap: 12px; padding: 12px 16px;
+  background: linear-gradient(180deg, #1e293b 0%, var(--bg) 100%);
+  border-bottom: 1px solid var(--border);
+}
+.shop-logo-wrap img { max-height: 40px; max-width: 72px; object-fit: contain; border-radius: 8px; }
+.shop-info .shop-name { font-size: 1rem; display: block; }
+.shop-info .branch-tag { color: var(--primary); font-weight: 600; }
+.login-logo { text-align: center; margin-bottom: 12px; }
+.login-logo img { max-height: 56px; max-width: 120px; object-fit: contain; border-radius: 10px; }
+.login-shop-meta { color: var(--muted); font-size: 13px; margin: 0 0 8px; text-align: center; }
+.profile-card {
+  background: var(--card); border-radius: var(--radius); padding: 20px;
+  border: 1px solid var(--border); text-align: center;
+}
+.profile-avatar {
+  width: 64px; height: 64px; border-radius: 50%; background: var(--primary); color: #0f172a;
+  display: grid; place-items: center; font-weight: 800; font-size: 1.25rem; margin: 0 auto;
+}
+.profile-section { text-align: left; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }
+.profile-section h3 { font-size: 12px; text-transform: uppercase; color: var(--muted); margin: 0 0 8px; }
+.profile-row { padding: 8px 0; border-bottom: 1px solid var(--border); display: grid; gap: 2px; }
+.profile-row:last-child { border-bottom: 0; }
+.mgr-order-popup {
+  position: fixed; inset: 0; z-index: 200;
+  display: flex; align-items: flex-end; justify-content: center;
+  padding: 16px; padding-bottom: calc(72px + env(safe-area-inset-bottom));
+  background: rgba(15, 23, 42, 0.72); backdrop-filter: blur(4px);
+}
+.mgr-order-popup.hidden { display: none; }
+.mgr-popup-card {
+  width: 100%; max-width: 420px; background: var(--card);
+  border: 2px solid var(--warn); border-radius: var(--radius);
+  padding: 16px; box-shadow: 0 16px 48px rgba(0,0,0,0.5);
+  max-height: 70vh; overflow: auto;
+}
+.mgr-popup-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 8px; }
+.mgr-popup-items { margin: 8px 0; padding-left: 18px; font-size: 13px; }
+.mgr-popup-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.updated { font-size: 11px; color: var(--muted); text-align: center; margin-top: 12px; }

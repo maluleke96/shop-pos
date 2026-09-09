@@ -5,21 +5,31 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Driver Registration</title>
   <link rel="stylesheet" href="css/driver.css">
+  <script src="/shared/panel-brand.js"></script>
 </head>
 <body>
   <div class="drv-wrap">
-    <div class="drv-card">
+    <div class="drv-card reg-card">
+      <div data-shop-logo class="drv-logo"></div>
       <h1>Become a Driver</h1>
-      <p class="muted">Register to deliver orders. Admin will review your application.</p>
+      <p class="muted">Upload your ID, selfie, and 5 photos of your delivery vehicle. Admin will review before approval.</p>
       <form id="reg-form">
         <label>Full name<input name="full_name" required></label>
         <label>Phone<input name="phone" type="tel" required></label>
         <label>Email<input name="email" type="email"></label>
-        <label>ID number<input name="id_number"></label>
-        <label>Address<textarea name="address" rows="2"></textarea></label>
-        <label>Vehicle info<input name="vehicle_info" placeholder="Car / bike, registration"></label>
+        <label>ID number<input name="id_number" required></label>
+        <label>Home address<textarea name="address" rows="2" required></textarea></label>
+        <label>Vehicle type & colour<input name="vehicle_info" placeholder="e.g. White Honda bike" required></label>
+        <label>Vehicle registration<input name="vehicle_registration" placeholder="ABC123GP" required></label>
+        <label>Bank name<input name="bank_name" placeholder="For payouts"></label>
+        <label>Bank account number<input name="bank_account"></label>
+        <label>Branch code<input name="bank_branch_code"></label>
+        <label>Your selfie (profile photo)<input type="file" id="selfie" accept="image/*" capture="user" required></label>
+        <label>Photo of your ID document<input type="file" id="id_photo" accept="image/*" capture="environment" required></label>
+        <label>Vehicle photos (5 required)<input type="file" id="vehicle_photos" accept="image/*" multiple required></label>
+        <p class="muted" id="vehicle-count">Select 5 clear photos: front, back, sides, and registration plate.</p>
         <label>Password<input name="password" type="password" required minlength="6"></label>
-        <button type="submit" class="drv-btn">Submit application</button>
+        <button type="submit" class="drv-btn" id="reg-submit">Submit application</button>
       </form>
       <p id="reg-msg" class="muted"></p>
       <p><a href="./">Already approved? Sign in</a></p>
@@ -28,17 +38,43 @@
   <script src="js/config.js"></script>
   <script src="js/api.js"></script>
   <script>
+    window.PanelBrand?.apply?.();
+    async function fileToDataUrl(file) {
+      return new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(r.result);
+        r.onerror = reject;
+        r.readAsDataURL(file);
+      });
+    }
+    document.getElementById('vehicle_photos').onchange = (e) => {
+      const n = e.target.files?.length || 0;
+      document.getElementById('vehicle-count').textContent = n
+        ? `${n} photo(s) selected${n < 5 ? ' — please add ' + (5 - n) + ' more' : ' ✓'}`
+        : 'Select 5 clear photos';
+    };
     document.getElementById('reg-form').onsubmit = async (e) => {
       e.preventDefault();
-      const fd = new FormData(e.target);
-      const data = Object.fromEntries(fd.entries());
+      const btn = document.getElementById('reg-submit');
       const msg = document.getElementById('reg-msg');
+      btn.disabled = true;
+      msg.textContent = 'Uploading…';
       try {
+        const fd = new FormData(e.target);
+        const data = Object.fromEntries(fd.entries());
+        const vehicleFiles = [...document.getElementById('vehicle_photos').files];
+        if (vehicleFiles.length < 5) throw new Error('Please upload 5 vehicle photos');
+        data.selfie = await fileToDataUrl(document.getElementById('selfie').files[0]);
+        data.id_photo = await fileToDataUrl(document.getElementById('id_photo').files[0]);
+        data.vehicle_photos = await Promise.all(vehicleFiles.slice(0, 5).map(fileToDataUrl));
+        delete data.vehicle_photos_raw;
         await DriverAPI.register(data);
-        msg.textContent = 'Application submitted. You will be notified when approved.';
+        msg.textContent = 'Application submitted! Admin will review your documents and notify you when approved.';
         e.target.reset();
       } catch (err) {
         msg.textContent = err.message || 'Registration failed';
+      } finally {
+        btn.disabled = false;
       }
     };
   </script>

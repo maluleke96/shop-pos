@@ -13,6 +13,14 @@ function loadUserById(id) {
  * Requires an active user session matching actor.id.
  */
 function assertUserActor(actor, allowedRoles = []) {
+  if (actor?.role === 'system') {
+    return {
+      id: actor.id != null ? Number(actor.id) : 0,
+      username: 'system',
+      full_name: 'System',
+      role: 'system'
+    };
+  }
   const sess = session.getUserSession();
   if (!sess?.id) throw new Error('Authentication required');
   // Cloud browser RPC may omit actor — trust the active session user id
@@ -75,7 +83,7 @@ function requireRole(actor, roles, message) {
 
 const ROLE_DEFAULTS = {
   owner: { sell: true, void_sales: true, refunds: true, discounts: true, change_prices: true, view_reports: true, manage_stock: true, system_settings: true, customers: true, suppliers: true, gift_cards: true, cash_up: true, products: true, reports: true, operations: true, kitchen: true, quotes: true, layby: true, delete_sales: true, bookkeeping: true, staff_portal: true, delivery: true },
-  manager: { sell: true, void_sales: true, refunds: true, discounts: true, change_prices: true, view_reports: true, manage_stock: true, customers: true, suppliers: true, gift_cards: true, cash_up: true, products: true, reports: true, operations: true, kitchen: true, quotes: true, layby: true, owner_salary: true, bookkeeping: true, delivery: true },
+  manager: { sell: true, void_sales: true, refunds: true, discounts: true, change_prices: true, view_reports: true, manage_stock: true, customers: true, suppliers: true, gift_cards: true, cash_up: true, products: true, reports: true, operations: true, kitchen: true, quotes: true, layby: true, owner_salary: true, bookkeeping: true, delivery: true, expense_capture: true },
   supervisor: { sell: true, void_sales: true, refunds: true, discounts: true, cash_up: true, operations: true, kitchen: true, gift_cards: true, layby: true, quotes: true, delivery: true },
   assistant_manager: { sell: true, void_sales: true, refunds: true, discounts: true, cash_up: true, operations: true, kitchen: true, gift_cards: true, layby: true, quotes: true, view_reports: true, customers: true, products: true, delivery: true },
   marketing_agent: {},

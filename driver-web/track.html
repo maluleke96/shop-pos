@@ -15,16 +15,25 @@
       const token = (location.pathname.split('/').pop() || '').trim();
       const el = document.getElementById('track-app');
       if (!token || token === 'track') { el.innerHTML = '<p>Invalid tracking link.</p>'; return; }
+      const esc = (s) => { const d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; };
       try {
         const t = await DriverAPI.tracking(token);
         const data = t.data || t;
-        el.innerHTML = `<h1>Delivery ${data.confirmation_code ? `#${data.confirmation_code}` : (data.order_number || '')}</h1>
-          <p class="status-pill">${data.status_label || data.status}</p>
+        const drv = data.driver;
+        el.innerHTML = `<h1>Delivery ${data.confirmation_code ? `#${esc(data.confirmation_code)}` : (esc(data.order_number) || '')}</h1>
+          <p class="status-pill">${esc(data.status_label || data.status)}</p>
           ${data.pickup_at_store ? '<p class="muted">Please collect your order at the store.</p>' : ''}
           <ol class="timeline">${(data.timeline || []).map((s) =>
-            `<li class="${s.done ? 'done' : ''} ${s.active ? 'active' : ''}">${s.label}</li>`).join('')}</ol>`;
+            `<li class="${s.done ? 'done' : ''} ${s.active ? 'active' : ''}">${esc(s.label)}</li>`).join('')}</ol>
+          ${drv?.name ? `<div class="driver-card" style="margin-top:20px;padding:14px;border:1px solid #334155;border-radius:12px">
+            ${drv.photo_url ? `<img src="${esc(drv.photo_url)}" alt="" style="width:56px;height:56px;border-radius:50%;object-fit:cover;float:left;margin-right:12px">` : ''}
+            <strong>Your driver: ${esc(drv.name)}</strong>
+            ${drv.vehicle_registration ? `<div class="muted">Reg: ${esc(drv.vehicle_registration)}</div>` : ''}
+            ${drv.vehicle_info ? `<div class="muted">${esc(drv.vehicle_info)}</div>` : ''}
+            ${drv.phone ? `<div style="margin-top:8px"><a href="tel:${esc(String(drv.phone).replace(/\s/g, ''))}">📞 Call driver</a></div>` : ''}
+          </div>` : ''}`;
       } catch (e) {
-        el.innerHTML = `<p>${e.message || 'Tracking unavailable'}</p>`;
+        el.innerHTML = `<p>${esc(e.message || 'Tracking unavailable')}</p>`;
       }
     })();
   </script>

@@ -1,8 +1,12 @@
 {
-  "appId": "com.shoppos.accounting",
-  "appName": "Business Accounting",
+  "appId": "com.shoppos.order",
+  "appName": "Online Ordering",
   "webDir": "www",
+  "server": {
+    "url": "https://chisafood.up.railway.app/order/",
+    "cleartext": false
+  },
   "android": {
-    "allowMixedContent": true
+    "allowMixedContent": false
   }
 }

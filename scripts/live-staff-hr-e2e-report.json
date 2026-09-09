@@ -1,0 +1,175 @@
+{
+  "url": "https://chisafood.up.railway.app",
+  "at": "2026-09-06T04:11:37.317Z",
+  "summary": {
+    "PASS": 31,
+    "WARN": 0,
+    "FAIL": 0
+  },
+  "results": [
+    {
+      "name": "hr-app.js build",
+      "status": "PASS",
+      "note": "2026.09.02-hr-full-parity"
+    },
+    {
+      "name": "hr-parity.js served",
+      "status": "PASS"
+    },
+    {
+      "name": "hr-parity nav sections",
+      "status": "PASS"
+    },
+    {
+      "name": "staff portal screen in index",
+      "status": "PASS"
+    },
+    {
+      "name": "staff.js salary claims UI",
+      "status": "PASS"
+    },
+    {
+      "name": "staff.js selfie flow",
+      "status": "PASS"
+    },
+    {
+      "name": "auth login",
+      "status": "PASS",
+      "note": "chisa96"
+    },
+    {
+      "name": "hr:login",
+      "status": "PASS"
+    },
+    {
+      "name": "HR approvals queue",
+      "status": "PASS",
+      "method": "hr:approvals",
+      "note": "2 rows"
+    },
+    {
+      "name": "Training records",
+      "status": "PASS",
+      "method": "hrTraining:getRecords",
+      "note": "0 rows"
+    },
+    {
+      "name": "Staff submissions",
+      "status": "PASS",
+      "method": "hrTraining:getSubmissions",
+      "note": "0 rows"
+    },
+    {
+      "name": "Training templates",
+      "status": "PASS",
+      "method": "hrTraining:getTemplates",
+      "note": "3 rows"
+    },
+    {
+      "name": "Probations",
+      "status": "PASS",
+      "method": "hr:getProbations",
+      "note": "0 rows"
+    },
+    {
+      "name": "HR contracts",
+      "status": "PASS",
+      "method": "hr:getContracts",
+      "note": "0 rows"
+    },
+    {
+      "name": "Contract templates",
+      "status": "PASS",
+      "method": "hr:getContractTemplates",
+      "note": "0 rows"
+    },
+    {
+      "name": "Job postings",
+      "status": "PASS",
+      "method": "jobs:getPostings",
+      "note": "0 rows"
+    },
+    {
+      "name": "Job candidates",
+      "status": "PASS",
+      "method": "jobs:getCandidates",
+      "note": "0 rows"
+    },
+    {
+      "name": "Recruitment settings",
+      "status": "PASS",
+      "method": "jobs:getSettings",
+      "note": ""
+    },
+    {
+      "name": "Login selfies",
+      "status": "PASS",
+      "method": "staff:getSelfies",
+      "note": "2 rows"
+    },
+    {
+      "name": "Login events",
+      "status": "PASS",
+      "method": "staff:getLoginEvents",
+      "note": "500 rows"
+    },
+    {
+      "name": "Salary claims",
+      "status": "PASS",
+      "method": "salaryClaims:list",
+      "note": "0 rows"
+    },
+    {
+      "name": "Staff employees",
+      "status": "PASS",
+      "method": "staff:getEmployees",
+      "note": "1 rows"
+    },
+    {
+      "name": "Payroll settings",
+      "status": "PASS",
+      "method": "payroll:getSettings",
+      "note": ""
+    },
+    {
+      "name": "Employee of month history",
+      "status": "PASS",
+      "method": "employeeOfMonth:getHistory",
+      "note": "0 rows"
+    },
+    {
+      "name": "Ops rules",
+      "status": "PASS",
+      "method": "ops:getRules",
+      "note": "0 rows"
+    },
+    {
+      "name": "staff portal settings object",
+      "status": "PASS",
+      "note": "selfie=on"
+    },
+    {
+      "name": "active employee for portal",
+      "status": "PASS",
+      "note": "maluleke happy (EM001)"
+    },
+    {
+      "name": "staff:login rejects bad PIN",
+      "status": "PASS",
+      "error": "Incorrect PIN"
+    },
+    {
+      "name": "hr:submitForApproval",
+      "status": "PASS",
+      "note": "REQ-000004"
+    },
+    {
+      "name": "hr:decideRequest reject",
+      "status": "PASS"
+    },
+    {
+      "name": "staff:saveSelfie (admin)",
+      "status": "PASS"
+    }
+  ]
+}

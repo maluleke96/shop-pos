@@ -7,12 +7,13 @@ const ManagerAPI = {
     return cfg.rpcUrl || 'https://chisafood.up.railway.app/rpc';
   })(),
 
-  token() { return localStorage.getItem('manager_token') || ''; },
+  token() { return sessionStorage.getItem('manager_token') || ''; },
 
   async call(method, args = []) {
     const headers = { 'Content-Type': 'application/json', 'X-Shop-Source': 'manager-app' };
     const tok = this.token();
-    if (tok && method !== 'mobile:login') args = [tok, ...args];
+    const skipToken = method === 'mobile:login' || method.startsWith('notifications:') || method === 'web:getSettings';
+    if (tok && !skipToken) args = [tok, ...args];
     let res;
     try {
       res = await fetch(this.rpcUrl, { method: 'POST', headers, body: JSON.stringify({ method, args }) });
@@ -23,8 +24,8 @@ const ManagerAPI = {
     if (!res.ok || json.success === false) {
       const msg = json.error || `Request failed (${res.status})`;
       if (/session|revoked|deactivated|not authenticated/i.test(msg)) {
-        localStorage.removeItem('manager_token');
-        localStorage.removeItem('manager_user');
+        sessionStorage.removeItem('manager_token');
+        sessionStorage.removeItem('manager_user');
       }
       throw new Error(msg);
     }
@@ -41,12 +42,13 @@ const ManagerAPI = {
   searchOrders: (q) => ManagerAPI.call('mobile:searchOrders', [q || {}]),
   staffActivity: (filters) => ManagerAPI.call('mobile:staffActivity', [filters || {}]),
   posStatus: () => ManagerAPI.call('mobile:posStatus', []),
-  alerts: (limit) => ManagerAPI.call('mobile:alerts', [limit || 50]),
+  alerts: (opts) => ManagerAPI.call('mobile:alerts', [typeof opts === 'object' ? opts : { limit: opts || 50 }]),
   markRead: (ids) => ManagerAPI.call('mobile:markRead', [ids || []]),
   getPrefs: () => ManagerAPI.call('mobile:getPrefs', []),
   savePrefs: (prefs) => ManagerAPI.call('mobile:savePrefs', [prefs]),
   registerPush: (token) => ManagerAPI.call('mobile:registerPush', [token]),
-  poll: (sinceId) => ManagerAPI.call('mobile:poll', [sinceId || 0])
+  poll: (sinceId) => ManagerAPI.call('mobile:poll', [sinceId || 0]),
+  pendingOnline: (filters) => ManagerAPI.call('mobile:onlineOrders', [{ ...(filters || {}), live_pending: true, limit: 30 }])
 };
 
 window.ManagerAPI = ManagerAPI;

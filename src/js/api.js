@@ -117,7 +117,18 @@ function downloadBlob(filename, bytes, mime) {
   return { success: true, path: filename };
 }
 
-function printHtmlBrowser(html, title) {
+function isMobileBrowser() {
+  if (typeof window === 'undefined') return false;
+  try {
+    if (window.matchMedia?.('(max-width: 767px), (pointer: coarse)').matches) return true;
+  } catch (_) { /* ignore */ }
+  return /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || '');
+}
+
+function printHtmlBrowser(html, title, opts) {
+  if (opts?.silent || isMobileBrowser()) {
+    return { success: true, skipped: true };
+  }
   const w = window.open('', '_blank', 'noopener,noreferrer');
   if (!w) return { success: false, error: 'Pop-up blocked. Allow pop-ups to print.' };
   const doc = html && String(html).includes('<html')
@@ -166,6 +177,8 @@ const API = {
   hasRecoverySecret: () => invoke('auth:hasRecovery'),
   getRecoveryStatus: () => invoke('auth:getRecoveryStatus'),
   verifyRecoveryPhrase: (secret) => invoke('auth:recoverVerify', secret),
+  recoverDriverPassword: (identifier) => invoke('auth:recoverDriverPassword', identifier),
+  recoverMarketingPassword: (identifier) => invoke('auth:recoverMarketingPassword', identifier),
   resetPasswordViaRecovery: (secret, username, newPassword) => invoke('auth:recoverReset', secret, username, newPassword),
   setRecoverySecret: (secret, actor) => invoke('auth:setRecoverySecret', secret, actor),
   factoryResetBusiness: (secret, confirmText, actor) => invoke('auth:factoryReset', secret, confirmText, actor),
@@ -181,6 +194,37 @@ const API = {
 
   getSettings: () => invoke('settings:get'),
   getSettingsParsed: () => invoke('settings:getParsed'),
+  getMobileApkStatus: async () => {
+    const base = String((typeof Utils !== 'undefined' && Utils.syncBaseUrl?.()) || window.location.origin).replace(/\/$/, '');
+    try {
+      const res = await fetch(`${base}/api/mobile-apk-status`, { cache: 'no-store' });
+      return res.json();
+    } catch (e) {
+      return { success: false, error: e.message || 'Network error' };
+    }
+  },
+  uploadMobileApk: async (apkFileName, file) => {
+    const base = String((typeof Utils !== 'undefined' && Utils.syncBaseUrl?.()) || window.location.origin).replace(/\/$/, '');
+    let token = '';
+    try {
+      token = sessionStorage.getItem('shoppos_rpc_session') || localStorage.getItem('shoppos_rpc_session') || '';
+    } catch (_) { /* ignore */ }
+    try {
+      const buf = await file.arrayBuffer();
+      const res = await fetch(`${base}/api/admin/mobile-apk-upload`, {
+        method: 'POST',
+        headers: { 'X-Session-Token': token, 'X-Apk-Filename': apkFileName },
+        body: buf
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) return { success: false, error: json.error || `Upload failed (${res.status})` };
+      return json;
+    } catch (e) {
+      return { success: false, error: e.message || 'Upload failed' };
+    }
+  },
+  getMenuHighlightSettings: () => invoke('settings:getMenuHighlights'),
+  saveMenuHighlightSettings: (data, actor) => invoke('settings:saveMenuHighlights', data, actor),
   saveSettings: (data, actor) => invoke('settings:save', data, actor),
   saveJsonSetting: (key, value, actor) => invoke('settings:saveJson', key, value, actor),
   submitSettingsRequest: (data, actor) => invoke('settings:submitRequest', data, actor),
@@ -222,6 +266,10 @@ const API = {
   getReturns: (filters) => invoke('returns:get', filters),
 
   getExpenses: (filters) => invoke('expenses:get', filters),
+  getExpense: (id) => invoke('expenses:getOne', id),
+  getExpenseCategories: () => invoke('expenses:getCategories'),
+  getExpenseDashboardStats: (filters, actor) => invoke('expenses:dashboardStats', filters, actor),
+  saveExpenseCategories: (cats, actor) => invoke('expenses:saveCategories', cats, actor),
   saveExpense: (data, actor) => invoke('expenses:save', data, actor),
   deleteExpense: (id, actor) => invoke('expenses:delete', id, actor),
 
@@ -245,7 +293,7 @@ const API = {
   updatePurchaseOrder: (id, data, actor) => invoke('po:update', id, data, actor),
 
   getDashboardStats: (from, to, actor) => invoke('dashboard:stats', from, to, actor),
-  getInventoryStats: () => invoke('inventory:stats'),
+  getInventoryStats: (branchId) => invoke('inventory:stats', branchId),
   getSalesAnalytics: (from, to) => invoke('analytics:sales', from, to),
   getSalesReport: (from, to) => invoke('reports:sales', from, to),
   getProfitReport: (from, to) => invoke('reports:profit', from, to),
@@ -296,6 +344,9 @@ const API = {
   createTestNotification: () => invoke('notifications:createTest'),
   refreshPaymentDueNotifications: () => invoke('notifications:refreshPaymentDue'),
   ensureDemoNotificationSound: () => invoke('notifications:ensureDemoSound'),
+  ackNotificationEvent: (panel, eventKey, meta) => invoke('notifications:ackEvent', panel, eventKey, meta || {}),
+  ackNotificationEvents: (panel, keys, meta) => invoke('notifications:ackEvents', panel, keys || [], meta || {}),
+  listAckedNotificationKeys: (panel, limit) => invoke('notifications:listAcked', panel, limit || 500),
 
   globalSearch: (q) => invoke('search:global', q),
   getPrinters: () => invoke('printers:list'),
@@ -310,16 +361,16 @@ const API = {
   getDeviceSettings: () => invoke('deviceSettings:get'),
   saveDeviceSettings: (data) => invoke('deviceSettings:save', data),
   printPreview: (html, title) => isCloudBrowser()
-    ? Promise.resolve(printHtmlBrowser(html, title))
+    ? Promise.resolve(printHtmlBrowser(html, title, {}))
     : invoke('print:preview', html, title),
   printReceipt: (html, opts) => isCloudBrowser()
-    ? Promise.resolve(printHtmlBrowser(html, 'Receipt'))
+    ? Promise.resolve(printHtmlBrowser(html, 'Receipt', opts || {}))
     : invoke('print:receipt', html, opts),
   printKitchen: (html, opts) => isCloudBrowser()
-    ? Promise.resolve(printHtmlBrowser(html, 'Kitchen'))
+    ? Promise.resolve(printHtmlBrowser(html, 'Kitchen', opts || {}))
     : invoke('print:kitchen', html, opts),
   printA4: (html, opts) => isCloudBrowser()
-    ? Promise.resolve(printHtmlBrowser(html, 'Document'))
+    ? Promise.resolve(printHtmlBrowser(html, 'Document', opts || {}))
     : invoke('print:a4', html, opts || {}),
   htmlToPdf: (html, opts) => invoke('print:htmlToPdf', html, opts || {}),
   openCashDrawer: () => invoke('print:openDrawer'),
@@ -626,7 +677,7 @@ const API = {
   getCustomerPhoneReportPdf: (filters) => invoke('staff:customerPhoneReportPdf', filters),
   getStaffPerformance: (id, from, to) => invoke('staff:getPerformance', id, from, to),
   getStaffNotifications: () => invoke('staff:getNotifications'),
-  getStaffPayslipPdf: (id) => invoke('staff:payslipPdf', id),
+  getStaffPayslipPdf: (id, auth) => invoke('staff:payslipPdf', id, auth),
   getStaffSchedulePdf: (from, to) => invoke('staff:schedulePdf', from, to),
   getStaffSchedulePrintHtml: (from, to) => invoke('staff:schedulePrintHtml', from, to),
   getStaffReportPdf: (type, data) => invoke('staff:reportPdf', type, data),
@@ -832,6 +883,7 @@ const API = {
   rejectPromoRequest: (id, notes, actor) => invoke('ops:rejectPromo', id, notes, actor),
   cancelPromoRequest: (id, actor) => invoke('ops:cancelPromo', id, actor),
   deletePromoRequest: (id, actor) => invoke('ops:deletePromo', id, actor),
+  updatePromoRequest: (id, data, actor) => invoke('ops:updatePromo', id, data, actor),
   getPromoSalesLog: (filters) => invoke('ops:promoSalesLog', filters),
   syncPromoStatuses: () => invoke('ops:syncPromoStatuses'),
 
@@ -1242,6 +1294,40 @@ const API = {
   getWhatsAppSettings: () => invoke('whatsapp:getSettings'),
   saveWhatsAppSettings: (data, actor) => invoke('whatsapp:saveSettings', data, actor),
 
+  commDashboard: (filters, actor) => invoke('comm:dashboard', filters, actor),
+  commAnalytics: (filters, actor) => invoke('comm:analytics', filters, actor),
+  commSettings: (actor) => invoke('comm:settings', actor),
+  commSaveSettings: (data, actor) => invoke('comm:saveSettings', data, actor),
+  commAdminLogs: (filters, actor) => invoke('comm:adminLogs', filters, actor),
+  commProviders: (actor) => invoke('comm:providers', actor),
+  commSaveProvider: (data, actor) => invoke('comm:saveProvider', data, actor),
+  commTestProvider: (id, actor) => invoke('comm:testProvider', id, actor),
+  commTemplates: (filters, actor) => invoke('comm:templates', filters, actor),
+  commSaveTemplate: (data, actor) => invoke('comm:saveTemplate', data, actor),
+  commDeleteTemplate: (id, actor) => invoke('comm:deleteTemplate', id, actor),
+  commPreview: (templateId, vars, actor) => invoke('comm:preview', templateId, vars, actor),
+  commSendTest: (data, actor) => invoke('comm:sendTest', data, actor),
+  commMessages: (filters, actor) => invoke('comm:messages', filters, actor),
+  commCampaigns: (filters, actor) => invoke('comm:campaigns', filters, actor),
+  commGetCampaign: (id, actor) => invoke('comm:getCampaign', id, actor),
+  commSaveCampaign: (data, actor) => invoke('comm:saveCampaign', data, actor),
+  commStartCampaign: (id, actor) => invoke('comm:startCampaign', id, actor),
+  commPauseCampaign: (id, actor) => invoke('comm:pauseCampaign', id, actor),
+  commCancelCampaign: (id, actor) => invoke('comm:cancelCampaign', id, actor),
+  commAutomations: (actor) => invoke('comm:automations', actor),
+  commSaveAutomation: (data, actor) => invoke('comm:saveAutomation', data, actor),
+  commSetAutomationActive: (id, active, actor) => invoke('comm:setAutomationActive', id, active, actor),
+  commRunAutomation: (id, actor) => invoke('comm:runAutomation', id, actor),
+  commSegments: (actor) => invoke('comm:segments', actor),
+  commSaveSegment: (data, actor) => invoke('comm:saveSegment', data, actor),
+  commEvaluateSegment: (id) => invoke('comm:evaluateSegment', id),
+  commCustomerProfile: (id, actor) => invoke('comm:customerProfile', id, actor),
+  commPreferences: (id, actor) => invoke('comm:preferences', id, actor),
+  commSavePreferences: (id, data, actor) => invoke('comm:savePreferences', id, data, actor),
+  commPortalUsers: (actor) => invoke('comm:portalUsers', actor),
+  commSavePortalUser: (data, actor) => invoke('comm:savePortalUser', data, actor),
+  commSetPortalUserActive: (id, active, actor) => invoke('comm:setPortalUserActive', id, active, actor),
+
   getDocuments: (filters) => invoke('documentHub:get', filters),
   getDocument: (id) => invoke('documentHub:getOne', id),
   saveDocument: (data, actor) => invoke('documentHub:save', data, actor),
@@ -1287,10 +1373,12 @@ const API = {
   listDeliveryDrivers: (filters, actor) => invoke('delivery:drivers', filters || {}, actor),
   getDeliveryDriver: (id, actor) => invoke('delivery:getDriver', id, actor),
   saveDeliveryDriver: (data, actor) => invoke('delivery:saveDriver', data, actor),
+  adminRegisterDeliveryDriver: (data, actor) => invoke('delivery:adminRegisterDriver', data, actor),
   approveDeliveryDriver: (id, actor) => invoke('delivery:approveDriver', id, actor),
   rejectDeliveryDriver: (id, reason, actor) => invoke('delivery:rejectDriver', id, reason, actor),
   assignDeliveryDriver: (id, driverId, actor, opts) => invoke('delivery:assign', id, driverId, actor, opts || {}),
   autoAssignDelivery: (id, actor) => invoke('delivery:autoAssign', id, actor),
+  releaseDeliveryToPool: (id, actor) => invoke('delivery:releaseToPool', id, actor),
   updateDeliveryStatus: (id, status, notes, actor) => invoke('delivery:updateStatus', id, status, notes, actor),
   getDeliverySettings: (actor) => invoke('delivery:settings', actor),
   saveDeliverySettings: (data, actor) => invoke('delivery:saveSettings', data, actor),
@@ -1306,6 +1394,16 @@ const API = {
   deliveryDriverEarnings: (driverId, filters, actor) => invoke('delivery:driverEarnings', driverId, filters || {}, actor),
   deliveryDriverPaymentSummary: (actor) => invoke('delivery:driverPaymentSummary', actor),
   recordDriverPayout: (driverId, data, actor) => invoke('delivery:recordDriverPayout', driverId, data || {}, actor),
+  deliveryDriverPayoutHistory: (driverId, filters, actor) => invoke('delivery:driverPayoutHistory', driverId, filters || {}, actor),
+  previewDriverPayout: (driverId, data, actor) => invoke('delivery:previewDriverPayout', driverId, data || {}, actor),
+  deliveryDriverPayoutDetail: (payoutId, actor) => invoke('delivery:driverPayoutDetail', payoutId, actor),
+  deliveryDriverPayoutPdf: (payoutId, actor) => invoke('delivery:driverPayoutPdf', payoutId, actor),
+  deliveryDriverOwed: (driverId, filters, actor) => invoke('delivery:driverOwed', driverId, filters || {}, actor),
+  updateDelivery: (id, data, actor) => invoke('delivery:updateDelivery', id, data || {}, actor),
+  cancelDelivery: (id, actor) => invoke('delivery:cancelDelivery', id, actor),
+  listPayoutClaims: (filters, actor) => invoke('delivery:listPayoutClaims', filters || {}, actor),
+  approvePayoutClaim: (id, notes, actor) => invoke('delivery:approvePayoutClaim', id, notes || '', actor),
+  rejectPayoutClaim: (id, reason, actor) => invoke('delivery:rejectPayoutClaim', id, reason || '', actor),
   acceptOnlineOrderAsSale: (id, opts, actor) => invoke('sync:acceptOnlineOrder', id, opts, actor),
 
   webGetSettings: () => invoke('web:getSettings'),
@@ -1322,6 +1420,7 @@ const API = {
   webListOrders: (token, limit) => invoke('web:listOrders', token, limit),
   webToggleFavorite: (token, productId, branchId) => invoke('web:toggleFavorite', token, productId, branchId),
   webAdminOrders: (filters, actor) => invokeCloudFirst('web:adminOrders', [filters || {}, actor], () => invoke('web:adminOrders', filters, actor)),
+  webRejectedOrdersReport: (filters, actor) => invokeCloudFirst('web:rejectedOrdersReport', [filters || {}, actor], () => invoke('web:rejectedOrdersReport', filters, actor)),
   webAdminAnalytics: (filters, actor) => invokeCloudFirst('web:adminAnalytics', [filters || {}, actor], () => invoke('web:adminAnalytics', filters, actor)),
   webSaveGlobalSettings: (data, actor) => invokeCloudFirst('web:saveGlobalSettings', [data || {}, actor], () => invoke('web:saveGlobalSettings', data, actor)),
   webSaveBranchSettings: (branchId, data, actor) => invokeCloudFirst('web:saveBranchSettings', [branchId, data || {}, actor], () => invoke('web:saveBranchSettings', branchId, data, actor)),

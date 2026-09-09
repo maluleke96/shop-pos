@@ -20,7 +20,7 @@
       }
       link.href = LOGO_URL;
       document.querySelectorAll('[data-shop-logo]').forEach((el) => {
-        el.innerHTML = `<img src="${LOGO_URL}" alt="" style="max-height:48px;border-radius:8px" onerror="this.style.display='none'">`;
+        el.innerHTML = `<img src="${LOGO_URL}" alt="" style="max-height:36px;max-width:72px;width:auto;height:auto;object-fit:contain;border-radius:8px" onerror="this.style.display='none'">`;
       });
       document.querySelectorAll('[data-shop-name]').forEach((el) => {
         el.textContent = name;

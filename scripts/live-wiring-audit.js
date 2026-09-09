@@ -119,7 +119,8 @@ function ok(r) {
   // Manager
   const ml = await rpc('mobile:login', [user, pass, { platform: 'e2e', device_name: 'audit' }]);
   add('manager', 'mobile:login', ml);
-  const mgrTok = unwrap(ml.json) || ml.json?.token;
+  const mgrData = unwrap(ml.json) || ml.json;
+  const mgrTok = (typeof mgrData === 'object' && mgrData?.token) ? mgrData.token : (ml.json?.token || null);
   if (mgrTok) {
     for (const [method, extraArgs] of [
       ['mobile:dashboard', [{}]],

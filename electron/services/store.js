@@ -23,6 +23,7 @@ const flyersSvc = require('./flyers');
 const marketingAgentSvc = require('./marketing-agent');
 const marketingPlatformSvc = require('./marketing-platform');
 const whatsappSvc = require('./whatsapp');
+const commSvc = require('./communication-centre');
 const documentHubSvc = require('./document-hub');
 const customerRewardsSvc = require('./customer-rewards');
 const employeeOfMonthSvc = require('./employee-of-month');
@@ -898,8 +899,11 @@ const SHOP_SETTING_FIELDS = [
   'payment_settings', 'account_settings', 'operating_hours_settings',
   'notification_settings', 'staff_portal_settings', 'sync_settings', 'whatsapp_settings', 'branch_id',
   'date_format', 'time_format', 'invoice_prefix', 'quote_prefix', 'receipt_prefix', 'sales_targets',
-  'shift_settings', 'admin_signature_path', 'app_display_name', 'eom_settings', 'account_settings_v2'
+  'shift_settings', 'admin_signature_path', 'app_display_name', 'eom_settings', 'account_settings_v2',
+  'expense_categories'
 ];
+
+const DEFAULT_EXPENSE_CATEGORIES = ['rent', 'transport', 'electricity', 'salary', 'fuel', 'maintenance', 'stock', 'other'];
 
 function parseJsonField(val, fallback = {}) {
   if (!val) return fallback;
@@ -965,7 +969,17 @@ function getSettingsParsed() {
       ]
     }),
     notification_settings: parseJsonField(s.notification_settings, {
-      sound_enabled: true, loop_until_read: true, sound_path: null
+      sound_enabled: true, loop_until_read: true, sound_path: null,
+      panel_sounds: {
+        pos: { enabled: true, sound_path: null },
+        admin: { enabled: true, sound_path: null },
+        driver: { enabled: true, sound_path: null },
+        manager: { enabled: true, sound_path: null },
+        online: { enabled: true, sound_path: null },
+        delivery: { enabled: true, sound_path: null },
+        staff: { enabled: true, sound_path: null },
+        recipe: { enabled: true, sound_path: null }
+      }
     }),
     staff_portal_settings: parseJsonField(s.staff_portal_settings, {
       leave_types: ['Annual Leave', 'Sick Leave', 'Family Responsibility', 'Unpaid Leave'],
@@ -984,6 +998,13 @@ function getSettingsParsed() {
     }),
     sales_targets: parseJsonField(s.sales_targets, { daily: 0, weekly: 0, monthly: 0, yearly: 0 }),
     shift_settings: normalizeShiftSettings(parseJsonField(s.shift_settings, {})),
+    expense_categories: (() => {
+      try {
+        const cats = parseJsonField(s.expense_categories, null);
+        if (Array.isArray(cats) && cats.length) return cats.map((c) => String(c).trim()).filter(Boolean);
+      } catch (_) { /* */ }
+      return [...DEFAULT_EXPENSE_CATEGORIES];
+    })(),
     online: (() => {
       if (getSettingsParsed._onlineCache) return getSettingsParsed._onlineCache;
       try {
@@ -2412,19 +2433,15 @@ function completeSale(saleData, actorId, actorName, actorRole) {
   const receiptNumber = nextReceiptNumber();
   const orderNumber = nextOrderNumber();
 
-  // Always validate combo component stock before transaction
+  // Validate combo stock before transaction
   for (const item of saleData.items || []) {
     if (!item.combo_id) continue;
     const combo = combosSvc.getCombo(item.combo_id);
     if (!combo) throw new Error(`Combo not found for ${item.product_name || 'combo item'}`);
-    for (const ci of combo.items || []) {
-      const product = db.prepare('SELECT id, name, stock_quantity, has_recipe FROM products WHERE id = ?').get(ci.product_id);
-      if (!product) continue;
-      const need = (Number(ci.quantity) || 1) * (Number(item.quantity) || 1);
-      if (product.has_recipe) continue;
-      if (product.stock_quantity < need) {
-        throw new Error(`Insufficient stock for combo "${combo.name}" — ${product.name}: need ${need}, have ${product.stock_quantity}`);
-      }
+    const need = Number(item.quantity) || 1;
+    const avail = combosSvc.comboAvailableUnits(combo, branchId);
+    if (need > avail) {
+      throw new Error(`Insufficient stock for combo "${combo.name}": need ${need}, have ${avail}`);
     }
   }
 
@@ -2939,8 +2956,73 @@ function getReturns(filters = {}) {
 
 // ─── Expenses ───────────────────────────────────────────────────────────────
 
+function ensureExpenseSettingsColumn() {
+  try { getDb().prepare('SELECT expense_categories FROM shop_settings WHERE id = 1').get(); } catch (_) {
+    try { getDb().exec('ALTER TABLE shop_settings ADD COLUMN expense_categories TEXT'); } catch (_2) { /* */ }
+  }
+}
+
+function getExpenseCategories() {
+  ensureExpenseSettingsColumn();
+  const row = getDb().prepare('SELECT expense_categories FROM shop_settings WHERE id = 1').get();
+  let cats = [];
+  try {
+    const raw = row?.expense_categories;
+    cats = typeof raw === 'string' ? JSON.parse(raw) : (Array.isArray(raw) ? raw : []);
+  } catch (_) { cats = []; }
+  cats = [...new Set((cats || []).map((c) => String(c).trim()).filter(Boolean))];
+  return cats.length ? cats : [...DEFAULT_EXPENSE_CATEGORIES];
+}
+
+function saveExpenseCategories(categories, actorId, actorName) {
+  ensureExpenseSettingsColumn();
+  const cats = [...new Set((categories || []).map((c) => String(c).trim()).filter(Boolean))];
+  if (!cats.length) throw new Error('Add at least one expense category');
+  saveSettings({ expense_categories: JSON.stringify(cats) }, actorId, actorName);
+  return cats;
+}
+
+function getExpenseById(id) {
+  return getDb().prepare(`
+    SELECT e.*, u.full_name as user_name FROM expenses e
+    LEFT JOIN users u ON e.user_id = u.id WHERE e.id = ?
+  `).get(id);
+}
+
+function getExpenseDashboardStats(actor, filters = {}) {
+  requireActor(actor, ['owner', 'manager', 'supervisor', 'assistant_manager', 'accountant', 'bookkeeper']);
+  const analytics = require('../../lib/expense-analytics');
+  const db = getDb();
+  const today = new Date().toLocaleDateString('en-CA');
+  const from = filters.from || (() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 120);
+    return d.toLocaleDateString('en-CA');
+  })();
+  const to = filters.to || today;
+  let sql = `
+    SELECT e.*, u.full_name AS user_name, b.name AS branch_name
+    FROM expenses e
+    LEFT JOIN users u ON e.user_id = u.id
+    LEFT JOIN branches b ON b.id = e.branch_id
+    WHERE e.expense_date >= ? AND e.expense_date <= ?`;
+  const params = [from, to];
+  const scope = branchesSvc.resolveBranchScope(actor || null, { branchId: filters.branch_id });
+  if (!scope.allBranches && scope.branchId) {
+    sql += ' AND (e.branch_id = ? OR e.branch_id IS NULL)';
+    params.push(scope.branchId);
+  }
+  sql += ' ORDER BY e.expense_date DESC';
+  const rows = db.prepare(sql).all(...params).map((r) => ({ ...r, amount: Number(r.amount) || 0 }));
+  const branchNames = {};
+  try {
+    for (const b of branchesSvc.getBranches()) branchNames[b.id] = b.name;
+  } catch (_) { /* optional */ }
+  return analytics.computeExpenseDashboard(rows, branchNames);
+}
+
 function getExpenses(filters = {}) {
-  let sql = 'SELECT e.*, u.full_name as user_name FROM expenses e LEFT JOIN users u ON e.user_id = u.id WHERE 1=1';
+  let sql = 'SELECT e.*, u.full_name as user_name, b.name as branch_name FROM expenses e LEFT JOIN users u ON e.user_id = u.id LEFT JOIN branches b ON b.id = e.branch_id WHERE 1=1';
   const params = [];
   if (filters.from) { sql += ' AND e.expense_date >= ?'; params.push(filters.from); }
   if (filters.to) { sql += ' AND e.expense_date <= ?'; params.push(filters.to); }
@@ -2953,7 +3035,8 @@ function getExpenses(filters = {}) {
     } catch (_) { /* ignore */ }
   }
   sql += ' ORDER BY e.expense_date DESC';
-  return getDb().prepare(sql).all(...params);
+  const rows = getDb().prepare(sql).all(...params);
+  return rows.map((r) => ({ ...r, amount: Number(r.amount) || 0 }));
 }
 
 function resolveInsertId(runResult, tableName) {
@@ -2967,39 +3050,69 @@ function resolveInsertId(runResult, tableName) {
 }
 
 function saveExpense(data, actorId, actorName) {
-  const amount = money(data.amount);
+  const li = require('../../lib/expense-line-items');
+  let lineItems = li.normalizeLineItems(data.line_items);
+  let amount = lineItems.length ? li.lineItemsTotal(lineItems) : li.roundMoney(money(data.amount));
   if (!(amount > 0)) throw new Error('Expense amount must be greater than zero');
   if (!data.category || !String(data.category).trim()) throw new Error('Expense category is required');
   const expenseDate = data.expense_date || new Date().toLocaleDateString('en-CA');
+  const description = String(data.description || data.notes || '').trim()
+    || (lineItems.length ? li.lineItemsSummary(lineItems, 5) : '');
+  const lineItemsJson = lineItems.length ? JSON.stringify(lineItems) : null;
   const scope = branchesSvc.resolveBranchScope({ id: actorId }, { forceTill: true, branchId: data.branch_id });
   const branchId = data.branch_id != null ? Number(data.branch_id) : scope.stampId;
+  let expenseId;
   if (data.id) {
+    expenseId = data.id;
     try {
-      getDb().prepare('UPDATE expenses SET category=?, description=?, amount=?, expense_date=?, branch_id=? WHERE id=?')
-        .run(data.category, data.description, amount, expenseDate, branchId, data.id);
+      getDb().prepare('UPDATE expenses SET category=?, description=?, amount=?, expense_date=?, branch_id=?, line_items_json=? WHERE id=?')
+        .run(data.category, description, amount, expenseDate, branchId, lineItemsJson, data.id);
     } catch (_) {
-      getDb().prepare('UPDATE expenses SET category=?, description=?, amount=?, expense_date=? WHERE id=?')
-        .run(data.category, data.description, amount, expenseDate, data.id);
+      try {
+        getDb().prepare('UPDATE expenses SET category=?, description=?, amount=?, expense_date=?, branch_id=? WHERE id=?')
+          .run(data.category, description, amount, expenseDate, branchId, data.id);
+      } catch (_2) {
+        getDb().prepare('UPDATE expenses SET category=?, description=?, amount=?, expense_date=? WHERE id=?')
+          .run(data.category, description, amount, expenseDate, data.id);
+      }
     }
     audit(actorId, actorName, 'update_expense', 'expense', data.id, data);
     accHook('postFromExpense', data.id, { repost: true });
-    return data.id;
+  } else {
+    let r;
+    try {
+      r = getDb().prepare(`
+        INSERT INTO expenses (category, description, amount, user_id, expense_date, branch_id, line_items_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(data.category, description, amount, actorId, expenseDate, branchId, lineItemsJson);
+    } catch (_) {
+      try {
+        r = getDb().prepare(`
+          INSERT INTO expenses (category, description, amount, user_id, expense_date, branch_id)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `).run(data.category, description, amount, actorId, expenseDate, branchId);
+      } catch (_2) {
+        r = getDb().prepare(`
+          INSERT INTO expenses (category, description, amount, user_id, expense_date)
+          VALUES (?, ?, ?, ?, ?)
+        `).run(data.category, description, amount, actorId, expenseDate);
+      }
+    }
+    expenseId = resolveInsertId(r, 'expenses');
+    audit(actorId, actorName, 'create_expense', 'expense', expenseId, data);
+    if (expenseId) accHook('postFromExpense', expenseId);
   }
-  let r;
-  try {
-    r = getDb().prepare(`
-      INSERT INTO expenses (category, description, amount, user_id, expense_date, branch_id)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run(data.category, data.description, amount, actorId, expenseDate, branchId);
-  } catch (_) {
-    r = getDb().prepare(`
-      INSERT INTO expenses (category, description, amount, user_id, expense_date)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(data.category, data.description, amount, actorId, expenseDate);
+  if (expenseId && data.invoice_image) {
+    try {
+      const ed = require('../../lib/expense-documents');
+      const invoicePath = ed.saveDataUrl(expenseId, data.invoice_image);
+      if (invoicePath) {
+        try {
+          getDb().prepare('UPDATE expenses SET invoice_path = ? WHERE id = ?').run(invoicePath, expenseId);
+        } catch (_) { /* column may not exist yet */ }
+      }
+    } catch (_) { /* invoice optional */ }
   }
-  const expenseId = resolveInsertId(r, 'expenses');
-  audit(actorId, actorName, 'create_expense', 'expense', expenseId, data);
-  if (expenseId) accHook('postFromExpense', expenseId);
   return expenseId;
 }
 
@@ -4397,15 +4510,22 @@ async function acceptOnlineOrderAsSale(localId, actor, opts = {}) {
       const combosSvc = require('./combos');
       const combo = combosSvc.getCombo(Number(line.combo_id));
       if (!combo) throw new Error(`Cannot match combo on this POS: ${line.name || line.combo_id}`);
-      const unitPrice = line.unit_price != null ? Number(line.unit_price) : (Number(combo.final_price) || 0);
+      const components = Array.isArray(line.combo_components) ? line.combo_components : [];
+      const unitPrice = line.unit_price != null
+        ? Number(line.unit_price)
+        : combosSvc.comboSaleUnitPrice(combo, components);
       saleItems.push({
         combo_id: combo.id,
         product_name: line.name || combo.name,
         quantity: Number(line.quantity) || 1,
         unit_price: unitPrice,
-        buying_price: (combo.items || []).reduce((s, ci) => s + (Number(ci.buying_price) || 0) * (Number(ci.quantity) || 1), 0),
+        buying_price: combo.combo_kind === 'custom'
+          ? 0
+          : (combo.items || []).reduce((s, ci) => s + (Number(ci.buying_price) || 0) * (Number(ci.quantity) || 1), 0),
         modifiers: [],
-        modifiers_text: line.modifiers_text || null
+        modifiers_text: line.modifiers_text || null,
+        combo_components: components.length ? components : null,
+        item_type: 'combo'
       });
       continue;
     }
@@ -4527,7 +4647,13 @@ async function acceptOnlineOrderAsSale(localId, actor, opts = {}) {
   try {
     const delivery = require('./delivery-platform');
     const saleRow = getSale(saleId);
-    if (saleRow) delivery.upsertFromSale(saleRow);
+    if (saleRow) {
+      if (fulfillment === 'delivery') {
+        delivery.releaseOnlineDeliveryAfterPosAccept(localId, saleId);
+      } else {
+        delivery.upsertFromSale(saleRow);
+      }
+    }
   } catch (_) { /* optional */ }
 
   try {
@@ -4581,7 +4707,7 @@ module.exports = {
   recordStockAdjustment, listStockAdjustments, resolveProductRef, resolveModifierExtras,
   completeSale, getSale, getSaleByReceipt, holdOrder, getHeldOrders, deleteHeldOrder,
   processReturn, getReturns,
-  getExpenses, saveExpense, deleteExpense,
+  getExpenses, getExpenseById, getExpenseCategories, getExpenseDashboardStats, saveExpenseCategories, saveExpense, deleteExpense,
   getCustomers, getCustomer, saveCustomer, deleteCustomer, getCustomerHistory,
   getSuppliers, saveSupplier, recordSupplierPayment, getSupplierPayments,
   getPurchaseOrders, getPurchaseOrder, savePurchaseOrder, receivePurchaseOrder, updatePurchaseOrder, deletePurchaseOrder,
@@ -4701,6 +4827,7 @@ module.exports = {
   })(),
   ...whatsappExports,
   getWhatsAppTemplates,
+  ...commSvc,
   ...documentHubExports,
   getHubDocuments,
   getHubDocument,

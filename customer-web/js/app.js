@@ -18,6 +18,11 @@ const OrderApp = {
   giftWallet: [],
   editingCartKey: null,
   _closedTimer: null,
+  _orderPollTimer: null,
+  _menuFull: null,
+  _menuBranchId: null,
+  _menuLoadPromise: null,
+  _searchTimer: null,
 
   parseTimeToday(timeStr) {
     const [h, m] = String(timeStr || '18:00').split(':').map(Number);
@@ -106,7 +111,7 @@ const OrderApp = {
   },
 
   goBack() {
-    if (this.view === 'order-detail') { this.view = 'orders'; this.selectedOrder = null; }
+    if (this.view === 'order-detail') { this.stopOrderPolling(); this.view = 'orders'; this.selectedOrder = null; }
     else if (this.view === 'product') { this.view = 'menu'; this.editingCartKey = null; }
     else if (this.view === 'cart') { this.view = 'menu'; }
     else if (this.view === 'checkout') { this.view = 'cart'; }
@@ -119,18 +124,193 @@ const OrderApp = {
     return `${c}${(Number(n) || 0).toFixed(2)}`;
   },
 
+  calcPromoUnitPrice(product, mods) {
+    const promoActive = !!product.on_sale;
+    const normal = Number(product.price) || 0;
+    const sale = Number(product.sale_price ?? product.price) || normal;
+    const extraTotal = (mods || []).reduce((s, m) => s + (Number(m.extra_price) || 0), 0);
+    const hasRemoval = (mods || []).some((m) =>
+      m.modifier_type === 'removal' || (Number(m.extra_price) < 0 && m.modifier_type !== 'extra'));
+    if (promoActive && hasRemoval) return Math.round((normal + extraTotal) * 100) / 100;
+    if (promoActive) return Math.round((sale + extraTotal) * 100) / 100;
+    return Math.round((sale + extraTotal) * 100) / 100;
+  },
+
+  calcComboUnitPrice(combo, comboComponents) {
+    const normal = Number(combo.price) || 0;
+    const sale = Number(combo.sale_price ?? combo.price) || normal;
+    const hasRemoval = (comboComponents || []).some((c) =>
+      (c.modifiers || []).some((m) =>
+        m.modifier_type === 'removal' || (Number(m.extra_price) < 0 && m.modifier_type !== 'extra')));
+    if (hasRemoval) return Math.round(normal * 100) / 100;
+    return Math.round((combo.on_sale ? sale : normal) * 100) / 100;
+  },
+
+  confirmWithoutOptionPrice(opts = {}) {
+    const optionName = opts.optionName || 'Without pap';
+    const salePrice = Number(opts.salePrice) || 0;
+    const normalPrice = Number(opts.normalPrice) || salePrice;
+    const isCombo = !!opts.isCombo;
+    const saleLabel = isCombo ? 'Combo deal price' : 'Sale price';
+    const normalLabel = isCombo ? 'Standard combo price' : 'Normal price';
+    const saleHint = isCombo ? 'Keep the combo as advertised (with pap)' : 'Keep the promotional sale price';
+    const normalHint = isCombo ? 'Without pap — charged at the regular combo total' : 'Without pap — charged at the regular menu price';
+    return new Promise((resolve) => {
+      const host = document.getElementById('app');
+      if (!host) return resolve(null);
+      const overlay = document.createElement('div');
+      overlay.className = 'order-price-confirm-overlay';
+      overlay.innerHTML = `
+        <div class="order-price-confirm-panel" role="dialog" aria-modal="true">
+          <div class="order-price-confirm-badge">Price confirmation required</div>
+          <h4>Confirm pricing choice</h4>
+          <p>You selected <strong>${this.esc(optionName)}</strong>.</p>
+          <p class="muted">Please confirm how this item should be priced before continuing.</p>
+          <div class="order-price-confirm-cards">
+            <button type="button" class="order-price-confirm-card" data-choice="sale">
+              <span class="label">${saleLabel}</span>
+              <span class="price">${this.money(salePrice)}</span>
+              <span class="hint">${saleHint}</span>
+            </button>
+            <button type="button" class="order-price-confirm-card alt" data-choice="normal">
+              <span class="label">${normalLabel}</span>
+              <span class="price">${this.money(normalPrice)}</span>
+              <span class="hint">${normalHint}</span>
+            </button>
+          </div>
+          <p class="muted foot">You must choose one option to continue.</p>
+        </div>`;
+      host.style.position = 'relative';
+      host.appendChild(overlay);
+      const finish = (choice) => {
+        overlay.remove();
+        if (!host.querySelector('.order-price-confirm-overlay')) host.style.position = '';
+        resolve(choice);
+      };
+      overlay.querySelector('[data-choice="sale"]')?.addEventListener('click', () => finish('sale'));
+      overlay.querySelector('[data-choice="normal"]')?.addEventListener('click', () => finish('normal'));
+    });
+  },
+
+  collectModifiersFromDom(scope = document) {
+    const mods = [];
+    (scope.querySelectorAll ? scope : document).querySelectorAll('[data-mod-group]').forEach((g) => {
+      const required = g.dataset.required === '1';
+      const type = g.dataset.type || 'radio';
+      if (type === 'radio' || type === 'radio-optional') {
+        const sel = g.querySelector('input:checked');
+        if (sel) {
+          mods.push({
+            id: Number.isFinite(Number(sel.value)) ? Number(sel.value) : sel.value,
+            name: sel.dataset.name,
+            extra_price: Number(sel.dataset.extra || 0),
+            modifier_type: sel.dataset.modType || 'option'
+          });
+        } else if (required) throw new Error(`Please choose ${g.dataset.modGroup}`);
+      } else {
+        g.querySelectorAll('input:checked').forEach((cb) => {
+          mods.push({
+            id: Number.isFinite(Number(cb.value)) ? Number(cb.value) : cb.value,
+            name: cb.dataset.name,
+            extra_price: Number(cb.dataset.extra || 0),
+            modifier_type: cb.dataset.modType || 'extra'
+          });
+        });
+      }
+    });
+    return mods;
+  },
+
   esc(s) {
     const d = document.createElement('div');
     d.textContent = s == null ? '' : String(s);
     return d.innerHTML;
   },
 
-  toast(msg, type = 'info') {
+  isDeliveryOrder(o) {
+    return (o?.fulfillment_type || o?.fulfillment) === 'delivery';
+  },
+
+  handoffCodeHtml(o, { copy = false } = {}) {
+    if (!this.isDeliveryOrder(o)) return '';
+    const code = o.confirmation_code || o.order_number;
+    if (!code) return '';
+    return `<div class="confirmation-code-box">
+      <span class="muted">Your delivery handoff code</span>
+      <strong class="handoff-code">${this.esc(code)}</strong>
+      <p class="muted" style="margin:8px 0 0;font-size:13px">Give this code to your driver when they arrive — not your order number (${this.esc(o.order_number || '')}).</p>
+      ${copy ? `<button type="button" class="btn-sm" data-act="copy-code" data-code="${this.esc(code)}" style="margin-top:8px">Copy code</button>` : ''}
+    </div>`;
+  },
+
+  driverCardHtml(driver) {
+    if (!driver?.name) return '';
+    const wa = driver.phone ? String(driver.phone).replace(/\D/g, '').replace(/^0/, '27') : '';
+    return `<div class="checkout-card driver-card">
+      <h3>Your driver</h3>
+      <div style="display:flex;gap:12px;align-items:flex-start">
+        ${driver.photo_url ? `<img src="${this.esc(driver.photo_url)}" alt="" style="width:72px;height:72px;border-radius:50%;object-fit:cover;flex-shrink:0">` : '<div style="width:72px;height:72px;border-radius:50%;background:var(--border);display:flex;align-items:center;justify-content:center;font-size:28px">🚚</div>'}
+        <div>
+          <p style="margin:0"><strong>${this.esc(driver.name)}</strong></p>
+          ${driver.vehicle_registration ? `<p style="margin:6px 0 0"><strong>Vehicle reg:</strong> ${this.esc(driver.vehicle_registration)}</p>` : ''}
+          ${driver.vehicle_info ? `<p class="muted" style="margin:4px 0 0">${this.esc(driver.vehicle_info)}</p>` : ''}
+          ${driver.phone ? `<p style="margin:8px 0 0"><a href="tel:${this.esc(driver.phone.replace(/\s/g, ''))}">📞 ${this.esc(driver.phone)}</a>
+            ${wa ? ` · <a href="https://wa.me/${wa}" target="_blank" rel="noopener">WhatsApp</a>` : ''}</p>` : ''}
+        </div>
+      </div>
+    </div>`;
+  },
+
+  startOrderPolling() {
+    this.stopOrderPolling();
+    if (!this.token || this.view !== 'order-detail' || !this.selectedOrder?.id) return;
+    this._lastOrderStatus = this.selectedOrder?.status || this.selectedOrder?.status_label;
+    this._orderPollTimer = setInterval(async () => {
+      if (this.view !== 'order-detail' || !this.selectedOrder?.id) return;
+      try {
+        const fresh = await OrderAPI.getOrder(this.selectedOrder.id, this.token);
+        const prev = this._lastOrderStatus;
+        const next = fresh?.status || fresh?.status_label;
+        if (prev && next && prev !== next) {
+          const key = `order_track:${this.selectedOrder.id}:${next}`;
+          if (!window.PanelNotify?.isAcked(key)) {
+            this.toast(`Order update: ${next}`, 'success');
+            PanelSound?.setPanel('online');
+            if (window.PanelSound) PanelSound.playOnce();
+            PanelNotify?.notifyBrowser('Order update', String(next), `order-${this.selectedOrder.id}`);
+            PanelNotify?.ack(key, 'seen');
+          }
+        }
+        this._lastOrderStatus = next;
+        this.selectedOrder = fresh;
+        this.render();
+      } catch (_) { /* ignore */ }
+    }, 12000);
+  },
+
+  stopOrderPolling() {
+    if (this._orderPollTimer) { clearInterval(this._orderPollTimer); this._orderPollTimer = null; }
+  },
+
+  toast(msg, type = 'info', ms = 3500) {
     const el = document.createElement('div');
     el.className = `toast toast-${type}`;
     el.textContent = msg;
     document.getElementById('toast-root').appendChild(el);
-    setTimeout(() => el.remove(), 3500);
+    setTimeout(() => el.remove(), ms);
+  },
+
+  showAuthErrorModal(msg) {
+    const root = document.getElementById('modal-root');
+    const title = document.getElementById('modal-title');
+    const body = document.getElementById('modal-body');
+    const foot = document.getElementById('modal-foot');
+    if (!root || !title || !body) return;
+    title.textContent = 'Sign in failed';
+    body.innerHTML = `<p>${this.esc(msg || 'Incorrect credentials. Please check your email/phone and password.')}</p>`;
+    if (foot) foot.innerHTML = '<button type="button" class="btn-primary" data-act="modal-close">OK</button>';
+    root.classList.remove('hidden');
+    root.setAttribute('aria-hidden', 'false');
   },
 
   async refreshLoyaltyAccount() {
@@ -187,11 +367,12 @@ const OrderApp = {
     const phone = this.branch?.phone || this.settings?.phone;
     const wa = this.branch?.whatsapp || this.settings?.whatsapp_number || phone;
     const address = this.branch?.address || this.settings?.address;
-    if (!phone && !wa && !address) return '';
+    const branchName = this.branch?.name || this.settings?.shop_name;
+    if (!branchName && !phone && !wa && !address) return '';
     return `<div class="shop-contact-bar">
       <img src="/api/logo" alt="" class="shop-contact-logo" onerror="this.style.display='none'">
       <div class="shop-contact-details">
-        ${this.branch ? `<strong>${this.esc(this.branch.name)}</strong>` : ''}
+        ${branchName ? `<strong>${this.esc(branchName)}</strong>` : ''}
         ${address ? `<span class="contact-addr">${this.esc(address)}</span>` : ''}
         ${phone ? `<span class="contact-phone">${this.esc(phone)}</span>` : ''}
       </div>
@@ -203,7 +384,10 @@ const OrderApp = {
   },
 
   giftWalletHtml() {
-    if (!this.token || !this.giftWallet?.length) return '';
+    if (!this.token) return '';
+    if (!this.giftWallet?.length) {
+      return `<div class="loyalty-card gift-wallet-card"><h3>🎁 Gift card wallet</h3><p class="muted" style="margin:0">No gift cards yet. Apply a code at checkout.</p></div>`;
+    }
     return `<div class="loyalty-card gift-wallet-card">
       <h3>🎁 Your gift cards</h3>
       ${this.giftWallet.map((g) => `<div class="gift-wallet-row">
@@ -224,15 +408,22 @@ const OrderApp = {
 
   checkoutCartHtml() {
     if (!this.cart.length) return '<p class="muted">Your cart is empty.</p>';
-    return this.cart.map((c) => `<div class="cart-line">
-          <div><strong>${this.esc(c.name)}</strong><div class="muted">× ${c.quantity}${c.modifiers?.length ? ` · ${c.modifiers.map((m) => m.name).join(', ')}` : ''}</div></div>
+    return this.cart.map((c) => {
+      const compText = (c.combo_components || []).map((ci) => {
+        const base = `${ci.product_name || 'Item'}`;
+        return ci.modifiers_text ? `${base} (${ci.modifiers_text})` : base;
+      }).join('; ');
+      const modLine = compText || (c.modifiers?.length ? c.modifiers.map((m) => m.name).join(', ') : '');
+      return `<div class="cart-line">
+          <div><strong>${this.esc(c.name)}</strong><div class="muted">× ${c.quantity}${modLine ? ` · ${this.esc(modLine)}` : ''} · ${this.money((c.unit_price || 0) * c.quantity)}</div></div>
           <div class="cart-actions">
             <button type="button" data-act="cart-dec" data-key="${c._key}">−</button>
             <span>${c.quantity}</span>
             <button type="button" data-act="cart-inc" data-key="${c._key}">+</button>
             <button type="button" class="link-btn" data-act="cart-edit" data-key="${c._key}">Edit</button>
             <button type="button" class="link-btn" data-act="cart-remove" data-key="${c._key}">Remove</button>
-          </div></div>`).join('');
+          </div></div>`;
+    }).join('');
   },
 
   saveCart() {
@@ -256,16 +447,21 @@ const OrderApp = {
         e.returnValue = 'You are signed in. Leave and sign out?';
       }
     });
-    try {
-      localStorage.removeItem('order_token');
-      localStorage.removeItem('order_branch');
-      localStorage.removeItem('order_view');
-    } catch (_) { /* ignore */ }
     this.token = sessionStorage.getItem('order_token') || '';
     const savedCat = sessionStorage.getItem('order_category');
     if (savedCat != null && savedCat !== '') this.categoryId = savedCat;
+    const savedSearch = sessionStorage.getItem('order_search');
+    if (savedSearch) this.search = savedSearch;
     try {
       this.settings = await OrderAPI.getSettings();
+      if (window.PanelNotify && !this._notifyReady) {
+        this._notifyReady = true;
+        PanelNotify.init({
+          panel: 'online',
+          loggedIn: () => !!this.token,
+          rpc: (method, args) => OrderAPI.call(method, args)
+        });
+      }
       if (this.token) {
         try {
           const acct = await OrderAPI.account(this.token);
@@ -286,48 +482,173 @@ const OrderApp = {
         this.view = 'branches';
       } else {
         const savedView = sessionStorage.getItem('order_view');
-        const safeViews = ['home', 'menu', 'account', 'orders'];
-        this.view = savedView && safeViews.includes(savedView) ? savedView : 'home';
+        const safeViews = ['home', 'menu', 'account', 'orders', 'checkout', 'branches'];
+        if (savedView === 'product') {
+          const savedPid = sessionStorage.getItem('order_product_id');
+          if (savedPid) {
+            try {
+              this.product = await OrderAPI.getProduct(this.branch.id, savedPid);
+              this.view = 'product';
+            } catch (_) {
+              sessionStorage.removeItem('order_product_id');
+              this.view = 'menu';
+            }
+          } else {
+            this.view = 'menu';
+          }
+        } else {
+          this.view = savedView && safeViews.includes(savedView) ? savedView : 'home';
+        }
       }
-      this.render();
+      await this.render();
       if (this.branch) this.loadMenu();
     } catch (err) {
-      document.getElementById('app').innerHTML = `<div class="empty-state"><h2>Unable to connect</h2><p>${this.esc(err.message)}</p></div>`;
+      document.getElementById('app').innerHTML = `<div class="empty-state"><h2>Unable to connect</h2><p>${this.esc(err.message)}</p><button type="button" class="btn-primary" onclick="location.reload()">Retry</button></div>`;
     }
   },
 
   async loadMenu(opts = {}) {
     if (!this.branch) return;
+    const force = !!opts.force;
     const scrollEl = document.querySelector('.category-scroll');
     const scrollLeft = opts.preserveScroll !== false && scrollEl ? scrollEl.scrollLeft : null;
+    const branchChanged = this._menuBranchId !== this.branch.id;
+    if (!force && !branchChanged && this._menuFull && !this.search) {
+      this.applyMenuFilter();
+      this.updateMenuDom(scrollLeft);
+      return;
+    }
+    if (this._menuLoadPromise && !force && !branchChanged) {
+      await this._menuLoadPromise;
+      this.applyMenuFilter();
+      this.updateMenuDom(scrollLeft);
+      return;
+    }
+    this._menuLoadPromise = OrderAPI.getMenu(this.branch.id, this.search ? { q: this.search } : {})
+      .then((menu) => {
+        this._menuFull = menu;
+        this._menuBranchId = this.branch.id;
+        this.applyMenuFilter();
+      })
+      .finally(() => { this._menuLoadPromise = null; });
     try {
-      this.menu = await OrderAPI.getMenu(this.branch.id, {
-        q: this.search || undefined,
-        category_id: this.categoryId || undefined
-      });
-      if (this.view === 'home' || this.view === 'menu') this.render();
-      requestAnimationFrame(() => {
-        const el = document.querySelector('.category-scroll');
-        if (!el) return;
-        if (scrollLeft != null) el.scrollLeft = scrollLeft;
-        const active = el.querySelector('.cat-chip.active');
-        if (active) active.scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'instant' });
-      });
+      await this._menuLoadPromise;
+      this.updateMenuDom(scrollLeft);
     } catch (err) { this.toast(err.message, 'error'); }
+  },
+
+  filterMenuProducts(allProducts, categoryId, search) {
+    let list = allProducts || [];
+    const cat = categoryId != null && categoryId !== '' ? String(categoryId) : '';
+    const today = new Date().toLocaleDateString('en-CA');
+    if (cat === 'combos') {
+      list = list.filter((p) => p.is_combo);
+    } else if (cat.startsWith('__')) {
+      if (cat === '__available_today') list = list.filter((p) => p.available_today);
+      else if (cat === '__new_arrival') list = list.filter((p) => p.is_new_arrival && (!p.new_arrival_until || p.new_arrival_until >= today));
+      else if (cat === '__best_seller') list = list.filter((p) => p.is_best_seller);
+      else if (cat === '__today_special') list = list.filter((p) => p.on_sale);
+    } else if (cat) {
+      list = list.filter((p) => String(p.category_id) === cat && !p.is_combo);
+    }
+    if (search) {
+      const q = String(search).toLowerCase();
+      list = list.filter((p) => p.name.toLowerCase().includes(q));
+    }
+    return list;
+  },
+
+  applyMenuFilter() {
+    if (!this._menuFull) return;
+    this._sanitizeCategoryFilter();
+    const products = this.filterMenuProducts(this._menuFull.products || [], this.categoryId, this.search);
+    const categories = (this._menuFull.categories || []).length
+      ? this._menuFull.categories
+      : this._categoriesFromProducts(this._menuFull.products || []);
+    this.menu = { ...this._menuFull, products, categories };
+  },
+
+  _sanitizeCategoryFilter() {
+    const cat = this.categoryId != null ? String(this.categoryId) : '';
+    if (!cat.startsWith('__')) return;
+    const tabIds = new Set((this._menuFull?.menu_tabs || []).map((t) => String(t.id)));
+    if (!tabIds.has(cat)) {
+      this.categoryId = null;
+      try { sessionStorage.removeItem('order_category'); } catch (_) { /* ignore */ }
+    }
+  },
+
+  _categoriesFromProducts(products) {
+    const seen = new Map();
+    for (const p of products || []) {
+      if (p.is_combo) continue;
+      const id = p.category_id;
+      if (id == null || id === '') continue;
+      const key = String(id);
+      if (!seen.has(key)) seen.set(key, { id: p.category_id, name: p.category_name || `Category ${key}` });
+    }
+    return [...seen.values()];
+  },
+
+  updateMenuDom(scrollLeft) {
+    if (this.view !== 'home' && this.view !== 'menu') return;
+    if (this.view === 'menu') {
+      const grid = document.querySelector('.product-grid');
+      if (grid) {
+        const products = this.menu?.products || [];
+        grid.innerHTML = products.map((p, idx) => this.productCard(p, idx)).join('') || '<p class="muted">No products found.</p>';
+        this.syncCategoryChips();
+        requestAnimationFrame(() => this.restoreCategoryScroll(scrollLeft));
+        return;
+      }
+    }
+    this.render();
+  },
+
+  syncCategoryChips() {
+    const activeCat = this.categoryId != null ? String(this.categoryId) : '';
+    document.querySelectorAll('[data-cat-id]').forEach((el) => {
+      const id = el.dataset.catId != null ? String(el.dataset.catId) : '';
+      el.classList.toggle('active', id === activeCat);
+    });
+  },
+
+  restoreCategoryScroll(scrollLeft) {
+    const el = document.querySelector('.category-scroll');
+    if (!el) return;
+    if (scrollLeft != null) el.scrollLeft = scrollLeft;
+    const active = el.querySelector('.cat-chip.active');
+    if (active) active.scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'instant' });
+  },
+
+  updateCartUi() {
+    const count = this.cartCount();
+    document.querySelectorAll('.cart-fab').forEach((fab) => {
+      let badge = fab.querySelector('.cart-badge');
+      if (count) {
+        if (!badge) {
+          badge = document.createElement('span');
+          badge.className = 'cart-badge';
+          fab.insertBefore(badge, fab.firstChild);
+        }
+        badge.textContent = String(count);
+      } else if (badge) badge.remove();
+    });
   },
 
   cartCount() { return this.cart.reduce((s, i) => s + i.quantity, 0); },
 
   addToCart(item) {
     const key = item.combo_id
-      ? `combo:${item.combo_id}`
+      ? `combo:${item.combo_id}:${JSON.stringify(item.combo_components || [])}`
       : `${item.product_id}:${JSON.stringify(item.modifiers || [])}`;
     const existing = this.cart.find((c) => c._key === key);
     if (existing) existing.quantity += item.quantity || 1;
     else this.cart.push({ ...item, _key: key });
     this.saveCart();
     this.toast('Added to cart', 'success');
-    this.render();
+    if (this.view === 'menu' || this.view === 'home') this.updateCartUi();
+    else this.render();
   },
 
   updateCartQty(key, delta) {
@@ -336,7 +657,8 @@ const OrderApp = {
     item.quantity += delta;
     if (item.quantity <= 0) this.cart = this.cart.filter((c) => c._key !== key);
     this.saveCart();
-    this.render();
+    if (this.view === 'cart') this.render();
+    else this.updateCartUi();
   },
 
   async validateCurrentCart() {
@@ -346,7 +668,8 @@ const OrderApp = {
         product_id: c.combo_id ? `combo-${c.combo_id}` : c.product_id,
         combo_id: c.combo_id || undefined,
         quantity: c.quantity,
-        modifiers: c.modifiers
+        modifiers: c.modifiers,
+        combo_components: c.combo_components || undefined
       })),
       fulfillment_type: this.checkout.fulfillment_type,
       coupon_code: this.checkout.coupon_code || undefined,
@@ -371,6 +694,77 @@ const OrderApp = {
         }
       });
     });
+    const p = this.product;
+    if (p?.on_sale && !p?.is_combo) {
+      document.querySelectorAll('input[data-mod-type="removal"]').forEach((input) => {
+        input.addEventListener('change', async () => {
+          if (!input.checked) return;
+          input.checked = false;
+          const choice = await this.confirmWithoutOptionPrice({
+            optionName: input.dataset.name || 'Without pap',
+            salePrice: Number(p.sale_price ?? p.price) || 0,
+            normalPrice: Number(p.price) || 0,
+            isCombo: false
+          });
+          if (choice === 'normal') input.checked = true;
+          this.updateProductPricePreview();
+        });
+      });
+    }
+    if (p?.is_combo) {
+      document.querySelectorAll('[data-combo-item] input[data-mod-type="removal"]').forEach((input) => {
+        input.addEventListener('change', async () => {
+          if (!input.checked) {
+            delete input.dataset.priceConfirmed;
+            this.updateComboPricePreview();
+            return;
+          }
+          input.checked = false;
+          const choice = await this.confirmWithoutOptionPrice({
+            optionName: input.dataset.name || 'Without pap',
+            salePrice: Number(p.sale_price ?? p.price) || 0,
+            normalPrice: Number(p.price) || 0,
+            isCombo: true
+          });
+          if (choice === 'normal') {
+            input.checked = true;
+            input.dataset.priceConfirmed = '1';
+          } else {
+            input.checked = false;
+            delete input.dataset.priceConfirmed;
+          }
+          this.updateComboPricePreview();
+        });
+      });
+    }
+    document.querySelectorAll('[data-mod-group] input').forEach((input) => {
+      input.addEventListener('change', () => {
+        if (p?.is_combo) this.updateComboPricePreview();
+        else this.updateProductPricePreview();
+      });
+    });
+  },
+
+  updateComboPricePreview() {
+    const el = document.getElementById('live-prod-price');
+    if (!el || !this.product?.is_combo) return;
+    try {
+      const comboComponents = [];
+      document.querySelectorAll('[data-combo-item]').forEach((section) => {
+        comboComponents.push({ modifiers: this.collectModifiersFromDom(section) });
+      });
+      el.textContent = this.money(this.calcComboUnitPrice(this.product, comboComponents));
+    } catch (_) { /* ignore */ }
+  },
+
+  updateProductPricePreview() {
+    const el = document.getElementById('live-prod-price');
+    if (!el || !this.product || this.product.is_combo) return;
+    try {
+      const mods = this.collectModifiersFromDom(document.getElementById('app'));
+      const price = this.calcPromoUnitPrice(this.product, mods);
+      el.textContent = this.money(price);
+    } catch (_) { /* ignore */ }
   },
 
   bind() {
@@ -390,7 +784,8 @@ const OrderApp = {
         this.categoryId = catChip.dataset.catId || null;
         try { sessionStorage.setItem('order_category', this.categoryId || ''); } catch (_) { /* */ }
         document.querySelectorAll('[data-cat-id]').forEach((el) => el.classList.toggle('active', el === catChip));
-        await this.loadMenu({ preserveScroll: true });
+        this.applyMenuFilter();
+        this.updateMenuDom(catChip.closest('.category-scroll')?.scrollLeft ?? null);
         return;
       }
       const btn = e.target.closest('[data-act]');
@@ -404,8 +799,15 @@ const OrderApp = {
         } else {
           this.view = next;
         }
-        if (this.view === 'menu') this.loadMenu();
-        else this.render();
+        if (this.view === 'menu') {
+          if (this._menuFull && this._menuBranchId === this.branch?.id) {
+            this.applyMenuFilter();
+            this.render();
+          } else {
+            this.render();
+            this.loadMenu();
+          }
+        } else this.render();
         return;
       }
       if (act === 'back') { this.goBack(); return; }
@@ -417,6 +819,7 @@ const OrderApp = {
           this.selectedOrder = await OrderAPI.getOrder(orderId, this.token);
           this.view = 'order-detail';
           this.render();
+          this.startOrderPolling();
         } catch (err) {
           this.toast(err.message, 'error');
         } finally {
@@ -444,6 +847,8 @@ const OrderApp = {
         const branches = await OrderAPI.getBranches();
         this.branch = branches.find((b) => String(b.id) === id);
         sessionStorage.setItem('order_branch', id);
+        this._menuFull = null;
+        this._menuBranchId = null;
         this.view = 'home';
         await this.loadMenu();
         this.render();
@@ -454,6 +859,7 @@ const OrderApp = {
         this.product = await OrderAPI.getProduct(this.branch.id, pid);
         this.editingCartKey = null;
         this.view = 'product';
+        try { sessionStorage.setItem('order_product_id', String(pid)); } catch (_) { /* ignore */ }
         this.render();
         return;
       }
@@ -484,32 +890,78 @@ const OrderApp = {
       if (act === 'add-cart') {
         const pid = Number(btn.dataset.id);
         const qty = Number(document.getElementById('prod-qty')?.value || 1);
-        const mods = [];
-        document.querySelectorAll('[data-mod-group]').forEach((g) => {
-          const gid = g.dataset.modGroup;
-          const required = g.dataset.required === '1';
-          const type = g.dataset.type || 'radio';
-          if (type === 'radio') {
-            const sel = g.querySelector('input:checked');
-            if (sel) mods.push({ id: Number(sel.value), name: sel.dataset.name });
-            else if (required) throw new Error(`Please choose ${gid}`);
-          } else {
-            g.querySelectorAll('input:checked').forEach((cb) => mods.push({ id: Number(cb.value), name: cb.dataset.name }));
-          }
-        });
         try {
           if (this.editingCartKey) {
             this.cart = this.cart.filter((c) => c._key !== this.editingCartKey);
             this.editingCartKey = null;
           }
-          this.addToCart({
-            product_id: this.product.is_combo ? null : pid,
-            combo_id: this.product.is_combo ? this.product.combo_id : null,
-            name: this.product.name,
-            quantity: qty,
-            modifiers: mods,
-            unit_price: this.product.sale_price ?? this.product.price
-          });
+          if (this.product.is_combo) {
+            const comboComponents = [];
+            document.querySelectorAll('[data-combo-item]').forEach((section) => {
+              const productId = Number(section.dataset.comboItem);
+              const mods = this.collectModifiersFromDom(section);
+              const itemMeta = (this.product.combo_items || []).find((ci) => Number(ci.product_id) === productId);
+              comboComponents.push({
+                product_id: productId,
+                product_name: itemMeta?.product_name || 'Item',
+                quantity: Number(itemMeta?.quantity) || 1,
+                modifiers: mods,
+                modifiers_text: mods.map((m) => m.name).join(', ')
+              });
+            });
+            for (const section of document.querySelectorAll('[data-combo-item]')) {
+              for (const input of section.querySelectorAll('input[data-mod-type="removal"]:checked')) {
+                if (input.dataset.priceConfirmed !== '1') {
+                  const choice = await this.confirmWithoutOptionPrice({
+                    optionName: input.dataset.name || 'Without pap',
+                    salePrice: Number(this.product.sale_price ?? this.product.price) || 0,
+                    normalPrice: Number(this.product.price) || 0,
+                    isCombo: true
+                  });
+                  if (choice === 'normal') {
+                    input.checked = true;
+                    input.dataset.priceConfirmed = '1';
+                  } else {
+                    input.checked = false;
+                    delete input.dataset.priceConfirmed;
+                  }
+                }
+              }
+            }
+            const finalComponents = [];
+            document.querySelectorAll('[data-combo-item]').forEach((section) => {
+              const productId = Number(section.dataset.comboItem);
+              const mods = this.collectModifiersFromDom(section);
+              const itemMeta = (this.product.combo_items || []).find((ci) => Number(ci.product_id) === productId);
+              finalComponents.push({
+                product_id: productId,
+                product_name: itemMeta?.product_name || 'Item',
+                quantity: Number(itemMeta?.quantity) || 1,
+                modifiers: mods,
+                modifiers_text: mods.map((m) => m.name).join(', ')
+              });
+            });
+            this.addToCart({
+              product_id: null,
+              combo_id: this.product.combo_id,
+              name: this.product.name,
+              quantity: qty,
+              modifiers: [],
+              combo_components: finalComponents,
+              unit_price: this.calcComboUnitPrice(this.product, finalComponents)
+            });
+          } else {
+            const mods = this.collectModifiersFromDom(document.getElementById('app'));
+            const unitPrice = this.calcPromoUnitPrice(this.product, mods);
+            this.addToCart({
+              product_id: pid,
+              combo_id: null,
+              name: this.product.name,
+              quantity: qty,
+              modifiers: mods,
+              unit_price: unitPrice
+            });
+          }
           this.view = 'menu';
           this.render();
         } catch (err) { this.toast(err.message, 'error'); }
@@ -561,12 +1013,12 @@ const OrderApp = {
         this.render();
         return;
       }
-      if (act === 'copy-gift') {
+      if (act === 'copy-gift' || act === 'copy-code') {
         const code = btn.dataset.code || '';
         if (!code) return;
         try {
           await navigator.clipboard.writeText(code);
-          this.toast('Gift card code copied', 'success');
+          this.toast(act === 'copy-code' ? 'Handoff code copied' : 'Gift card code copied', 'success');
         } catch (_) {
           this.toast(code, 'info');
         }
@@ -663,13 +1115,22 @@ const OrderApp = {
           sessionStorage.setItem('order_token', this.token);
           this.customer = r.customer;
           await this.refreshLoyaltyAccount();
-          this.branch = null;
-          sessionStorage.removeItem('order_branch');
+          const ret = this.authReturn;
           this.authReturn = null;
-          this.view = 'branches';
+          if (!this.branch) {
+            sessionStorage.removeItem('order_branch');
+            this.view = 'branches';
+          } else {
+            const ok = ['home', 'menu', 'account', 'orders', 'checkout'].includes(ret);
+            this.view = ok ? ret : 'home';
+          }
           this.toast('Welcome back!', 'success');
           this.render();
-        } catch (err) { this.toast(err.message, 'error'); }
+        } catch (err) {
+          const msg = err.message || 'Incorrect email/phone or password';
+          this.toast(msg, 'error');
+          this.showAuthErrorModal(msg);
+        }
         finally { btn.disabled = false; btn.textContent = prev; }
         return;
       }
@@ -732,8 +1193,21 @@ const OrderApp = {
       const submit = form.querySelector('[data-act="login-submit"], [data-act="register-submit"]');
       submit?.click();
     };
+    app.oninput = (e) => {
+      if (e.target.id !== 'menu-search') return;
+      this.search = e.target.value;
+      try { sessionStorage.setItem('order_search', this.search); } catch (_) { /* ignore */ }
+      clearTimeout(this._searchTimer);
+      this._searchTimer = setTimeout(() => {
+        if (this._menuFull && this._menuBranchId === this.branch?.id) {
+          this.applyMenuFilter();
+          this.updateMenuDom();
+        } else {
+          this.loadMenu();
+        }
+      }, 180);
+    };
     app.onchange = async (e) => {
-      if (e.target.id === 'menu-search') { this.search = e.target.value; await this.loadMenu(); }
       if (e.target.name === 'fulfillment') {
         this.checkout.fulfillment_type = e.target.value;
         const firstPay = (this.settings?.online?.payment_methods || []).find((m) => m.enabled !== false && (!m.fulfillment || m.fulfillment === 'any' || m.fulfillment === e.target.value));
@@ -830,8 +1304,8 @@ const OrderApp = {
           <h3>⭐ Your loyalty points</h3>
           <div class="loyalty-balance">${this.loyaltyAccount.balance} pts</div>
           <div class="muted">Worth ${this.money(this.loyaltyAccount.value)} at checkout</div>
-        </div>` : (!this.token ? `<div class="checkout-card"><p class="muted" style="margin:0 0 10px">Register to earn points on every order.</p>
-          <button type="button" class="btn-primary btn-sm" data-act="nav" data-view="register">Register now</button></div>` : '')}
+        </div>` : (this.token ? `<div class="loyalty-card"><h3>⭐ Loyalty points</h3><p class="muted" style="margin:0">Earn points on every order you place.</p></div>` : `<div class="checkout-card"><p class="muted" style="margin:0 0 10px">Register to earn points on every order.</p>
+          <button type="button" class="btn-primary btn-sm" data-act="nav" data-view="register">Register now</button></div>`)}
         ${this.giftWalletHtml()}
         ${specials.length ? `<h2>Today's specials</h2><div class="product-grid">${specials.slice(0, 6).map((p) => this.productCard(p)).join('')}</div>` : ''}
       </section>`);
@@ -839,16 +1313,26 @@ const OrderApp = {
       return;
     }
     if (this.view === 'menu') {
-      const cats = this.menu?.categories || [];
+      const cats = (this.menu?.categories || this._categoriesFromProducts(this._menuFull?.products || []))
+        .filter((c) => String(c.id) !== 'combos');
+      const menuTabs = this.menu?.menu_tabs || [];
       const products = this.menu?.products || [];
       const activeCat = this.categoryId != null ? String(this.categoryId) : '';
       app.innerHTML = this.shell(`<section class="page">
         <div class="menu-search-wrap"><input type="search" id="menu-search" placeholder="Search menu…" value="${this.esc(this.search)}"></div>
+        ${menuTabs.length ? `<div class="category-scroll menu-tabs-scroll" role="tablist" aria-label="Highlights">
+          ${menuTabs.map((t) => {
+            const comboCls = t.id === 'combos' ? ' highlight-tab-combo' : '';
+            const saleCls = t.saleStyle ? ' highlight-tab-sale' : '';
+            const badge = t.count ? `<span class="menu-tab-count${t.saleStyle || t.id === 'combos' ? ' sale' : ''}">${t.count}</span>` : '';
+            return `<button type="button" class="cat-chip highlight-tab${saleCls}${comboCls} ${activeCat === String(t.id) ? 'active' : ''}" data-cat-id="${this.esc(t.id)}" style="border-color:${t.color || '#64748b'}">${this.esc(t.name)}${badge}</button>`;
+          }).join('')}
+        </div>` : ''}
         <div class="category-scroll" role="tablist" aria-label="Categories">
           <button type="button" class="cat-chip ${!activeCat ? 'active' : ''}" data-cat-id="">All</button>
           ${cats.map((c) => `<button type="button" class="cat-chip ${activeCat === String(c.id) ? 'active' : ''}" data-cat-id="${this.esc(c.id)}">${this.esc(c.name)}</button>`).join('')}
         </div>
-        <div class="product-grid">${products.map((p) => this.productCard(p)).join('') || '<p class="muted">No products found.</p>'}</div>
+        <div class="product-grid">${products.map((p, idx) => this.productCard(p, idx)).join('') || '<p class="muted">No products found.</p>'}</div>
       </section>`);
       this.bind();
       return;
@@ -860,31 +1344,44 @@ const OrderApp = {
       const selectedModIds = new Set((editLine?.modifiers || []).map((m) => String(m.id)));
       const isChecked = (id) => selectedModIds.has(String(id)) ? 'checked' : '';
       const qtyVal = editLine?.quantity || 1;
-      const comboList = p.is_combo && (p.combo_items || []).length
-        ? `<div class="checkout-card"><h3>Includes</h3><ul class="combo-includes">${p.combo_items.map((ci) => `<li>${this.esc(ci.product_name || 'Item')} × ${ci.quantity || 1}</li>`).join('')}</ul></div>`
-        : '';
+      const modInput = (o, type, name, checked) =>
+        `<input type="${type}" name="${name}" value="${o.id}" data-name="${this.esc(o.name)}" data-extra="${o.extra_price || 0}" data-mod-type="${this.esc(o.modifier_type || (o.extra_price < 0 ? 'removal' : 'option'))}" ${checked} ${o.out_of_stock ? 'disabled' : ''}${o.modifier_type === 'removal' ? ' data-mod-type="removal"' : ''}>`;
+      const renderModGroups = (modGroups, prefix = '') => (modGroups || []).map((g) => {
+        const gType = g.type || (g.required ? 'radio' : 'radio-optional');
+        if (gType === 'checkbox') {
+          return `<fieldset class="mod-group" data-mod-group="${this.esc(prefix + g.name)}" data-required="0" data-type="checkbox">
+          <legend>${this.esc(g.name)}</legend>
+          ${g.options.map((o) => `<label class="mod-opt ${o.out_of_stock ? 'disabled' : ''}">${modInput(o, 'checkbox', `mod-${this.esc(prefix + g.name)}`, isChecked(o.id))}
+            ${this.esc(o.name)}${o.extra_price ? ` ${o.extra_price < 0 ? '' : '+'}${this.money(o.extra_price)}` : ''}${o.out_of_stock ? ' (Out of stock)' : ''}</label>`).join('')}
+        </fieldset>`;
+        }
+        return `<fieldset class="mod-group" data-mod-group="${this.esc(prefix + g.name)}" data-required="${g.required ? '1' : '0'}" data-type="${gType}">
+          <legend>${this.esc(g.name)}${g.required ? ' *' : ' <small class="muted">(optional)</small>'}</legend>
+          ${g.options.map((o) => `<label class="mod-opt ${o.out_of_stock ? 'disabled' : ''}">${modInput(o, 'radio', `mod-${this.esc(prefix + g.name)}`, isChecked(o.id))}
+            ${this.esc(o.name)}${o.extra_price ? ` ${o.extra_price < 0 ? '' : '+'}${this.money(o.extra_price)}` : ''}${o.out_of_stock ? ' (Out of stock)' : ''}</label>`).join('')}
+        </fieldset>`;
+      }).join('');
+      const comboModSections = p.is_combo && (p.combo_items || []).some((ci) => ci.modifier_groups?.length || ci.allow_pap_choice)
+        ? (p.combo_items || []).filter((ci) => ci.modifier_groups?.length || ci.allow_pap_choice).map((ci) => `
+        <div class="checkout-card combo-item-options" data-combo-item="${ci.product_id}">
+          <h3>${this.esc(ci.product_name || 'Item')} × ${ci.quantity || 1}</h3>
+          ${ci.image ? `<img src="${this.esc(ci.image)}" alt="" style="max-height:72px;border-radius:8px;margin-bottom:8px">` : ''}
+          ${renderModGroups(ci.modifier_groups, `ci${ci.product_id}-`)}
+        </div>`).join('')
+        : (p.is_combo && (p.combo_items || []).length
+          ? `<div class="checkout-card"><h3>Includes</h3><ul class="combo-includes">${p.combo_items.map((ci) => `<li>${this.esc(ci.product_name || 'Item')} × ${ci.quantity || 1}</li>`).join('')}</ul></div>`
+          : '');
       app.innerHTML = this.shell(`<section class="page product-detail">
-        ${p.image ? `<img class="prod-img" src="${this.esc(p.image)}" alt="">` : '<div class="prod-img placeholder">🍽️</div>'}
+        ${p.image ? `<img class="prod-img" src="${this.esc(p.image)}" alt="" fetchpriority="high">` : '<div class="prod-img placeholder">🍽️</div>'}
+        ${p.is_combo && p.combo_thumbs?.length ? `<div class="combo-thumb-row">${p.combo_thumbs.map((u) => `<img src="${this.esc(u)}" alt="" loading="eager">`).join('')}</div>` : ''}
         <h1>${p.is_combo ? '🎁 ' : ''}${this.esc(p.name)}</h1>
         <p class="muted">${this.esc(p.description)}</p>
-        ${comboList}
-        <div class="price-row">${p.on_sale ? `<s>${this.money(p.price)}</s> <strong class="sale">${this.money(p.sale_price)}</strong>` : `<strong>${this.money(p.price)}</strong>`}
+        ${comboModSections}
+        <div class="price-row">${p.is_combo
+          ? (p.on_sale ? `<s>${this.money(p.price)}</s> <strong class="sale" id="live-prod-price">${this.money(p.sale_price)}</strong>` : `<strong id="live-prod-price">${this.money(p.price)}</strong>`)
+          : (p.on_sale ? `<s>${this.money(p.price)}</s> <strong class="sale" id="live-prod-price">${this.money(p.sale_price)}</strong>` : `<strong id="live-prod-price">${this.money(p.price)}</strong>`)}
         <span class="stock ${p.available ? 'ok' : 'out'}">${p.available ? '● Available' : 'Out of stock'}</span></div>
-        ${groups.map((g) => {
-          const gType = g.type || (g.required ? 'radio' : 'radio-optional');
-          if (gType === 'checkbox') {
-            return `<fieldset class="mod-group" data-mod-group="${this.esc(g.name)}" data-required="0" data-type="checkbox">
-          <legend>${this.esc(g.name)}</legend>
-          ${g.options.map((o) => `<label class="mod-opt ${o.out_of_stock ? 'disabled' : ''}"><input type="checkbox" name="mod-${this.esc(g.name)}" value="${o.id}" data-name="${this.esc(o.name)}" ${isChecked(o.id)} ${o.out_of_stock ? 'disabled' : ''}>
-            ${this.esc(o.name)}${o.extra_price ? ` ${o.extra_price < 0 ? '' : '+'}${this.money(o.extra_price)}` : ''}${o.out_of_stock ? ' (Out of stock)' : ''}</label>`).join('')}
-        </fieldset>`;
-          }
-          return `<fieldset class="mod-group" data-mod-group="${this.esc(g.name)}" data-required="${g.required ? '1' : '0'}" data-type="${gType}">
-          <legend>${this.esc(g.name)}${g.required ? ' *' : ' <small class="muted">(optional — tap again to clear)</small>'}</legend>
-          ${g.options.map((o) => `<label class="mod-opt ${o.out_of_stock ? 'disabled' : ''}"><input type="radio" name="mod-${this.esc(g.name)}" value="${o.id}" data-name="${this.esc(o.name)}" ${isChecked(o.id)} ${o.out_of_stock ? 'disabled' : ''}>
-            ${this.esc(o.name)}${o.extra_price ? ` ${o.extra_price < 0 ? '' : '+'}${this.money(o.extra_price)}` : ''}${o.out_of_stock ? ' (Out of stock)' : ''}</label>`).join('')}
-        </fieldset>`;
-        }).join('')}
+        ${!p.is_combo ? renderModGroups(groups) : ''}
         <div class="qty-row"><label>Qty</label><input type="number" id="prod-qty" min="1" value="${qtyVal}" class="qty-input"></div>
         <button type="button" class="btn-primary btn-block" data-act="add-cart" data-id="${p.is_combo ? p.id : p.id}" ${p.available && this.isShopOpenNow() ? '' : 'disabled'}>${editLine ? 'Update item' : 'Add to cart'}</button>
       </section>`);
@@ -915,6 +1412,8 @@ const OrderApp = {
       const maxPts = this.maxRedeemPoints(q.subtotal);
       const ptsUsed = this.checkout.loyalty_points_used || 0;
       const earnPts = this.previewEarnPoints(q.total);
+      const couponsOn = this.settings?.online?.coupons_enabled !== false;
+      const giftCardsOn = this.settings?.online?.gift_cards_enabled !== false;
       const payMethods = (this.settings?.online?.payment_methods || []).filter((m) => m.enabled !== false).filter((m) => {
         const mf = String(m.fulfillment || 'any').toLowerCase();
         return mf === 'any' || mf === fulfillment;
@@ -956,15 +1455,15 @@ const OrderApp = {
           <button type="button" class="btn-outline btn-block" data-act="apply-loyalty" style="margin-top:10px">Apply points</button>
         </div>` : ''}
         ${this.giftWalletHtml()}
-        <div class="checkout-card">
+        ${couponsOn ? `<div class="checkout-card">
           <h3>Coupon code</h3>
           <div style="display:flex;gap:8px"><input id="coupon-code" value="${this.esc(this.checkout.coupon_code)}" placeholder="Enter code"><button type="button" class="btn-sm" data-act="apply-coupon">Apply</button></div>
-        </div>
-        <div class="checkout-card">
+        </div>` : ''}
+        ${giftCardsOn ? `<div class="checkout-card">
           <h3>🎁 Gift card</h3>
           <div style="display:flex;gap:8px"><input id="gift-card-code" value="${this.esc(this.checkout.gift_card_code || '')}" placeholder="Enter gift card code"><button type="button" class="btn-sm" data-act="apply-gift-card">Apply</button></div>
           ${q.gift_card_amount ? `<p class="muted" style="margin:8px 0 0">Gift card applied: -${this.money(q.gift_card_amount)}</p>` : ''}
-        </div>
+        </div>` : ''}
         <div class="checkout-card">
           <h3>Special instructions</h3>
           <textarea id="order-notes" rows="2" placeholder="Allergies, gate code, etc.">${this.esc(this.checkout.notes)}</textarea>
@@ -983,15 +1482,18 @@ const OrderApp = {
       return;
     }
     if (this.view === 'confirmed' && this.lastOrder) {
-      const code = this.lastOrder.confirmation_code;
+      const o = this.lastOrder;
+      const isDelivery = this.isDeliveryOrder(o);
       app.innerHTML = this.shell(`<section class="page confirmed">
         <div class="success-icon">✓</div>
         <h1>Order confirmed</h1>
-        <p class="order-num">${this.esc(this.lastOrder.order_number)}</p>
-        ${code ? `<div class="confirmation-code-box"><span class="muted">Your delivery code</span><strong>${this.esc(code)}</strong><p class="muted" style="margin:8px 0 0;font-size:13px">Give this code to the driver. We also sent it to your WhatsApp if we have your number.</p></div>` : ''}
-        <p><strong>${this.esc(this.branch?.name)}</strong> · ${this.money(this.lastOrder.total)}</p>
-        <p class="muted">We'll notify you when the branch accepts your order.</p>
-        <button type="button" class="btn-primary btn-block" data-act="nav" data-view="orders">Track my order</button>
+        <p class="order-num">Order ${this.esc(o.order_number)}</p>
+        ${isDelivery ? this.handoffCodeHtml(o, { copy: true }) : ''}
+        <p><strong>${this.esc(this.branch?.name)}</strong> · ${this.money(o.total)}</p>
+        ${o.accepted_by || o.cashier ? `<p class="muted">Accepted by <strong>${this.esc(o.accepted_by || o.cashier)}</strong></p>` : '<p class="muted">We\'ll notify you when the branch accepts your order.</p>'}
+        ${this.driverCardHtml(o.driver)}
+        ${isDelivery && !o.driver?.name ? `<p class="muted" style="font-size:13px">Your driver details will appear here once assigned.</p>` : ''}
+        <button type="button" class="btn-primary btn-block" data-act="view-order" data-id="${o.id}">Track this order</button>
         <button type="button" class="btn-outline btn-block" data-act="nav" data-view="menu" style="margin-top:10px">Order again</button>
       </section>`);
       this.bind();
@@ -1000,7 +1502,9 @@ const OrderApp = {
     if (this.view === 'orders') {
       if (!this.token) { this.view = 'login'; this.authReturn = 'orders'; return this.render(); }
       let orders = [];
-      try { orders = await OrderAPI.listOrders(this.token); } catch (err) {
+      try {
+        orders = await OrderAPI.listOrders(this.token);
+      } catch (err) {
         if (/invalid|expired|session/i.test(err.message)) {
           this.token = ''; sessionStorage.removeItem('order_token'); this.customer = null;
           this.view = 'login'; this.authReturn = 'orders'; this.toast('Please sign in again', 'error'); return this.render();
@@ -1012,10 +1516,15 @@ const OrderApp = {
           const items = Array.isArray(o.items) ? o.items : [];
           const preview = items.slice(0, 2).map((i) => `${i.name} ×${i.quantity}`).join(', ');
           const more = items.length > 2 ? ` +${items.length - 2} more` : '';
+          const isDelivery = this.isDeliveryOrder(o);
+          const code = isDelivery ? (o.confirmation_code || o.order_number) : null;
           return `<button type="button" class="order-card order-card-btn" data-act="view-order" data-id="${o.id}">
             <div class="order-card-main">
               <strong>${this.esc(o.order_number)}</strong>
-              <span class="order-status">${this.esc(String(o.status || 'pending').toUpperCase())}</span>
+              <span class="order-status">${this.esc(String(o.status_label || o.status || 'pending').toUpperCase())}</span>
+              ${code && isDelivery ? `<span class="order-code-tag" title="Delivery handoff code">Code: ${this.esc(code)}</span>` : ''}
+              ${o.driver?.name ? `<span class="muted" style="display:block;font-size:12px;margin-top:4px">🚚 ${this.esc(o.driver.name)}${o.driver.vehicle_registration ? ` · ${this.esc(o.driver.vehicle_registration)}` : ''}</span>` : ''}
+              ${o.accepted_by || o.cashier ? `<span class="muted" style="display:block;font-size:12px">Accepted by ${this.esc(o.accepted_by || o.cashier)}</span>` : ''}
               <span class="muted order-preview">${this.esc(preview)}${more}</span>
               <span class="muted">${this.esc(String(o.created_at).slice(0, 16))}</span>
             </div>
@@ -1037,14 +1546,16 @@ const OrderApp = {
       const fulfillment = o.fulfillment_type || o.fulfillment || 'collection';
       const events = Array.isArray(o.events) ? o.events : [];
       const steps = o.tracking_steps || [];
-      const code = o.confirmation_code;
       app.innerHTML = this.shell(`<section class="page">
         <button type="button" class="link-btn" data-act="nav" data-view="orders">← Back to orders</button>
         <h1>${this.esc(o.order_number || 'Order')}</h1>
         <p><span class="order-status">${this.esc(String(o.status_label || o.status || 'pending').toUpperCase())}</span>
           · ${this.esc(String(o.created_at).slice(0, 16))}</p>
-        ${code ? `<div class="confirmation-code-box"><span class="muted">Delivery code</span><strong>${this.esc(code)}</strong></div>` : ''}
-        ${steps.length ? `<div class="checkout-card"><h3>Track order</h3>${this.trackingTimelineHtml(steps)}</div>` : ''}
+        ${this.isDeliveryOrder(o) ? this.handoffCodeHtml(o, { copy: true }) : ''}
+        ${o.accepted_by || o.cashier ? `<div class="checkout-card"><h3>Shop accepted your order</h3><p><strong>${this.esc(o.accepted_by || o.cashier)}</strong> is handling your order.</p></div>` : ''}
+          ${steps.length ? `<div class="checkout-card"><h3>Track order</h3>${this.trackingTimelineHtml(steps)}</div>` : ''}
+          ${this.driverCardHtml(o.driver)}
+          ${this.isDeliveryOrder(o) && !o.driver?.name ? `<div class="checkout-card"><p class="muted" style="margin:0">Your driver will appear here once assigned — you'll see their photo, vehicle registration, and contact details.</p></div>` : ''}
         <div class="checkout-card">
           <h3>Items</h3>
           ${items.length ? items.map((i) => {
@@ -1076,6 +1587,7 @@ const OrderApp = {
         </div>` : ''}
       </section>`);
       this.bind();
+      this.startOrderPolling();
       return;
     }
     if (this.view === 'login') {
@@ -1124,21 +1636,42 @@ const OrderApp = {
         ${acct.wallet?.length ? `<div class="checkout-card"><h3>🎁 Gift card wallet</h3>
           ${acct.wallet.map((g) => `<div class="wallet-line"><strong>${this.esc(g.code)}</strong> · ${this.money(g.balance)}${g.expires_at ? ` <span class="muted">expires ${this.esc(g.expires_at.slice(0, 10))}</span>` : ''}</div>`).join('')}
         </div>` : ''}
+        <div class="checkout-card"><h3>Notifications</h3>
+          <p class="muted" style="margin:0 0 8px">Get a sound and pop-up when your order status changes (even when this tab is in the background).</p>
+          ${window.PanelNotify ? PanelNotify.soundToggleHtml('online', { id: 'order-notify-sound', label: 'Order update alerts' }) : ''}
+        </div>
         <button type="button" class="link-btn" data-act="logout">Logout</button>
         <button type="button" class="link-btn danger" data-act="delete-account" style="margin-top:12px;display:block">Delete online account</button>
       </section>`);
+      const orderNotify = document.getElementById('order-notify-sound');
+      if (orderNotify && window.PanelNotify) PanelNotify.bindSoundToggle(orderNotify, 'online');
       this.bind();
       return;
     }
-    this.render();
+    if (this.view === 'product' && !this.product) {
+      this.view = 'menu';
+      return this.render();
+    }
+    console.warn('[OrderApp] Unknown view:', this.view);
+    this.view = this.token && this.branch ? 'home' : 'login';
+    return this.render();
   },
 
-  productCard(p) {
+  productCard(p, idx = 0) {
     const btnLabel = p.is_combo ? 'View combo' : (p.has_modifiers ? 'Choose options' : 'Add');
     const btnAct = p.has_modifiers && !p.is_combo ? 'open-product' : (p.is_combo ? 'open-product' : 'quick-add');
+    const badges = (p.badges || []).map((b) => `<span class="pc-badge" style="background:${b.color || '#64748b'}">${this.esc(b.label)}</span>`).join('');
+    const imgTag = p.image
+      ? `<img src="${this.esc(p.image)}" alt="" ${idx < 16 ? 'loading="eager" fetchpriority="high"' : 'loading="lazy"'}>`
+      : `<div class="thumb">${p.is_combo ? '🎁' : '🍽️'}</div>`;
+    const comboThumbs = p.is_combo && p.combo_thumbs?.length
+      ? `<div class="combo-mini-thumbs">${p.combo_thumbs.slice(0, 3).map((u) => `<img src="${this.esc(u)}" alt="" loading="eager">`).join('')}</div>`
+      : '';
     return `<article class="product-card ${p.available ? '' : 'unavailable'} ${p.is_combo ? 'combo-card' : ''}" data-product-id="${this.esc(p.id)}" role="button" tabindex="0">
-      ${p.image ? `<img src="${this.esc(p.image)}" alt="" loading="lazy">` : `<div class="thumb">${p.is_combo ? '🎁' : '🍽️'}</div>`}
+      ${imgTag}
+      ${comboThumbs}
       <div class="pc-body">
+        ${badges ? `<div class="pc-badges">${badges}</div>` : ''}
         <h3>${p.is_combo ? '🎁 ' : ''}${this.esc(p.name)}</h3>
         <div class="pc-price">${p.on_sale ? `<s>${this.money(p.price)}</s> <span class="sale">${this.money(p.sale_price)}</span>` : this.money(p.price)}</div>
         <span class="stock ${p.available ? 'ok' : 'out'}">${p.available ? 'Available' : 'Out of stock'}</span>

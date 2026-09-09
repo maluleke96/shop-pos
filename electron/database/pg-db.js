@@ -202,6 +202,8 @@ function rewriteSqliteSql(sql) {
       // date(?) or date(column) — no nested parens
       .replace(/date\s*\(\s*([^()]+?)\s*\)/gi, '(($1)::timestamptz)::date')
       .replace(/\bIFNULL\s*\(/gi, 'COALESCE(')
+      // SQLite scalar MAX(a,b) → Postgres GREATEST (aggregate MAX unchanged)
+      .replace(/\bMAX\s*\(\s*([^,)]+)\s*,\s*([^)]+?)\s*\)/gi, 'GREATEST($1, $2)')
       .replace(/\bGLOB\b/gi, 'LIKE')
       // SQLite case-insensitive order — strip (Postgres has no COLLATE NOCASE)
       .replace(/\bCOLLATE\s+NOCASE\b/gi, '')

@@ -45,16 +45,23 @@
           <strong>${title}</strong>
           ${hint ? `<small class="muted">${hint}</small>` : ''}
         </span>
-        <input type="checkbox" id="${id}" ${checked ? 'checked' : ''}>
-        <span class="portal-switch-state">${checked ? 'ON' : 'OFF'}</span>
+        <span class="portal-switch-track">
+          <input type="checkbox" id="${id}" ${checked ? 'checked' : ''}>
+          <span class="portal-switch-state">${checked ? 'ON' : 'OFF'}</span>
+        </span>
       </label>`;
-    return `<div class="portal-vis-card" id="portal-vis-card"><h4 style="margin:0 0 4px">Turn staff portal sections ON or OFF</h4>
-      <p class="muted" style="margin:0 0 12px">Use these switches for morning routines, closing routines, shift schedule, and whether a shift is required to clock in. Staff only see what is ON.</p>
-      ${row('sp-set-routines', on('show_routines'), 'Routines (master switch)', 'Off hides both morning and closing from staff')}
-      ${row('sp-set-morning', on('show_morning_routines'), 'Morning opening routines', 'Show morning tasks on the staff portal')}
-      ${row('sp-set-closing', on('show_closing_routines'), 'Closing routines', 'Show closing tasks on the staff portal')}
-      ${row('sp-set-shifts', on('show_shifts'), 'Show shift schedule', 'Hide the My Shifts list from staff')}
-      ${row('sp-set-require-shift', on('require_scheduled_shift'), 'Require assigned shift to clock in', 'Off = staff can clock in/out even without a shift')}
+    return `<div class="portal-vis-card staffhr-portal-settings" id="portal-vis-card">
+      <div class="staffhr-portal-settings-head">
+        <h4>Staff portal sections</h4>
+        <p class="muted">Turn each section ON or OFF. Staff only see what is enabled — changes apply immediately after save.</p>
+      </div>
+      <div class="portal-switch-grid">
+      ${row('sp-set-routines', on('show_routines'), 'Routines (master)', 'Off hides morning & closing routines from staff')}
+      ${row('sp-set-morning', on('show_morning_routines'), 'Morning opening routines', 'Opening checklist tasks on the portal')}
+      ${row('sp-set-closing', on('show_closing_routines'), 'Closing routines', 'End-of-day tasks on the portal')}
+      ${row('sp-set-shifts', on('show_shifts'), 'Shift schedule', 'My Shifts — weekly roster each employee sees')}
+      ${row('sp-set-require-shift', on('require_scheduled_shift'), 'Require shift to clock in', 'Off = clock in/out without an assigned shift')}
+      </div>
     </div>`;
   },
 
@@ -181,9 +188,10 @@
     if (this.pendingSelfie && !needSelfie) this.pendingSelfie = false;
     if (needSelfie) return StaffSelfieCapture.render(el, this.employee, (emp) => {
       this.employee = emp;
+      this.employeePin = null;
       this.pendingSelfie = false;
       this._rerender();
-    });
+    }, { pin: this.employeePin });
     return this.renderWorkerPanel(el);
   },
 
@@ -366,6 +374,7 @@
   renderWorkerLogin(el) {
     el.innerHTML = `<div class="staff-gate card" style="max-width:420px;margin:40px auto;padding:32px"><h2 style="text-align:center">Employee Sign In</h2>
       <p class="muted" style="text-align:center">Enter your Employee ID and secret PIN, or ask admin to link your POS user to your employee profile.</p>
+      <p id="staff-emp-login-err" class="error-msg hidden" style="margin-bottom:12px"></p>
       <div class="field"><label>Employee ID</label><input id="staff-emp-code" placeholder="EMP0001" autofocus></div>
       <div class="field"><label>PIN</label><input type="password" id="staff-emp-pin" maxlength="12" inputmode="numeric"></div>
       <button class="btn btn-primary btn-lg" id="staff-emp-login" style="width:100%">Sign In</button>
@@ -389,12 +398,20 @@
   async workerLogin() {
     const code = document.getElementById('staff-emp-code').value.trim();
     const pin = document.getElementById('staff-emp-pin').value.trim();
-    if (!code || !pin) return Utils.toast('Employee ID and PIN required', 'error');
+    const errEl = document.getElementById('staff-emp-login-err');
+    if (!code || !pin) {
+      if (errEl) { errEl.textContent = 'Employee ID and PIN required'; errEl.classList.remove('hidden'); }
+      return;
+    }
+    if (errEl) errEl.classList.add('hidden');
     const r = await API.staffLogin(code, pin);
-    if (!r.success) return Utils.toast(r.error || 'Login failed', 'error');
+    if (!r.success) {
+      const msg = r.error || 'Wrong PIN or employee ID';
+      if (errEl) { errEl.textContent = msg; errEl.classList.remove('hidden'); }
+      return;
+    }
     this.employee = r.data;
-    // Do not retain raw PIN " staff:login already established pinVerified session
-    this.employeePin = null;
+    this.employeePin = pin;
     this.pendingSelfie = !!window.StaffSelfieCapture?.selfieRequired?.();
     Utils.toast(`Welcome, ${this.employee.full_name}`, 'success');
     this._rerender();
@@ -590,6 +607,7 @@
           let timer;
           const r = await Promise.race([
             API.staffClock(emp.id, btn.dataset.clock, {
+              pin: this._adminOverride ? undefined : (this.employeePin || undefined),
               clientRequestId: this._newClientRequestId(),
               actor: this._adminOverride ? this.app.user : undefined
             }).finally(() => clearTimeout(timer)),
@@ -783,12 +801,24 @@
         </tbody></table></div>
         <p style="margin-top:8px"><strong>Period total: ${hist.total_hours || 0}h</strong> · Days with clock-in: ${hist.days_worked || 0}</p>
       </div></div>
-      ${portalSettings.show_shifts !== false ? `<div class="card" style="margin-top:16px"><div class="card-body"><h4>My Shifts " 4 weeks (${scheduleStart} -> ${scheduleEnd})</h4>
-        ${schedRes.success === false ? this._staffSectionFail(schedRes, 'Shift information') : (myShifts.length ? `<div class="table-wrap"><table><thead><tr><th>Date</th><th>Shift</th><th>Opening</th><th>Closing</th></tr></thead>
-          <tbody>${myShifts.map(s => `<tr><td>${this._esc(s.shift_date)}</td><td>${s.is_rest_day ? 'Rest day' : this._esc(s.shift_name || '"')}</td>
-            <td>${s.is_rest_day ? '"' : this._esc(s.start_time || '"')}</td>
-            <td>${s.is_rest_day ? '"' : this._esc(s.end_time || '"')}</td></tr>`).join('')}</tbody></table></div>`
-          : '<p class="muted">No shifts scheduled in this period. Ask admin to generate shifts in Admin -> Staff -> Shifts and link your user to your employee profile.</p>')}
+      ${portalSettings.show_shifts !== false ? `<div class="card staff-shifts-card" style="margin-top:16px"><div class="card-body">
+        <div class="staff-shifts-head">
+          <h4>My Shifts</h4>
+          <span class="staff-shifts-range">${scheduleStart} → ${scheduleEnd}</span>
+        </div>
+        ${schedRes.success === false ? this._staffSectionFail(schedRes, 'Shift information') : (myShifts.length ? `
+        <div class="staff-shifts-grid">
+          ${myShifts.map(s => {
+            const isToday = s.shift_date === Utils.today();
+            const overnight = !s.is_rest_day && String(s.end_time || '').slice(0, 5) <= String(s.start_time || '').slice(0, 5);
+            return `<article class="staff-shift-item${isToday ? ' today' : ''}${s.is_rest_day ? ' rest' : ''}">
+              <div class="staff-shift-date">${this._esc(s.shift_date)}${isToday ? ' <small>Today</small>' : ''}</div>
+              <div class="staff-shift-name">${s.is_rest_day ? 'Rest day' : this._esc(s.shift_name || 'Shift')}</div>
+              <div class="staff-shift-times">${s.is_rest_day ? '—' : `${this._esc(s.start_time || '?')} – ${this._esc(s.end_time || '?')}${overnight ? ' (+1)' : ''}`}</div>
+              ${s.branch ? `<div class="staff-shift-branch">${this._esc(s.branch)}</div>` : ''}
+            </article>`;
+          }).join('')}
+        </div>` : '<p class="muted">No shifts scheduled in this period. Ask admin to generate shifts in Admin → Staff & HR → Shifts.</p>')}
       </div></div>` : ''}
       ${hrDocs.length ? `<div class="card" style="margin-top:16px"><div class="card-body"><h4>HR Documents</h4>
         ${hrDocs.map(d => `<div style="padding:8px 0;border-bottom:1px solid var(--border)"><strong>${this._esc(d.doc_type || d.document_type || 'Document')}</strong>
@@ -1055,7 +1085,8 @@
     });
     el.querySelectorAll('.dl-payslip').forEach(btn => {
       btn.addEventListener('click', async () => {
-        await Utils.savePdfBuffer(`payslip-${btn.dataset.id}.pdf`, await API.getStaffPayslipPdf(parseInt(btn.dataset.id, 10)));
+        const pdfAuth = this._adminOverride ? undefined : (this.employeePin ? { pin: this.employeePin } : undefined);
+        await Utils.savePdfBuffer(`payslip-${btn.dataset.id}.pdf`, await API.getStaffPayslipPdf(parseInt(btn.dataset.id, 10), pdfAuth));
       });
     });
     el.querySelectorAll('.wa-payslip').forEach(btn => {

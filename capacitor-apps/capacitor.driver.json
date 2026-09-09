@@ -1,0 +1,8 @@
+{
+  "appId": "com.shoppos.driver",
+  "appName": "Driver App",
+  "webDir": "www",
+  "android": {
+    "allowMixedContent": false
+  }
+}

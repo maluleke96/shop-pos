@@ -77,6 +77,7 @@ const App = {
       'js/pages/admin-employee-month.js',
       'js/pages/admin-recruitment.js',
       'js/pages/admin-marketing.js',
+      'js/pages/admin-communication.js',
       'js/pages/admin-delivery.js',
       'js/pages/admin-business-modules.js',
       'js/pages/users.js'
@@ -120,6 +121,12 @@ const App = {
 
   isPosKiosk() {
     return this.appMode() === 'pos';
+  },
+
+  formatSidebarUserRole(user, branchName) {
+    const name = user?.full_name || user?.username || '';
+    const role = user?.role ? String(user.role).replace(/_/g, ' ') : '';
+    return [name, role, branchName].filter(Boolean).join(' · ');
   },
 
   isDeliveryPortal() {
@@ -746,11 +753,22 @@ const App = {
   },
 
   async closeDeliveryDepartment() {
+    window.AdminDeliveryPage?.stopAutoRefresh?.();
+    window.PanelNotifyHub?.stop('delivery');
     await this.doLogout();
+  },
+
+  initPanelNotify() {
+    if (this.isPosKiosk?.()) return;
+    const mode = this.appMode();
+    if (mode === 'delivery' || mode === 'recipe') return;
+    if (!window.PanelNotifyHub) return;
+    PanelNotifyHub.initPanel('admin', () => !!this.user);
   },
 
   async openDeliveryDepartment() {
     this.stopLoginOperatingTimer();
+    await this.ensureFeatureCss('css/delivery-dept.css');
     document.body.classList.remove('sidebar-open');
     if (!this.user) {
       this.showScreen('login');
@@ -788,6 +806,10 @@ const App = {
       };
       AdminDeliveryPage.standalone = true;
       await AdminDeliveryPage.render(root, admin);
+      if (window.PanelNotifyHub) {
+        PanelNotifyHub.initPanel('delivery', () => !!this.user);
+        PanelNotifyHub.startPoll('delivery', () => PanelNotifyHub.pollDelivery(this.user), 18000);
+      }
     } catch (err) {
       console.error('[DeliveryDepartment]', err);
       root.innerHTML = `<div class="login-card" style="max-width:420px;margin:40px auto;text-align:center">
@@ -813,14 +835,15 @@ const App = {
       document.getElementById('sp-open-back')?.addEventListener('click', () => this.closeStaffPortal());
     };
     try {
-      if (!this.settings) {
-        await this.ensureSettingsLoaded().catch(() => { this.settings = this.settings || {}; });
-      }
-      await Utils.loadScript('js/pages/staff.js');
+      const loadScripts = Promise.all([
+        this.ensureSettingsLoaded().catch(() => { this.settings = this.settings || {}; }),
+        Utils.loadScript('js/pages/staff.js'),
+        this.ensureFeatureScript('js/staff-selfie-ui.js'),
+        this.ensureFeatureScript('js/staff-portal-standalone.js')
+      ]);
       try { await Utils.loadScript('js/pages/staff-owner-salary.js'); } catch (_) { /* optional */ }
+      await loadScripts;
       this.bindPageModule('staff');
-      await this.ensureFeatureScript('js/staff-selfie-ui.js');
-      await this.ensureFeatureScript('js/staff-portal-standalone.js');
     } catch (err) {
       console.error('[StaffPortal] open load failed', err?.message || err);
       showLoadError('Staff portal modules failed to load. Retry.');
@@ -841,6 +864,7 @@ const App = {
   },
 
   async closeStaffPortal() {
+    window.PanelNotifyHub?.stop('staff');
     try { await API.staffLogout?.(); } catch (_) { /* ignore */ }
     StaffSelfieCapture?.stopCamera?.();
     if (window.StaffPortalStandalone) {
@@ -1113,7 +1137,8 @@ const App = {
     document.title = appName;
 
     const useCloudLogo = !!(window.__SHOP_POS_CLOUD__ || /^https?:/i.test(String(location.protocol || '')));
-    const applyLogo = async (elId, fallback = '??') => {
+    const brandInitials = (shopName || appName || 'POS').split(/\s+/).filter(Boolean).map((w) => w[0]).join('').slice(0, 2).toUpperCase() || 'POS';
+    const applyLogo = async (elId, fallback = brandInitials) => {
       const el = document.getElementById(elId);
       if (!el) return;
       if (useCloudLogo) {
@@ -1394,7 +1419,7 @@ const App = {
     if (!hasLocalOrCloud) {
       Utils.showModal('Account Recovery', `
         <p>Private recovery has not been set up on this shop yet.</p>
-        <p class="muted">Sign in on the online shop (or after first successful login here), then go to <strong>Admin ? Security ? Account Recovery</strong> and create a Private Recovery Phrase. That phrase is stored in your Supabase shop database and works on the browser URL and on installers when you are online.</p>`,
+        <p class="muted">Sign in on the online shop (or after first successful login here), then go to <strong>Admin → Security → Account Recovery</strong> and create a Private Recovery Phrase. That phrase is stored in your Supabase shop database and works on the browser URL and on installers when you are online.</p>`,
         '<button class="btn btn-primary" id="recovery-close">OK</button>');
       document.getElementById('recovery-close')?.addEventListener('click', Utils.hideModal);
       return;
@@ -1703,7 +1728,7 @@ const App = {
     if (!this.isPosKiosk()) {
       this.renderNav();
       document.getElementById('sidebar-user-role').textContent =
-        (this.user?.full_name || '') + ' ? ' + (this.user?.role || '');
+        this.formatSidebarUserRole(this.user);
       this.refreshBranchSwitcher().catch(() => {});
     }
 
@@ -1743,19 +1768,23 @@ const App = {
 
     // Background startup (never block UI) ? lighter on POS kiosk
     const bg = async () => {
+      if (this.appMode() === 'admin' && Utils.canAccessAdmin?.(this.user)) {
+        this.ensurePageScripts('admin').catch(() => {});
+      }
       if (!this.isPosKiosk()) {
         try {
           const br = await API.getActiveBranch();
           if (br.success && br.data) {
             this.activeBranch = br.data;
             document.getElementById('sidebar-user-role').textContent =
-              this.user.full_name + ' ? ' + this.user.role + ' ? ' + this.activeBranch.name;
+              this.formatSidebarUserRole(this.user, this.activeBranch.name);
           }
         } catch { /* ignore */ }
       }
       try { await API.logOperatingEvent('open', this.user); } catch { /* ignore */ }
       if (!this.isPosKiosk()) {
         try { await API.ensureDemoNotificationSound(); } catch { /* ignore */ }
+        this.initPanelNotify();
         this.startOperatingTimer();
         this.startNotificationSoundMonitor();
         this.startNotificationRefresh();
@@ -1855,7 +1884,18 @@ const App = {
       if (this.navHistory.length > 40) this.navHistory.shift();
     }
     this.currentPage = page;
+    document.body.classList.toggle('pos-till-active', page === 'pos');
+    if (page !== 'pos') window.POSPage?.stopAdvertReminderMonitor?.();
+    if (page === 'pos') this.ensureFeatureCss('css/pos-till.css').catch(() => {});
     const navGen = (this._navGen = (this._navGen || 0) + 1);
+    if (page === 'admin' && !this.isPosKiosk?.()) {
+      this.initPanelNotify();
+      this.checkNotificationSounds().catch(() => {});
+    }
+    if (page === 'admin' && !this.isPosKiosk?.()) {
+      this.initPanelNotify();
+      this.checkNotificationSounds().catch(() => {});
+    }
     document.querySelectorAll('.nav-btn').forEach(b =>
       b.classList.toggle('active', b.dataset.page === page));
     const titles = {
@@ -1887,7 +1927,10 @@ const App = {
     });
 
     let host = hosts.querySelector(`:scope > .page-host[data-page="${page}"]`);
-    const reused = !!(host && host.childNodes.length);
+    const hostReady = page === 'pos'
+      ? !!(host?.querySelector?.('.pos-layout'))
+      : !!(host && host.childNodes.length);
+    const reused = hostReady;
     if (!host) {
       host = document.createElement('div');
       host.className = 'page-host';
@@ -1896,6 +1939,10 @@ const App = {
     }
     host.hidden = false;
     host.classList.add('page-host-active');
+
+    if (page === 'pos' && !host.querySelector('.pos-layout')) {
+      host.innerHTML = '<p class="muted" style="padding:24px">Loading POS…</p>';
+    }
 
     // Session check always in background ? never await on click
     this.ensureSessionActive().then((ok) => {
@@ -1921,8 +1968,13 @@ const App = {
           await this.ensurePageScripts(page);
           if (navGen !== this._navGen || this.currentPage !== page) return;
           const pageModule = this.bindPageModule(page) || this.pages[page];
-          if (!pageModule?.render) return;
-          if (typeof pageModule.activate === 'function') {
+          if (!pageModule?.render) {
+            host.innerHTML = '<p class="error-msg">POS module failed to load. Refresh the page.</p>';
+            return;
+          }
+          if (page === 'pos' && !host.querySelector('.pos-layout')) {
+            await pageModule.render(host, this);
+          } else if (typeof pageModule.activate === 'function') {
             await pageModule.activate(host, this);
           } else {
             await pageModule.render(host, this);
@@ -2157,6 +2209,9 @@ const App = {
     this.stopNotificationRefresh();
     this.stopScheduledDocMonitor();
     SoundService?.stopAlert();
+    window.PanelNotify?.onLogout();
+    window.PanelNotifyHub?.stop('admin');
+    window.PanelNotifyHub?.stop('delivery');
     Utils.forceHideModal();
     try { window.PanelExitGuard?.unbind?.(); } catch (_) { /* ignore */ }
     try { sessionStorage.removeItem('pos_welcome_done'); } catch (_) { /* ignore */ }
@@ -2362,13 +2417,28 @@ const App = {
     return true;
   },
 
+  stopAllNotificationSounds() {
+    window.SoundService?.stopAlert();
+    window.PanelSound?.stop();
+  },
+
+  /** Sound scope matches the default Today filter — older unread alerts stay in the list but do not ring. */
+  alertQualifiesForSound(createdAt) {
+    return this._isNotifToday(createdAt);
+  },
+
   async checkNotificationSounds(fromCache) {
     if (this.isPosKiosk()) {
-      SoundService?.stopAlert();
+      this.stopAllNotificationSounds();
       return;
     }
     if (!this.user || !['owner', 'manager', 'supervisor', 'assistant_manager'].includes(this.user.role)) {
-      SoundService?.stopAlert();
+      this.stopAllNotificationSounds();
+      window.PanelNotify?.onLogout();
+      return;
+    }
+    if (window.PanelNotifyHub) {
+      await PanelNotifyHub.pollAdmin(this);
       return;
     }
     let shouldAlert = false;
@@ -2384,7 +2454,7 @@ const App = {
     if (shouldAlert && this.settings?.notification_settings?.loop_until_read !== false) {
       await SoundService.startAlert(this.settings);
     } else {
-      SoundService.stopAlert();
+      this.stopAllNotificationSounds();
     }
   },
 
@@ -2974,8 +3044,9 @@ const App = {
     });
   },
 
-  async fetchNotificationBuckets(force = false) {
+  async fetchNotificationBuckets(force = false, opts = {}) {
     const now = Date.now();
+    const fastOnly = !!opts.fastOnly;
     if (!force && this._notifCache && now - this._notifCache.at < 8000) {
       return this._notifCache.data;
     }
@@ -2983,9 +3054,9 @@ const App = {
     const alerts = (res.data || [])
       .map(n => ({ ...n, kind: 'alert' }))
       .filter(n => this.notificationConcernsUser(n));
-    let pending = [];
-    let reminders = [];
-    if (['owner', 'manager'].includes(this.user?.role)) {
+    let pending = this._notifCache?.data?.pending || [];
+    let reminders = this._notifCache?.data?.reminders || [];
+    if (['owner', 'manager'].includes(this.user?.role) && !fastOnly) {
       try {
         const dismissedPending = this._getDismissedPending();
         const dismissedRem = this._getDismissedReminders();
@@ -3005,6 +3076,7 @@ const App = {
           action_page: 'admin:approvals',
           audience_roles: 'owner,manager'
         })).filter(p => !dismissedPending.includes(String(p.pendingId)));
+        reminders = [];
         (comp.data || []).forEach((n, i) => {
           const id = `comp-${n.type || i}`;
           if (dismissedRem.includes(id)) return;
@@ -3017,8 +3089,6 @@ const App = {
         });
       } catch { /* offline */ }
     }
-
-    // Online ordering removed ? do not surface hub online-order alerts.
 
     const data = { alerts, pending, reminders };
     this._notifCache = { at: now, data };
@@ -3052,16 +3122,17 @@ const App = {
     if (this.isPosKiosk()) return;
     if (filter) this._notifFilter = filter;
     if (!this._notifFilter) this._notifFilter = 'today';
-    Utils.showModal('Notifications', '<p class="muted">Loading?</p>', '<button class="btn btn-ghost" id="notif-close">Close</button>');
-    document.getElementById('notif-close')?.addEventListener('click', () => Utils.hideModal());
-    const { alerts, pending, reminders } = await this.fetchNotificationBuckets(true);
-    const f = this._notifFilter;
+
+    const paint = (buckets) => {
+      const { alerts, pending, reminders } = buckets;
+      const f = this._notifFilter;
     const filteredAlerts = alerts.filter(n => this._matchesNotifFilter(n.created_at, f));
     const filteredPending = pending.filter(n => this._matchesNotifFilter(n.created_at, f));
     const filteredReminders = reminders.filter(n => this._matchesNotifFilter(n.created_at, f));
 
     const filterBar = `<div class="notif-filter-bar">
       ${['today', 'week', 'all'].map(id => `<button type="button" class="btn btn-sm ${f === id ? 'btn-primary' : 'btn-ghost'} notif-filter-btn" data-filter="${id}">${id === 'today' ? 'Today' : id === 'week' ? 'This week' : 'All'}</button>`).join('')}
+      <p class="muted" style="font-size:11px;margin:8px 0 0;width:100%">Alert sound rings for <strong>today&apos;s</strong> unread alerts only. Use Today / This week / All to browse older items.</p>
     </div>`;
 
     let html = filterBar;
@@ -3123,11 +3194,12 @@ const App = {
       try {
         const r = await API.markAllNotificationsRead(this.user);
         if (r && r.success === false) throw new Error(r.error || 'Could not mark all read');
+        (alerts || []).forEach((n) => window.PanelNotifyHub?.ackAdminAlert(n.id));
         this._notifCache = null;
         Utils.hideModal();
-        SoundService?.stopAlert();
+        this.stopAllNotificationSounds();
         await this.loadNotifications();
-        this.checkNotificationSounds();
+        await this.checkNotificationSounds();
         Utils.toast('Your alerts marked as read', 'success');
       } catch (err) {
         if (btn) btn.disabled = false;
@@ -3145,7 +3217,10 @@ const App = {
         this.navigateToNotificationTarget(type, kind, actionPage);
         if (kind === 'alert') {
           const id = parseInt(row.dataset.id, 10);
-          this._notifCache = null;
+          window.PanelNotifyHub?.ackAdminAlert(id);
+          if (this._notifCache?.data) {
+            this._notifCache.data.alerts = (this._notifCache.data.alerts || []).filter((n) => n.id !== id);
+          }
           API.markNotificationRead(id).then(() => this.loadNotifications()).catch(() => {});
           this.checkNotificationSounds();
         }
@@ -3155,40 +3230,47 @@ const App = {
     document.querySelectorAll('.notif-mark-read').forEach(btn => {
       btn.addEventListener('click', async (e) => {
         e.stopPropagation();
-        btn.disabled = true;
         const id = parseInt(btn.dataset.id, 10);
-        const r = await API.markNotificationRead(id);
-        if (r && r.success === false) {
-          btn.disabled = false;
-          return Utils.toast(r.error || 'Could not mark read', 'error');
+        const row = btn.closest('.notif-row');
+        window.PanelNotifyHub?.ackAdminAlert(id);
+        row?.remove();
+        if (this._notifCache?.data) {
+          this._notifCache.data.alerts = (this._notifCache.data.alerts || []).filter((n) => n.id !== id);
         }
-        await this.loadNotifications();
-        const { alerts: remaining } = await this.fetchNotificationBuckets();
-        if (!remaining.length) {
-          Utils.hideModal();
-          SoundService?.stopAlert();
+        const remaining = this._notifCache?.data?.alerts?.length || 0;
+        const markAll = document.getElementById('mark-all-read');
+        if (markAll) markAll.style.display = remaining ? '' : 'none';
+        if (!remaining) {
+          this.stopAllNotificationSounds();
           Utils.toast('All alerts attended', 'success');
-        } else {
-          this.showNotifications();
         }
-        this.checkNotificationSounds();
+        await this.checkNotificationSounds();
+        API.markNotificationRead(id).catch(() => Utils.toast('Could not mark read', 'error'));
       });
     });
 
     document.querySelectorAll('.notif-dismiss-pending').forEach(btn => {
-      btn.addEventListener('click', async (e) => {
+      btn.addEventListener('click', (e) => {
         e.stopPropagation();
+        btn.closest('.notif-row')?.remove();
         this._dismissPending(btn.dataset.id);
-        await this.loadNotifications();
-        this.showNotifications();
+        window.PanelNotifyHub?.ackAdminPending(btn.dataset.id);
+        if (this._notifCache?.data) {
+          this._notifCache.data.pending = (this._notifCache.data.pending || []).filter((n) => String(n.id) !== String(btn.dataset.id));
+        }
+        this.loadNotifications();
       });
     });
 
     document.querySelectorAll('.notif-dismiss-reminder').forEach(btn => {
-      btn.addEventListener('click', async (e) => {
+      btn.addEventListener('click', (e) => {
         e.stopPropagation();
+        btn.closest('.notif-row')?.remove();
         this._dismissReminder(btn.dataset.id);
-        this.showNotifications();
+        window.PanelNotifyHub?.ackAdminReminder(btn.dataset.id);
+        if (this._notifCache?.data) {
+          this._notifCache.data.reminders = (this._notifCache.data.reminders || []).filter((n) => String(n.id) !== String(btn.dataset.id));
+        }
       });
     });
 
@@ -3196,6 +3278,13 @@ const App = {
       Utils.hideModal();
       this.checkNotificationSounds();
     });
+    };
+
+    const cached = this._notifCache?.data || { alerts: [], pending: [], reminders: [] };
+    paint(cached);
+    this.fetchNotificationBuckets(true).then((buckets) => {
+      if (document.getElementById('notif-close')) paint(buckets);
+    }).catch(() => {});
   }
 };
 

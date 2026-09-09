@@ -18,6 +18,7 @@ const StaffPortalStandalone = {
       <div class="login-logo" id="sp-login-logo">👷</div>
       <h1>${Utils.escHtml(shop)}</h1>
       <p class="login-sub">Employee Staff Portal</p>
+      <p id="sp-login-err" class="error-msg hidden" style="margin-bottom:12px"></p>
       <div class="field"><label>Employee ID</label><input id="sp-code" placeholder="EMP0001" autofocus autocomplete="username"></div>
       <div class="field"><label>PIN</label><input type="password" id="sp-pin" maxlength="12" inputmode="numeric" autocomplete="current-password"></div>
       <button type="button" class="btn btn-primary btn-lg btn-block" id="sp-login">Sign In</button>
@@ -42,11 +43,23 @@ const StaffPortalStandalone = {
   async doLogin() {
     const code = document.getElementById('sp-code').value.trim();
     const pin = document.getElementById('sp-pin').value.trim();
-    if (!code || !pin) return Utils.toast('Employee ID and PIN required', 'error');
+    const errEl = document.getElementById('sp-login-err');
+    const btn = document.getElementById('sp-login');
+    if (!code || !pin) {
+      if (errEl) { errEl.textContent = 'Employee ID and PIN required'; errEl.classList.remove('hidden'); }
+      return;
+    }
+    if (btn) { btn.disabled = true; btn.textContent = 'Signing in…'; }
+    if (errEl) errEl.classList.add('hidden');
     const r = await API.staffLogin(code, pin);
-    if (!r.success) return Utils.toast(r.error || 'Login failed', 'error');
+    if (btn) { btn.disabled = false; btn.textContent = 'Sign In'; }
+    if (!r.success) {
+      const msg = r.error || 'Wrong PIN or employee ID';
+      if (errEl) { errEl.textContent = /pin|password|invalid|incorrect/i.test(msg) ? msg : 'Wrong PIN or employee ID — please try again'; errEl.classList.remove('hidden'); }
+      return;
+    }
     this.employee = r.data;
-    this.employeePin = null;
+    this.employeePin = pin;
     this.step = window.StaffSelfieCapture?.selfieRequired?.() ? 'selfie' : 'portal';
     this.render(this.container, this.app);
   },
@@ -74,12 +87,14 @@ const StaffPortalStandalone = {
     }
     StaffSelfieCapture.render(this.container, this.employee, (emp) => {
       this.employee = emp;
+      this.employeePin = null;
       this.step = 'portal';
       this.render(this.container, this.app);
-    });
+    }, { pin: this.employeePin });
   },
 
   async goLogin() {
+    window.PanelNotifyHub?.stop('staff');
     try { await API.staffLogout?.(); } catch (_) { /* ignore */ }
     this.employee = null;
     this.employeePin = null;
@@ -105,10 +120,15 @@ const StaffPortalStandalone = {
     this.container.innerHTML = `<div class="staff-portal-shell">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:8px">
         <h2 style="margin:0">👷 Staff Portal</h2>
-        <button type="button" class="btn btn-ghost btn-sm" id="sp-exit">Exit Portal</button>
+        <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+          ${window.PanelNotify ? PanelNotify.soundToggleHtml('staff', { id: 'sp-notify-sound', label: 'Alerts' }) : ''}
+          <button type="button" class="btn btn-ghost btn-sm" id="sp-exit">Exit Portal</button>
+        </div>
       </div>
       <div id="sp-portal-root"><p class="muted">Loading your portal…</p></div>
     </div>`;
+    const spNotify = document.getElementById('sp-notify-sound');
+    if (spNotify && window.PanelNotify) PanelNotify.bindSoundToggle(spNotify, 'staff');
     document.getElementById('sp-exit')?.addEventListener('click', async () => {
       StaffSelfieCapture?.stopCamera?.();
       try { await API.staffLogout?.(); } catch (_) { /* ignore */ }
@@ -155,6 +175,14 @@ const StaffPortalStandalone = {
     try {
       await page.renderWorkerPanel(inner);
       clearTimeout(watchdog);
+      if (window.PanelNotifyHub && this.employee?.id) {
+        PanelNotifyHub.initPanel('staff', () => !!this.employee);
+        PanelNotifyHub.startPoll(
+          'staff',
+          () => PanelNotifyHub.pollStaff(this.employee.id, page.hrActor?.(this.employee) || this.app?.user),
+          25000
+        );
+      }
     } catch (err) {
       clearTimeout(watchdog);
       // Never wipe a working clock shell — secondary sections can fail independently

@@ -121,7 +121,8 @@ const StaffSelfieCapture = {
     });
   },
 
-  async render(container, employee, onComplete) {
+  async render(container, employee, onComplete, opts = {}) {
+    const loginPin = opts.pin || null;
     this.stopCamera();
     this._capturing = false;
     this.ensureStaffPortalScreen();
@@ -295,6 +296,7 @@ const StaffSelfieCapture = {
             employee_id: employee.id,
             employee_name: employee.full_name,
             photo_data: photoData,
+            pin: loginPin || undefined,
             device_info: navigator.userAgent?.slice(0, 200) || ''
           });
           if (!r.success) {
@@ -302,11 +304,12 @@ const StaffSelfieCapture = {
               btn.disabled = false;
               btn.textContent = 'Continue to Portal';
             }
+            const authErr = /auth|session|login|pin/i.test(String(r.error || ''));
             if (!this.selfieRequired()) {
               Utils.toast((r.error || 'Could not save selfie') + ' — continuing without saving', 'error');
               return finish(employee);
             }
-            return Utils.toast(r.error || 'Could not save selfie', 'error');
+            return Utils.toast(authErr ? 'Session expired — go back and sign in again, then retake your selfie' : (r.error || 'Could not save selfie'), 'error');
           }
           Utils.toast('Verification complete', 'success');
           finish(employee);

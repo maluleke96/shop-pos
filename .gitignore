@@ -24,6 +24,7 @@ android/build/
 android/.gradle/
 *.log
 *.apk
+!public/android-downloads/*.apk
 *.exe
 *.map
 .idea/

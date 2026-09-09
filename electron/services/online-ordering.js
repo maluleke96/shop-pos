@@ -464,17 +464,26 @@ function mapProductForWeb(p, branchId, promos = [], productPromo = null) {
   };
 }
 
+function comboPendingOnlineQty(comboId, branchId) {
+  let pending = 0;
+  try {
+    const rows = dbAll('SELECT items_json FROM online_orders_local WHERE status = ? AND branch_id = ?', ['pending', branchId]);
+    for (const row of rows) {
+      let lines = [];
+      try { lines = JSON.parse(row.items_json || '[]'); } catch (_) { lines = []; }
+      for (const line of lines) {
+        if (Number(line.combo_id) === Number(comboId)) pending += Number(line.quantity) || 1;
+      }
+    }
+  } catch (_) { /* optional */ }
+  return pending;
+}
+
 function comboAvailableAtBranch(combo, branchId) {
   if (!combo) return false;
   const combosSvc = require('./combos');
   if (!combosSvc.isComboActive(combo)) return false;
-  if (combo.combo_kind === 'custom') return (combo.items || []).length > 0;
-  for (const ci of combo.items || []) {
-    if (!ci.product_id) continue;
-    const qty = branchStockQty(ci.product_id, branchId);
-    if (qty < (Number(ci.quantity) || 1)) return false;
-  }
-  return (combo.items || []).length > 0;
+  return combosSvc.comboAvailableUnits(combo, branchId) > 0;
 }
 
 function comboItemImageUrl(ci) {
@@ -484,7 +493,8 @@ function comboItemImageUrl(ci) {
 }
 
 function mapComboForWeb(combo, branchId) {
-  const available = comboAvailableAtBranch(combo, branchId);
+  const combosSvc = require('./combos');
+  const availUnits = combosSvc.comboAvailableUnits(combo, branchId);
   const normal = Number(combo.normal_price) || 0;
   const finalPrice = Number(combo.final_price) || normal;
   const pic = combo.image_path || combo.picture_path;
@@ -511,8 +521,10 @@ function mapComboForWeb(combo, branchId) {
     price: normal,
     sale_price: finalPrice < normal ? finalPrice : null,
     on_sale: finalPrice < normal,
-    available,
-    stock_qty: available ? 99 : 0,
+    available: availUnits > 0,
+    stock_qty: combo.combo_kind === 'custom' && combo.stock_quantity != null && combo.stock_quantity !== ''
+      ? Math.max(0, Number(combo.stock_quantity) || 0)
+      : (availUnits > 9999 ? 99 : availUnits),
     has_modifiers: hasModifiers,
     combo_items: items.map((ci) => ({
       product_id: ci.product_id,
@@ -678,12 +690,28 @@ function getProductDetail(branchId, productId) {
     const combo = combosSvc.getCombo(comboId);
     if (!combo) throw new Error('Combo not found');
     const items = (combo.items || []).map((ci) => {
-      const groups = getModifiersForProduct(ci.product_id, branchId);
+      let groups = ci.product_id ? getModifiersForProduct(ci.product_id, branchId) : [];
+      if (ci.allow_pap_choice && ci.product_id) {
+        const hasRemoval = groups.some((g) => (g.options || []).some((o) => o.modifier_type === 'removal'));
+        if (!hasRemoval) {
+          groups = [...groups, {
+            name: 'Pap choice',
+            required: false,
+            type: 'checkbox',
+            options: [{
+              id: `pap-${ci.product_id}`,
+              name: 'Without pap',
+              extra_price: 0,
+              modifier_type: 'removal'
+            }]
+          }];
+        }
+      }
       return {
         ...ci,
         modifier_groups: groups,
         has_modifiers: groups.length > 0,
-        image: ci.picture_path ? publicProductImageUrl(ci.product_id, false) : null
+        image: ci.custom_image_path ? publicAssetImageUrl(ci.custom_image_path) : (ci.picture_path ? publicProductImageUrl(ci.product_id, false) : null)
       };
     });
     return {
@@ -793,10 +821,16 @@ function validateCart(branchId, cart = {}) {
         errors.push(`${combo.name} is not available at this branch`);
         continue;
       }
-      const unitPrice = round2(Number(combo.final_price) || 0);
+      const components = Array.isArray(item.combo_components) ? item.combo_components : [];
+      const avail = combosSvc.comboAvailableUnits(combo, branchId)
+        - (combo.combo_kind === 'custom' && combo.stock_quantity != null ? comboPendingOnlineQty(comboId, branchId) : 0);
+      if (qty > avail) {
+        errors.push(avail > 0 ? `Only ${avail} of ${combo.name} available` : `${combo.name} is out of stock`);
+        continue;
+      }
+      const unitPrice = round2(combosSvc.comboSaleUnitPrice(combo, components));
       const lineTotal = round2(unitPrice * qty);
       subtotal = round2(subtotal + lineTotal);
-      const components = Array.isArray(item.combo_components) ? item.combo_components : [];
       const modText = components.length
         ? components.map((c) => {
           const base = `${c.product_name || 'Item'}`;
@@ -1102,6 +1136,20 @@ function submitOrder(branchId, payload = {}, webToken = null, idempotencyKey = n
   logOrderEvent(orderId, 'received', 'Order placed online', 'customer', customer.id);
 
   for (const line of cart.lines) {
+    if (line.combo_id) {
+      const combo = require('./combos').getCombo(Number(line.combo_id));
+      if (combo?.combo_kind === 'custom') continue;
+      for (const ci of combo?.items || []) {
+        if (!ci.product_id) continue;
+        const reserveQty = (Number(line.quantity) || 1) * (Number(ci.quantity) || 1);
+        try {
+          dbRun(`INSERT INTO web_stock_reservations (order_id, product_id, branch_id, quantity, status, expires_at)
+            VALUES (?,?,?,?, 'reserved', ?)`,
+            [orderId, ci.product_id, branchId, reserveQty, nowPlusMin(30)]);
+        } catch (_) { /* */ }
+      }
+      continue;
+    }
     try {
       dbRun(`INSERT INTO web_stock_reservations (order_id, product_id, branch_id, quantity, status, expires_at)
         VALUES (?,?,?,?, 'reserved', ?)`,

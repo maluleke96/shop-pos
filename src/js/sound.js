@@ -15,8 +15,10 @@ const SoundService = {
     return ns.sound_enabled !== false;
   },
 
-  async resolveUrl(settings) {
-    const path = settings?.notification_settings?.sound_path;
+  async resolveUrl(settings, panel = 'admin') {
+    const ns = settings?.notification_settings || {};
+    const p = String(panel || 'admin');
+    const path = ns?.panel_sounds?.[p]?.sound_path || ns?.sound_path;
     if (!path) return null;
     try {
       const r = await API.getAudioDataUrl(path);
@@ -107,28 +109,44 @@ const SoundService = {
     } catch { /* no audio */ }
   },
 
+  async startOrderAlert(settings) {
+    if (this.playing || !this.isEnabled(settings)) return;
+    this.playing = true;
+    const url = await this.resolveUrl(settings);
+    if (url) {
+      this.audio = new Audio(url);
+      this.audio.loop = true;
+      try {
+        await this.audio.play();
+      } catch {
+        await this.startSynthLoop();
+      }
+    } else {
+      try {
+        const fallback = `/api/notification-sound?panel=pos&t=${Date.now()}`;
+        this.audio = new Audio(fallback);
+        this.audio.loop = true;
+        await this.audio.play();
+      } catch {
+        await this.startSynthLoop();
+      }
+    }
+  },
+
+  syncOrderAlert(settings, hasPending) {
+    if (!hasPending) {
+      this.stopAlert();
+      return;
+    }
+    const ns = settings?.notification_settings || {};
+    if (ns.sound_enabled === false) return;
+    if (!this.playing) this.startOrderAlert(settings);
+  },
+
   async playOnlineOrderAlert(settings) {
     const ns = settings?.notification_settings || {};
     if (ns.sound_enabled === false) return;
-    try {
-      const ctx = await this.ensureAudioContext();
-      const beep = (freq, delay) => {
-        setTimeout(() => {
-          const osc = ctx.createOscillator();
-          const gain = ctx.createGain();
-          osc.type = 'sine';
-          osc.frequency.value = freq;
-          gain.gain.value = 0.18;
-          osc.connect(gain);
-          gain.connect(ctx.destination);
-          osc.start();
-          setTimeout(() => { try { osc.stop(); } catch { /* ignore */ } }, 320);
-        }, delay);
-      };
-      beep(880, 0);
-      beep(1100, 380);
-      beep(880, 760);
-    } catch { /* no audio */ }
+    await this.playOnce(settings);
   },
 
   async playOnce(settings) {

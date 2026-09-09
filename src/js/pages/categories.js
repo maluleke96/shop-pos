@@ -1,11 +1,6 @@
 const CategoriesPage = {
-  async render(el, app) {
-    this.app = app;
-    const cached = window.DataCache?.peek?.('categories', [{}]);
-    this.categories = Array.isArray(cached) ? cached : (this.categories || []);
-
-    const paint = () => {
-      el.innerHTML = `
+  repaint(el, app) {
+    el.innerHTML = `
       <div class="page-toolbar"><h3>Categories</h3><button class="btn btn-primary" id="add-cat">+ Add Category</button></div>
       <p class="muted" style="margin:0 0 12px">Activate/deactivate <strong>Show on POS</strong> to control which category tabs appear at checkout.</p>
       <div class="card"><div class="table-wrap"><table>
@@ -21,19 +16,25 @@ const CategoriesPage = {
               ${Number(c.show_on_pos) === 0 ? 'Activate on POS' : 'Deactivate on POS'}
             </button>
             <button class="btn btn-sm btn-danger del-cat" data-id="${c.id}">Delete</button>
-          </td></tr>`).join('') || '<tr><td colspan="5" class="muted">Loading categories…</td></tr>'}
+          </td></tr>`).join('') || '<tr><td colspan="5" class="muted">No categories yet</td></tr>'}
         </tbody></table></div></div>`;
-      this.bindEvents(el, app);
-    };
+    this.bindEvents(el, app);
+    Utils.hydrateImages(el);
+  },
 
-    paint();
+  async render(el, app) {
+    this.app = app;
+    const cached = window.DataCache?.peek?.('categories', [{}]);
+    this.categories = Array.isArray(cached?.data) ? cached.data : (this.categories || []);
+
+    this.repaint(el, app);
     const res = await API.getCategories();
     if (res?.success === false) {
       Utils.toast(res.error || 'Failed to load categories', 'error');
       return;
     }
     this.categories = res.data || [];
-    paint();
+    this.repaint(el, app);
   },
 
   bindEvents(el, app) {
@@ -98,7 +99,21 @@ const CategoriesPage = {
       btn.disabled = false;
       if (!r.success) return Utils.toast(r.error, 'error');
       Utils.hideModal();
-      CategoriesPage.render(document.getElementById('page-content'), this.app);
+      const savedId = r.data?.id || cat?.id;
+      const row = {
+        ...(cat || {}),
+        id: savedId,
+        name,
+        color: document.getElementById('cf-color').value,
+        image_path: this.imagePath,
+        show_on_pos: document.getElementById('cf-show-pos')?.checked ? 1 : 0
+      };
+      const idx = this.categories.findIndex((c) => c.id === savedId);
+      if (idx >= 0) this.categories[idx] = { ...this.categories[idx], ...row };
+      else this.categories.push(row);
+      const host = document.getElementById('page-content');
+      if (host) this.repaint(host, this.app);
+      window.DataCache?.invalidate?.('categories', 'products', 'pos');
       Utils.toast('Category saved', 'success');
     });
   }

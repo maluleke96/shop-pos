@@ -319,6 +319,8 @@ function registerIpc() {
 
   // Settings
   ipcMain.handle('settings:getParsed', wrapSync(() => store.getSettingsParsed()));
+  ipcMain.handle('settings:getMenuHighlights', wrapSync(() => store.getMenuHighlightSettings()));
+  ipcMain.handle('settings:saveMenuHighlights', wrapF((data, actor) => store.saveMenuHighlightSettings(data, actor?.id, actor?.username || actor?.full_name)));
   ipcMain.handle('settings:get', wrapSync(() => store.sanitizeSettingsResponse(store.getSettings())));
   ipcMain.handle('settings:detectExistingBusiness', wrapSync(() => store.detectExistingBusiness()));
   ipcMain.handle('settings:adoptExistingBusiness', wrapSync(() => store.adoptExistingBusiness()));
@@ -428,6 +430,10 @@ function registerIpc() {
 
   // Expenses
   ipcMain.handle('expenses:get', wrap((filters) => { requireSession(); return store.getExpenses(filters); }));
+  ipcMain.handle('expenses:dashboardStats', wrap((filters, actor) => {
+    const user = store.getUserSession?.() || actor;
+    return store.getExpenseDashboardStats(user, filters || {});
+  }));
   ipcMain.handle('expenses:save', wrapSync((data, actor) => {
     const user = store.requireActor(actor, ['owner', 'manager', 'supervisor', 'assistant_manager']);
     return store.saveExpense(data, user.id, user.username);
@@ -484,7 +490,7 @@ function registerIpc() {
     const branchId = scope.allBranches ? null : scope.branchId;
     return store.getDashboardStats(from, to, branchId);
   }));
-  ipcMain.handle('inventory:stats', wrapSync(() => store.getInventoryStats()));
+  ipcMain.handle('inventory:stats', wrapSync((branchId) => store.getInventoryStats(branchId)));
   ipcMain.handle('analytics:sales', wrapSync((from, to) => store.getSalesAnalytics(from, to)));
   ipcMain.handle('shifts:open', wrapSync((float, actor) => {
     const user = store.requireActor(actor, ['owner', 'manager', 'cashier', 'supervisor', 'assistant_manager']);
@@ -556,6 +562,20 @@ function registerIpc() {
   ipcMain.handle('notifications:ensureDemoSound', wrap(() => {
     ensureDemoNotificationSound();
     return store.getSettingsParsed()?.notification_settings || {};
+  }));
+  ipcMain.handle('notifications:ackEvent', wrap((_e, panel, eventKey, meta) => {
+    const na = require('./electron/services/notification-acks');
+    const sess = store.getUserSession?.();
+    return na.ackEvent(panel, eventKey, { ...(meta || {}), user_id: meta?.user_id || sess?.id });
+  }));
+  ipcMain.handle('notifications:ackEvents', wrap((_e, panel, keys, meta) => {
+    const na = require('./electron/services/notification-acks');
+    const sess = store.getUserSession?.();
+    return na.ackEvents(panel, keys || [], { ...(meta || {}), user_id: meta?.user_id || sess?.id });
+  }));
+  ipcMain.handle('notifications:listAcked', wrap((_e, panel, limit) => {
+    const na = require('./electron/services/notification-acks');
+    return na.listAckedKeys(panel, limit || 500);
   }));
 
   // Search
@@ -1344,7 +1364,7 @@ function registerIpc() {
     return store.updatePurchaseOrder(id, data, user.id, user.username);
   }));
   // Audit & sales management
-  ipcMain.handle('audit:salesList', wrapF((f) => { requireSession(); return store.getSalesList(f); }));
+  ipcMain.handle('audit:salesList', wrapF((f) => { requireSession(); return store.getUnifiedSalesList(f); }));
   ipcMain.handle('audit:searchSales', wrapF((f) => store.searchSalesExplorer(f)));
   ipcMain.handle('audit:voidSale', wrapF((id, reason, actor, supervisorCode) => {
     const user = store.requireActor(actor, ['owner', 'manager', 'cashier', 'supervisor', 'assistant_manager']);
@@ -1442,6 +1462,10 @@ function registerIpc() {
     const empSess = store.getEmployeeSession();
     const sessEmpId = empSess ? Number(empSess.id || empSess.employee_id) : null;
     if (sessEmpId != null && sessEmpId === Number(data?.employee_id)) {
+      return store.saveStaffSelfie(data);
+    }
+    if (data?.pin && data?.employee_id) {
+      store.verifyEmployeePin(Number(data.employee_id), data.pin);
       return store.saveStaffSelfie(data);
     }
     store.requireActor(actor || store.getUserSession(), ['owner', 'manager']);
@@ -1724,9 +1748,15 @@ function registerIpc() {
   }));
   ipcMain.handle('staff:getPerformance', wrapF((id, from, to) => store.getEmployeePerformance(id, from, to)));
   ipcMain.handle('staff:getNotifications', wrapF(() => store.getStaffNotifications()));
-  ipcMain.handle('staff:payslipPdf', wrapF((id) => {
+  ipcMain.handle('staff:payslipPdf', wrapF((id, auth) => {
+    const pin = auth?.pin != null ? String(auth.pin) : null;
+    if (pin) {
+      const owner = store.getDb().prepare('SELECT employee_id FROM employee_payroll WHERE id = ?').get(id);
+      if (!owner) throw new Error('Payroll record not found');
+      store.verifyEmployeePin(owner.employee_id, pin);
+    }
     const s = store.getSettingsParsed();
-    return store.buildPayslipPdf(id, s?.shop_name, s?.currency || 'R');
+    return store.buildPayslipPdf(id, s?.shop_name, s?.currency || 'R', { skipAuth: !!pin });
   }));
   ipcMain.handle('staff:schedulePdf', wrapF((from, to) => {
     const s = store.getSettingsParsed();
@@ -2261,6 +2291,7 @@ function registerIpc() {
   ipcMain.handle('ops:rejectPromo', wrapF((id, notes, actor) => store.rejectPromoRequest(id, notes, actor)));
   ipcMain.handle('ops:cancelPromo', wrapF((id, actor) => store.cancelPromoRequest(id, actor)));
   ipcMain.handle('ops:deletePromo', wrapF((id, actor) => store.deletePromoRequest(id, actor)));
+  ipcMain.handle('ops:updatePromo', wrapF((id, data, actor) => store.updatePromoRequest(id, data, actor)));
   ipcMain.handle('ops:promoSalesLog', wrapF((filters) => store.getPromoSalesLog(filters)));
   ipcMain.handle('ops:syncPromoStatuses', wrapF(() => { store.syncPromoStatuses(); return true; }));
 
@@ -2832,9 +2863,22 @@ function registerIpc() {
     requireUserSession(['owner', 'manager', 'supervisor']);
     return web.listAdminOrders(filters || {});
   }));
-  ipcMain.handle('web:adminAnalytics', wrap((filters, actor) => {
+  
+ipcMain.handle('web:adminAnalytics', wrap((filters, actor) => {
     requireUserSession(['owner', 'manager']);
     return web.getOnlineAnalytics(filters || {});
+  }));
+  ipcMain.handle('web:rejectedOrdersReport', wrap((filters, actor) => {
+    requireUserSession(['owner', 'manager', 'supervisor']);
+    return web.listRejectedOrdersReport(filters || {});
+  }));
+  ipcMain.handle('auth:recoverDriverPassword', wrap((identifier) => {
+    const recovery = require('./services/panel-password-recovery');
+    return recovery.recoverDriverPassword(identifier);
+  }));
+  ipcMain.handle('auth:recoverMarketingPassword', wrap((identifier) => {
+    const recovery = require('./services/panel-password-recovery');
+    return recovery.recoverMarketingAgentPassword(identifier);
   }));
   ipcMain.handle('web:saveGlobalSettings', wrap((data, actor) => {
     requireUserSession(['owner', 'manager']);

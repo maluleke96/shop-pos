@@ -18,7 +18,20 @@
     /^(print_|printers_|file_|kitchen_open|kitchen_close|kitchen_refresh|customer_open|customer_close|customer_refresh|app_quit|export_|backup_|deviceSettings_)/;
 
   const TOKEN_KEY = 'shoppos_rpc_session';
-  let sessionToken = localStorage.getItem(TOKEN_KEY) || '';
+
+  function isAdminPortal() {
+    try {
+      return (window.__SHOP_POS_APP_MODE__ || document.documentElement.dataset.appMode || '') === 'admin';
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function tokenStorage() {
+    return isAdminPortal() ? sessionStorage : localStorage;
+  }
+
+  let sessionToken = tokenStorage().getItem(TOKEN_KEY) || '';
   let flushing = false;
 
   function env() {
@@ -44,9 +57,20 @@
     return !!(String(e.RPC_URL || e.SHOP_POS_RPC_URL || '').trim());
   }
 
+  function isCloudShellCapacitor() {
+    try {
+      if (!window.Capacitor?.isNativePlatform?.()) return false;
+      if (window.__SHOP_POS_LOCAL_INSTALLER__) return false;
+      return isHostedBrowser();
+    } catch (_) {
+      return false;
+    }
+  }
+
   function useCloud() {
-    // Installers (Windows Electron + Android) always use the local database.
-    // Browser URL on Railway stays cloud-only.
+    // Cloud-shell Android APKs load the live Railway URL — same data/UI as browser.
+    if (isCloudShellCapacitor()) return true;
+    // Legacy local-first bundled installers use on-device SQLite.
     try {
       if (window.__SHOP_POS_MOBILE__ || window.Capacitor?.isNativePlatform?.()) return false;
     } catch (_) { /* ignore */ }
@@ -68,8 +92,13 @@
 
   function saveToken(t) {
     sessionToken = t || '';
-    if (sessionToken) localStorage.setItem(TOKEN_KEY, sessionToken);
-    else localStorage.removeItem(TOKEN_KEY);
+    const store = tokenStorage();
+    if (sessionToken) store.setItem(TOKEN_KEY, sessionToken);
+    else store.removeItem(TOKEN_KEY);
+    // Admin portal: keep auth in this tab only — never reuse POS localStorage session
+    if (isAdminPortal()) {
+      try { localStorage.removeItem(TOKEN_KEY); } catch (_) { /* ignore */ }
+    }
   }
 
   async function sendRpc(method, args, opts) {
