@@ -189,10 +189,26 @@ function installApiReadCache() {
   wrap('getPromoRequestHistory', 'promoHistory', 45000, (a) => [a[0] || {}]);
   wrap('getCombos', 'combosList', 60000, (a) => [a[0] || {}]);
 
-  const invalidateProducts = () => {
-    DataCache.invalidate('products', 'stockReport', 'stockHistory', 'dashboard', 'pos', 'categories');
-    try { window.dispatchEvent(new CustomEvent('shop-pos-stock-updated')); } catch (_) { /* */ }
+  /** Invalidate menu/catalog caches and notify POS, Recipe, and embedded admin views instantly. */
+  const notifyCatalogChanged = () => {
+    DataCache.invalidate(
+      'products', 'stockReport', 'stockHistory', 'dashboard', 'pos', 'categories',
+      'promoHistory', 'combos', 'combosList'
+    );
+    try {
+      Utils.sessionCacheClear?.('products_page');
+      Utils.sessionCacheClear?.('pos_');
+    } catch (_) { /* ignore */ }
+    try {
+      window.dispatchEvent(new CustomEvent('shop-pos-catalog-updated'));
+      window.dispatchEvent(new CustomEvent('shop-pos-stock-updated'));
+      window.dispatchEvent(new CustomEvent('shop-pos-combos-updated'));
+    } catch (_) { /* ignore */ }
   };
+
+  DataCache.notifyCatalogChanged = notifyCatalogChanged;
+
+  const invalidateProducts = () => notifyCatalogChanged();
   const invalidateSales = () => {
     DataCache.invalidate('dashboard', 'salesReport', 'stockReport', 'products', 'kitchen');
     try { window.dispatchEvent(new CustomEvent('shop-pos-sales-updated')); } catch (_) { /* */ }
@@ -261,10 +277,22 @@ function installApiReadCache() {
     if (res?.success !== false) invalidateProducts();
   });
   after('saveCategory', (res) => {
-    if (res?.success !== false) DataCache.invalidate('categories', 'products');
+    if (res?.success !== false) notifyCatalogChanged();
   });
   after('deleteCategory', (res) => {
-    if (res?.success !== false) DataCache.invalidate('categories', 'products');
+    if (res?.success !== false) notifyCatalogChanged();
+  });
+  after('saveMenuHighlightSettings', (res) => {
+    if (res?.success !== false) notifyCatalogChanged();
+  });
+  after('recipeSetPosMenuFlags', (res) => {
+    if (res?.success !== false) notifyCatalogChanged();
+  });
+  after('applyFlyerPosPrices', (res) => {
+    if (res?.success !== false) notifyCatalogChanged();
+  });
+  after('rejectPromoRequest', (res) => {
+    if (res?.success !== false) notifyCatalogChanged();
   });
   after('saveCustomer', (res) => {
     if (res?.success !== false) DataCache.invalidate('customers');
@@ -278,8 +306,12 @@ function installApiReadCache() {
   after('saveSettings', (res) => {
     if (res?.success !== false) DataCache.invalidate('settings');
   });
-  after('saveJsonSetting', (res) => {
-    if (res?.success !== false) DataCache.invalidate('settings');
+  after('saveJsonSetting', (res, args) => {
+    if (res?.success !== false) {
+      DataCache.invalidate('settings');
+      const key = args?.[0];
+      if (key === 'customization') notifyCatalogChanged();
+    }
   });
   after('markNotificationRead', (res) => {
     if (res?.success !== false) DataCache.invalidate('notifications');
@@ -288,10 +320,7 @@ function installApiReadCache() {
     if (res?.success !== false) DataCache.invalidate('notifications');
   });
 
-  const invalidateCombos = () => {
-    DataCache.invalidate('combos');
-    try { window.dispatchEvent(new CustomEvent('shop-pos-combos-updated')); } catch (_) { /* */ }
-  };
+  const invalidateCombos = () => notifyCatalogChanged();
   after('saveCombo', (res) => { if (res?.success !== false) invalidateCombos(); });
   after('deleteCombo', (res) => { if (res?.success !== false) invalidateCombos(); });
   after('setComboStatus', (res) => { if (res?.success !== false) invalidateCombos(); });

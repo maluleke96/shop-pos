@@ -278,8 +278,12 @@ const POSPage = {
     this.bindEvents(el);
     this.bindMoreMenu(el);
     this.startAdvertReminderMonitor();
-    this._stockRefreshHandler = () => this.reloadCatalog?.();
-    window.addEventListener('shop-pos-stock-updated', this._stockRefreshHandler);
+    this._catalogRefreshHandler = () => {
+      clearTimeout(this._catalogRefreshDebounce);
+      this._catalogRefreshDebounce = setTimeout(() => this.reloadCatalog?.(), 250);
+    };
+    window.addEventListener('shop-pos-stock-updated', this._catalogRefreshHandler);
+    window.addEventListener('shop-pos-catalog-updated', this._catalogRefreshHandler);
     this._comboRefreshHandler = () => this.reloadCombosOnly?.();
     window.addEventListener('shop-pos-combos-updated', this._comboRefreshHandler);
     this._bindComboLiveRefresh();
@@ -1485,15 +1489,18 @@ const POSPage = {
     if (!this.app?.user) return;
     try {
       const filters = { for_pos: true, actor: this.app.user };
-      window.DataCache?.invalidate?.('combos');
-      const [prodRes, comboRes] = await Promise.all([
-        API.getProducts._uncached ? API.getProducts._uncached(filters) : API.getProducts(filters),
+      const uncached = (fn, ...args) => (fn?._uncached ? fn._uncached(...args) : fn(...args));
+      const [catRes, prodRes, comboRes] = await Promise.all([
+        uncached(API.getCategories, { for_pos: true }),
+        uncached(API.getProducts, filters),
         this.fetchPosCombos(true)
       ]);
+      this.categories = catRes?.data || catRes || this.categories || [];
       this.products = this._unwrapRpcList(prodRes);
       this.setPosCombos(comboRes);
       this._invalidateProductGridCache();
       this.rebuildProductLookups();
+      this.ensureDefaultCategory();
       this.renderCategoryTabs(this.selectedCategory || '');
       this.renderProducts(document.getElementById('pos-search')?.value || '');
     } catch (_) { /* ignore */ }

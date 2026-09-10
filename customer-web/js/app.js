@@ -502,10 +502,28 @@ const OrderApp = {
         }
       }
       await this.render();
-      if (this.branch) this.loadMenu();
+      if (this.branch) {
+        this.loadMenu();
+        this.startMenuLiveSync();
+      }
     } catch (err) {
       document.getElementById('app').innerHTML = `<div class="empty-state"><h2>Unable to connect</h2><p>${this.esc(err.message)}</p><button type="button" class="btn-primary" onclick="location.reload()">Retry</button></div>`;
     }
+  },
+
+  startMenuLiveSync() {
+    if (this._menuLiveSyncStarted) return;
+    this._menuLiveSyncStarted = true;
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState !== 'visible' || !this.branch) return;
+      if (!['home', 'menu', 'product'].includes(this.view)) return;
+      this.loadMenu({ force: true, preserveScroll: true });
+    });
+    this._menuLiveTimer = setInterval(() => {
+      if (!this.branch) return;
+      if (!['home', 'menu', 'product'].includes(this.view)) return;
+      this.loadMenu({ force: true, preserveScroll: true });
+    }, 20000);
   },
 
   async loadMenu(opts = {}) {

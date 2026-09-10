@@ -113,7 +113,6 @@ const CategoriesPage = {
       else this.categories.push(row);
       const host = document.getElementById('page-content');
       if (host) this.repaint(host, this.app);
-      window.DataCache?.invalidate?.('categories', 'products', 'pos');
       Utils.toast('Category saved', 'success');
     });
   }

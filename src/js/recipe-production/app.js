@@ -426,7 +426,42 @@ const RecipeProductionApp = {
       this.user = null;
       this.render();
     };
+    this._bindCatalogLiveSync();
     this.renderPage();
+  },
+
+  _bindCatalogLiveSync() {
+    if (this._catalogSyncBound) return;
+    this._catalogSyncBound = true;
+    let timer = null;
+    const refresh = () => {
+      clearTimeout(timer);
+      timer = setTimeout(async () => {
+        if (!this.isOpen() || !this.user) return;
+        if (this._editingMealProductId || this._editingRecipe) return;
+        const modal = document.getElementById('modal-overlay');
+        if (modal && !modal.classList.contains('hidden')) return;
+        this._mealProductsCache = null;
+        this._ingredients = [];
+        const appCtx = this.hostApp || window.App;
+        if (this.page === 'products') {
+          const host = document.getElementById('rp-products-host');
+          if (host && window.ProductsPage?.render) {
+            await ProductsPage.render(host, appCtx);
+            return;
+          }
+        }
+        if (this.page === 'categories') {
+          const host = document.getElementById('rp-categories-host');
+          if (host && window.CategoriesPage?.render) {
+            await CategoriesPage.render(host, appCtx);
+            return;
+          }
+        }
+        try { await this.renderPage(); } catch (_) { /* ignore */ }
+      }, 350);
+    };
+    window.addEventListener('shop-pos-catalog-updated', refresh);
   },
 
   async renderPage() {
