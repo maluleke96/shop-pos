@@ -97,7 +97,19 @@ const POSPage = {
     return this._productsForCategory(catKey).length > 0;
   },
 
+  /** First real menu category (not All / highlights) — POS opens here by default. */
+  firstCategoryKey() {
+    for (const c of this.categories || []) {
+      if (this._categoryHasProducts(String(c.id))) return String(c.id);
+    }
+    const first = (this.categories || [])[0];
+    return first?.id != null ? String(first.id) : null;
+  },
+
   defaultCategoryKey() {
+    const first = this.firstCategoryKey();
+    if (first) return first;
+    if ((this.combos || []).length) return 'combos';
     const cfg = this._menuHighlightSettings();
     const counts = this.getMenuTabCounts();
     const highlightOrder = [
@@ -110,9 +122,6 @@ const POSPage = {
       if (cfg.tabs?.[settingKey]?.pos === false) continue;
       if ((counts[catKey] || 0) > 0) return catKey;
     }
-    for (const c of this.categories || []) {
-      if (this._categoryHasProducts(String(c.id))) return String(c.id);
-    }
     return '__all';
   },
 
@@ -123,11 +132,11 @@ const POSPage = {
 
   ensureDefaultCategory() {
     const cur = this.selectedCategory;
-    if (cur == null || cur === '') {
+    if (cur == null || cur === '' || cur === '__all') {
       this.selectedCategory = this.defaultCategoryKey();
       return;
     }
-    if (cur === '__all' || cur === 'combos') return;
+    if (cur === 'combos') return;
     if (this._isHighlightCategory(cur)) {
       if (this._highlightTabEnabled(cur) && this._categoryHasProducts(cur)) return;
       this.selectedCategory = this.defaultCategoryKey();
@@ -1515,8 +1524,8 @@ const POSPage = {
       stockBadge = `<span class="product-card-badge ${left > 0 ? '' : 'out-stock'}">${left > 0 ? `${left} available` : 'Out of stock'}</span>`;
     }
     let media;
-    if (c.image_path || Utils.comboImageUrl(c)) {
-      media = `<img ${Utils.comboImageAttr(c)} alt="">`;
+    if (c.image_path || c.picture_path || Utils.comboImageUrl(c)) {
+      media = `<img ${Utils.comboImageAttr(c)} data-image-path="${Utils.escHtml(c.image_path || c.picture_path || '')}" alt="">`;
     } else if (thumbs.length) {
       const cols = Math.min(thumbs.length, 3);
       media = `<div class="combo-item-thumbs" style="display:grid;grid-template-columns:repeat(${cols},1fr);gap:2px;width:100%;height:100%">

@@ -111,7 +111,8 @@ function getActivePromosMap() {
   const todayStr = today();
   const rows = getDb().prepare(`
     SELECT * FROM product_promo_requests
-    WHERE status = 'active' AND date(?) BETWEEN date(start_date) AND date(end_date)
+    WHERE status IN ('active', 'approved')
+      AND date(?) BETWEEN date(start_date) AND date(end_date)
   `).all(todayStr);
   const map = {};
   for (const row of rows) map[row.product_id] = row;

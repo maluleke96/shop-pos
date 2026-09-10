@@ -78,6 +78,69 @@ const PromoPoster = {
     return `${currency}${(Number(amount) || 0).toFixed(2)}`;
   },
 
+  orderUrl(data) {
+    return String(data?.orderUrl || Utils.getOnlineOrderUrl?.() || '').trim();
+  },
+
+  paintOrderFooter(ctx, data, yStart) {
+    const orderUrl = this.orderUrl(data);
+    const t = this.theme;
+    ctx.textAlign = 'center';
+    ctx.fillStyle = t.card;
+    this.roundRect(ctx, 64, yStart, this.W - 128, orderUrl ? 220 : 160, 20);
+    ctx.fill();
+    ctx.fillStyle = t.text;
+    ctx.font = '32px system-ui,Segoe UI,sans-serif';
+    ctx.fillText('Order in-store or online today', this.W / 2, yStart + 48);
+    if (orderUrl) {
+      ctx.fillStyle = t.gold;
+      ctx.font = 'bold 26px system-ui,Segoe UI,sans-serif';
+      const short = orderUrl.length > 52 ? `${orderUrl.slice(0, 49)}…` : orderUrl;
+      ctx.fillText(short, this.W / 2, yStart + 98);
+    }
+    ctx.fillStyle = t.saleRed;
+    ctx.font = 'bold 34px system-ui,Segoe UI,sans-serif';
+    ctx.fillText(data.footerTag || 'Limited time offer', this.W / 2, yStart + (orderUrl ? 158 : 118));
+    return yStart + (orderUrl ? 220 : 160);
+  },
+
+  buildPromoShareMessage(data) {
+    const shop = data.shopName || 'Our Shop';
+    const orderUrl = this.orderUrl(data);
+    const lines = [
+      `🔥 *SALE — ${shop}*`,
+      '',
+      `*${data.title || 'Special Offer'}*`,
+      `Was ${this.formatMoney(data.wasPrice, data.currency)} → Now *${this.formatMoney(data.nowPrice, data.currency)}*`
+    ];
+    if (data.dateRange) lines.push(`Valid: ${data.dateRange}`);
+    if (data.branchLabel) lines.push(`📍 ${data.branchLabel}`);
+    lines.push('', 'Visit us in-store or order online — quick, easy, and fresh.');
+    if (orderUrl) lines.push('', `Order online: ${orderUrl}`);
+    lines.push('', 'Thank you for choosing us!');
+    return lines.join('\n');
+  },
+
+  buildComboShareMessage(data) {
+    const shop = data.shopName || 'Our Shop';
+    const orderUrl = this.orderUrl(data);
+    const items = (data.items || []).map((i) => `${i.name}${i.qty > 1 ? ` ×${i.qty}` : ''}`).join(', ');
+    const lines = [
+      `🎁 *COMBO DEAL — ${shop}*`,
+      '',
+      `*${data.title || 'Combo'}*`,
+      `Was ${this.formatMoney(data.wasPrice, data.currency)} → Now *${this.formatMoney(data.nowPrice, data.currency)}*`
+    ];
+    if (data.dateRange) lines.push(`Available: ${data.dateRange}`);
+    if (data.branchLabel) lines.push(`📍 ${data.branchLabel}`);
+    if (items) lines.push('', `Includes: ${items}`);
+    if (data.description) lines.push('', String(data.description).slice(0, 200));
+    lines.push('', 'Perfect for sharing — order in-store or online.');
+    if (orderUrl) lines.push('', `Order online: ${orderUrl}`);
+    lines.push('', 'See you soon!');
+    return lines.join('\n');
+  },
+
   wrapText(ctx, text, x, y, maxWidth, lineHeight, maxLines) {
     const words = String(text).split(/\s+/);
     let line = '';
@@ -213,15 +276,7 @@ const PromoPoster = {
       ctx.font = '32px system-ui,Segoe UI,sans-serif';
       ctx.fillText(data.dateRange, this.W / 2, y + 20);
     }
-    ctx.fillStyle = this.theme.card;
-    this.roundRect(ctx, 64, this.H - 280, this.W - 128, 200, 20);
-    ctx.fill();
-    ctx.fillStyle = this.theme.text;
-    ctx.font = '32px system-ui,Segoe UI,sans-serif';
-    ctx.fillText('Order in-store or online today', this.W / 2, this.H - 210);
-    ctx.fillStyle = this.theme.saleRed;
-    ctx.font = 'bold 34px system-ui,Segoe UI,sans-serif';
-    ctx.fillText('Limited time offer', this.W / 2, this.H - 155);
+    this.paintOrderFooter(ctx, data, this.H - 280);
     return canvas;
   },
 
@@ -308,13 +363,7 @@ const PromoPoster = {
       ctx.font = '28px system-ui,Segoe UI,sans-serif';
       ctx.fillText(`Available: ${data.dateRange}`, this.W / 2, this.H - 180);
     }
-    ctx.fillStyle = this.theme.saleRed;
-    ctx.font = 'bold 32px system-ui,Segoe UI,sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText('Order in-store or online today', this.W / 2, this.H - 88);
-    ctx.fillStyle = this.theme.gold;
-    ctx.font = 'bold 28px system-ui,Segoe UI,sans-serif';
-    ctx.fillText('Limited time combo offer', this.W / 2, this.H - 48);
+    this.paintOrderFooter(ctx, { ...data, footerTag: 'Limited time combo offer' }, this.H - 280);
     return canvas;
   },
 
@@ -327,32 +376,39 @@ const PromoPoster = {
 
   showPreviewModal(canvas, opts = {}) {
     const dataUrl = canvas.toDataURL('image/png');
-    const msg = opts.whatsappMessage || '';
+    const shareMsg = opts.shareMessage || opts.whatsappMessage || '';
     const groupLink = opts.groupLink || '';
+    const orderUrl = opts.orderUrl || Utils.getOnlineOrderUrl?.() || '';
     Utils.showModal(opts.title || 'Promo Poster', `
+      <p class="muted" style="margin:0 0 10px;font-size:13px">Flyer preview — save the picture, then copy the message below to share.</p>
       <div class="promo-poster-preview-wrap">
-        <img class="promo-poster-preview" src="${dataUrl}" alt="Poster preview">
+        <img class="promo-poster-preview" src="${dataUrl}" alt="Flyer preview">
       </div>
+      ${shareMsg ? `<label class="muted" style="display:block;margin-top:14px;font-size:13px">Share message (copy & paste)</label>
+      <textarea id="pp-share-msg" readonly rows="7" style="width:100%;margin-top:6px;font-size:13px;line-height:1.45">${Utils.escHtml(shareMsg)}</textarea>
+      ${orderUrl ? `<p class="muted" style="margin:8px 0 0;font-size:12px">Online order: <a href="${Utils.escHtml(orderUrl)}" target="_blank" rel="noopener">${Utils.escHtml(orderUrl)}</a></p>` : ''}` : ''}
       <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn btn-primary" id="pp-save">Save picture</button>
+        ${shareMsg ? '<button class="btn btn-primary" id="pp-copy">Copy message</button>' : ''}
         <button class="btn btn-success" id="pp-wa" ${groupLink ? '' : 'disabled'}>Send to WhatsApp Group</button>
-        ${msg ? '<button class="btn btn-ghost" id="pp-copy">Copy message</button>' : ''}
       </div>`,
       '<button class="btn btn-ghost" id="pp-close">Close</button>');
     document.getElementById('pp-close')?.addEventListener('click', () => Utils.hideModal());
     document.getElementById('pp-save')?.addEventListener('click', () => {
       this.downloadCanvas(canvas, opts.filename || 'promo-poster.png');
-      Utils.toast('Poster saved — ready for WhatsApp Status', 'success');
+      Utils.toast('Flyer saved — attach it when you share', 'success');
     });
     document.getElementById('pp-copy')?.addEventListener('click', async () => {
-      try { await navigator.clipboard.writeText(msg); Utils.toast('Message copied', 'success'); } catch (_) { Utils.toast('Copy failed', 'error'); }
+      const text = document.getElementById('pp-share-msg')?.value || shareMsg;
+      try { await navigator.clipboard.writeText(text); Utils.toast('Message copied', 'success'); } catch (_) { Utils.toast('Copy failed', 'error'); }
     });
     document.getElementById('pp-wa')?.addEventListener('click', async () => {
       if (!groupLink) return Utils.toast('Connect WhatsApp group first', 'error');
       this.downloadCanvas(canvas, opts.filename || 'promo-poster.png');
-      if (msg) { try { await navigator.clipboard.writeText(msg); } catch (_) { /* */ } }
+      const text = document.getElementById('pp-share-msg')?.value || shareMsg;
+      if (text) { try { await navigator.clipboard.writeText(text); } catch (_) { /* */ } }
       window.open(groupLink, '_blank', 'noopener');
-      Utils.toast('Group opened — attach the saved poster and paste the message', 'success');
+      Utils.toast('Group opened — attach the saved flyer and paste the message', 'success');
     });
   }
 };

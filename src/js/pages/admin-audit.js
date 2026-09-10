@@ -1037,29 +1037,33 @@
 
     const showPromoFlyer = async (pr) => {
       const imgUrl = pr.product_id ? `/api/product-image/${pr.product_id}` : '';
-      const msg = `🔥 *SALE — ${shopName}*\n\n*${pr.product_name || 'Product'}*\nWas ${Number(pr.original_price || 0).toFixed(2)} → Now *${Number(pr.proposed_price || 0).toFixed(2)}*\nValid: ${pr.start_date} to ${pr.end_date}\n\nOrder in-store or online today!`;
+      const orderUrl = Utils.getOnlineOrderUrl?.() || '';
+      const posterData = {
+        title: pr.product_name || 'Product',
+        wasPrice: pr.original_price,
+        nowPrice: pr.proposed_price,
+        dateRange: `${pr.start_date} — ${pr.end_date}`,
+        shopName,
+        shopAddress,
+        shopPhone,
+        branchLabel: pr.branch_name || 'All branches',
+        imageUrl: imgUrl,
+        currency,
+        orderUrl
+      };
+      const shareMessage = PromoPoster.buildPromoShareMessage(posterData);
       if (!window.PromoPoster) return Utils.toast('Poster tool loading — try again', 'error');
-      Utils.showModal('Building promo poster…', '<p class="muted">Preparing WhatsApp Status poster…</p>', '');
+      Utils.showModal('Building promo flyer…', '<p class="muted">Preparing promo flyer…</p>', '');
       try {
-        const canvas = await PromoPoster.renderPromo({
-          title: pr.product_name || 'Product',
-          wasPrice: pr.original_price,
-          nowPrice: pr.proposed_price,
-          dateRange: `${pr.start_date} — ${pr.end_date}`,
-          shopName,
-          shopAddress,
-          shopPhone,
-          branchLabel: pr.branch_name || 'All branches',
-          imageUrl: imgUrl,
-          currency,
-          tagline: 'Order in-store or online'
-        });
+        const canvas = await PromoPoster.renderPromo(posterData);
         Utils.hideModal();
         PromoPoster.showPreviewModal(canvas, {
           title: `Promo — ${pr.product_name || 'Product'}`,
           filename: `promo-${pr.product_id || pr.id}.png`,
           groupLink,
-          whatsappMessage: msg
+          orderUrl,
+          shareMessage,
+          whatsappMessage: shareMessage
         });
       } catch (err) {
         Utils.hideModal();

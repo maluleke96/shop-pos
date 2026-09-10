@@ -186,6 +186,8 @@ function installApiReadCache() {
   wrap('getAdminDashboard', 'adminDashboard', 45000, (a) => [a[0], a[1]]);
   wrap('getSalesList', 'salesList', 30000, (a) => [a[0] || {}]);
   wrap('getSoldProductsReport', 'soldProductsReport', 60000, (a) => [a[0], a[1]]);
+  wrap('getPromoRequestHistory', 'promoHistory', 45000, (a) => [a[0] || {}]);
+  wrap('getCombos', 'combosList', 60000, (a) => [a[0] || {}]);
 
   const invalidateProducts = () => {
     DataCache.invalidate('products', 'stockReport', 'stockHistory', 'dashboard', 'pos', 'categories');
@@ -238,6 +240,18 @@ function installApiReadCache() {
     if (res?.success !== false) invalidateProducts();
   });
   after('recipeRestockIngredient', (res) => {
+    if (res?.success !== false) invalidateProducts();
+  });
+  after('proposeProductPromo', (res) => {
+    if (res?.success !== false && !res?.needs_confirm) invalidateProducts();
+  });
+  after('approvePromoRequest', (res) => {
+    if (res?.success !== false) invalidateProducts();
+  });
+  after('updatePromoRequest', (res) => {
+    if (res?.success !== false) invalidateProducts();
+  });
+  after('deletePromoRequest', (res) => {
     if (res?.success !== false) invalidateProducts();
   });
   after('adjustStock', (res) => {

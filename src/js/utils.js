@@ -623,6 +623,19 @@ const Utils = {
     return '';
   },
 
+  getOnlineOrderUrl() {
+    if (window.App?.getCloudBaseUrl) {
+      return `${window.App.getCloudBaseUrl().replace(/\/$/, '')}/order/`;
+    }
+    const raw = (window.__SHOP_POS_ENV__?.RPC_URL || window.__SHOP_POS_ENV__?.SHOP_POS_RPC_URL || '')
+      .replace(/\/rpc\/?$/i, '').replace(/\/$/, '');
+    if (raw) return `${raw}/order/`;
+    if (typeof location !== 'undefined' && location.origin && !location.origin.startsWith('file:')) {
+      return `${location.origin.replace(/\/$/, '')}/order/`;
+    }
+    return 'https://chisafood.up.railway.app/order/';
+  },
+
   comboImageUrl(combo) {
     if (!combo?.id) return '';
     const path = String(combo.image_path || combo.picture_path || '');
@@ -696,10 +709,19 @@ const Utils = {
 
   async hydrateImages(root) {
     const scope = root && root.querySelectorAll ? root : document;
-    const imgs = [...scope.querySelectorAll('img[data-image-path], img[data-product-id]')];
+    const imgs = [...scope.querySelectorAll('img[data-image-path], img[data-product-id], img[data-combo-id]')];
     const pending = [];
     for (const img of imgs) {
       if (img.dataset.imageLoaded === '1') continue;
+      const comboId = img.dataset.comboId;
+      if (comboId) {
+        const cloud = Utils.comboImageUrl({ id: comboId, image_path: img.dataset.imagePath || '' });
+        if (cloud) {
+          img.src = cloud;
+          img.dataset.imageLoaded = '1';
+          continue;
+        }
+      }
       const productId = img.dataset.productId;
       if (productId) {
         const cloud = Utils.productImageUrl({ id: productId, picture_path: img.dataset.imagePath || '' });

@@ -2074,8 +2074,15 @@ const App = {
       if (page === 'stock') {
         tasks.push(() => API.getStockReport());
       }
-      // Run at most 3 prefetches, staggered
-      tasks.slice(0, 3).forEach((fn, i) => {
+      if (page === 'admin') {
+        tasks.push(() => API.getProducts({ admin_list: true }));
+        tasks.push(() => API.getAdminDashboard(from, to));
+        tasks.push(() => API.getCategories({}));
+        tasks.push(() => API.getActiveCombos({ for_pos: true }));
+        this.ensurePageScripts('admin').catch(() => {});
+      }
+      const maxTasks = page === 'admin' ? 5 : 3;
+      tasks.slice(0, maxTasks).forEach((fn, i) => {
         setTimeout(() => {
           try { fn()?.catch?.(() => {}); } catch { /* ignore */ }
         }, i * 120);

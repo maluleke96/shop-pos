@@ -254,31 +254,36 @@
         ? `${combo.valid_time_start} – ${combo.valid_time_end}`
         : '';
       const availability = [dateRange, timeRange].filter(Boolean).join(' · ');
-      const msg = `🎁 *COMBO — ${shopName}*\n\n*${combo.name}*\nWas ${Number(combo.normal_price || 0).toFixed(2)} → Now *${Number(combo.final_price || 0).toFixed(2)}*\n${branchLabel}${availability ? `\n${availability}` : ''}\n\nIncludes: ${items.map((i) => i.product_name || i.custom_name).join(', ')}`;
-      Utils.showModal('Building combo poster…', '<p class="muted">Preparing WhatsApp Status poster…</p>', '');
+      const orderUrl = Utils.getOnlineOrderUrl?.() || '';
+      const posterData = {
+        title: combo.name,
+        wasPrice: combo.normal_price,
+        nowPrice: combo.final_price,
+        dateRange: availability || dateRange,
+        shopName,
+        shopAddress: this.admin.settings?.address || '',
+        shopPhone: this.admin.settings?.phone || '',
+        branchLabel,
+        imageUrl: heroUrl || posterSlots.find(Boolean) || '',
+        itemImages: posterSlots,
+        itemCount,
+        items: items.map((i) => ({ name: i.product_name || i.custom_name, qty: i.quantity })),
+        description: combo.description || '',
+        currency,
+        orderUrl
+      };
+      const shareMessage = PromoPoster.buildComboShareMessage(posterData);
+      Utils.showModal('Building combo flyer…', '<p class="muted">Preparing combo flyer…</p>', '');
       try {
-        const canvas = await PromoPoster.renderCombo({
-          title: combo.name,
-          wasPrice: combo.normal_price,
-          nowPrice: combo.final_price,
-          dateRange: availability || dateRange,
-          shopName,
-          shopAddress: this.admin.settings?.address || '',
-          shopPhone: this.admin.settings?.phone || '',
-          branchLabel,
-          imageUrl: heroUrl || posterSlots.find(Boolean) || '',
-          itemImages: posterSlots,
-          itemCount,
-          items: items.map((i) => ({ name: i.product_name || i.custom_name, qty: i.quantity })),
-          description: combo.description || '',
-          currency
-        });
+        const canvas = await PromoPoster.renderCombo(posterData);
         Utils.hideModal();
         PromoPoster.showPreviewModal(canvas, {
           title: `Combo — ${combo.name}`,
           filename: `combo-${combo.combo_code || combo.id}.png`,
           groupLink,
-          whatsappMessage: msg
+          orderUrl,
+          shareMessage,
+          whatsappMessage: shareMessage
         });
       } catch (err) {
         Utils.hideModal();

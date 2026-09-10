@@ -131,11 +131,14 @@ const AdminPage = {
     const today = Utils.today();
     const actor = this.app?.user;
     const warm = [
-      API.getProducts?.({ for_pos: true, actor }).catch(() => {}),
-      API.getCategories?.({ for_pos: true, actor }).catch(() => {}),
+      API.getProducts?.({ admin_list: true, actor }).catch(() => {}),
+      API.getCategories?.({}).catch(() => {}),
+      API.getSuppliers?.('').catch(() => {}),
       API.getAdminDashboard?.(today, today).catch(() => {}),
       API.getSalesList?.({ from: today, to: today, limit: 500 }).catch(() => {}),
-      API.getPromoRequestHistory?.({ status: 'active' }).catch(() => {})
+      API.getPromoRequestHistory?.({ status: 'active' }).catch(() => {}),
+      API.getActiveCombos?.({ for_pos: true }).catch(() => {}),
+      API.getCombos?.({ list_only: true }).catch(() => {})
     ];
     Promise.all(warm).catch(() => {});
     API.getSettingsParsed().then((res) => {
