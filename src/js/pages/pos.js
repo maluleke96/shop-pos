@@ -142,6 +142,20 @@ const POSPage = {
     document.querySelectorAll('#pos-categories .cat-tab').forEach((t) => {
       t.classList.toggle('active', String(t.dataset.cat) === key);
     });
+    const active = document.querySelector('#pos-categories .cat-tab.active');
+    active?.scrollIntoView({ inline: 'nearest', block: 'nearest', behavior: 'smooth' });
+  },
+
+  bindCategoryTabsScroll() {
+    const el = document.getElementById('pos-categories');
+    if (!el || el.dataset.scrollBound === '1') return;
+    el.dataset.scrollBound = '1';
+    el.addEventListener('wheel', (e) => {
+      if (el.scrollWidth <= el.clientWidth + 1) return;
+      if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
+      e.preventDefault();
+      el.scrollLeft += e.deltaY;
+    }, { passive: false });
   },
 
   _invalidateProductGridCache() {
@@ -163,6 +177,7 @@ const POSPage = {
       ${this.combos?.length ? `<button class="cat-tab cat-tab-sale ${cat === 'combos' ? 'active' : ''}" data-cat="combos" style="border-color:#ef4444">COMBOS<span class="menu-tab-count sale">${this.combos.length}</span></button>` : ''}
       ${(this.categories || []).map((c) => `<button class="cat-tab ${String(cat) === String(c.id) ? 'active' : ''}" data-cat="${c.id}" style="border-color:${c.color}">
         ${c.image_path ? `<img ${Utils.categoryImageAttr(c)} class="cat-tab-img" alt="">` : ''}${c.name}</button>`).join('')}`;
+    this.bindCategoryTabsScroll();
   },
   products: [],
   combos: [],

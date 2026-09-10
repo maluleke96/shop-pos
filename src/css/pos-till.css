@@ -263,14 +263,26 @@ html.pos-kiosk .pos-till .pos-layout {
 
 /* ── Categories & products ── */
 .pos-till .category-tabs {
+  display: flex;
   padding: 12px 14px 10px; margin: 0; gap: 10px;
   background: transparent; border-bottom: 1px solid var(--border);
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   overflow-x: auto;
-  overflow-y: visible;
+  overflow-y: hidden;
+  min-width: 0;
+  width: 100%;
   -webkit-overflow-scrolling: touch;
+  scroll-snap-type: x proximity;
+  overscroll-behavior-x: contain;
   scrollbar-width: thin;
+  touch-action: pan-x;
 }
+.pos-till .category-tabs::-webkit-scrollbar { height: 6px; }
+.pos-till .category-tabs::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 999px;
+}
+.pos-till .category-tabs .cat-tab { scroll-snap-align: start; }
 .pos-till .cat-tab {
   padding: 11px 22px; border-radius: 999px; font-size: 14px; font-weight: 700;
   border: 1.5px solid var(--border); background: var(--pos-surface);
@@ -886,10 +898,12 @@ body.pos-till-active #pos-success-screen:not(.hidden) {
   }
   .pos-till .cart-actions { grid-template-columns: repeat(4, 1fr); }
   .pos-till .category-tabs {
-    flex-wrap: wrap;
-    overflow-x: visible;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
     padding: 10px 12px;
     min-height: 64px;
+    -webkit-overflow-scrolling: touch;
   }
 }
 
@@ -946,7 +960,13 @@ body.pos-till-active #pos-success-screen:not(.hidden) {
   .pos-action-chip { min-width: 60px; padding: 8px 8px 6px; }
   .pos-action-chip-icon { width: 32px; height: 32px; }
   .pos-action-chip-label { font-size: 10px; }
-  .pos-till .category-tabs { flex-wrap: wrap; overflow-x: visible; min-height: 48px; }
+  .pos-till .category-tabs {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
+    min-height: 48px;
+    -webkit-overflow-scrolling: touch;
+  }
 }
 
 @media (min-width: 901px) and (max-width: 1200px) {

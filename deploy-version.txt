@@ -1,1 +1,1 @@
-deploy-20260910-loyalty-points-expiry-reminders-v2.10.35
+deploy-20260910-pos-category-tabs-scroll-v2.10.36
