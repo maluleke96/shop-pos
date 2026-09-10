@@ -341,7 +341,7 @@ function ensureDefaultBranch() {
   }
 }
 
-/** Resolve till branch for sales/shifts — honors client till_branch_id only when actor is allowed. */
+/** Resolve till branch for sales/shifts — branch-bound staff cannot override via client till_branch_id. */
 function resolveTillBranchId(actor = null, opts = {}) {
   ensureBranchSchema();
   const explicitRaw = opts.tillBranchId ?? opts.till_branch_id ?? opts.branch_id;
@@ -359,28 +359,30 @@ function resolveTillBranchId(actor = null, opts = {}) {
   }
   const role = user?.role || actor?.role || null;
 
-  if (explicitId && getBranch(explicitId)) {
-    if (role === 'owner') return explicitId;
-    if (role === 'manager' && (user?.branch_id == null || user?.branch_id === '' || Number(user.branch_id) === explicitId)) {
-      return explicitId;
-    }
-    if (user?.branch_id != null && user?.branch_id !== '' && Number(user.branch_id) === explicitId) {
-      return explicitId;
-    }
-    const scope = resolveBranchScope(user || actor, { forceTill: true });
-    if (Number(scope.tillId) === explicitId || Number(scope.stampId) === explicitId) {
-      return explicitId;
-    }
-    const branchName = getBranch(explicitId)?.name || `branch ${explicitId}`;
-    const userBranch = user?.branch_id != null ? getBranch(user.branch_id)?.name : null;
-    throw new Error(
-      userBranch
-        ? `Not authorized to sell on "${branchName}". Your account belongs to "${userBranch}".`
-        : `Not authorized to sell on "${branchName}".`
-    );
+  if (role === 'owner') {
+    if (explicitId && getBranch(explicitId)) return explicitId;
+    return resolveBranchScope(user || actor, { forceTill: true }).stampId;
   }
 
-  return resolveBranchScope(user || actor, { forceTill: true }).stampId;
+  if (user?.branch_id != null && user.branch_id !== '') {
+    const bound = Number(user.branch_id);
+    if (!getBranch(bound)) throw new Error('Your branch is no longer configured. Contact admin.');
+    if (explicitId && explicitId !== bound) {
+      const want = getBranch(explicitId)?.name || `branch ${explicitId}`;
+      const have = getBranch(bound)?.name || `branch ${bound}`;
+      throw new Error(`Not authorized to sell on "${want}". Your account belongs to "${have}".`);
+    }
+    return bound;
+  }
+
+  const scope = resolveBranchScope(user || actor, { forceTill: true });
+  if (explicitId && getBranch(explicitId)) {
+    if (Number(scope.stampId) !== explicitId) {
+      throw new Error(`Not authorized to sell on branch ${explicitId}.`);
+    }
+    return explicitId;
+  }
+  return scope.stampId;
 }
 
 function saveBranch(data) {
