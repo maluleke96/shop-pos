@@ -750,6 +750,33 @@ function getLoyaltyHistory(customerId) {
   return getDb().prepare('SELECT * FROM loyalty_transactions WHERE customer_id = ? ORDER BY created_at DESC').all(customerId);
 }
 
+function adjustLoyaltyPoints(customerId, pointsDelta, notes, actorId) {
+  const db = getDb();
+  const id = Number(customerId);
+  if (!id) throw new Error('Customer is required');
+  const delta = Math.floor(Number(pointsDelta) || 0);
+  if (!delta) throw new Error('Enter points to add or remove');
+  const row = db.prepare('SELECT id, name, loyalty_points FROM customers WHERE id = ?').get(id);
+  if (!row) throw new Error('Customer not found');
+  const current = Math.floor(Number(row.loyalty_points) || 0);
+  const next = current + delta;
+  if (next < 0) throw new Error(`Cannot remove ${Math.abs(delta)} points — customer only has ${current}`);
+  db.prepare('UPDATE customers SET loyalty_points = ?, updated_at = datetime(\'now\') WHERE id = ?').run(next, id);
+  db.prepare(`INSERT INTO loyalty_transactions (customer_id, points, type, notes)
+    VALUES (?, ?, 'adjust', ?)`).run(id, delta, notes || (delta > 0 ? 'manual_credit' : 'manual_debit'));
+  try {
+    db.prepare('UPDATE web_customers SET loyalty_points = ? WHERE customer_id = ?').run(next, id);
+  } catch (_) { /* optional */ }
+  return {
+    customer_id: id,
+    name: row.name,
+    previous: current,
+    delta,
+    balance: next,
+    value: next * (getLoyaltySettings().point_value || 1)
+  };
+}
+
 /** Reverse loyalty points, gift card balance, and on-account charges after void/refund. */
 function reverseSaleBenefits(saleId, actorId, refundRatio = 1) {
   const db = getDb();
@@ -1803,7 +1830,7 @@ module.exports = {
   getLaybyes, getLayby, createLayby, addLaybyPayment, refundLayby, getLaybySettings, saveLaybySettings,
   getGiftCards, createGiftCard, updateGiftCard, deleteGiftCard, redeemGiftCard, checkGiftCardBalance,
   approveGiftCard, rejectGiftCard, getGiftCardSettings, saveGiftCardSettings,
-  earnLoyaltyPoints, redeemLoyaltyPoints, reverseSaleBenefits, getLoyaltyHistory, getLoyaltySettings, calcLoyaltyRedemption,
+  earnLoyaltyPoints, redeemLoyaltyPoints, reverseSaleBenefits, getLoyaltyHistory, getLoyaltySettings, calcLoyaltyRedemption, adjustLoyaltyPoints,
   addCustomerCreditCharge, addCustomerCreditPayment, getCustomerCreditLedger,
   getStockCounts, createStockCount, updateStockCountLine, completeStockCount, getStockCount,
   recordWaste, getWasteRecords, approveWaste, rejectWaste, returnWasteToStock,

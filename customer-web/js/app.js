@@ -16,6 +16,7 @@ const OrderApp = {
   quote: null,
   loyaltyAccount: null,
   giftWallet: [],
+  regLink: null,
   editingCartKey: null,
   _closedTimer: null,
   _orderPollTimer: null,
@@ -1145,12 +1146,36 @@ const OrderApp = {
         if (pass.length < 6) { this.toast('Password must be at least 6 characters', 'error'); return; }
         btn.disabled = true;
         const prev = btn.textContent;
-        btn.textContent = 'Creating account…';
+        btn.textContent = 'Checking…';
         try {
+          const check = await OrderAPI.checkRegistration({ first_name: first, last_name: last, email, phone });
+          if (check.status === 'already_online') {
+            this.toast(check.message || 'Account exists — please sign in', 'error');
+            this.view = 'login';
+            this.render();
+            return;
+          }
+          if (check.status === 'pos_no_phone') {
+            this.toast(check.message, 'error');
+            return;
+          }
+          if (check.status === 'link_existing') {
+            this.regLink = { check, form: { first_name: first, last_name: last, email, phone, password: pass } };
+            this.view = 'register-verify';
+            this.render();
+            try {
+              const sent = await OrderAPI.sendRegistrationCode({ email, phone });
+              if (sent.whatsapp_url) window.open(sent.whatsapp_url, '_blank');
+              this.toast(sent.message || 'Verification code sent', 'success');
+            } catch (err) { this.toast(err.message || 'Could not send code', 'error'); }
+            return;
+          }
+          btn.textContent = 'Creating account…';
           const r = await OrderAPI.register({ first_name: first, last_name: last, email, phone, password: pass });
           this.token = r.token;
           sessionStorage.setItem('order_token', this.token);
           this.customer = r.customer;
+          this.regLink = null;
           await this.refreshLoyaltyAccount();
           this.authReturn = null;
           this.view = 'branches';
@@ -1158,6 +1183,48 @@ const OrderApp = {
           this.render();
         } catch (err) { this.toast(err.message, 'error'); }
         finally { btn.disabled = false; btn.textContent = prev; }
+        return;
+      }
+      if (act === 'register-verify-submit') {
+        const code = document.getElementById('reg-code')?.value.trim() || '';
+        const pass = document.getElementById('reg-verify-pass')?.value || this.regLink?.form?.password || '';
+        const form = this.regLink?.form;
+        if (!form) { this.view = 'register'; this.render(); return; }
+        if (!code || code.length < 4) { this.toast('Enter the WhatsApp verification code', 'error'); return; }
+        if (pass.length < 6) { this.toast('Password must be at least 6 characters', 'error'); return; }
+        btn.disabled = true;
+        const prev = btn.textContent;
+        btn.textContent = 'Activating…';
+        try {
+          const r = await OrderAPI.register({
+            ...form,
+            password: pass,
+            verification_code: code
+          });
+          this.token = r.token;
+          sessionStorage.setItem('order_token', this.token);
+          this.customer = r.customer;
+          this.regLink = null;
+          await this.refreshLoyaltyAccount();
+          this.authReturn = null;
+          this.view = 'branches';
+          const pts = r.loyalty_points || this.loyaltyAccount?.balance;
+          this.toast(pts ? `Account linked — ${pts} loyalty points ready to use` : 'Account activated', 'success');
+          this.render();
+        } catch (err) { this.toast(err.message, 'error'); }
+        finally { btn.disabled = false; btn.textContent = prev; }
+        return;
+      }
+      if (act === 'resend-reg-code') {
+        const form = this.regLink?.form;
+        if (!form) return;
+        btn.disabled = true;
+        try {
+          const sent = await OrderAPI.sendRegistrationCode({ email: form.email, phone: form.phone });
+          if (sent.whatsapp_url) window.open(sent.whatsapp_url, '_blank');
+          this.toast(sent.message || 'New code sent', 'success');
+        } catch (err) { this.toast(err.message, 'error'); }
+        finally { btn.disabled = false; }
         return;
       }
       if (act === 'delete-account') {
@@ -1190,7 +1257,7 @@ const OrderApp = {
       const form = e.target.closest('form[data-form]');
       if (!form) return;
       e.preventDefault();
-      const submit = form.querySelector('[data-act="login-submit"], [data-act="register-submit"]');
+      const submit = form.querySelector('[data-act="login-submit"], [data-act="register-submit"], [data-act="register-verify-submit"]');
       submit?.click();
     };
     app.oninput = (e) => {
@@ -1606,7 +1673,7 @@ const OrderApp = {
     if (this.view === 'register') {
       app.innerHTML = `<div class="auth-page"><form class="auth-card" data-form="register" novalidate>
         <h1>Create account</h1>
-        <p class="muted auth-lead">Register once — order faster next time.</p>
+        <p class="muted auth-lead">Register once — order faster next time. If you already shop with us in-store, we will link your loyalty points after WhatsApp verification.</p>
         <label>First name<input id="reg-first" autocomplete="given-name" required></label>
         <label>Last name<input id="reg-last" autocomplete="family-name"></label>
         <label>Email<input id="reg-email" type="email" autocomplete="email" placeholder="you@email.com"></label>
@@ -1617,6 +1684,23 @@ const OrderApp = {
       </form></div>`;
       this.bind();
       document.getElementById('reg-first')?.focus();
+      return;
+    }
+    if (this.view === 'register-verify') {
+      const link = this.regLink?.check || {};
+      const form = this.regLink?.form || {};
+      app.innerHTML = `<div class="auth-page"><form class="auth-card" data-form="register-verify" novalidate>
+        <h1>Verify your account</h1>
+        <p class="muted auth-lead">${this.esc(link.message || 'We found your in-store profile. Enter the WhatsApp code to activate online ordering.')}</p>
+        ${link.points ? `<div class="loyalty-card" style="margin-bottom:12px"><strong>${link.points} loyalty points</strong> will be linked to your online account.</div>` : ''}
+        <label>WhatsApp verification code<input id="reg-code" inputmode="numeric" autocomplete="one-time-code" placeholder="6-digit code" required></label>
+        <label>Choose password<input type="password" id="reg-verify-pass" autocomplete="new-password" minlength="6" value="${this.esc(form.password || '')}" required></label>
+        <button type="submit" class="btn-primary btn-block" data-act="register-verify-submit">Activate account</button>
+        <button type="button" class="link-btn" data-act="resend-reg-code">Resend WhatsApp code</button>
+        <button type="button" class="link-btn" data-act="nav" data-view="register">Back</button>
+      </form></div>`;
+      this.bind();
+      document.getElementById('reg-code')?.focus();
       return;
     }
     if (this.view === 'account') {

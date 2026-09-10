@@ -738,6 +738,158 @@ function hashToken(token) {
   return crypto.createHash('sha256').update(String(token)).digest('hex');
 }
 
+function phoneDigits(phone) {
+  if (!phone) return '';
+  let d = String(phone).replace(/\D/g, '');
+  if (d.startsWith('27') && d.length >= 11) d = d.slice(2);
+  if (d.startsWith('0')) d = d.slice(1);
+  return d.slice(-9);
+}
+
+function phonesMatch(a, b) {
+  const na = phoneDigits(a);
+  const nb = phoneDigits(b);
+  return !!(na && nb && na.length >= 9 && na === nb);
+}
+
+function maskPhone(phone) {
+  const d = String(phone || '').replace(/\D/g, '');
+  return d.length >= 4 ? `***${d.slice(-4)}` : '***';
+}
+
+function ensureRegistrationSchema() {
+  try {
+    dbRun(`CREATE TABLE IF NOT EXISTS web_registration_codes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      phone TEXT NOT NULL,
+      email TEXT,
+      customer_id INTEGER NOT NULL,
+      code_hash TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      created_at TEXT DEFAULT (datetime('now'))
+    )`);
+  } catch (_) { /* table may exist on PG */ }
+}
+
+function findPosCustomerByContact(phone, email) {
+  const emailLower = String(email || '').trim().toLowerCase();
+  const rows = dbAll(`SELECT * FROM customers WHERE
+    (phone IS NOT NULL AND TRIM(phone) != '') OR (email IS NOT NULL AND TRIM(email) != '')`);
+  if (phone) {
+    for (const c of rows) {
+      if (c.phone && phonesMatch(phone, c.phone)) return c;
+    }
+  }
+  if (emailLower) {
+    for (const c of rows) {
+      if (c.email && String(c.email).trim().toLowerCase() === emailLower) return c;
+    }
+  }
+  return null;
+}
+
+function webAccountExists(phone, email) {
+  const emailLower = String(email || '').trim().toLowerCase();
+  if (emailLower && dbGet('SELECT id FROM web_customers WHERE lower(email) = ? AND is_active = 1', [emailLower])) {
+    return { exists: true, message: 'This email already has an online account. Please sign in.' };
+  }
+  if (phone) {
+    const rows = dbAll('SELECT id, phone FROM web_customers WHERE is_active = 1 AND phone IS NOT NULL');
+    for (const r of rows) {
+      if (phonesMatch(phone, r.phone)) {
+        return { exists: true, message: 'This mobile number already has an online account. Please sign in.' };
+      }
+    }
+  }
+  return { exists: false };
+}
+
+function checkWebRegistration(data = {}) {
+  ensureSchema();
+  ensureRegistrationSchema();
+  const email = String(data.email || '').trim().toLowerCase();
+  const phone = String(data.phone || data.mobile || '').trim();
+  if (!email && !phone) throw new Error('Email or phone is required');
+
+  const exists = webAccountExists(phone, email);
+  if (exists.exists) return { status: 'already_online', message: exists.message };
+
+  const pos = findPosCustomerByContact(phone, email);
+  if (pos) {
+    const verifyPhone = String(pos.phone || phone || '').trim();
+    if (!verifyPhone) {
+      return {
+        status: 'pos_no_phone',
+        message: 'We found your in-store profile but have no mobile number on file. Please contact the shop to add your number first.'
+      };
+    }
+    const points = Math.floor(Number(pos.loyalty_points) || 0);
+    return {
+      status: 'link_existing',
+      customer_id: pos.id,
+      name: pos.name,
+      points,
+      phone_masked: maskPhone(verifyPhone),
+      message: `We found your account (${pos.name}). Verify your mobile via WhatsApp, then choose a password to order online${points ? ` and use your ${points} loyalty points` : ''}.`
+    };
+  }
+  return { status: 'new' };
+}
+
+function sendWebRegistrationCode(data = {}) {
+  ensureSchema();
+  ensureRegistrationSchema();
+  const check = checkWebRegistration(data);
+  if (check.status === 'already_online') throw new Error(check.message);
+  if (check.status !== 'link_existing') throw new Error('No existing in-store account to link — continue with normal registration');
+  const pos = dbGet('SELECT * FROM customers WHERE id = ?', [check.customer_id]);
+  if (!pos) throw new Error('Customer record not found');
+  const verifyPhone = String(pos.phone || data.phone || '').trim();
+  if (!verifyPhone) throw new Error('No mobile number on file for verification');
+
+  const code = String(Math.floor(100000 + Math.random() * 900000));
+  const hash = bcrypt.hashSync(code, 10);
+  const expires = nowPlusMin(15);
+  try { dbRun('DELETE FROM web_registration_codes WHERE customer_id = ?', [pos.id]); } catch (_) { /* */ }
+  dbRun(`INSERT INTO web_registration_codes (phone, email, customer_id, code_hash, expires_at)
+    VALUES (?,?,?,?,?)`, [verifyPhone, String(data.email || '').trim().toLowerCase() || null, pos.id, hash, expires]);
+
+  const shopName = dbGet('SELECT shop_name FROM shop_settings WHERE id = 1')?.shop_name || 'Shop';
+  let sent = false;
+  let url = null;
+  try {
+    const whatsapp = require('./whatsapp');
+    const r = whatsapp.sendMessage({
+      phone: verifyPhone,
+      body: `${shopName} — Your online ordering verification code is: ${code}\n\nEnter this code to activate your account. Valid for 15 minutes.\n\nDo not share this code with anyone.`,
+      message_type: 'verification',
+      recipient_type: 'customer',
+      customer_id: pos.id
+    });
+    sent = r?.status === 'sent' || r?.via === 'cloud_api';
+    url = r?.url || null;
+  } catch (_) { /* fallback url below */ }
+
+  return {
+    sent,
+    whatsapp_url: url,
+    phone_masked: maskPhone(verifyPhone),
+    message: sent
+      ? `Verification code sent to WhatsApp ending ${maskPhone(verifyPhone).slice(-4)}`
+      : `Open WhatsApp to receive your verification code on ${maskPhone(verifyPhone)}`
+  };
+}
+
+function verifyRegistrationCode(customerId, code) {
+  ensureRegistrationSchema();
+  const row = dbGet('SELECT * FROM web_registration_codes WHERE customer_id = ? AND expires_at > ? ORDER BY id DESC LIMIT 1',
+    [Number(customerId), nowIso()]);
+  if (!row) throw new Error('Verification code expired — request a new code');
+  if (!bcrypt.compareSync(String(code || '').trim(), row.code_hash)) throw new Error('Incorrect verification code');
+  dbRun('DELETE FROM web_registration_codes WHERE id = ?', [row.id]);
+  return row;
+}
+
 function createWebSession(customerId) {
   const token = crypto.randomBytes(32).toString('hex');
   const hash = hashToken(token);
@@ -760,24 +912,60 @@ function resolveWebCustomer(token) {
 
 function registerWebCustomer(data = {}) {
   ensureSchema();
+  ensureRegistrationSchema();
   const first = String(data.first_name || data.name || '').trim();
   const last = String(data.last_name || data.surname || '').trim();
   const email = String(data.email || '').trim().toLowerCase();
   const phone = String(data.phone || data.mobile || '').trim();
   const password = String(data.password || '');
+  const verificationCode = String(data.verification_code || data.code || '').trim();
   if (!first) throw new Error('First name is required');
   if (!password || password.length < 6) throw new Error('Password must be at least 6 characters');
   if (!email && !phone) throw new Error('Email or phone is required');
+
+  const exists = webAccountExists(phone, email);
+  if (exists.exists) throw new Error(exists.message);
+
+  const posMatch = findPosCustomerByContact(phone, email);
+  if (posMatch) {
+    if (!verificationCode) {
+      throw new Error('Your phone or email is already on our system. Verify with the WhatsApp code before choosing a password.');
+    }
+    verifyRegistrationCode(posMatch.id, verificationCode);
+    const pos = dbGet('SELECT * FROM customers WHERE id = ?', [posMatch.id]);
+    const verifyPhone = String(pos.phone || phone || '').trim();
+    const hash = bcrypt.hashSync(password, 10);
+    const referral = (data.referral_code || '').trim().toUpperCase() || null;
+    const loyaltyPoints = Math.floor(Number(pos.loyalty_points) || 0);
+    if (email && pos.email && String(pos.email).trim().toLowerCase() !== email) {
+      dbRun('UPDATE customers SET email = ?, updated_at = ? WHERE id = ?', [email, nowIso(), pos.id]);
+    }
+    if (verifyPhone && pos.phone !== verifyPhone) {
+      dbRun('UPDATE customers SET phone = ?, updated_at = ? WHERE id = ?', [verifyPhone, nowIso(), pos.id]);
+    }
+    const r = dbRun(`INSERT INTO web_customers (customer_id, first_name, last_name, email, phone, password_hash, referred_by_code, loyalty_points)
+      VALUES (?,?,?,?,?,?,?,?)`, [
+      pos.id, first, last, email || pos.email || null, verifyPhone || null, hash, referral, loyaltyPoints
+    ]);
+    const session = createWebSession(r.lastInsertRowid);
+    return { customer: resolveWebCustomer(session.token), token: session.token, linked: true, loyalty_points: loyaltyPoints };
+  }
+
   if (email && dbGet('SELECT id FROM web_customers WHERE lower(email) = ?', [email])) throw new Error('Email already registered');
-  if (phone && dbGet('SELECT id FROM web_customers WHERE phone = ?', [phone])) throw new Error('Phone already registered');
+  if (phone) {
+    const rows = dbAll('SELECT phone FROM web_customers WHERE phone IS NOT NULL');
+    for (const r of rows) {
+      if (phonesMatch(phone, r.phone)) throw new Error('Phone already registered');
+    }
+  }
 
   let customerId = null;
   if (phone) {
-    const existing = dbGet('SELECT id FROM customers WHERE phone = ?', [phone]);
+    const existing = findPosCustomerByContact(phone, email);
     if (existing) customerId = existing.id;
     else {
-      const r = dbRun('INSERT INTO customers (name, phone, email) VALUES (?,?,?)', [`${first} ${last}`.trim(), phone, email || null]);
-      customerId = r.lastInsertRowid;
+      const ins = dbRun('INSERT INTO customers (name, phone, email) VALUES (?,?,?)', [`${first} ${last}`.trim(), phone, email || null]);
+      customerId = ins.lastInsertRowid;
     }
   }
 
@@ -1522,6 +1710,8 @@ module.exports = {
   getPublicBranches,
   getBranchMenu,
   getProductDetail,
+  checkWebRegistration,
+  sendWebRegistrationCode,
   registerWebCustomer,
   loginWebCustomer,
   resolveWebCustomer,

@@ -135,18 +135,130 @@ const CustomersPage = {
     });
   },
 
+  loyaltySettings() {
+    try {
+      const raw = this.app.settings?.loyalty_settings;
+      const ls = typeof raw === 'string' ? JSON.parse(raw) : (raw || {});
+      return { point_value: Number(ls.point_value) > 0 ? Number(ls.point_value) : 1 };
+    } catch (_) {
+      return { point_value: 1 };
+    }
+  },
+
+  pointsValue(points) {
+    const pv = this.loyaltySettings().point_value;
+    return Utils.formatMoney((Number(points) || 0) * pv, this.app.settings?.currency || 'R');
+  },
+
+  giftPointsMessage(customer, delta, balance) {
+    const shop = this.app.settings?.shop_name || 'Our shop';
+    const name = (customer?.name || 'Customer').split(' ')[0];
+    const absDelta = Math.abs(Number(delta) || 0);
+    const bal = Math.floor(Number(balance) || customer?.loyalty_points || 0);
+    if (delta > 0) {
+      return `Hi ${name},\n\n${shop} has gifted you ${absDelta} loyalty points (worth ${this.pointsValue(absDelta)}).\n\nYour new balance is ${bal} points (${this.pointsValue(bal)}).\n\nUse them in-store or when ordering online.\n\nThank you!`;
+    }
+    return `Hi ${name},\n\nYour loyalty points at ${shop} have been updated.\n\nCurrent balance: ${bal} points (${this.pointsValue(bal)}).\n\nThank you!`;
+  },
+
+  async notifyPointsWhatsApp(customer, delta, balance) {
+    const phone = String(customer?.phone || '').trim();
+    if (!phone) return Utils.toast('Add a phone number first', 'error');
+    const body = this.giftPointsMessage(customer, delta, balance);
+    try {
+      const wa = await API.sendWhatsAppMessage({
+        phone,
+        body,
+        message_type: 'loyalty_gift',
+        customer_id: customer.id,
+        recipient_type: 'customer'
+      }, this.app.user);
+      await Utils.deliverWhatsApp(wa, phone, body);
+    } catch (err) {
+      Utils.toast(err.message || 'WhatsApp failed', 'error');
+    }
+  },
+
+  notifyPointsEmail(customer, delta, balance) {
+    const email = String(customer?.email || '').trim();
+    if (!email) return Utils.toast('Add an email address first', 'error');
+    const shop = this.app.settings?.shop_name || 'Our shop';
+    const subject = encodeURIComponent(`${shop} — your loyalty points`);
+    const body = encodeURIComponent(this.giftPointsMessage(customer, delta, balance));
+    const url = `mailto:${encodeURIComponent(email)}?subject=${subject}&body=${body}`;
+    if (window.API?.openExternal) API.openExternal(url);
+    else window.open(url, '_blank');
+    Utils.toast('Email opened — review and send', 'success');
+  },
+
   showForm(c = null) {
+    const currency = this.app.settings?.currency || 'R';
+    const points = Math.floor(c?.loyalty_points || 0);
+    const pointsBlock = c ? `
+      <div class="field full" style="margin-top:8px;padding:14px;border:1px solid var(--border);border-radius:10px;background:var(--bg-secondary,#f8fafc)">
+        <label style="font-weight:700;margin-bottom:8px;display:block">Loyalty points</label>
+        <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-bottom:10px">
+          <div><span class="muted">Current balance</span><br><strong style="font-size:1.25rem">${points}</strong> pts · ${this.pointsValue(points)}</div>
+        </div>
+        <div class="form-grid" style="margin-bottom:10px">
+          <div class="field"><label>Add points</label><input type="number" id="cu-pts-add" min="0" step="1" placeholder="e.g. 50"></div>
+          <div class="field"><label>Remove points</label><input type="number" id="cu-pts-remove" min="0" step="1" placeholder="e.g. 20"></div>
+          <div class="field full"><label>Note (optional)</label><input id="cu-pts-note" placeholder="Birthday gift, correction…"></div>
+        </div>
+        <button type="button" class="btn btn-sm btn-primary" id="cu-pts-apply">Apply points change</button>
+        <div id="cu-pts-notify" style="margin-top:12px;display:none">
+          <p class="muted" style="margin:0 0 8px">Notify customer about this points update:</p>
+          <div style="display:flex;flex-wrap:wrap;gap:8px">
+            <button type="button" class="btn btn-sm btn-success" id="cu-wa-gift">💬 WhatsApp</button>
+            <button type="button" class="btn btn-sm btn-ghost" id="cu-em-gift">✉️ Email</button>
+          </div>
+        </div>
+      </div>` : '';
+
     Utils.showModal(c ? 'Edit Customer' : 'Add Customer', `
       <div class="form-grid">
-        <div class="field"><label>Name *</label><input id="cu-name" value="${c?.name || ''}"></div>
-        <div class="field"><label>Phone</label><input id="cu-phone" value="${c?.phone || ''}"></div>
-        <div class="field"><label>Email</label><input id="cu-email" value="${c?.email || ''}"></div>
-        <div class="field"><label>Balance</label><input type="number" id="cu-balance" step="0.01" value="${c?.balance || 0}"></div>
-        <div class="field"><label>Credit Limit (${this.app.settings?.currency || 'R'})</label><input type="number" id="cu-credit-limit" step="0.01" min="0" placeholder="Use shop default" value="${c?.credit_limit ?? ''}"></div>
+        <div class="field"><label>Name *</label><input id="cu-name" value="${Utils.escHtml(c?.name || '')}"></div>
+        <div class="field"><label>Phone</label><input id="cu-phone" value="${Utils.escHtml(c?.phone || '')}"></div>
+        <div class="field"><label>Email</label><input id="cu-email" value="${Utils.escHtml(c?.email || '')}"></div>
+        <div class="field"><label>Balance (${currency})</label><input type="number" id="cu-balance" step="0.01" value="${c?.balance || 0}"></div>
+        <div class="field"><label>Credit Limit (${currency})</label><input type="number" id="cu-credit-limit" step="0.01" min="0" placeholder="Use shop default" value="${c?.credit_limit ?? ''}"></div>
         <div class="field full"><label><input type="checkbox" id="cu-on-account" ${c?.allow_on_account ? 'checked' : ''}> Approved for On Account purchases</label></div>
-        <div class="field full"><label>Address</label><input id="cu-address" value="${c?.address || ''}"></div>
+        <div class="field full"><label>Address</label><input id="cu-address" value="${Utils.escHtml(c?.address || '')}"></div>
+        ${pointsBlock}
       </div>`,
       '<button class="btn btn-primary" id="save-cust">Save</button>');
+
+    let lastPointChange = null;
+
+    document.getElementById('cu-pts-apply')?.addEventListener('click', async () => {
+      const add = parseInt(document.getElementById('cu-pts-add')?.value, 10) || 0;
+      const remove = parseInt(document.getElementById('cu-pts-remove')?.value, 10) || 0;
+      if (add && remove) return Utils.toast('Use either Add or Remove, not both', 'error');
+      const delta = add || (remove ? -remove : 0);
+      if (!delta) return Utils.toast('Enter points to add or remove', 'error');
+      const note = document.getElementById('cu-pts-note')?.value.trim() || '';
+      const r = await API.adjustLoyaltyPoints(c.id, delta, note, this.app.user);
+      if (!r.success) return Utils.toast(r.error || 'Could not update points', 'error');
+      const data = r.data || r;
+      lastPointChange = { delta: data.delta, balance: data.balance };
+      c.loyalty_points = data.balance;
+      const notify = document.getElementById('cu-pts-notify');
+      if (notify) notify.style.display = 'block';
+      document.getElementById('cu-pts-add').value = '';
+      document.getElementById('cu-pts-remove').value = '';
+      Utils.toast(`${delta > 0 ? 'Added' : 'Removed'} ${Math.abs(delta)} points — new balance: ${data.balance}`, 'success');
+    });
+
+    document.getElementById('cu-wa-gift')?.addEventListener('click', () => {
+      const ch = lastPointChange || { delta: 0, balance: c.loyalty_points };
+      this.notifyPointsWhatsApp({ ...c, phone: document.getElementById('cu-phone')?.value.trim() || c.phone }, ch.delta, ch.balance);
+    });
+
+    document.getElementById('cu-em-gift')?.addEventListener('click', () => {
+      const ch = lastPointChange || { delta: 0, balance: c.loyalty_points };
+      this.notifyPointsEmail({ ...c, email: document.getElementById('cu-email')?.value.trim() || c.email }, ch.delta, ch.balance);
+    });
+
     document.getElementById('save-cust').addEventListener('click', async () => {
       const limitVal = document.getElementById('cu-credit-limit').value;
       const r = await API.saveCustomer({

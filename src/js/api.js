@@ -535,6 +535,7 @@ const API = {
   shareNativeFile: (filePath, title) => invoke('file:shareNative', filePath, title),
 
   getLoyaltyHistory: (id) => invoke('loyalty:history', id),
+  adjustLoyaltyPoints: (customerId, pointsDelta, notes, actor) => invoke('loyalty:adjust', customerId, pointsDelta, notes, actor),
   getCreditLedger: (id) => invoke('credit:ledger', id),
   payCustomerCredit: (id, amount, notes, actor) => invoke('credit:pay', id, amount, notes, actor),
 

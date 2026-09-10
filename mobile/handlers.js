@@ -963,6 +963,10 @@ function buildHandlers(store) {
   }));
 
   add('loyalty:history', wrapSync(id => s.getLoyaltyHistory(id)));
+  add('loyalty:adjust', wrapSync((customerId, pointsDelta, notes, actor) => {
+    const user = s.requireActor(actor, ['owner', 'manager', 'supervisor', 'assistant_manager']);
+    return s.adjustLoyaltyPoints(customerId, pointsDelta, notes, user.id);
+  }));
   add('credit:ledger', wrapSync(id => { requireSession(); return s.getCustomerCreditLedger(id); }));
   add('credit:pay', wrapSync((id, amt, n, a) => {
     const user = s.requireActor(a, ['owner', 'manager', 'cashier', 'supervisor', 'assistant_manager']);
@@ -2612,6 +2616,8 @@ function buildHandlers(store) {
   add('web:getBranches', wrapSync(() => web.getPublicBranches()));
   add('web:getMenu', wrapSync((branchId, filters) => web.getBranchMenu(branchId, filters || {})));
   add('web:getProduct', wrapSync((branchId, productId) => web.getProductDetail(branchId, productId)));
+  add('web:checkRegistration', wrapSync((data) => web.checkWebRegistration(data || {})));
+  add('web:sendRegistrationCode', wrapSync((data) => web.sendWebRegistrationCode(data || {})));
   add('web:register', wrapSync((data) => web.registerWebCustomer(data || {})));
   add('web:login', wrapSync((login, password) => web.loginWebCustomer(login, password)));
   add('web:account', wrapSync((token) => web.getCustomerAccount(token)));
