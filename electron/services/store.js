@@ -1319,6 +1319,21 @@ function deleteCategory(id, actorId, actorName) {
 
 // ─── Products ───────────────────────────────────────────────────────────────
 
+let _menuHighlightsLastSync = 0;
+const MENU_HIGHLIGHTS_SYNC_MS = 15 * 60 * 1000;
+
+/** Best-seller / new-arrival sync is expensive — debounce off the POS hot path. */
+function maybeSyncMenuHighlights(force = false) {
+  const now = Date.now();
+  if (!force && now - _menuHighlightsLastSync < MENU_HIGHLIGHTS_SYNC_MS) return;
+  _menuHighlightsLastSync = now;
+  try { require('./recipe-production').clearExpiredNewArrivals(); } catch (_) { /* ignore */ }
+  try {
+    const menuHl = require('../../lib/menu-highlights');
+    menuHl.syncAutoBestSellers(getDb(), getSettingsParsed());
+  } catch (_) { /* optional */ }
+}
+
 function getProducts(filters = {}) {
   ensureCategoryPosSchema();
   let sql = `
@@ -1361,11 +1376,7 @@ function getProducts(filters = {}) {
   const products = getDb().prepare(sql).all(...params);
   const liteProductFetch = !!(filters.combo_picker || filters.menu_flags_only || filters.ids_only);
   if (!liteProductFetch) {
-    try { require('./recipe-production').clearExpiredNewArrivals(); } catch (_) { /* ignore */ }
-    try {
-      const menuHl = require('../../lib/menu-highlights');
-      menuHl.syncAutoBestSellers(getDb(), getSettingsParsed());
-    } catch (_) { /* optional */ }
+    maybeSyncMenuHighlights();
   }
 
   if (filters.menu_flags_only) {
@@ -4464,6 +4475,7 @@ function processScheduledDocuments() {
 }
 
 function runStartupTasks() {
+  try { maybeSyncMenuHighlights(true); } catch (_) { /* ignore */ }
   try { processScheduledDocuments(); } catch (_) { /* ignore */ }
   try { if (typeof staffExports.autoCloseOpenAttendance === 'function') staffExports.autoCloseOpenAttendance(); } catch (_) { /* ignore */ }
   try { enforceShiftCashoutDeadlines(); } catch (_) { /* ignore */ }

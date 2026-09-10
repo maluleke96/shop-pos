@@ -220,10 +220,25 @@ const POSPage = {
     this.app = app;
     this._host = el;
     document.body.classList.add('pos-till-active');
-    try {
-      if (app?.ensureFeatureCss) await app.ensureFeatureCss('css/pos-till.css');
-      else if (window.App?.ensureFeatureCss) await window.App.ensureFeatureCss('css/pos-till.css');
-    } catch (_) { /* optional */ }
+    const branchId = app.user?.branch_id || undefined;
+    const filters = { for_pos: true, actor: app.user };
+    const comboFilters = branchId ? { branch_id: branchId, for_pos: true } : { for_pos: true };
+    const catalogP = Promise.all([
+      API.getCategories(filters),
+      API.getProducts(filters),
+      API.getActiveCombos(comboFilters).catch(() => ({ success: false, data: [] }))
+    ]);
+    const shiftP = Promise.all([
+      API.getShiftSettings().catch(() => ({ success: false })),
+      API.getOpenShift(app.user).catch(() => ({ success: false, data: null }))
+    ]);
+    const cssP = (async () => {
+      try {
+        if (app?.ensureFeatureCss) await app.ensureFeatureCss('css/pos-till.css');
+        else if (window.App?.ensureFeatureCss) await window.App.ensureFeatureCss('css/pos-till.css');
+      } catch (_) { /* optional */ }
+    })();
+    await cssP;
     try {
     const pendingQuote = app.pendingQuote;
     app.pendingQuote = null;
@@ -238,7 +253,6 @@ const POSPage = {
       ...this.app.settings,
       device_settings: Utils.mergeDeviceSettings(this.app.settings)
     };
-    const branchId = app.user?.branch_id || undefined;
     const isKiosk = !!(window.__SHOP_POS_APP_MODE__ === 'pos' || app.isPosKiosk?.());
 
     this.shiftSettings = app.settings?.shift_settings || this.shiftSettings || {
@@ -262,10 +276,8 @@ const POSPage = {
     this._bindComboLiveRefresh();
     if (isKiosk) this.ensureKioskLogout(el);
 
-    const filters = { for_pos: true, actor: app.user };
     const cachedProd = window.DataCache?.peek?.('products', [filters]);
     const cachedCat = window.DataCache?.peek?.('categories', [filters]);
-    const comboFilters = branchId ? { branch_id: branchId, for_pos: true } : { for_pos: true };
     const cachedCombo = window.DataCache?.peek?.('combos', [comboFilters]);
     if (!(this.products || []).length && cachedProd?.data?.length) {
       this.categories = cachedCat?.data || this.categories || [];
@@ -273,16 +285,6 @@ const POSPage = {
       this.combos = this.filterActiveCombos(cachedCombo?.data || cachedCombo || this.combos || []);
       this.rebuildProductLookups?.();
     }
-    const shiftP = Promise.all([
-      API.getShiftSettings().catch(() => ({ success: false })),
-      API.getOpenShift(app.user).catch(() => ({ success: false, data: null }))
-    ]);
-    const catalogP = Promise.all([
-      API.getCategories(filters),
-      API.getProducts(filters),
-      API.getActiveCombos(branchId ? { branch_id: branchId, for_pos: true } : { for_pos: true }).catch(() => ({ success: false, data: [] }))
-    ]);
-
     this._shiftFlowComplete = false;
     this.refreshShiftBarQuick();
     this.updateShiftGate();
@@ -594,13 +596,28 @@ const POSPage = {
     this.app = app;
     this._host = el;
     this.resetPosSaleUi();
-    try {
-      const [catRes, prodRes, shiftRes, comboRes] = await Promise.all([
-        API.getCategories({ for_pos: true }),
-        API.getProducts({ for_pos: true }),
-        API.getOpenShift(app.user),
-        this.fetchPosCombos(true)
-      ]);
+    const filters = { for_pos: true, actor: app.user };
+    const branchId = app.user?.branch_id || undefined;
+    const comboFilters = branchId ? { branch_id: branchId, for_pos: true } : { for_pos: true };
+    const cachedProd = window.DataCache?.peek?.('products', [filters]);
+    const cachedCat = window.DataCache?.peek?.('categories', [filters]);
+    const cachedCombo = window.DataCache?.peek?.('combos', [comboFilters]);
+    if (cachedProd?.data?.length) {
+      this.categories = cachedCat?.data || this.categories || [];
+      this.products = cachedProd.data;
+      this.setPosCombos(cachedCombo);
+      this.rebuildProductLookups();
+      this.renderProducts(document.getElementById('pos-search')?.value || '');
+      this.refreshShiftBarQuick?.();
+      this.updateShiftGate?.();
+      if (typeof this.renderCart === 'function') this.renderCart();
+    }
+    Promise.all([
+      API.getCategories(filters),
+      API.getProducts(filters),
+      API.getOpenShift(app.user),
+      this.fetchPosCombos(true)
+    ]).then(([catRes, prodRes, shiftRes, comboRes]) => {
       this.categories = catRes?.data || catRes || [];
       this.products = this._unwrapRpcList(prodRes);
       this.setPosCombos(comboRes);
@@ -611,9 +628,9 @@ const POSPage = {
       this.updateShiftGate?.();
       if (typeof this.renderCart === 'function') this.renderCart();
       window.DataCache?.clearStaleBanner?.(el);
-    } catch (err) {
-      window.DataCache?.showStaleBanner?.(el, 'Unable to refresh. Showing last updated data.');
-    }
+    }).catch((err) => {
+      window.DataCache?.showStaleBanner?.(el, err?.message || 'Unable to refresh. Showing last updated data.');
+    });
   },
 
   requiresShift() {

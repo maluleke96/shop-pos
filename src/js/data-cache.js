@@ -178,7 +178,7 @@ function installApiReadCache() {
   wrap('getSalesReport', 'salesReport', 60000, (a) => [a[0], a[1]]);
   wrap('getEmployees', 'employees', 120000, (a) => [a[0] || {}, a[1]?.id || null]);
   wrap('getOpenShift', 'openShift', 20000, (a) => [a[0]?.id || a[0] || null]);
-  wrap('getActiveCombos', 'combos', 8000, (a) => [a[0] || {}]);
+  wrap('getActiveCombos', 'combos', 120000, (a) => [a[0] || {}]);
   wrap('getActiveCampaigns', 'campaigns', 60000, (a) => [a[0] ?? null]);
   wrap('getKitchenOrders', 'kitchen', 15000, (a) => [a[0] ?? null]);
   wrap('getSettingsParsed', 'settings', 300000, () => []);

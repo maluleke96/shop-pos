@@ -1365,8 +1365,11 @@ const App = {
         await this.showPosWelcomeSuccessModal(user, branchLabel);
         try { sessionStorage.setItem('pos_welcome_done', '1'); } catch (_) { /* ignore */ }
       }
-      // Keep existing settings ? do NOT clear (was forcing a slow reload after every login)
-      try { window.DataCache?.invalidate?.(); } catch (_) { /* ignore */ }
+      // Keep POS catalog cache warm — only drop session-specific reads
+      try {
+        window.DataCache?.invalidate?.('openShift', 'notifications', 'dashboard', 'salesReport', 'salesList', 'kitchen');
+      } catch (_) { /* ignore */ }
+      this.prefetchPosCatalog(user);
       this.applyPosKioskChrome();
       this._clearPortalEntry();
       try {
@@ -1710,6 +1713,7 @@ const App = {
       this.stopScheduledDocMonitor();
       document.getElementById('notif-badge')?.classList.add('hidden');
       try { window.ShopPosConnection?.set?.('hidden'); } catch (_) { /* ignore */ }
+      this.prefetchPosCatalog(this.user);
       await this.navigate('pos');
       const bgPos = async () => {
         try { await API.logOperatingEvent('open', this.user); } catch { /* ignore */ }
@@ -2026,9 +2030,23 @@ const App = {
     this._saveNavState();
   },
 
+  /** Warm POS categories/products/combos so the till menu paints instantly. */
+  prefetchPosCatalog(user = this.user) {
+    if (!window.API || !user) return;
+    const filters = { for_pos: true, actor: user };
+    const branchId = user.branch_id != null ? Number(user.branch_id) : undefined;
+    const comboArgs = branchId ? { branch_id: branchId, for_pos: true } : { for_pos: true };
+    try {
+      API.getCategories(filters)?.catch?.(() => {});
+      API.getProducts(filters)?.catch?.(() => {});
+      API.getActiveCombos(comboArgs)?.catch?.(() => {});
+    } catch (_) { /* ignore */ }
+  },
+
   /** Warm likely next-page reads without flooding the network. */
   schedulePrefetch(page) {
     clearTimeout(this._prefetchTimer);
+    const delay = page === 'pos' ? 0 : 350;
     this._prefetchTimer = setTimeout(() => {
       if (!window.API || !this.user) return;
       const from = Utils.monthStart?.() || new Date().toISOString().slice(0, 10);
@@ -2061,7 +2079,7 @@ const App = {
           try { fn()?.catch?.(() => {}); } catch { /* ignore */ }
         }, i * 120);
       });
-    }, 350);
+    }, delay);
   },
 
   clearPageHosts() {
