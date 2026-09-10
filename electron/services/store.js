@@ -291,7 +291,9 @@ function login(username, password, pin) {
   const shiftBlock = checkCashierShiftAccess(user);
   if (!shiftBlock.ok) return { success: false, error: shiftBlock.error };
 
+  // Cloud/web POS binds till per device (localStorage) — do not block login on shared shop_settings.branch_id.
   const branchBlock = ['cashier', 'supervisor', 'assistant_manager'].includes(user.role)
+    && process.env.SHOP_POS_CLOUD !== '1'
     ? branchesSvc.assertUserTillBranch(user)
     : { ok: true };
   if (!branchBlock.ok) return { success: false, error: branchBlock.error };
@@ -2256,7 +2258,11 @@ function completeSale(saleData, actorId, actorName, actorRole) {
       return features.getBranchId();
     }
   })();
-  const deviceId = syncSvc.resolveDeviceUid();
+  const deviceId = (() => {
+    const client = saleData?.device_id ? String(saleData.device_id).trim() : '';
+    if (client && /^[A-Za-z0-9_-]{4,64}$/.test(client)) return client.slice(0, 64);
+    return syncSvc.resolveDeviceUid();
+  })();
 
   // Offline replay: same client_request_id must not create a duplicate sale
   const clientRequestId = saleData && saleData.client_request_id
@@ -2524,6 +2530,9 @@ function completeSale(saleData, actorId, actorName, actorRole) {
   }
   try { db.exec('ALTER TABLE sales ADD COLUMN order_source TEXT'); } catch (_) { /* exists */ }
   try { db.exec('ALTER TABLE sales ADD COLUMN delivery_fee REAL DEFAULT 0'); } catch (_) { /* exists */ }
+  const adjustStockForBranch = (productId, quantity, type, notes, userId, refType, refId) =>
+    adjustStock(productId, quantity, type, notes, userId, refType, refId, branchId);
+
   const txn = db.transaction(() => {
     let saleResult;
     try {
@@ -2568,12 +2577,12 @@ function completeSale(saleData, actorId, actorName, actorRole) {
         originalUnitPrice, promoRequestId);
       const saleItemId = itemResult.lastInsertRowid;
       if (item.combo_id) {
-        combosSvc.processComboSale(item.combo_id, item.quantity, saleId, saleItemId, adjustStock, actorId, receiptNumber);
+        combosSvc.processComboSale(item.combo_id, item.quantity, saleId, saleItemId, adjustStockForBranch, actorId, receiptNumber);
       } else if (item.product_id) {
         const prodMeta = db.prepare('SELECT has_recipe, production_mode, stock_quantity FROM products WHERE id = ?').get(item.product_id);
         const makeToStock = prodMeta?.production_mode === 'make_to_stock';
         if (makeToStock) {
-          adjustStock(item.product_id, item.quantity, 'sale', `Sale ${receiptNumber}`, actorId, 'sale', saleId);
+          adjustStockForBranch(item.product_id, item.quantity, 'sale', `Sale ${receiptNumber}`, actorId, 'sale', saleId);
         } else {
           const saleNote = `Sale ${receiptNumber} (recipe)`;
           const selectedMods = item.modifiers?.length
@@ -2583,10 +2592,10 @@ function completeSale(saleData, actorId, actorName, actorRole) {
               .map(s => ({ name: s.trim() }))
               .filter(m => m.name);
           const recipeDeducted = inventory.deductRecipeIngredients(
-            item.product_id, item.quantity, saleNote, actorId, 'sale', saleId, adjustStock, selectedMods, item.substitutions || null
+            item.product_id, item.quantity, saleNote, actorId, 'sale', saleId, adjustStockForBranch, selectedMods, item.substitutions || null
           );
           if (!recipeDeducted) {
-            adjustStock(item.product_id, item.quantity, 'sale', `Sale ${receiptNumber}`, actorId, 'sale', saleId);
+            adjustStockForBranch(item.product_id, item.quantity, 'sale', `Sale ${receiptNumber}`, actorId, 'sale', saleId);
           }
         }
         db.prepare('UPDATE products SET last_sale_date = date(\'now\') WHERE id = ?').run(item.product_id);

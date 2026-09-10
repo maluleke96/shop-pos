@@ -341,13 +341,46 @@ function ensureDefaultBranch() {
   }
 }
 
-/** Resolve till branch for sales/shifts — prefers explicit till_branch_id from client (multi-POS cloud). */
+/** Resolve till branch for sales/shifts — honors client till_branch_id only when actor is allowed. */
 function resolveTillBranchId(actor = null, opts = {}) {
-  const explicit = opts.tillBranchId ?? opts.till_branch_id ?? opts.branch_id;
-  if (explicit != null && explicit !== '' && getBranch(Number(explicit))) {
-    return Number(explicit);
+  ensureBranchSchema();
+  const explicitRaw = opts.tillBranchId ?? opts.till_branch_id ?? opts.branch_id;
+  const explicitId = explicitRaw != null && explicitRaw !== '' ? Number(explicitRaw) : null;
+
+  let user = null;
+  if (actor?.id) {
+    try {
+      user = getDb().prepare('SELECT id, role, branch_id FROM users WHERE id = ?').get(actor.id);
+    } catch (_) {
+      user = actor;
+    }
+  } else if (actor?.role) {
+    user = actor;
   }
-  return resolveBranchScope(actor, { forceTill: true }).stampId;
+  const role = user?.role || actor?.role || null;
+
+  if (explicitId && getBranch(explicitId)) {
+    if (role === 'owner') return explicitId;
+    if (role === 'manager' && (user?.branch_id == null || user?.branch_id === '' || Number(user.branch_id) === explicitId)) {
+      return explicitId;
+    }
+    if (user?.branch_id != null && user?.branch_id !== '' && Number(user.branch_id) === explicitId) {
+      return explicitId;
+    }
+    const scope = resolveBranchScope(user || actor, { forceTill: true });
+    if (Number(scope.tillId) === explicitId || Number(scope.stampId) === explicitId) {
+      return explicitId;
+    }
+    const branchName = getBranch(explicitId)?.name || `branch ${explicitId}`;
+    const userBranch = user?.branch_id != null ? getBranch(user.branch_id)?.name : null;
+    throw new Error(
+      userBranch
+        ? `Not authorized to sell on "${branchName}". Your account belongs to "${userBranch}".`
+        : `Not authorized to sell on "${branchName}".`
+    );
+  }
+
+  return resolveBranchScope(user || actor, { forceTill: true }).stampId;
 }
 
 function saveBranch(data) {
