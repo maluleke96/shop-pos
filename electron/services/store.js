@@ -2247,17 +2247,11 @@ function completeSale(saleData, actorId, actorName, actorRole) {
     const shift = getOpenShift(actorId);
     if (!shift) throw new Error('You must open a shift before completing sales');
   }
-  const branchId = (() => {
-    try {
-      const actor = actorId ? getDb().prepare('SELECT id, role, branch_id FROM users WHERE id = ?').get(actorId) : null;
-      return branchesSvc.resolveTillBranchId(actor, {
-        till_branch_id: saleData?.till_branch_id ?? saleData?.branch_id,
-        branch_id: saleData?.branch_id
-      });
-    } catch (_) {
-      return features.getBranchId();
-    }
-  })();
+  const actor = actorId ? getDb().prepare('SELECT id, role, branch_id FROM users WHERE id = ?').get(actorId) : null;
+  const branchId = branchesSvc.resolveTillBranchId(actor, {
+    till_branch_id: saleData?.till_branch_id ?? saleData?.branch_id,
+    branch_id: saleData?.branch_id
+  });
   const deviceId = (() => {
     const client = saleData?.device_id ? String(saleData.device_id).trim() : '';
     if (client && /^[A-Za-z0-9_-]{4,64}$/.test(client)) return client.slice(0, 64);
