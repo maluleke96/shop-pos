@@ -225,6 +225,21 @@ function installApiReadCache() {
   after('deleteProduct', (res) => {
     if (res?.success !== false) invalidateProducts();
   });
+  after('recipeSaveMeal', (res) => {
+    if (res?.success !== false) invalidateProducts();
+  });
+  after('recipeUpdateIngredient', (res) => {
+    if (res?.success !== false) invalidateProducts();
+  });
+  after('recipeDeleteIngredient', (res) => {
+    if (res?.success !== false) invalidateProducts();
+  });
+  after('recipeEnsureIngredient', (res) => {
+    if (res?.success !== false) invalidateProducts();
+  });
+  after('recipeRestockIngredient', (res) => {
+    if (res?.success !== false) invalidateProducts();
+  });
   after('adjustStock', (res) => {
     if (res?.success !== false) invalidateProducts();
   });

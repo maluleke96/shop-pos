@@ -2062,6 +2062,7 @@ const App = {
         this.ensurePageScripts('products').catch(() => {});
       }
       if (page === 'products') {
+        tasks.push(() => API.getProducts({ admin_list: true }));
         tasks.push(() => API.getCategories({}));
         tasks.push(() => API.getSuppliers());
       }

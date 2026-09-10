@@ -1374,8 +1374,9 @@ function getProducts(filters = {}) {
   if (filters.low_stock) sql += ' AND p.stock_quantity <= p.min_stock';
   sql += ' ORDER BY p.name';
   const products = getDb().prepare(sql).all(...params);
+  const adminList = !!filters.admin_list;
   const liteProductFetch = !!(filters.combo_picker || filters.menu_flags_only || filters.ids_only);
-  if (!liteProductFetch) {
+  if (!liteProductFetch && !adminList) {
     maybeSyncMenuHighlights();
   }
 
@@ -1443,6 +1444,7 @@ function getProducts(filters = {}) {
       removals: (byProduct[p.id] || []).filter(m => m.modifier_type === 'removal')
     };
   });
+  if (adminList) return enriched;
   enriched = promoRequestsSvc.applyPromoPricesToProducts(enriched);
   try {
     enriched = require('./recipe-production').applyRecipePromoPricesToProducts(enriched);

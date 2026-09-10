@@ -1,5 +1,43 @@
 const ProductsPage = {
   _cache: null,
+  LIST_FILTERS: { admin_list: true },
+
+  syncListCache() {
+    Utils.sessionCacheSet('products_page', {
+      products: this.products,
+      categories: this.categories,
+      suppliers: this.suppliers || []
+    });
+    window.DataCache?.set?.('products', [this.LIST_FILTERS], { success: true, data: this.products }, 90000);
+  },
+
+  repaintList() {
+    const table = this._host?.querySelector?.('#prod-table') || document.getElementById('prod-table');
+    if (!table) return false;
+    const currency = this.app?.settings?.currency || 'R';
+    table.innerHTML = this.renderRows(currency);
+    this.bindTableEvents();
+    Utils.hydrateImages(table);
+    return true;
+  },
+
+  applySavedProduct(saved, formData) {
+    const productId = saved?.id || formData?.id;
+    if (!productId) return false;
+    const catName = this.categories.find((c) => c.id === (saved?.category_id ?? formData?.category_id))?.name
+      || saved?.category_name || '';
+    const row = { ...(typeof saved === 'object' ? saved : {}), category_name: catName };
+    const active = saved?.is_active !== undefined ? saved.is_active : formData?.is_active;
+    if (active === 0 || active === false) {
+      this.products = this.products.filter((p) => p.id !== productId);
+    } else {
+      const idx = this.products.findIndex((p) => p.id === productId);
+      if (idx >= 0) this.products[idx] = { ...this.products[idx], ...row };
+      else this.products.unshift(row);
+    }
+    this.syncListCache();
+    return this.repaintList();
+  },
 
   async render(el, app) {
     this.app = app;
@@ -32,14 +70,15 @@ const ProductsPage = {
       Utils.hydrateImages(el);
     };
 
-    // Cache-first paint only when we have a non-empty product list (empty [] must not block refresh / hide errors)
-    const mem = window.DataCache?.peek?.('products', [{}]);
+    const listFilters = this.LIST_FILTERS;
+    const mem = window.DataCache?.peek?.('products', [listFilters]);
     const fromMem = mem?.success !== false && Array.isArray(mem?.data) && mem.data.length
       ? { products: mem.data, categories: window.DataCache?.peek?.('categories', [{}])?.data || [], suppliers: window.DataCache?.peek?.('suppliers', [''])?.data || [] }
       : null;
     const fromSession = Utils.sessionCacheGet('products_page');
     const cached = fromMem || (Array.isArray(fromSession?.products) && fromSession.products.length ? fromSession : null);
-    if (cached?.products?.length) {
+    const paintedFromCache = !!cached?.products?.length;
+    if (paintedFromCache) {
       this.products = cached.products;
       this.categories = cached.categories || this.categories || [];
       this.suppliers = cached.suppliers || this.suppliers || [];
@@ -50,9 +89,9 @@ const ProductsPage = {
       <div class="card"><div class="table-wrap">${Utils.pageSkeleton(5)}</div></div>`;
     }
 
-    try {
+    const refresh = async () => {
       const [prodRes, catRes, supRes] = await Promise.all([
-        API.getProducts({}),
+        API.getProducts(listFilters),
         API.getCategories({}),
         API.getSuppliers()
       ]);
@@ -68,13 +107,16 @@ const ProductsPage = {
       this.products = Array.isArray(prodRes?.data) ? prodRes.data : [];
       this.categories = Array.isArray(catRes?.data) ? catRes.data : (this.categories || []);
       this.suppliers = Array.isArray(supRes?.data) ? supRes.data : (this.suppliers || []);
-      Utils.sessionCacheSet('products_page', {
-        products: this.products,
-        categories: this.categories,
-        suppliers: this.suppliers
-      });
+      this.syncListCache();
       paint();
       window.DataCache?.clearStaleBanner?.(el);
+    };
+
+    try {
+      if (paintedFromCache) refresh().catch(() => {
+        window.DataCache?.showStaleBanner?.(el, 'Unable to refresh. Showing last updated data.');
+      });
+      else await refresh();
     } catch (err) {
       if (!this.products?.length) {
         el.innerHTML = `<div class="page-toolbar"><h3>Products</h3></div><p class="error-msg">${Utils.escHtml(err?.message || 'Failed to load products')}</p>`;
@@ -130,13 +172,14 @@ const ProductsPage = {
       if (p) this.showForm({ ...p, id: null, name: p.name + ' (Copy)', barcode: null });
     }));
     document.querySelectorAll('.del-prod').forEach(b => b.addEventListener('click', async () => {
-      if (confirm('Delete this product?')) {
-        const r = await API.deleteProduct(parseInt(b.dataset.id), this.app.user);
-        if (!r.success) return Utils.toast(r.error, 'error');
-        Utils.sessionCacheClear('products_page');
-        ProductsPage.render(document.getElementById('page-content'), this.app);
-        Utils.toast('Product deleted', 'success');
-      }
+      if (!confirm('Delete this product?')) return;
+      const id = parseInt(b.dataset.id, 10);
+      const r = await API.deleteProduct(id, this.app.user);
+      if (!r.success) return Utils.toast(r.error, 'error');
+      this.products = this.products.filter((p) => p.id !== id);
+      this.syncListCache();
+      this.repaintList();
+      Utils.toast('Product deleted', 'success');
     }));
   },
 
@@ -616,31 +659,10 @@ const ProductsPage = {
         await API.saveCustomFieldValues('product', productId, values, this.app.user);
       }
       Utils.hideModal();
-      Utils.sessionCacheClear('products_page');
-      window.DataCache?.invalidate?.('products', 'stockReport', 'stockHistory', 'dashboard', 'pos', 'categories');
-      const host = document.getElementById('page-content') || this._host;
-      const table = document.getElementById('prod-table');
-      if (productId && table && host) {
-        const saved = result.data || {};
-        const catName = this.categories.find((c) => c.id === data.category_id)?.name || '';
-        const row = { ...prev, ...data, id: productId, ...(typeof saved === 'object' ? saved : {}), category_name: catName };
-        const idx = this.products.findIndex((p) => p.id === productId);
-        if (idx >= 0) this.products[idx] = { ...this.products[idx], ...row };
-        else this.products.unshift(row);
-        const currency = this.app.settings?.currency || 'R';
-        table.innerHTML = this.renderRows(currency);
-        this.bindTableEvents();
-        Utils.hydrateImages(table);
-        Utils.sessionCacheSet('products_page', {
-          products: this.products,
-          categories: this.categories,
-          suppliers: this.suppliers || []
-        });
-        window.DataCache?.set?.('products', [{}], { success: true, data: this.products }, 90000);
-        Utils.toast('Product saved successfully', 'success');
-        return;
+      const saved = typeof result.data === 'object' ? result.data : { id: productId };
+      if (!this.applySavedProduct(saved, data)) {
+        await ProductsPage.render(this._host || document.getElementById('page-content'), this.app);
       }
-      await ProductsPage.render(host, this.app);
       Utils.toast('Product saved successfully', 'success');
     } catch (err) {
       Utils.toast(err.message || 'Failed to save product', 'error');

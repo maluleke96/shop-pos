@@ -958,8 +958,31 @@ const RecipeProductionApp = {
         if (!r.success) return Utils.toast(r.error || 'Update failed', 'error');
         Utils.hideModal();
         Utils.toast('Ingredient updated', 'success');
-        this._ingredients = [];
-        this.pageIngredients(el);
+        const u = r.data || {};
+        const idx = this._ingredients.findIndex((x) => Number(x.id) === Number(p.id));
+        if (idx >= 0) {
+          this._ingredients[idx] = { ...this._ingredients[idx], ...u, name: u.name || document.getElementById('rp-ie-name')?.value || p.name };
+        }
+        const tr = el.querySelector(`tr[data-id="${p.id}"]`);
+        if (tr) {
+          const name = u.name || document.getElementById('rp-ie-name')?.value || p.name;
+          const stock = u.stock_quantity ?? p.stock_quantity;
+          const unit = u.stock_unit || u.unit || document.getElementById('rp-ie-unit')?.value || p.stock_unit || p.unit || 'g';
+          const cost = u.buying_price ?? parseFloat(document.getElementById('rp-ie-cost')?.value) ?? p.buying_price;
+          const min = u.min_stock ?? parseFloat(document.getElementById('rp-ie-min')?.value) ?? p.min_stock;
+          tr.querySelector('td strong').textContent = name;
+          tr.cells[2].innerHTML = `<strong>${stock}</strong> <span class="rp-muted">left</span>`;
+          tr.cells[3].textContent = unit;
+          tr.cells[5].textContent = this.money(cost);
+          tr.cells[6].innerHTML = stock <= 0
+            ? '<span class="rp-tag danger">Out</span>'
+            : stock <= (min || 5)
+              ? '<span class="rp-tag warn">Low</span>'
+              : '<span class="rp-tag ok">OK</span>';
+        } else {
+          this._ingredients = [];
+          this.pageIngredients(el);
+        }
       };
     }));
     el.querySelectorAll('.rp-ing-del').forEach(btn => btn.addEventListener('click', async () => {
@@ -969,8 +992,12 @@ const RecipeProductionApp = {
       const r = await API.recipeDeleteIngredient(p.id, this.user);
       if (!r.success) return Utils.toast(r.error || 'Delete failed', 'error');
       Utils.toast('Ingredient deleted', 'success');
-      this._ingredients = [];
-      this.pageIngredients(el);
+      this._ingredients = this._ingredients.filter((x) => Number(x.id) !== Number(p.id));
+      el.querySelector(`tr[data-id="${p.id}"]`)?.remove();
+      if (!el.querySelector('tbody tr')) {
+        const tbody = el.querySelector('.rp-table tbody');
+        if (tbody) tbody.innerHTML = '<tr><td colspan="8" class="rp-muted">No ingredients yet. Add one here, or save a recipe in Recipe Builder.</td></tr>';
+      }
     }));
   },
 
@@ -987,11 +1014,9 @@ const RecipeProductionApp = {
     const filters = { search: filter || undefined };
     if (this._mealRecipeFilter === 'with') filters.with_recipe = true;
     if (this._mealRecipeFilter === 'without') filters.with_recipe = false;
-    const res = await API.recipeMealProducts({ ...filters, ...this.branchFilter() }, this.user);
-    if (!res.success) throw new Error(res.error || 'Failed to load products');
-    const products = res.data || [];
-
-    el.innerHTML = `
+    const mealCacheKey = JSON.stringify({ ...filters, ...this.branchFilter() });
+    const paintMealGrid = (products) => {
+      el.innerHTML = `
       <p class="rp-muted" style="margin-top:0">
         <strong>How it works:</strong> Click a meal already in POS (e.g. Quarter Chicken).
         Add each ingredient you use for <em>one</em> meal (chicken piece, oil, paprika, spice — with amounts).
@@ -1023,23 +1048,36 @@ const RecipeProductionApp = {
           </button>`).join('') || '<p class="rp-muted">No products found. Add meals in POS Products first.</p>'}
       </div>`;
 
-    const reload = async () => {
-      this._mealFilter = document.getElementById('rp-meal-q').value.trim();
-      this._mealRecipeFilter = document.getElementById('rp-meal-filter').value;
-      this.pageRecipes(el);
+      const reload = async () => {
+        this._mealFilter = document.getElementById('rp-meal-q').value.trim();
+        this._mealRecipeFilter = document.getElementById('rp-meal-filter').value;
+        this.pageRecipes(el);
+      };
+      const bindCards = () => {
+        el.querySelectorAll('.rp-meal-card').forEach(b => b.onclick = () => {
+          this._editingMealProductId = parseInt(b.dataset.id, 10);
+          this._editingRecipe = null;
+          this._useLegacyEditor = false;
+          this.renderMealRecipeEditor(el, this._editingMealProductId);
+        });
+      };
+      document.getElementById('rp-meal-q').onkeydown = (e) => { if (e.key === 'Enter') reload(); };
+      document.getElementById('rp-meal-refresh').onclick = reload;
+      document.getElementById('rp-meal-filter').onchange = reload;
+      bindCards();
     };
-    const bindCards = () => {
-      el.querySelectorAll('.rp-meal-card').forEach(b => b.onclick = () => {
-        this._editingMealProductId = parseInt(b.dataset.id, 10);
-        this._editingRecipe = null;
-        this._useLegacyEditor = false;
-        this.renderMealRecipeEditor(el, this._editingMealProductId);
-      });
-    };
-    document.getElementById('rp-meal-q').onkeydown = (e) => { if (e.key === 'Enter') reload(); };
-    document.getElementById('rp-meal-refresh').onclick = reload;
-    document.getElementById('rp-meal-filter').onchange = reload;
-    bindCards();
+
+    const cachedMeals = this._mealProductsCache?.key === mealCacheKey ? this._mealProductsCache.products : null;
+    if (cachedMeals?.length) paintMealGrid(cachedMeals);
+
+    const res = await API.recipeMealProducts({ ...filters, ...this.branchFilter() }, this.user);
+    if (!res.success) {
+      if (!cachedMeals?.length) throw new Error(res.error || 'Failed to load products');
+      return;
+    }
+    const products = res.data || [];
+    this._mealProductsCache = { key: mealCacheKey, products };
+    paintMealGrid(products);
   },
 
   escapeAttr(s) {
@@ -1739,6 +1777,11 @@ const RecipeProductionApp = {
         setDirty(false);
         saving = false;
         scheduleRecalc();
+        if (this._mealProductsCache?.products) {
+          this._mealProductsCache.products = this._mealProductsCache.products.map((p) =>
+            Number(p.id) === Number(productId) ? { ...p, ingredient_count: count } : p
+          );
+        }
         const sum = document.getElementById('rr-saved-summary');
         if (sum) sum.innerHTML = `Currently saved: <strong>${count}</strong> ingredient(s)${names ? ` — ${names}` : ''}`;
       } catch (err) {
@@ -1931,8 +1974,11 @@ const RecipeProductionApp = {
         if (res.skipped) return Utils.toast('Enter quantity bought', 'error');
         if (!res.success) return Utils.toast(res.error, 'error');
         Utils.toast('Stock updated', 'success');
-        this._ingredients = [];
-        this.pageRestock(el);
+        const u = res.data || {};
+        const stockCell = tr.querySelector('td:nth-child(3) strong');
+        if (stockCell && u.stock_quantity != null) stockCell.textContent = u.stock_quantity;
+        tr.querySelector('.rp-rs-qty').value = '';
+        tr.querySelector('.rp-rs-cost').value = '';
       };
     });
     document.getElementById('rp-rs-all')?.addEventListener('click', async () => {
@@ -1942,11 +1988,14 @@ const RecipeProductionApp = {
         if (res.skipped) continue;
         if (!res.success) return Utils.toast(res.error, 'error');
         n++;
+        const u = res.data || {};
+        const stockCell = tr.querySelector('td:nth-child(3) strong');
+        if (stockCell && u.stock_quantity != null) stockCell.textContent = u.stock_quantity;
+        tr.querySelector('.rp-rs-qty').value = '';
+        tr.querySelector('.rp-rs-cost').value = '';
       }
       if (!n) return Utils.toast('Fill quantity on at least one line', 'error');
       Utils.toast(`Updated ${n} ingredient(s)`, 'success');
-      this._ingredients = [];
-      this.pageRestock(el);
     });
   },
 
