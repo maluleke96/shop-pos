@@ -51,6 +51,7 @@
     "package:railway": "node scripts/package-railway-source.js",
     "package:netlify-manual": "node scripts/package-netlify-manual.js",
     "smoke:rpc": "node scripts/smoke-rpc.js",
+    "audit:admin": "node scripts/live-admin-audit.js",
     "test:signage": "node scripts/signage-test-suite.js",
     "test:kiosk-drivethru": "node scripts/kiosk-drive-thru-test-suite.js"
   },

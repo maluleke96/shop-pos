@@ -24,7 +24,19 @@
   const origRenderSection = AdminPage.renderSection.bind(AdminPage);
   AdminPage.renderSection = async function (el) {
     const auditRenderers = {
-      overview: () => this.renderBusinessDashboard(el),
+      overview: async () => {
+        await this.renderBusinessDashboard(el);
+        let host = el.querySelector('#admin-overview-quick-panel');
+        if (!host) {
+          host = document.createElement('div');
+          host.id = 'admin-overview-quick-panel';
+          host.style.marginTop = '16px';
+          el.appendChild(host);
+        }
+        if (typeof this.renderOverviewQuickPanel === 'function') {
+          await this.renderOverviewQuickPanel(host);
+        }
+      },
       salesmgmt: () => this.renderSalesManagement(el),
       saleexplorer: () => this.renderSalesExplorer(el),
       soldproducts: () => this.renderSoldProducts(el),

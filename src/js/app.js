@@ -1606,19 +1606,40 @@ const App = {
       ...(this._lazyScripts[page] || [])
     ];
     const failures = [];
-    // Load in order ? Admin extenders (admin-audit, admin-pro, ?) must run AFTER admin.js
-    for (const src of scripts) {
-      try {
-        await Utils.loadScript(src);
-      } catch (err) {
-        failures.push(src);
-        console.warn('Lazy script load failed:', src, err?.message || err);
+    const adminExtenderRe = /\/admin-(pro|audit|staff|hr|operations|combos|quotes|payroll|employee-month|recruitment|marketing|delivery|business-modules)\.js$/i;
+    // Admin core must register AdminPage before any extender runs
+    if (page === 'admin') {
+      const core = scripts.find((s) => /\/admin\.js$/i.test(s));
+      const rest = scripts.filter((s) => s !== core);
+      if (core) {
+        try { await Utils.loadScript(core); } catch (err) {
+          failures.push(core);
+          console.warn('Admin core load failed:', err?.message || err);
+        }
+      }
+      for (let i = 0; i < 40 && !window.AdminPage; i++) {
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      for (const src of rest) {
+        try { await Utils.loadScript(src); } catch (err) {
+          failures.push(src);
+          console.warn('Lazy script load failed:', src, err?.message || err);
+        }
+      }
+    } else {
+      for (const src of scripts) {
+        try {
+          await Utils.loadScript(src);
+        } catch (err) {
+          failures.push(src);
+          console.warn('Lazy script load failed:', src, err?.message || err);
+        }
       }
     }
 
     // If Admin extenders ran too early on a previous visit, force-reload them once
     if (page === 'admin' && window.AdminPage && !AdminPage.sections?.some((s) => s.id === 'salesmgmt')) {
-      const extenders = scripts.filter((s) => /\/admin-(pro|audit|staff|hr|operations|combos|quotes|payroll|employee-month|recruitment|marketing)\.js$/i.test(s));
+      const extenders = scripts.filter((s) => adminExtenderRe.test(s));
       for (const src of extenders) {
         try {
           Utils._loadedScripts?.delete?.(src);

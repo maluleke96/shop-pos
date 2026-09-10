@@ -19,6 +19,12 @@ const AdminPage = {
     }
   },
 
+  _adminNavLabel(label) {
+    const hide = this.app?.settings?.customization?.hide_nav_emojis;
+    if (!hide) return label;
+    return String(label || '').replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE00}-\u{FE0F}\u{200D}]/gu, '').replace(/\s+/g, ' ').trim();
+  },
+
   sections: [
     { id: 'overview', label: '🏠 Overview', icon: 'overview' },
     { id: 'printer', label: '🖨️ Printer Setup', icon: 'printer' },
@@ -62,7 +68,7 @@ const AdminPage = {
     { id: 'hrcontracts', label: '📄 Contracts & Probation', icon: 'hrcontracts' },
     { id: 'recruitment', label: '💼 Recruitment', icon: 'recruitment' },
     { id: 'marketing-mgmt', label: '📣 Marketing Command Centre', icon: 'marketing' },
-    { id: 'delivery-dept', label: '🚚 Delivery Department', icon: 'delivery' },
+    { id: 'delivery-dept', label: '🚚 Deliveries', icon: 'delivery' },
     { id: 'payroll', label: '💼 Payroll & Compliance', icon: 'payroll' },
     { id: 'employee-of-month', label: '🏆 Employee of Month', icon: 'employee-of-month' }
   ],
@@ -76,13 +82,13 @@ const AdminPage = {
     el.innerHTML = `<div class="admin-layout">
       <div class="admin-sidebar-col">
         <div class="admin-search-bar">
-          <input type="search" id="admin-global-search" placeholder="Search admin, staff, products…" autocomplete="off">
+          <input type="search" id="admin-global-search" placeholder="Search admin… (Ctrl+K)" autocomplete="off" title="Search admin sections, products, staff — Ctrl+K">
           <div id="admin-search-results" class="search-dropdown hidden"></div>
         </div>
         <nav class="admin-nav" id="admin-nav">${this.sections.filter(s =>
           Utils.canAccessAdminSection(app.user, s.id)
         ).map(s =>
-          `<button class="admin-nav-btn ${s.id === this.section ? 'active' : ''}" data-section="${s.id}">${s.label}</button>`
+          `<button class="admin-nav-btn ${s.id === this.section ? 'active' : ''}" data-section="${s.id}">${this._adminNavLabel(s.label)}</button>`
         ).join('')}</nav>
       </div>
       <div class="admin-content" id="admin-content"></div>
@@ -94,8 +100,18 @@ const AdminPage = {
       setTimeout(() => el.querySelector('#admin-search-results')?.classList.add('hidden'), 200);
     });
     searchInput?.addEventListener('focus', () => {
-      if (searchInput.value.length >= 2) this.handleAdminSearch(searchInput.value);
+      if (searchInput.value.length >= 1) this.handleAdminSearch(searchInput.value);
     });
+    if (!this._adminSearchKeyBound) {
+      this._adminSearchKeyBound = true;
+      document.addEventListener('keydown', (e) => {
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k' && this.app?.currentPage === 'admin') {
+          e.preventDefault();
+          searchInput?.focus();
+          searchInput?.select();
+        }
+      });
+    }
 
     el.querySelector('#admin-nav').addEventListener('click', (e) => {
       const btn = e.target.closest('.admin-nav-btn');
@@ -230,7 +246,6 @@ const AdminPage = {
       customize: () => this.renderCustomize(el),
       branches: () => this.renderBranchesSync(el),
       'online-orders': () => this.renderOnlineOrders(el),
-      deliveries: () => this.renderDeliveries(el),
       'mobile-app': () => this.renderMobileAppUsers(el),
       'business-modules': async () => tryModule(
         () => window.AdminBusinessModulesPage,
@@ -367,9 +382,11 @@ const AdminPage = {
     });
   },
 
-  async renderOverview(el) {
+  async renderOverviewQuickPanel(container) {
+    const el = container || document.createElement('div');
+    if (!container) el.className = 'admin-section';
     const s = this.settings;
-    el.innerHTML = `<div class="admin-section"><h3>Admin Dashboard</h3><p class="muted">Loading business stats…</p></div>`;
+    el.innerHTML = `<p class="muted">Loading quick links…</p>`;
     // Prefer admin dashboard once; fall back to lighter dashboard:stats if needed (avoid double heavy load).
     let dashRes = await API.getAdminDashboard(Utils.today(), Utils.today()).catch(() => ({ success: false }));
     let todayRes = { success: false };
@@ -389,8 +406,8 @@ const AdminPage = {
     const dashErr = !dashRes.success && !todayRes.success
       ? `<p class="muted" style="color:var(--danger)">Stats unavailable: ${Utils.escHtml(dashRes.error || todayRes.error || 'error')}</p>`
       : '';
-    el.innerHTML = `<div class="admin-section">
-      <h3>Admin Dashboard</h3>
+    el.innerHTML = `${container ? '' : '<div class="admin-section">'}
+      <h4 style="margin-top:0">Quick admin snapshot</h4>
       <p class="muted">Till rules, printers, PINs, loyalty, and staff live here. Shop name / theme / backup is under sidebar <strong>Settings</strong>.</p>
       ${dashErr}
       <div class="stats-grid" style="margin-top:20px">
@@ -444,36 +461,42 @@ const AdminPage = {
           <button type="button" class="btn btn-ghost" id="admin-open-accounting-overview">Accounting &amp; Bookkeeping</button>
         </div>
       </div></div>
-    </div>`;
-    document.getElementById('admin-open-business-modules')?.addEventListener('click', () => {
+    ${container ? '' : '</div>'}`;
+    const adminContent = () => document.getElementById('admin-content');
+    el.querySelector('#admin-open-business-modules')?.addEventListener('click', () => {
       this.section = 'business-modules';
       document.querySelectorAll('.admin-nav-btn').forEach((b) =>
         b.classList.toggle('active', b.dataset.section === 'business-modules'));
-      this.renderSection(el);
+      this.renderSection(adminContent());
     });
     el.querySelectorAll('[data-bm-section]').forEach((card) => {
       card.addEventListener('click', () => {
         this.section = card.dataset.bmSection;
         document.querySelectorAll('.admin-nav-btn').forEach((b) =>
           b.classList.toggle('active', b.dataset.section === 'business-modules'));
-        this.renderSection(el);
+        this.renderSection(adminContent());
       });
     });
-    document.getElementById('admin-open-recipe')?.addEventListener('click', () => {
+    el.querySelector('#admin-open-recipe')?.addEventListener('click', () => {
       this.app.openRecipeProduction({ fromApp: true });
     });
-    document.getElementById('admin-open-business-manager')?.addEventListener('click', () => {
+    el.querySelector('#admin-open-business-manager')?.addEventListener('click', () => {
       this.app?.openBusinessManager?.({ embed: true });
     });
-    document.getElementById('admin-manage-mobile-users')?.addEventListener('click', () => {
+    el.querySelector('#admin-manage-mobile-users')?.addEventListener('click', () => {
       this.section = 'mobile-app';
       document.querySelectorAll('.admin-nav-btn').forEach((b) =>
         b.classList.toggle('active', b.dataset.section === 'mobile-app'));
-      this.renderSection(el);
+      this.renderSection(adminContent());
     });
-    document.getElementById('admin-open-accounting-overview')?.addEventListener('click', () => {
+    el.querySelector('#admin-open-accounting-overview')?.addEventListener('click', () => {
       this.app?.openAccounting?.({ fromApp: true, skipLogin: true });
     });
+    return el;
+  },
+
+  async renderOverview(el) {
+    return this.renderOverviewQuickPanel(el);
   },
 
   async renderRecipeSection(el) {
@@ -2882,29 +2905,11 @@ const AdminPage = {
   },
 
   async renderLoyaltyOnline(el) {
-    const globalRes = await (this._loyaltyOnlinePrefetch || API.webGetSettings?.().catch(() => ({ data: {} })));
-    this._loyaltyOnlinePrefetch = null;
-    const global = globalRes?.data || globalRes || {};
-    const online = global.online || {};
     el.innerHTML = `<div class="card"><div class="card-body">
-      <h4 style="margin-top:0">Online store — loyalty & gift cards</h4>
-      <p class="muted">Control what customers can use when ordering on your website. Full online order settings are under <strong>Online Orders</strong>.</p>
-      <label style="display:block;margin:8px 0"><input type="checkbox" id="loy-on-loyalty" ${online.loyalty_enabled !== false ? 'checked' : ''}> Allow loyalty points at online checkout</label>
-      <label style="display:block;margin:8px 0"><input type="checkbox" id="loy-on-giftcards" ${online.gift_cards_enabled !== false ? 'checked' : ''}> Allow gift card redemption online</label>
-      <label style="display:block;margin:8px 0"><input type="checkbox" id="loy-on-coupons" ${online.coupons_enabled !== false ? 'checked' : ''}> Allow coupon codes online</label>
-      <button type="button" class="btn btn-primary btn-sm" id="loy-on-save" style="margin-top:8px">Save online settings</button>
-      <button type="button" class="btn btn-ghost btn-sm" id="loy-on-orders" style="margin-top:8px;margin-left:8px">Open Online Orders</button>
+      <h4 style="margin-top:0">Online checkout options</h4>
+      <p class="muted">Loyalty points, gift cards, coupons, and online order toggles are managed in one place to avoid conflicting settings.</p>
+      <button type="button" class="btn btn-primary" id="loy-on-orders">Open Online Orders settings →</button>
     </div></div>`;
-    el.querySelector('#loy-on-save')?.addEventListener('click', async () => {
-      const r = await this.saveWebGlobalSettings({
-        loyalty_enabled: document.getElementById('loy-on-loyalty').checked,
-        gift_cards_enabled: document.getElementById('loy-on-giftcards').checked,
-        coupons_enabled: document.getElementById('loy-on-coupons').checked
-      });
-      if (!r) return;
-      Utils.toast('Online loyalty & gift card settings saved', 'success');
-      this._loyaltyOnlinePrefetch = null;
-    });
     el.querySelector('#loy-on-orders')?.addEventListener('click', () => {
       this.section = 'online-orders';
       document.querySelectorAll('.admin-nav-btn').forEach((b) => b.classList.toggle('active', b.dataset.section === 'online-orders'));
@@ -3399,6 +3404,7 @@ const AdminPage = {
 
   renderDevice(el) {
     const ds = this.settings.device_settings || {};
+    const ss = this.settings.scanner_settings || {};
     const devId = ds.device_id || Utils.getDeviceId();
     el.innerHTML = `<div class="admin-section"><h3>Device Settings</h3>
       <div class="card"><div class="card-body"><div class="form-grid">
@@ -3410,7 +3416,32 @@ const AdminPage = {
         <div class="field"><label><input type="checkbox" id="dev-active" ${ds.activated!==false?'checked':''}> POS Activated</label></div>
       </div>
       <button class="btn btn-primary" id="save-device" style="margin-top:16px">Save Device Settings</button>
+      <h4 style="margin-top:28px">Barcode Scanner</h4>
+      <div class="form-grid">
+        <div class="field"><label>Scanner Type</label>
+          <select id="scan-type"><option value="usb" ${ss.type==='usb'||!ss.type?'selected':''}>USB Scanner</option>
+          <option value="bluetooth" ${ss.type==='bluetooth'?'selected':''}>Bluetooth Scanner</option>
+          <option value="camera" ${ss.type==='camera'?'selected':''}>Camera Scanner (Tablet)</option></select></div>
+        <div class="field"><label><input type="checkbox" id="scan-enabled" ${ss.enabled!==false?'checked':''}> Scanner enabled</label></div>
+        <div class="field"><label><input type="checkbox" id="scan-beep" ${ss.beep_on_scan!==false?'checked':''}> Beep on scan</label></div>
+        <div class="field full"><label>Prefix / Suffix (optional)</label><input id="scan-prefix" value="${ss.prefix||''}" placeholder="e.g. *"></div>
+      </div>
+      <button class="btn btn-ghost" id="save-scanner" style="margin-top:12px">Save Scanner Settings</button>
       </div></div></div>`;
+    document.getElementById('save-scanner')?.addEventListener('click', async () => {
+      const r = await this.awaitSave(API.saveJsonSetting('scanner_settings', {
+        type: document.getElementById('scan-type').value,
+        enabled: document.getElementById('scan-enabled').checked,
+        beep_on_scan: document.getElementById('scan-beep').checked,
+        prefix: document.getElementById('scan-prefix').value.trim()
+      }, this.app.user), 'Scanner settings saved', 'Could not save scanner settings');
+      if (r) this.settings.scanner_settings = {
+        type: document.getElementById('scan-type').value,
+        enabled: document.getElementById('scan-enabled').checked,
+        beep_on_scan: document.getElementById('scan-beep').checked,
+        prefix: document.getElementById('scan-prefix').value.trim()
+      };
+    });
     document.getElementById('save-device').addEventListener('click', async () => {
       const deviceId = document.getElementById('dev-id').value || Utils.getDeviceId();
       await API.saveJsonSetting('device_settings', {
@@ -3542,21 +3573,22 @@ const AdminPage = {
   async handleAdminSearch(query) {
     const dropdown = document.getElementById('admin-search-results');
     if (!dropdown) return;
-    if (!query || query.length < 2) { dropdown.classList.add('hidden'); return; }
+    if (!query || !String(query).trim()) { dropdown.classList.add('hidden'); return; }
     const q = query.toLowerCase();
+    const needRpc = q.length >= 2;
     const currency = this.settings?.currency || 'R';
     let html = '';
 
     const sections = (this.sections || []).filter(s =>
-      s.label.toLowerCase().includes(q) && Utils.canAccessAdminSection(this.app.user, s.id)
+      (this._adminNavLabel(s.label).toLowerCase().includes(q) || s.label.toLowerCase().includes(q))
+      && Utils.canAccessAdminSection(this.app.user, s.id)
     );
     if (sections.length) {
       html += '<div class="search-group"><h4>Admin Sections</h4>' +
         sections.map(s => `<div class="search-item" data-action="admin-section" data-section="${s.id}">${s.label}</div>`).join('') + '</div>';
     }
 
-    const res = await API.globalSearch(query);
-    const data = res.data || {};
+    const data = needRpc ? ((await API.globalSearch(query)).data || {}) : {};
     if (data.products?.length && Utils.canAccess(this.app.user, 'products')) {
       html += '<div class="search-group"><h4>Products</h4>' +
         data.products.map(p => `<div class="search-item" data-action="page" data-page="products">${p.name} — ${Utils.formatMoney(p.selling_price, currency)}</div>`).join('') + '</div>';
@@ -3813,14 +3845,6 @@ const AdminPage = {
         this.renderOnlineOrders(el);
       });
     });
-  },
-
-  async renderDeliveries(el) {
-    if (window.App?.ensurePageScripts) await App.ensurePageScripts('admin');
-    if (window.AdminDeliveryPage) {
-      return window.AdminDeliveryPage.render(el, this);
-    }
-    el.innerHTML = `<div class="admin-section"><p class="muted">Delivery Department module not loaded. Try refreshing, or open <strong>Delivery Department</strong> from the sidebar.</p></div>`;
   },
 
   async renderMobileAppUsers(el) {

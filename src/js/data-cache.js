@@ -203,6 +203,7 @@ function installApiReadCache() {
       window.dispatchEvent(new CustomEvent('shop-pos-catalog-updated'));
       window.dispatchEvent(new CustomEvent('shop-pos-stock-updated'));
       window.dispatchEvent(new CustomEvent('shop-pos-combos-updated'));
+      localStorage.setItem('shop-pos-catalog-ts', String(Date.now()));
     } catch (_) { /* ignore */ }
   };
 

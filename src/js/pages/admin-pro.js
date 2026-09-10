@@ -30,36 +30,6 @@
     return origRenderSection(el);
   };
 
-  const origDevice = AdminPage.renderDevice.bind(AdminPage);
-  AdminPage.renderDevice = async function (el) {
-    await origDevice(el);
-    const ss = this.settings.scanner_settings || {};
-    const card = el.querySelector('.card .card-body');
-    if (!card || document.getElementById('scan-type')) return;
-    const extra = document.createElement('div');
-    extra.innerHTML = `<h4 style="margin-top:24px">Barcode Scanner</h4>
-      <div class="form-grid">
-        <div class="field"><label>Scanner Type</label>
-          <select id="scan-type"><option value="usb" ${ss.type==='usb'||!ss.type?'selected':''}>USB Scanner</option>
-          <option value="bluetooth" ${ss.type==='bluetooth'?'selected':''}>Bluetooth Scanner</option>
-          <option value="camera" ${ss.type==='camera'?'selected':''}>Camera Scanner (Tablet)</option></select></div>
-        <div class="field"><label><input type="checkbox" id="scan-enabled" ${ss.enabled!==false?'checked':''}> Scanner enabled</label></div>
-        <div class="field"><label><input type="checkbox" id="scan-beep" ${ss.beep_on_scan!==false?'checked':''}> Beep on scan</label></div>
-        <div class="field full"><label>Prefix / Suffix (optional)</label><input id="scan-prefix" value="${ss.prefix||''}" placeholder="e.g. *"></div>
-      </div>
-      <button class="btn btn-ghost" id="save-scanner" style="margin-top:12px">Save Scanner Settings</button>`;
-    card.appendChild(extra);
-    document.getElementById('save-scanner').addEventListener('click', async () => {
-      await API.saveJsonSetting('scanner_settings', {
-        type: document.getElementById('scan-type').value,
-        enabled: document.getElementById('scan-enabled').checked,
-        beep_on_scan: document.getElementById('scan-beep').checked,
-        prefix: document.getElementById('scan-prefix').value.trim()
-      }, this.app.user);
-      Utils.toast('Scanner settings saved', 'success');
-    });
-  };
-
   AdminPage.renderDatabase = async function (el) {
     const res = await API.getDatabaseHealth();
     const health = res.data || {};

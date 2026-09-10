@@ -285,6 +285,7 @@ const POSPage = {
     this.bindEvents(el);
     this.bindMoreMenu(el);
     this.startAdvertReminderMonitor();
+    this._lastCatalogStamp = this._catalogStamp();
     this._bindCatalogLiveSync();
     this._bindComboLiveRefresh();
     if (isKiosk) this.ensureKioskLogout(el);
@@ -427,6 +428,14 @@ const POSPage = {
     window.addEventListener('shop-pos-catalog-updated', this._catalogRefreshHandler);
     this._comboRefreshHandler = () => this.reloadCombosOnly?.();
     window.addEventListener('shop-pos-combos-updated', this._comboRefreshHandler);
+    if (!this._catalogStorageBound) {
+      this._catalogStorageBound = true;
+      window.addEventListener('storage', (e) => {
+        if (e.key !== 'shop-pos-catalog-ts' || !e.newValue) return;
+        this._lastCatalogStamp = e.newValue;
+        this.reloadCatalog?.().catch(() => {});
+      });
+    }
   },
 
   async fetchTodaySalesTotal() {
@@ -614,6 +623,10 @@ const POSPage = {
     }
   },
 
+  _catalogStamp() {
+    try { return localStorage.getItem('shop-pos-catalog-ts') || ''; } catch (_) { return ''; }
+  },
+
   /** Keep-alive revisit: preserve cart, refresh catalog/shift in background. */
   async activate(el, app) {
     if (!el?.querySelector?.('.pos-layout')) {
@@ -622,6 +635,11 @@ const POSPage = {
     this.app = app;
     this._host = el;
     this.resetPosSaleUi();
+    const stamp = this._catalogStamp();
+    if (stamp && stamp !== this._lastCatalogStamp) {
+      this._lastCatalogStamp = stamp;
+      this.reloadCatalog().catch(() => {});
+    }
     const filters = { for_pos: true, actor: app.user };
     const branchId = app.user?.branch_id || undefined;
     const comboFilters = branchId ? { branch_id: branchId, for_pos: true } : { for_pos: true };
