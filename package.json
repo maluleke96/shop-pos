@@ -52,6 +52,7 @@
     "package:netlify-manual": "node scripts/package-netlify-manual.js",
     "smoke:rpc": "node scripts/smoke-rpc.js",
     "audit:admin": "node scripts/live-admin-audit.js",
+    "audit:admin-performance": "node scripts/live-admin-performance-audit.js",
     "test:signage": "node scripts/signage-test-suite.js",
     "test:kiosk-drivethru": "node scripts/kiosk-drive-thru-test-suite.js"
   },

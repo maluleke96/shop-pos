@@ -95,12 +95,12 @@ const AdminPage = {
     </div>`;
 
     const searchInput = el.querySelector('#admin-global-search');
-    searchInput?.addEventListener('input', (e) => this.handleAdminSearch(e.target.value));
+    searchInput?.addEventListener('input', (e) => this.handleAdminSearchDebounced(e.target.value));
     searchInput?.addEventListener('blur', () => {
       setTimeout(() => el.querySelector('#admin-search-results')?.classList.add('hidden'), 200);
     });
     searchInput?.addEventListener('focus', () => {
-      if (searchInput.value.length >= 1) this.handleAdminSearch(searchInput.value);
+      if (searchInput.value.length >= 1) this.handleAdminSearchDebounced(searchInput.value);
     });
     if (!this._adminSearchKeyBound) {
       this._adminSearchKeyBound = true;
@@ -139,31 +139,75 @@ const AdminPage = {
     if (layout) layout.classList.toggle('admin-ops-full', !!opsOnly);
   },
 
+  /** Tear down timers/polling when leaving an admin section. */
+  _leaveSection(sectionId) {
+    if (!sectionId) return;
+    if (sectionId === 'overview') {
+      clearInterval(this._liveTimer);
+      this._liveTimer = null;
+    }
+    if (sectionId === 'delivery-dept') {
+      window.AdminDeliveryPage?.stopAutoRefresh?.();
+    }
+  },
+
+  /** Instant nav feedback + cancel stale section renders. */
+  _beginSectionRender(el) {
+    const prev = this._activeSection;
+    if (prev && prev !== this.section) this._leaveSection(prev);
+    this._activeSection = this.section;
+    this._sectionGen = (this._sectionGen || 0) + 1;
+    const gen = this._sectionGen;
+    if (!el) return gen;
+    const today = Utils.today();
+    const cachedDash = this.section === 'overview'
+      && window.DataCache?.peek?.('adminDashboard', [today, today]);
+    const syncSections = new Set([
+      'printer', 'payments', 'receipt', 'security', 'permissions', 'tax', 'customize', 'device'
+    ]);
+    if (!cachedDash && !syncSections.has(this.section)) {
+      el.innerHTML = `<div class="admin-section">${Utils.pageSkeleton(3)}</div>`;
+    }
+    return gen;
+  },
+
   _prefetchAdmin() {
     if (this._adminPrefetchStarted) return;
     this._adminPrefetchStarted = true;
     if (window.App?.ensurePageScripts) {
       this._adminScriptsP = App.ensurePageScripts('admin').catch(() => {});
     }
-    const today = Utils.today();
-    const actor = this.app?.user;
-    const warm = [
-      API.getProducts?.({ admin_list: true, actor }).catch(() => {}),
-      API.getCategories?.({}).catch(() => {}),
-      API.getSuppliers?.('').catch(() => {}),
-      API.getAdminDashboard?.(today, today).catch(() => {}),
-      API.getSalesList?.({ from: today, to: today, limit: 500 }).catch(() => {}),
-      API.getPromoRequestHistory?.({ status: 'active' }).catch(() => {}),
-      API.getActiveCombos?.({ for_pos: true }).catch(() => {}),
-      API.getCombos?.({ list_only: true }).catch(() => {})
-    ];
-    Promise.all(warm).catch(() => {});
-    API.getSettingsParsed().then((res) => {
-      if (res?.data) {
-        this.settings = res.data;
-        if (this.app) this.app.settings = res.data;
+    if (!this.settings?.shop_name && !this.app?.settings?.shop_name) {
+      API.getSettingsParsed().then((res) => {
+        if (res?.data) {
+          this.settings = res.data;
+          if (this.app) this.app.settings = res.data;
+        }
+      }).catch(() => {});
+    } else if (this.app?.settings && !this.settings?.shop_name) {
+      this.settings = this.app.settings;
+    }
+    const warmIdle = () => {
+      const today = Utils.today();
+      const dc = window.DataCache;
+      dc?.prefetch?.('categories', [{}], () => API.getCategories({}), { ttlMs: 300000 });
+      if (this.section === 'overview') {
+        dc?.prefetch?.('adminDashboard', [today, today], () => API.getAdminDashboard(today, today), { ttlMs: 45000 });
       }
-    }).catch(() => {});
+    };
+    if (typeof requestIdleCallback === 'function') requestIdleCallback(warmIdle, { timeout: 2500 });
+    else setTimeout(warmIdle, 900);
+  },
+
+  /** Revisit admin page without rebuilding the shell. */
+  async activate(el, app) {
+    this.app = app;
+    if (!el?.querySelector?.('.admin-layout')) return this.render(el, app);
+    el.querySelectorAll('.admin-nav-btn').forEach((b) => {
+      b.classList.toggle('active', b.dataset.section === this.section);
+    });
+    this.toggleOpsComplianceLayout(this.section === 'opscompliance');
+    await this.renderSection(document.getElementById('admin-content'));
   },
 
   async _ensureAdminScripts(checkFn) {
@@ -199,6 +243,11 @@ const AdminPage = {
   },
 
   async renderSection(el) {
+    const gen = this._beginSectionRender(el);
+    await this._renderSectionCore(el, gen);
+  },
+
+  async _renderSectionCore(el, gen) {
     if (this.section === 'deliveries') this.section = 'delivery-dept';
     const lazySections = new Set([
       'hrcontracts', 'recruitment', 'marketing-mgmt', 'employee-of-month', 'staffhr', 'hr-workspace', 'hr-approvals', 'staffportal', 'payroll',
@@ -371,9 +420,12 @@ const AdminPage = {
     };
     const renderer = renderers[this.section];
     if (renderer) {
-      return renderer();
+      await Promise.resolve(renderer());
+      if (gen !== this._sectionGen) return;
+      return;
     }
     await this._ensureAdminScripts(() => false);
+    if (gen !== this._sectionGen) return;
     el.innerHTML = `<div class="admin-section"><p class="muted">The "${Utils.escHtml(this.section)}" section could not load. Try reloading admin modules.</p>
         <button type="button" class="btn btn-primary" id="admin-reload-ext">Reload</button></div>`;
     document.getElementById('admin-reload-ext')?.addEventListener('click', async () => {
@@ -400,15 +452,8 @@ const AdminPage = {
     if (!dashRes.success) {
       todayRes = await API.getDashboardStats(today, today, this.app.user).catch(() => ({ success: false }));
     }
-    const foodRes = await API.recipeFoodCostAlerts(this.app.user).catch(() => ({ success: false }));
-    const bizRes = await API.bizModulesSummary(this.app.user).catch(() => ({ success: false }));
     const d = dashRes.success ? (dashRes.data || {}) : {};
     const todayStats = todayRes.success ? (todayRes.data || {}) : {};
-    const foodAlerts = foodRes.success ? (foodRes.data || []) : [];
-    const biz = bizRes.success ? (bizRes.data || {}) : {};
-    const inv = biz.investor || {};
-    const rel = biz.release || {};
-    const mtg = biz.meeting || {};
     const currency = s.currency || 'R';
     const dashErr = !dashRes.success && !todayRes.success
       ? `<p class="muted" style="color:var(--danger)">Stats unavailable: ${Utils.escHtml(dashRes.error || todayRes.error || 'error')}</p>`
@@ -422,43 +467,12 @@ const AdminPage = {
         <div class="stat-card success"><div class="label">Gross Profit Today</div><div class="value">${Utils.formatMoney(d.today?.grossProfit ?? todayStats.profit ?? 0, currency)}</div></div>
         <div class="stat-card"><div class="label">This Month</div><div class="value">${Utils.formatMoney(d.month?.sales ?? 0, currency)}</div></div>
         <div class="stat-card warning"><div class="label">Low Stock</div><div class="value">${d.lowStock?.length ?? todayStats.lowStockCount ?? 0}</div></div>
-        <div class="stat-card warning"><div class="label">Food Cost Alerts</div><div class="value">${foodAlerts.length}</div><small>meals over target</small></div>
+        <div class="stat-card warning" id="overview-food-alert-stat"><div class="label">Food Cost Alerts</div><div class="value">…</div><small>loading</small></div>
         <div class="stat-card"><div class="label">Shop</div><div class="value" style="font-size:18px">${s.shop_name}</div></div>
         <div class="stat-card"><div class="label">Pending Leave</div><div class="value">${d.pendingLeave ?? 0}</div></div>
       </div>
-      ${foodAlerts.length ? `<div class="card" style="margin-top:16px"><div class="card-body">
-        <h4>Food cost / margin alerts</h4>
-        <p class="muted">Meals where food cost is high or profit margin is low after ingredient prices change.</p>
-        <div class="table-wrap"><table><thead><tr><th>Meal</th><th>Food cost %</th><th>Margin %</th><th>Cost</th><th>Sell</th></tr></thead>
-          <tbody>${foodAlerts.slice(0, 8).map(a => `<tr>
-            <td>${a.name}</td><td>${a.food_cost_pct ?? 0}%</td><td>${a.profit_margin ?? 0}%</td>
-            <td>${Utils.formatMoney(a.recipe_cost || 0, currency)}</td>
-            <td>${Utils.formatMoney(a.selling_price || 0, currency)}</td>
-          </tr>`).join('')}</tbody></table></div>
-        <button type="button" class="btn btn-primary" id="admin-open-recipe" style="margin-top:10px">Open Recipe & Production</button>
-      </div></div>` : ''}
-      <div class="card" style="margin-top:16px"><div class="card-body">
-        <h4>Business Modules</h4>
-        <p class="muted">Investor Management, App Release Centre, and AI Meeting Centre — each with separate login portals.</p>
-        <div class="stats-grid" style="margin-top:12px;display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px">
-          <div class="stat-card" style="cursor:pointer" data-bm-section="business-modules" data-bm-tab="investors">
-            <div class="label">Investors</div>
-            <div class="value">${inv.active_investors ?? 0}</div>
-            <small>${inv.pending_agreements ?? 0} pending agreements</small>
-          </div>
-          <div class="stat-card" style="cursor:pointer" data-bm-section="business-modules">
-            <div class="label">Release Centre</div>
-            <div class="value" style="font-size:16px">${Utils.escHtml(rel.current_version || '—')}</div>
-            <small>Last test: ${Utils.escHtml(rel.last_test_status || 'NOT_TESTED')}</small>
-          </div>
-          <div class="stat-card" style="cursor:pointer" data-bm-section="business-modules">
-            <div class="label">Meetings</div>
-            <div class="value">${mtg.meetings_this_month ?? 0}</div>
-            <small>${mtg.outstanding_action_items ?? 0} action items</small>
-          </div>
-        </div>
-        <button type="button" class="btn btn-primary" id="admin-open-business-modules" style="margin-top:12px">Manage Business Modules</button>
-      </div></div>
+      <div id="overview-food-alerts-host"></div>
+      <div id="overview-biz-modules-host"><p class="muted" style="margin-top:16px">Loading business modules…</p></div>
       <div class="card" style="margin-top:16px"><div class="card-body">
         <h4>Business Manager</h4>
         <p class="muted">Monitor sales, orders, and POS status on your phone or here in Admin — no extra login when you open it from Admin.</p>
@@ -469,6 +483,86 @@ const AdminPage = {
         </div>
       </div></div>
     ${container ? '' : '</div>'}`;
+    this._bindOverviewQuickActions(el);
+    Promise.all([
+      API.recipeFoodCostAlerts(this.app.user).catch(() => ({ success: false })),
+      API.bizModulesSummary(this.app.user).catch(() => ({ success: false }))
+    ]).then(([foodRes, bizRes]) => {
+      if (!el.isConnected) return;
+      const foodAlerts = foodRes.success ? (foodRes.data || []) : [];
+      const biz = bizRes.success ? (bizRes.data || {}) : {};
+      const inv = biz.investor || {};
+      const rel = biz.release || {};
+      const mtg = biz.meeting || {};
+      const stat = el.querySelector('#overview-food-alert-stat');
+      if (stat) {
+        stat.querySelector('.value').textContent = String(foodAlerts.length);
+        const sm = stat.querySelector('small');
+        if (sm) sm.textContent = 'meals over target';
+      }
+      const foodHost = el.querySelector('#overview-food-alerts-host');
+      if (foodHost && foodAlerts.length) {
+        foodHost.innerHTML = `<div class="card" style="margin-top:16px"><div class="card-body">
+          <h4>Food cost / margin alerts</h4>
+          <p class="muted">Meals where food cost is high or profit margin is low after ingredient prices change.</p>
+          <div class="table-wrap"><table><thead><tr><th>Meal</th><th>Food cost %</th><th>Margin %</th><th>Cost</th><th>Sell</th></tr></thead>
+            <tbody>${foodAlerts.slice(0, 8).map(a => `<tr>
+              <td>${a.name}</td><td>${a.food_cost_pct ?? 0}%</td><td>${a.profit_margin ?? 0}%</td>
+              <td>${Utils.formatMoney(a.recipe_cost || 0, currency)}</td>
+              <td>${Utils.formatMoney(a.selling_price || 0, currency)}</td>
+            </tr>`).join('')}</tbody></table></div>
+          <button type="button" class="btn btn-primary" id="admin-open-recipe" style="margin-top:10px">Open Recipe & Production</button>
+        </div></div>`;
+        foodHost.querySelector('#admin-open-recipe')?.addEventListener('click', () => {
+          this.app.openRecipeProduction({ fromApp: true });
+        });
+      }
+      const bizHost = el.querySelector('#overview-biz-modules-host');
+      if (bizHost) {
+        bizHost.innerHTML = `<div class="card" style="margin-top:16px"><div class="card-body">
+          <h4>Business Modules</h4>
+          <p class="muted">Investor Management, App Release Centre, and AI Meeting Centre — each with separate login portals.</p>
+          <div class="stats-grid" style="margin-top:12px;display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px">
+            <div class="stat-card" style="cursor:pointer" data-bm-section="business-modules" data-bm-tab="investors">
+              <div class="label">Investors</div>
+              <div class="value">${inv.active_investors ?? 0}</div>
+              <small>${inv.pending_agreements ?? 0} pending agreements</small>
+            </div>
+            <div class="stat-card" style="cursor:pointer" data-bm-section="business-modules">
+              <div class="label">Release Centre</div>
+              <div class="value" style="font-size:16px">${Utils.escHtml(rel.current_version || '—')}</div>
+              <small>Last test: ${Utils.escHtml(rel.last_test_status || 'NOT_TESTED')}</small>
+            </div>
+            <div class="stat-card" style="cursor:pointer" data-bm-section="business-modules">
+              <div class="label">Meetings</div>
+              <div class="value">${mtg.meetings_this_month ?? 0}</div>
+              <small>${mtg.outstanding_action_items ?? 0} action items</small>
+            </div>
+          </div>
+          <button type="button" class="btn btn-primary" id="admin-open-business-modules" style="margin-top:12px">Manage Business Modules</button>
+        </div></div>`;
+        bizHost.querySelector('#admin-open-business-modules')?.addEventListener('click', () => {
+          this.section = 'business-modules';
+          document.querySelectorAll('.admin-nav-btn').forEach((b) =>
+            b.classList.toggle('active', b.dataset.section === 'business-modules'));
+          this.renderSection(document.getElementById('admin-content'));
+        });
+        bizHost.querySelectorAll('[data-bm-section]').forEach((card) => {
+          card.addEventListener('click', () => {
+            this.section = card.dataset.bmSection;
+            document.querySelectorAll('.admin-nav-btn').forEach((b) =>
+              b.classList.toggle('active', b.dataset.section === 'business-modules'));
+            this.renderSection(document.getElementById('admin-content'));
+          });
+        });
+      }
+    }).catch(() => {});
+    return el;
+  },
+
+  _bindOverviewQuickActions(el) {
+    if (el.dataset.ovActionsBound === '1') return;
+    el.dataset.ovActionsBound = '1';
     const adminContent = () => document.getElementById('admin-content');
     el.querySelector('#admin-open-business-modules')?.addEventListener('click', () => {
       this.section = 'business-modules';
@@ -499,7 +593,6 @@ const AdminPage = {
     el.querySelector('#admin-open-accounting-overview')?.addEventListener('click', () => {
       this.app?.openAccounting?.({ fromApp: true, skipLogin: true });
     });
-    return el;
   },
 
   async renderOverview(el) {
@@ -3577,10 +3670,87 @@ const AdminPage = {
     });
   },
 
+  handleAdminSearchDebounced(query) {
+    clearTimeout(this._adminSearchDebounce);
+    this._adminSearchDebounce = setTimeout(() => this.handleAdminSearch(query), 280);
+    if (query && String(query).trim().length >= 1) {
+      this.handleAdminSearchLocal(query);
+    }
+  },
+
+  handleAdminSearchLocal(query) {
+    const dropdown = document.getElementById('admin-search-results');
+    if (!dropdown) return;
+    if (!query || !String(query).trim()) { dropdown.classList.add('hidden'); return; }
+    const q = query.toLowerCase();
+    let html = '';
+    const sections = (this.sections || []).filter(s =>
+      (this._adminNavLabel(s.label).toLowerCase().includes(q) || s.label.toLowerCase().includes(q))
+      && Utils.canAccessAdminSection(this.app.user, s.id)
+    );
+    if (sections.length) {
+      html += '<div class="search-group"><h4>Admin Sections</h4>' +
+        sections.map(s => `<div class="search-item" data-action="admin-section" data-section="${s.id}">${s.label}</div>`).join('') + '</div>';
+    }
+    const navHits = (this.app.navItems || []).filter(item => {
+      const label = item.label.replace(/^[^\w]+/, '').toLowerCase();
+      return (label.includes(q) || item.id.includes(q)) && Utils.canAccess(this.app.user, item.id);
+    }).slice(0, 10);
+    if (navHits.length) {
+      html += '<div class="search-group"><h4>App Pages</h4>' +
+        navHits.map(f => `<div class="search-item" data-action="page" data-page="${f.id}">${f.label}</div>`).join('') + '</div>';
+    }
+    if (html) {
+      dropdown.innerHTML = html + '<p class="muted" style="padding:8px;font-size:12px">Searching…</p>';
+      dropdown.classList.remove('hidden');
+      this._bindAdminSearchResults(dropdown);
+    }
+  },
+
+  _bindAdminSearchResults(dropdown, receiptHandler) {
+    dropdown.querySelectorAll('[data-action="admin-section"]').forEach(el => {
+      el.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        dropdown.classList.add('hidden');
+        const section = el.dataset.section;
+        if (!Utils.canAccessAdminSection(this.app.user, section)) return;
+        this.section = section;
+        document.querySelectorAll('.admin-nav-btn').forEach(b => b.classList.toggle('active', b.dataset.section === section));
+        this.toggleOpsComplianceLayout(section === 'opscompliance');
+        this.renderSection(document.getElementById('admin-content'));
+      });
+    });
+    dropdown.querySelectorAll('[data-action="page"]').forEach(el => {
+      el.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        dropdown.classList.add('hidden');
+        if (el.dataset.page === 'recipe') return this.app.openRecipeProduction({ fromApp: true });
+        if (Utils.canAccess(this.app.user, el.dataset.page)) this.app.navigate(el.dataset.page);
+      });
+    });
+    dropdown.querySelectorAll('[data-action="bookkeeping-tab"]').forEach(el => {
+      el.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        dropdown.classList.add('hidden');
+        this.app.navigateToBookkeepingTab(el.dataset.tab);
+      });
+    });
+    if (typeof receiptHandler === 'function') {
+      dropdown.querySelectorAll('[data-action="receipt"]').forEach(el => {
+        el.addEventListener('mousedown', async (e) => {
+          e.preventDefault();
+          dropdown.classList.add('hidden');
+          await receiptHandler(el);
+        });
+      });
+    }
+  },
+
   async handleAdminSearch(query) {
     const dropdown = document.getElementById('admin-search-results');
     if (!dropdown) return;
     if (!query || !String(query).trim()) { dropdown.classList.add('hidden'); return; }
+    const seq = ++this._adminSearchSeq;
     const q = query.toLowerCase();
     const needRpc = q.length >= 2;
     const currency = this.settings?.currency || 'R';
@@ -3596,6 +3766,7 @@ const AdminPage = {
     }
 
     const data = needRpc ? ((await API.globalSearch(query)).data || {}) : {};
+    if (seq !== this._adminSearchSeq) return;
     if (data.products?.length && Utils.canAccess(this.app.user, 'products')) {
       html += '<div class="search-group"><h4>Products</h4>' +
         data.products.map(p => `<div class="search-item" data-action="page" data-page="products">${p.name} — ${Utils.formatMoney(p.selling_price, currency)}</div>`).join('') + '</div>';
@@ -3657,49 +3828,18 @@ const AdminPage = {
 
     dropdown.innerHTML = html || '<div class="search-group"><p class="muted">No results</p></div>';
     dropdown.classList.remove('hidden');
-
-    dropdown.querySelectorAll('[data-action="admin-section"]').forEach(el => {
-      el.addEventListener('mousedown', (e) => {
-        e.preventDefault();
-        dropdown.classList.add('hidden');
-        const section = el.dataset.section;
-        if (!Utils.canAccessAdminSection(this.app.user, section)) return;
-        this.section = section;
-        document.querySelectorAll('.admin-nav-btn').forEach(b => b.classList.toggle('active', b.dataset.section === section));
-        this.toggleOpsComplianceLayout(section === 'opscompliance');
-        this.renderSection(document.getElementById('admin-content'));
-      });
-    });
-    dropdown.querySelectorAll('[data-action="page"]').forEach(el => {
-      el.addEventListener('mousedown', (e) => {
-        e.preventDefault();
-        dropdown.classList.add('hidden');
-        if (el.dataset.page === 'recipe') return this.app.openRecipeProduction({ fromApp: true });
-        if (Utils.canAccess(this.app.user, el.dataset.page)) this.app.navigate(el.dataset.page);
-      });
-    });
-    dropdown.querySelectorAll('[data-action="bookkeeping-tab"]').forEach(el => {
-      el.addEventListener('mousedown', (e) => {
-        e.preventDefault();
-        dropdown.classList.add('hidden');
-        this.app.navigateToBookkeepingTab(el.dataset.tab);
-      });
-    });
-    dropdown.querySelectorAll('[data-action="receipt"]').forEach(el => {
-      el.addEventListener('mousedown', async (e) => {
-        e.preventDefault();
-        dropdown.classList.add('hidden');
-        const r = await API.getSaleByReceipt(el.dataset.id);
-        if (r.success && r.data) {
-          Utils.showModal(`Receipt ${r.data.receipt_number}`, `
-            <p><strong>Total:</strong> ${Utils.formatMoney(r.data.total, currency)}</p>
-            <p><strong>Date:</strong> ${Utils.formatDateTime(r.data.created_at)}</p>
-            <p><strong>Cashier:</strong> ${r.data.cashier_name || '—'}</p>`,
-            '<button class="btn btn-primary" id="search-receipt-close">Close</button>');
-          document.getElementById('search-receipt-close')?.addEventListener('click', Utils.hideModal);
-        } else Utils.toast('Receipt not found', 'error');
-      });
-    });
+    const receiptHandler = async (el) => {
+      const r = await API.getSaleByReceipt(el.dataset.id);
+      if (r.success && r.data) {
+        Utils.showModal(`Receipt ${r.data.receipt_number}`, `
+          <p><strong>Total:</strong> ${Utils.formatMoney(r.data.total, currency)}</p>
+          <p><strong>Date:</strong> ${Utils.formatDateTime(r.data.created_at)}</p>
+          <p><strong>Cashier:</strong> ${r.data.cashier_name || '—'}</p>`,
+          '<button class="btn btn-primary" id="search-receipt-close">Close</button>');
+        document.getElementById('search-receipt-close')?.addEventListener('click', Utils.hideModal);
+      } else Utils.toast('Receipt not found', 'error');
+    };
+    this._bindAdminSearchResults(dropdown, receiptHandler);
   },
 
   async renderOnlineOrders(el) {

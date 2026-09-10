@@ -1256,6 +1256,21 @@ const Utils = {
         if (k?.startsWith(`spcache_${prefix || ''}`)) sessionStorage.removeItem(k);
       }
     } catch { /* ignore */ }
+  },
+
+  /** Immediate click feedback — disables button until promise settles. */
+  runAsyncButton(btn, work) {
+    if (!btn || btn.disabled || btn.dataset.busy === '1') return Promise.resolve();
+    btn.dataset.busy = '1';
+    btn.disabled = true;
+    btn.setAttribute('aria-busy', 'true');
+    return Promise.resolve()
+      .then(() => work())
+      .finally(() => {
+        btn.disabled = false;
+        btn.removeAttribute('aria-busy');
+        delete btn.dataset.busy;
+      });
   }
 };
 

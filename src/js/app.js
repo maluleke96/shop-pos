@@ -2138,13 +2138,11 @@ const App = {
         tasks.push(() => API.getStockReport());
       }
       if (page === 'admin') {
-        tasks.push(() => API.getProducts({ admin_list: true }));
         tasks.push(() => API.getAdminDashboard(from, to));
         tasks.push(() => API.getCategories({}));
-        tasks.push(() => API.getActiveCombos({ for_pos: true }));
-        this.ensurePageScripts('admin').catch(() => {});
+        tasks.push(() => API.getProducts({ admin_list: true }));
       }
-      const maxTasks = page === 'admin' ? 5 : 3;
+      const maxTasks = page === 'admin' ? 3 : 3;
       tasks.slice(0, maxTasks).forEach((fn, i) => {
         setTimeout(() => {
           try { fn()?.catch?.(() => {}); } catch { /* ignore */ }

@@ -6,6 +6,11 @@ const DataCache = {
   mem: new Map(),
   inflight: new Map(),
   stats: { hits: 0, misses: 0, dedupes: 0, refreshes: 0 },
+  perf: {
+    requests: [],
+    maxEntries: 400,
+    byNs: {}
+  },
 
   key(ns, args) {
     try {
@@ -84,13 +89,17 @@ const DataCache = {
 
     if (!force && this.inflight.has(k)) {
       this.stats.dedupes += 1;
+      this.recordPerf(ns, args, 0, { deduped: true, cached: cached != null });
       if (cached != null && swr) return cached;
       return this.inflight.get(k);
     }
 
+    const t0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
     const run = Promise.resolve()
       .then(() => fetcher())
       .then((res) => {
+        const ms = ((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()) - t0;
+        this.recordPerf(ns, args, ms, { cached: false });
         if (this.inflight.get(k) === run) this.inflight.delete(k);
         // Do not re-cache a response that finished after a newer invalidate.
         if ((this._invalidateGen || 0) !== genAtStart && !force) return res;
@@ -98,6 +107,8 @@ const DataCache = {
         return res;
       })
       .catch((err) => {
+        const ms = ((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()) - t0;
+        this.recordPerf(ns, args, ms, { error: true });
         if (this.inflight.get(k) === run) this.inflight.delete(k);
         throw err;
       });
@@ -150,6 +161,46 @@ const DataCache = {
       entries: this.mem.size,
       hitRate: total ? Math.round((this.stats.hits / total) * 100) : null
     };
+  },
+
+  recordPerf(ns, args, ms, meta = {}) {
+    const entry = {
+      ns,
+      args,
+      ms: Math.round(ms),
+      at: Date.now(),
+      ...meta
+    };
+    this.perf.requests.push(entry);
+    if (this.perf.requests.length > this.perf.maxEntries) {
+      this.perf.requests.splice(0, this.perf.requests.length - this.perf.maxEntries);
+    }
+    const bucket = this.perf.byNs[ns] || { count: 0, totalMs: 0, maxMs: 0, dedupes: 0 };
+    bucket.count += 1;
+    bucket.totalMs += entry.ms;
+    bucket.maxMs = Math.max(bucket.maxMs, entry.ms);
+    if (meta.deduped) bucket.dedupes += 1;
+    this.perf.byNs[ns] = bucket;
+  },
+
+  getPerfReport() {
+    const slowest = [...this.perf.requests].sort((a, b) => b.ms - a.ms).slice(0, 25);
+    const modules = Object.entries(this.perf.byNs)
+      .map(([ns, s]) => ({
+        ns,
+        count: s.count,
+        avgMs: s.count ? Math.round(s.totalMs / s.count) : 0,
+        maxMs: s.maxMs,
+        dedupes: s.dedupes
+      }))
+      .sort((a, b) => b.avgMs - a.avgMs);
+    return {
+      cache: this.getStats(),
+      requestCount: this.perf.requests.length,
+      slowest,
+      modules,
+      nav: window.App?._navPerf || {}
+    };
   }
 };
 
@@ -188,6 +239,7 @@ function installApiReadCache() {
   wrap('getSoldProductsReport', 'soldProductsReport', 60000, (a) => [a[0], a[1]]);
   wrap('getPromoRequestHistory', 'promoHistory', 45000, (a) => [a[0] || {}]);
   wrap('getCombos', 'combosList', 60000, (a) => [a[0] || {}]);
+  wrap('globalSearch', 'globalSearch', 15000, (a) => [String(a[0] || '').toLowerCase().trim()]);
 
   let catalogBroadcast = null;
   try {
@@ -371,3 +423,17 @@ document.addEventListener('DOMContentLoaded', () => installApiReadCache());
 setTimeout(() => installApiReadCache(), 0);
 
 window.DataCache = DataCache;
+window.AdminPerf = {
+  report: () => DataCache.getPerfReport(),
+  reset: () => {
+    DataCache.perf.requests = [];
+    DataCache.perf.byNs = {};
+    DataCache.stats = { hits: 0, misses: 0, dedupes: 0, refreshes: 0 };
+  },
+  logSlowest: (n = 10) => {
+    const r = DataCache.getPerfReport();
+    console.table(r.slowest.slice(0, n));
+    console.table(r.modules.slice(0, n));
+    return r;
+  }
+};

@@ -21,11 +21,14 @@
     AdminPage.sections = auditSections.concat(AdminPage.sections.filter(s => s.id !== 'overview'));
   }
 
-  const origRenderSection = AdminPage.renderSection.bind(AdminPage);
+  const origRenderSectionCore = AdminPage._renderSectionCore?.bind(AdminPage)
+    || AdminPage.renderSection.bind(AdminPage);
   AdminPage.renderSection = async function (el) {
+    const gen = this._beginSectionRender(el);
     const auditRenderers = {
       overview: async () => {
         const dashResult = await this.renderBusinessDashboard(el);
+        if (gen !== this._sectionGen) return;
         let host = el.querySelector('#admin-overview-quick-panel');
         if (!host) {
           host = document.createElement('div');
@@ -49,9 +52,11 @@
       'pos-menu': () => this.renderPosMenuPromos(el)
     };
     if (auditRenderers[this.section]) {
-      return auditRenderers[this.section]();
+      await auditRenderers[this.section]();
+      if (gen !== this._sectionGen) return;
+      return;
     }
-    return origRenderSection(el);
+    return origRenderSectionCore(el, gen);
   };
 
   AdminPage._liveTimer = null;
@@ -157,11 +162,15 @@
         });
       });
       clearInterval(this._liveTimer);
+      this._liveTimer = null;
       if (isToday) {
+        const liveGen = this._sectionGen;
         this._liveTimer = setInterval(async () => {
+          if (document.hidden || this.section !== 'overview' || liveGen !== this._sectionGen) return;
           const feed = document.getElementById('live-sales-feed');
-          if (!feed) { clearInterval(this._liveTimer); return; }
+          if (!feed) { clearInterval(this._liveTimer); this._liveTimer = null; return; }
           const r = await API.getSalesList({ from: rangeFrom, to: rangeTo, limit: 15 });
+          if (liveGen !== this._sectionGen) return;
           feed.innerHTML = this.renderLiveFeed(r.data || [], currency, isToday);
         }, 15000);
       }
