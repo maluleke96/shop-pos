@@ -735,9 +735,6 @@ function earnLoyaltyPoints(customerId, saleTotal, saleId) {
   if (points <= 0) return 0;
   getDb().prepare('UPDATE customers SET loyalty_points = COALESCE(loyalty_points, 0) + ? WHERE id = ?').run(points, customerId);
   getDb().prepare('INSERT INTO loyalty_transactions (customer_id, points, type, sale_id) VALUES (?,?,?,?)').run(customerId, points, 'earn', saleId);
-  try {
-    require('./communication-centre').recordLoyaltyLot(customerId, points, saleId);
-  } catch (_) { /* comm centre optional until migrated */ }
   return points;
 }
 

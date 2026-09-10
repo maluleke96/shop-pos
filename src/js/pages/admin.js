@@ -62,7 +62,6 @@ const AdminPage = {
     { id: 'hrcontracts', label: '📄 Contracts & Probation', icon: 'hrcontracts' },
     { id: 'recruitment', label: '💼 Recruitment', icon: 'recruitment' },
     { id: 'marketing-mgmt', label: '📣 Marketing Command Centre', icon: 'marketing' },
-    { id: 'communication-centre', label: '📡 Communication Centre', icon: 'communication' },
     { id: 'delivery-dept', label: '🚚 Delivery Department', icon: 'delivery' },
     { id: 'payroll', label: '💼 Payroll & Compliance', icon: 'payroll' },
     { id: 'employee-of-month', label: '🏆 Employee of Month', icon: 'employee-of-month' }
@@ -168,7 +167,7 @@ const AdminPage = {
 
   async renderSection(el) {
     const lazySections = new Set([
-      'hrcontracts', 'recruitment', 'marketing-mgmt', 'communication-centre', 'employee-of-month', 'staffhr', 'hr-workspace', 'hr-approvals', 'staffportal', 'payroll',
+      'hrcontracts', 'recruitment', 'marketing-mgmt', 'employee-of-month', 'staffhr', 'hr-workspace', 'hr-approvals', 'staffportal', 'payroll',
       'opscompliance', 'combos', 'recipe', 'quotes',
       'salesmgmt', 'saleexplorer', 'soldproducts', 'returnsmgmt', 'activity',
       'exceptions', 'alerts', 'dailyclose', 'discount-report', 'delivery-dept'
@@ -261,11 +260,6 @@ const AdminPage = {
         () => window.AdminMarketingPage,
         () => window.AdminMarketingPage.render(el, this.app || this),
         'Marketing Management'
-      ),
-      'communication-centre': async () => tryModule(
-        () => window.AdminCommunicationPage,
-        () => window.AdminCommunicationPage.render(el, this.app || this),
-        'Communication Centre'
       ),
       'delivery-dept': async () => tryModule(
         () => window.AdminDeliveryPage,

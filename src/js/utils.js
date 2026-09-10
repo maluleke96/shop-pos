@@ -323,7 +323,7 @@ const Utils = {
 
   /** Sections managers/supervisors should always see when they have admin access */
   adminManagerSections: new Set([
-    'overview', 'staffhr', 'staffportal', 'hrcontracts', 'recruitment', 'marketing-mgmt', 'communication-centre', 'employee-of-month', 'opscompliance', 'combos',
+    'overview', 'staffhr', 'staffportal', 'hrcontracts', 'recruitment', 'marketing-mgmt', 'employee-of-month', 'opscompliance', 'combos',
     'quotes', 'approvals', 'recipe', 'tax', 'tax-hub', 'cashiers', 'branches',
     'mobile-app', 'business-manager', 'business-modules', 'digital-signage', 'online-orders', 'hr-workspace', 'hr-approvals', 'accounting-workspace',
     'delivery-dept', 'deliveries', 'loyalty', 'discounts', 'payments', 'inventory', 'shifts', 'operating', 'cashdrawer', 'customize', 'onaccount',

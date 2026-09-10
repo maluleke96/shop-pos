@@ -34,8 +34,6 @@ const SIGNAGE_WEB = path.join(ROOT, 'signage-web');
 const SIGNAGE_PLAYER = path.join(ROOT, 'signage-player');
 const KIOSK_WEB = path.join(ROOT, 'kiosk-web');
 const DRIVE_THRU_WEB = path.join(ROOT, 'drive-thru-web');
-const COMMUNICATION_WEB = path.join(ROOT, 'communication-web');
-
 const { loadProjectEnv } = require('./lib/load-env');
 loadProjectEnv(ROOT);
 
@@ -329,13 +327,6 @@ function syncDriveThruWebConfig() {
     fs.mkdirSync(path.join(DRIVE_THRU_WEB, 'js'), { recursive: true });
     fs.writeFileSync(path.join(DRIVE_THRU_WEB, 'js', 'config.js'), portalConfig('__DRIVE_THRU_CONFIG__', '/drive-thru/'), 'utf8');
   } catch (e) { console.warn('[drive-thru-web] config write failed:', e.message); }
-}
-
-function syncCommunicationWebConfig() {
-  try {
-    fs.mkdirSync(path.join(COMMUNICATION_WEB, 'js'), { recursive: true });
-    fs.writeFileSync(path.join(COMMUNICATION_WEB, 'js', 'config.js'), portalConfig('__COMM_CONFIG__', '/communications/'), 'utf8');
-  } catch (e) { console.warn('[communication-web] config write failed:', e.message); }
 }
 
 function servePortalWeb(req, res, baseDir, mount) {
@@ -636,7 +627,6 @@ async function main() {
   syncSignageWebConfig();
   syncKioskWebConfig();
   syncDriveThruWebConfig();
-  syncCommunicationWebConfig();
   syncPublicEnvJs();
 
   console.log('Connecting to Supabase Postgres…');
@@ -696,22 +686,6 @@ async function main() {
         return writeJson(res, 200, { success: true, data: listStatus() });
       } catch (e) {
         return writeJson(res, 500, { success: false, error: e.message || 'Could not read APK status' });
-      }
-    }
-
-    if (urlPath.startsWith('/communication/webhooks/') && req.method === 'POST') {
-      const provider = urlPath.split('/').pop() || 'unknown';
-      try {
-        const chunks = [];
-        for await (const c of req) chunks.push(c);
-        const raw = Buffer.concat(chunks).toString('utf8') || '{}';
-        let payload = {};
-        try { payload = JSON.parse(raw); } catch { payload = { raw }; }
-        const comm = require('./electron/services/communication-centre');
-        const result = comm.handleWebhook(provider, payload);
-        return writeJson(res, 200, { success: true, data: result });
-      } catch (e) {
-        return writeJson(res, 500, { success: false, error: e.message || 'Webhook failed' });
       }
     }
 
@@ -1080,10 +1054,6 @@ async function main() {
       return servePortalWeb(req, res, DRIVE_THRU_WEB, '/drive-thru');
     }
 
-    if (urlPath === '/communications' || urlPath.startsWith('/communications/')) {
-      return servePortalWeb(req, res, COMMUNICATION_WEB, '/communications');
-    }
-
     if (urlPath === '/track' || urlPath.startsWith('/track/')) {
       return serveTrackingWeb(req, res);
     }
@@ -1113,7 +1083,6 @@ async function main() {
     console.log(`  Player:   http://localhost:${PORT}/signage-player/`);
     console.log(`  Kiosk:    http://localhost:${PORT}/kiosk/`);
     console.log(`  Drive-Thru: http://localhost:${PORT}/drive-thru/`);
-    console.log(`  Communication Centre: http://localhost:${PORT}/communications/`);
     console.log(`  Track:    http://localhost:${PORT}/track/TOKEN`);
     console.log('');
   });

@@ -23,7 +23,6 @@ const flyersSvc = require('./flyers');
 const marketingAgentSvc = require('./marketing-agent');
 const marketingPlatformSvc = require('./marketing-platform');
 const whatsappSvc = require('./whatsapp');
-const commSvc = require('./communication-centre');
 const documentHubSvc = require('./document-hub');
 const customerRewardsSvc = require('./customer-rewards');
 const employeeOfMonthSvc = require('./employee-of-month');
@@ -4827,7 +4826,6 @@ module.exports = {
   })(),
   ...whatsappExports,
   getWhatsAppTemplates,
-  ...commSvc,
   ...documentHubExports,
   getHubDocuments,
   getHubDocument,

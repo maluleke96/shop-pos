@@ -77,7 +77,6 @@ const App = {
       'js/pages/admin-employee-month.js',
       'js/pages/admin-recruitment.js',
       'js/pages/admin-marketing.js',
-      'js/pages/admin-communication.js',
       'js/pages/admin-delivery.js',
       'js/pages/admin-business-modules.js',
       'js/pages/users.js'
