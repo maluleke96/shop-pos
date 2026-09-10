@@ -420,7 +420,10 @@ const POSPage = {
   _bindCatalogLiveSync() {
     if (this._catalogLiveSyncBound) return;
     this._catalogLiveSyncBound = true;
-    this._catalogRefreshHandler = () => {
+    this._catalogRefreshHandler = (e) => {
+      const stamp = e?.detail?.stamp || this._catalogStamp();
+      if (stamp && stamp === this._lastCatalogStamp) return;
+      if (stamp) this._lastCatalogStamp = stamp;
       clearTimeout(this._catalogRefreshDebounce);
       this._catalogRefreshDebounce = setTimeout(() => this.reloadCatalog?.(), 250);
     };
@@ -432,9 +435,31 @@ const POSPage = {
       this._catalogStorageBound = true;
       window.addEventListener('storage', (e) => {
         if (e.key !== 'shop-pos-catalog-ts' || !e.newValue) return;
+        if (e.newValue === this._lastCatalogStamp) return;
         this._lastCatalogStamp = e.newValue;
         this.reloadCatalog?.().catch(() => {});
       });
+    }
+    if (!this._catalogBroadcastBound && typeof BroadcastChannel !== 'undefined') {
+      this._catalogBroadcastBound = true;
+      try {
+        this._catalogBroadcast = new BroadcastChannel('shop-pos-catalog');
+        this._catalogBroadcast.onmessage = (ev) => {
+          const stamp = ev?.data?.stamp;
+          if (!stamp || stamp === this._lastCatalogStamp) return;
+          this._lastCatalogStamp = stamp;
+          this.reloadCatalog?.().catch(() => {});
+        };
+      } catch (_) { /* ignore */ }
+    }
+    if (!this._catalogPollTimer) {
+      this._catalogPollTimer = setInterval(() => {
+        const stamp = this._catalogStamp();
+        if (stamp && stamp !== this._lastCatalogStamp) {
+          this._lastCatalogStamp = stamp;
+          this.reloadCatalog?.().catch(() => {});
+        }
+      }, 4000);
     }
   },
 
@@ -638,7 +663,7 @@ const POSPage = {
     const stamp = this._catalogStamp();
     if (stamp && stamp !== this._lastCatalogStamp) {
       this._lastCatalogStamp = stamp;
-      this.reloadCatalog().catch(() => {});
+      this.reloadCatalog(true).catch(() => {});
     }
     const filters = { for_pos: true, actor: app.user };
     const branchId = app.user?.branch_id || undefined;
@@ -1540,8 +1565,10 @@ const POSPage = {
     else layout.insertAdjacentHTML('afterbegin', `<div class="pos-campaign-banners">${html}</div>`);
   },
 
-  async reloadCatalog() {
+  async reloadCatalog(force = false) {
     if (!this.app?.user) return;
+    const stamp = this._catalogStamp();
+    if (!force && stamp && stamp === this._lastCatalogReloadStamp) return;
     try {
       const filters = { for_pos: true, actor: this.app.user };
       const uncached = (fn, ...args) => (fn?._uncached ? fn._uncached(...args) : fn(...args));
@@ -1570,6 +1597,8 @@ const POSPage = {
       this.renderCategoryTabs(this.selectedCategory || '');
       this.renderProducts(document.getElementById('pos-search')?.value || '');
       this._updateCampaignBanners();
+      this._lastCatalogReloadStamp = stamp || String(Date.now());
+      if (stamp) this._lastCatalogStamp = stamp;
     } catch (err) {
       Utils.toast?.(err?.message || 'Menu refresh failed — showing last loaded menu', 'warning');
     }
@@ -3858,7 +3887,11 @@ const POSPage = {
       onDismiss: releaseCheckout,
       onConfirm: async ({ payments, paid, change, loyaltyRedeem, loyaltyDiscount }) => {
         try {
+        const tillBranchId = await API.getTillBranchId?.().catch(() => null);
         const saleData = {
+          till_branch_id: tillBranchId || undefined,
+          branch_id: tillBranchId || this.app.user?.branch_id || undefined,
+          device_id: Utils.getDeviceId?.() || undefined,
           items: this.cart.map(i => ({
             product_id: i.product_id,
             product_name: i.product_name,

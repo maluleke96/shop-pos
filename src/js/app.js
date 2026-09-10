@@ -765,6 +765,49 @@ const App = {
     PanelNotifyHub.initPanel('admin', () => !!this.user);
   },
 
+  bindGlobalCatalogSync() {
+    if (this._globalCatalogSyncBound) return;
+    this._globalCatalogSyncBound = true;
+    try {
+      this._globalCatalogStamp = localStorage.getItem('shop-pos-catalog-ts') || '';
+    } catch (_) {
+      this._globalCatalogStamp = '';
+    }
+    const notify = (stamp) => {
+      if (!stamp || stamp === this._globalCatalogStamp) return;
+      this._globalCatalogStamp = stamp;
+      try {
+        window.dispatchEvent(new CustomEvent('shop-pos-catalog-updated', { detail: { stamp } }));
+      } catch (_) { /* ignore */ }
+    };
+    window.addEventListener('storage', (e) => {
+      if (e.key === 'shop-pos-catalog-ts' && e.newValue) notify(e.newValue);
+    });
+    window.addEventListener('focus', () => {
+      try { notify(localStorage.getItem('shop-pos-catalog-ts') || ''); } catch (_) { /* ignore */ }
+    });
+    if (typeof BroadcastChannel !== 'undefined') {
+      try {
+        const bc = new BroadcastChannel('shop-pos-catalog');
+        bc.onmessage = (ev) => { if (ev?.data?.stamp) notify(ev.data.stamp); };
+      } catch (_) { /* ignore */ }
+    }
+    this._globalCatalogPoll = setInterval(() => {
+      try { notify(localStorage.getItem('shop-pos-catalog-ts') || ''); } catch (_) { /* ignore */ }
+    }, 5000);
+  },
+
+  checkPosCatalogStamp() {
+    if (!window.PosPage?.reloadCatalog) return;
+    let stamp = '';
+    try { stamp = localStorage.getItem('shop-pos-catalog-ts') || ''; } catch (_) { /* ignore */ }
+    if (!stamp || stamp === PosPage._lastCatalogStamp) return;
+    if (document.getElementById('pos-grid') || document.querySelector('.pos-layout')) {
+      PosPage._lastCatalogStamp = stamp;
+      PosPage.reloadCatalog(true).catch(() => {});
+    }
+  },
+
   async openDeliveryDepartment() {
     this.stopLoginOperatingTimer();
     await this.ensureFeatureCss('css/delivery-dept.css');
@@ -1819,6 +1862,7 @@ const App = {
       this.startAutoLogoutTimer();
       this.startSyncMonitor();
       this.startSessionMonitor();
+      this.bindGlobalCatalogSync();
       try { window.PanelExitGuard?.bind?.(() => this.doLogout()); } catch (_) { /* ignore */ }
     };
     if (isMobile) setTimeout(bg, 0);
@@ -1999,6 +2043,7 @@ const App = {
           } else {
             await pageModule.render(host, this);
           }
+          if (page === 'pos') this.checkPosCatalogStamp();
           window.DataCache?.clearStaleBanner?.(host);
         } catch (err) {
           window.DataCache?.showStaleBanner?.(host, err?.message || 'Unable to refresh. Showing last updated data.');
@@ -2031,6 +2076,7 @@ const App = {
       if (page === 'admin' && typeof AdminPage !== 'undefined' && typeof AdminPage.refreshAdminNav === 'function') {
         AdminPage.refreshAdminNav(host);
       }
+      if (page === 'pos') this.checkPosCatalogStamp();
     } catch (err) {
       if (navGen !== this._navGen) {
         content.dataset.loading = '0';

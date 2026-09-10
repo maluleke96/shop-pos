@@ -2906,6 +2906,94 @@ ipcMain.handle('web:adminAnalytics', wrap((filters, actor) => {
     return web.updateOrderStatus(orderId, status, user, opts || {});
   }));
 
+  const bizActor = (a) => a || store.getUserSession?.();
+
+  ipcMain.handle('bizModules:settings', wrap(() => {
+    requireUserSession(['owner', 'manager']);
+    return store.getBizModuleSettings?.();
+  }));
+  ipcMain.handle('bizModules:saveSettings', wrap((data, actor) => {
+    requireUserSession(['owner']);
+    return store.saveBizModuleSettings?.(data || {}, bizActor(actor));
+  }));
+  ipcMain.handle('bizModules:summary', wrap((actor) => {
+    requireUserSession(['owner', 'manager']);
+    return store.bizModulesSummary?.();
+  }));
+
+  ipcMain.handle('investor:login', wrap((u, p) => store.investorLogin(u, p)));
+  ipcMain.handle('investor:logout', wrap((tok) => store.investorLogout(tok)));
+  ipcMain.handle('investor:dashboard', wrap((tok) => store.investorDashboard(tok)));
+  ipcMain.handle('investor:list', wrap((f, actor) => store.listInvestors(bizActor(actor), f || {})));
+  ipcMain.handle('investor:get', wrap((id, actor) => store.getInvestor(id, bizActor(actor))));
+  ipcMain.handle('investor:save', wrap((d, actor) => store.saveInvestor(d || {}, bizActor(actor))));
+  ipcMain.handle('investor:createPortalUser', wrap((invId, d, actor) => store.createInvestorPortalUser(invId, d || {}, bizActor(actor))));
+  ipcMain.handle('investor:saveProposal', wrap((d, actor) => store.saveProposal(d || {}, bizActor(actor))));
+  ipcMain.handle('investor:listProposals', wrap((f, actor) => store.listProposals(bizActor(actor), f || {})));
+  ipcMain.handle('investor:proposalPdf', wrap((id, actor) => store.buildProposalPdf(id, bizActor(actor))));
+  ipcMain.handle('investor:saveAgreement', wrap((d, actor) => store.saveAgreement(d || {}, bizActor(actor))));
+  ipcMain.handle('investor:uploadDocument', wrap((d, actor) => store.uploadInvestorDocument(d || {}, bizActor(actor))));
+  ipcMain.handle('investor:recordPayment', wrap((d, actor) => store.recordPayment(d || {}, bizActor(actor))));
+  ipcMain.handle('investor:recordDistribution', wrap((d, actor) => store.recordDistribution(d || {}, bizActor(actor))));
+  ipcMain.handle('investor:summary', wrap((actor) => {
+    requireUserSession(['owner', 'manager']);
+    return store.investorSummary?.();
+  }));
+
+  ipcMain.handle('release:login', wrap((u, p) => store.releaseLogin(u, p)));
+  ipcMain.handle('release:logout', wrap((tok) => store.releaseLogout(tok)));
+  ipcMain.handle('release:dashboard', wrap((tok) => store.releaseDashboard(tok)));
+  ipcMain.handle('release:runTests', wrap(async (tok, verId) => store.runFullSystemTest(tok, verId || null)));
+  ipcMain.handle('release:createVersion', wrap((tok, d) => store.createReleaseVersion(d || {}, tok)));
+  ipcMain.handle('release:approve', wrap(async (tok, verId, confirm) => store.approveRelease(verId, tok, !!confirm)));
+  ipcMain.handle('release:publish', wrap(async (tok, verId, confirm) => store.publishRelease(verId, tok, !!confirm)));
+  ipcMain.handle('release:listUsers', wrap((actor) => store.listReleaseUsers(bizActor(actor))));
+  ipcMain.handle('release:saveUser', wrap((d, actor) => store.saveReleaseUser(d || {}, bizActor(actor))));
+  ipcMain.handle('release:summary', wrap((actor) => {
+    requireUserSession(['owner', 'manager']);
+    return store.releaseSummary?.();
+  }));
+
+  ipcMain.handle('meeting:login', wrap((u, p) => store.meetingLogin(u, p)));
+  ipcMain.handle('meeting:logout', wrap((tok) => store.meetingLogout(tok)));
+  ipcMain.handle('meeting:list', wrap((tok, f) => store.listMeetings(tok, f || {})));
+  ipcMain.handle('meeting:get', wrap((tok, id) => store.getMeeting(id, tok)));
+  ipcMain.handle('meeting:save', wrap((tok, d) => store.saveMeeting(d || {}, tok)));
+  ipcMain.handle('meeting:start', wrap((tok, id) => store.startMeeting(id, tok)));
+  ipcMain.handle('meeting:stop', wrap((tok, id) => store.stopMeeting(id, tok)));
+  ipcMain.handle('meeting:saveRecording', wrap((tok, id, d) => store.saveRecording(id, tok, d || {})));
+  ipcMain.handle('meeting:saveTranscript', wrap((tok, id, segs) => store.saveTranscript(id, tok, segs)));
+  ipcMain.handle('meeting:processAi', wrap(async (tok, id) => store.processMeetingAi(id, tok)));
+  ipcMain.handle('meeting:finalizeMinutes', wrap((tok, id) => store.finalizeMinutes(id, tok)));
+  ipcMain.handle('meeting:search', wrap((tok, q) => store.searchMeetings(tok, q)));
+  ipcMain.handle('meeting:ask', wrap(async (tok, id, q) => store.askMeetingAi(id, tok, q)));
+  ipcMain.handle('meeting:listUsers', wrap((actor) => store.listMeetingUsers(bizActor(actor))));
+  ipcMain.handle('meeting:saveUser', wrap((d, actor) => store.saveMeetingUser(d || {}, bizActor(actor))));
+  ipcMain.handle('meeting:summary', wrap((actor) => {
+    requireUserSession(['owner', 'manager']);
+    return store.meetingSummary?.();
+  }));
+
+  ipcMain.handle('signage:login', wrap((u, p) => store.signageLogin(u, p)));
+  ipcMain.handle('signage:logout', wrap((tok) => store.signageLogout(tok)));
+  ipcMain.handle('signage:dashboard', wrap((tok) => store.signageDashboard(tok)));
+  ipcMain.handle('signage:summary', wrap((actor) => {
+    requireUserSession(['owner', 'manager']);
+    return store.signageSummary?.();
+  }));
+  ipcMain.handle('signage:requestPairing', wrap((meta) => store.requestPairing(meta || {})));
+  ipcMain.handle('signage:pairingStatus', wrap((code) => store.pairingStatus(code)));
+  ipcMain.handle('signage:pendingPairings', wrap((tok) => store.listPendingPairings(tok)));
+  ipcMain.handle('signage:approvePairing', wrap((tok, code, data) => store.approvePairing(code, data || {}, tok)));
+  ipcMain.handle('signage:rejectPairing', wrap((tok, code) => store.rejectPairing(code, tok)));
+  ipcMain.handle('signage:revokeDevice', wrap((tok, id) => store.revokeDevice(id, tok)));
+  ipcMain.handle('signage:listDevices', wrap((tok) => store.listDevices(tok)));
+  ipcMain.handle('signage:saveDevice', wrap((tok, d) => store.saveDevice(d || {}, tok)));
+  ipcMain.handle('signage:listMedia', wrap((tok, f) => store.listMedia(tok, f || {})));
+  ipcMain.handle('signage:uploadMedia', wrap((tok, d) => store.uploadMedia(d || {}, tok)));
+  ipcMain.handle('signage:deleteMedia', wrap((tok, id) => store.deleteMedia(id, tok)));
+  ipcMain.handle('signage:listPlaylists', wrap((tok) => store.listPlaylists(tok)));
+
   const mm = require('./services/mobile-manager');
   ipcMain.handle('mobile:login', wrap((username, password, deviceInfo) => mm.login(username, password, deviceInfo || {})));
   ipcMain.handle('mobile:bootstrapAdmin', wrap((actor) => {

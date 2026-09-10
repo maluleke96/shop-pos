@@ -382,16 +382,23 @@ const AdminPage = {
     });
   },
 
-  async renderOverviewQuickPanel(container) {
+  async renderOverviewQuickPanel(container, opts = {}) {
     const el = container || document.createElement('div');
     if (!container) el.className = 'admin-section';
     const s = this.settings;
     el.innerHTML = `<p class="muted">Loading quick links…</p>`;
-    // Prefer admin dashboard once; fall back to lighter dashboard:stats if needed (avoid double heavy load).
-    let dashRes = await API.getAdminDashboard(Utils.today(), Utils.today()).catch(() => ({ success: false }));
+    const today = Utils.today();
+    let dashRes = opts.dashboardRes || null;
+    if (!dashRes?.success) {
+      const cached = window.DataCache?.peek?.('adminDashboard', [today, today]);
+      if (cached?.data) dashRes = { success: true, data: cached.data };
+    }
+    if (!dashRes?.success) {
+      dashRes = await API.getAdminDashboard(today, today).catch(() => ({ success: false }));
+    }
     let todayRes = { success: false };
     if (!dashRes.success) {
-      todayRes = await API.getDashboardStats(Utils.today(), Utils.today(), this.app.user).catch(() => ({ success: false }));
+      todayRes = await API.getDashboardStats(today, today, this.app.user).catch(() => ({ success: false }));
     }
     const foodRes = await API.recipeFoodCostAlerts(this.app.user).catch(() => ({ success: false }));
     const bizRes = await API.bizModulesSummary(this.app.user).catch(() => ({ success: false }));

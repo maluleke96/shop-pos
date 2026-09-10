@@ -64,20 +64,21 @@ async function checkAsset(path, mustContain = []) {
     else summary.failed++;
   }
 
-  // Health
   const health = await fetch(`${BASE}/health`).then((r) => r.json()).catch((e) => ({ error: e.message }));
   record(health.ok ? pass('health', { handlers: health.handlers }) : fail('health', { error: health.error }));
 
-  // Static admin assets
   const assets = [
-    ['js/pages/admin.js', ['AdminPage', 'renderOverview']],
-    ['js/pages/admin-pro.js', ['AdminProPage']],
-    ['js/pages/admin-staff.js', ['AdminStaffPage']],
-    ['js/pages/admin-marketing.js', ['AdminMarketingPage']],
+    ['js/pages/admin.js', ['AdminPage', 'renderOverviewQuickPanel']],
+    ['js/pages/admin-audit.js', ['renderBusinessDashboard', 'dashboardRes']],
+    ['js/pages/admin-pro.js', ['AdminPage', 'renderAutomation']],
+    ['js/pages/admin-staff.js', ['AdminPage']],
     ['js/pages/admin-delivery.js', ['AdminDeliveryPage']],
     ['js/pages/admin-hr.js', ['AdminHrPage']],
-    ['js/pages/admin-payroll.js', ['AdminPayrollPage']],
-    ['js/app.js', ['navigate', 'admin']],
+    ['js/pages/admin-payroll.js', ['renderPayrollCompliance']],
+    ['js/app.js', ['bindGlobalCatalogSync', 'checkPosCatalogStamp']],
+    ['js/data-cache.js', ['shop-pos-catalog-ts', 'BroadcastChannel']],
+    ['js/pages/pos.js', ['reloadCatalog', 'shop-pos-catalog-updated']],
+    ['js/api.js', ['getTillBranchId', 'branches:get']],
   ];
   for (const [path, must] of assets) {
     const a = await checkAsset(path, must);
@@ -88,7 +89,6 @@ async function checkAsset(path, mustContain = []) {
     }));
   }
 
-  // Login
   const login = await rpc('auth:login', [user, passEnv]);
   const actor = login.json?.user || login.json?.data?.user;
   const token = login.token;
@@ -99,41 +99,45 @@ async function checkAsset(path, mustContain = []) {
   }
   record(pass('login', { user: actor.username, role: actor.role, ms: login.ms }));
 
+  const today = new Date().toISOString().slice(0, 10);
   const tests = [
     ['settings:getParsed', []],
-    ['dashboard:stats', [new Date().toISOString().slice(0, 10), new Date().toISOString().slice(0, 10), actor]],
-    ['dashboard:admin', [new Date().toISOString().slice(0, 10), new Date().toISOString().slice(0, 10), actor]],
+    ['dashboard:stats', [today, today, actor]],
+    ['audit:dashboard', [today, today, actor]],
     ['inventory:stats', []],
     ['products:get', [{}]],
     ['categories:get', [{}]],
     ['customers:get', ['']],
     ['suppliers:get', []],
     ['auth:getUsers', [actor]],
-    ['branches:get', [actor]],
-    ['branches:getDetailed', [actor]],
+    ['branches:get', []],
+    ['branches:getActive', []],
+    ['branches:getView', []],
     ['web:adminOrders', [{ status: 'pending' }, actor]],
     ['web:adminOrders', [{}]],
-    ['shifts:list', [actor]],
-    ['discounts:get', []],
-    ['loyalty:getSettings', []],
+    ['shifts:get', [50]],
+    ['reports:discounts', [today, today]],
+    ['loyalty:pointsSummary', [1]],
     ['expenses:get', [{}]],
     ['po:get', []],
     ['returns:get', [{}]],
     ['settings:getPendingRequests', []],
     ['mktp:agents', [{ status: 'active' }, actor]],
-    ['mktp:agents', [{ status: 'pending' }, actor]],
-    ['delivery:listDrivers', [actor]],
-    ['delivery:listOrders', [{}, actor]],
-    ['hr:employees', [actor]],
-    ['payroll:runs', [actor]],
+    ['delivery:drivers', [{}, actor]],
+    ['delivery:list', [{}, actor]],
+    ['hr:people', [{}, actor]],
+    ['payroll:getSettings', []],
     ['acc:journals', [{ limit: 5 }, actor]],
     ['acc:accounts', [{}, actor]],
     ['recipe:foodCostAlerts', [actor]],
-    ['ops:complianceDashboard', [actor]],
+    ['ops:dashboard', []],
     ['combos:get', [actor]],
-    ['quotes:list', [actor]],
-    ['mobile:users', [actor]],
-    ['audit:log', [{ limit: 10 }, actor]],
+    ['quotes:get', [{}]],
+    ['mobile:adminListUsers', [actor]],
+    ['audit:get', [{ limit: 10 }]],
+    ['bizModules:summary', [actor]],
+    ['signage:summary', [actor]],
+    ['meeting:summary', [actor]],
   ];
 
   for (const [method, args] of tests) {
@@ -159,29 +163,31 @@ async function checkAsset(path, mustContain = []) {
     }
   }
 
-  // Branch stock integrity
-  const branches = await rpc('branches:getDetailed', [actor], token);
+  const branches = await rpc('branches:get', [], token);
   const branchRows = branches.json?.data || [];
   if (branchRows.length === 0) {
-    record(fail('branches:empty', { severity: 'bug', note: 'No branches configured — stock saves may fail' }));
+    record(fail('branches:empty', { severity: 'bug', note: 'No branches configured — multi-branch stock/sales may fail' }));
   } else {
-    record(pass('branches:configured', { count: branchRows.length, active: branchRows.find((b) => b.is_active)?.name }));
+    record(pass('branches:configured', {
+      count: branchRows.length,
+      primary: branchRows[0]?.name,
+      code: branchRows[0]?.code,
+      id: branchRows[0]?.id
+    }));
   }
 
-  // Products with zero stock overlay check
+  const active = await rpc('branches:getActive', [], token);
+  const activeBranch = active.json?.data;
+  if (branchRows.length && activeBranch?.id) {
+    record(pass('branches:active', { id: activeBranch.id, name: activeBranch.name }));
+  } else if (branchRows.length) {
+    record(fail('branches:active-missing', { severity: 'warning', note: 'Active branch not resolved' }));
+  }
+
   const products = await rpc('products:get', [{}], token);
   const prods = products.json?.data || [];
-  const zeroStock = prods.filter((p) => Number(p.stock_quantity) === 0).length;
-  record(pass('products:loaded', { total: prods.length, zeroStock }));
+  record(pass('products:loaded', { total: prods.length }));
 
-  // Pending online orders
-  const pending = await rpc('web:adminOrders', [{ status: 'pending' }, actor], token);
-  const pendingOrders = pending.json?.data || [];
-  if (pendingOrders.length > 0) {
-    record(pass('online-orders:pending', { count: pendingOrders.length, numbers: pendingOrders.slice(0, 5).map((o) => o.order_number) }));
-  }
-
-  // Admin page HTTP
   const adminPage = await fetch(`${BASE}/?app=admin`);
   record(adminPage.ok ? pass('admin:page_http', { status: adminPage.status }) : fail('admin:page_http', { status: adminPage.status }));
 
@@ -191,7 +197,7 @@ async function checkAsset(path, mustContain = []) {
 
   console.log(JSON.stringify({
     summary,
-    failed: failed.map((f) => ({ name: f.name, error: f.error, note: f.note, ms: f.ms })),
+    failed: failed.map((f) => ({ name: f.name, error: f.error, note: f.note, ms: f.ms, missing: f.missing })),
     warnings: warnings.map((f) => ({ name: f.name, error: f.error, note: f.note })),
     slow: slowRpc.map((f) => ({ name: f.name, ms: f.ms })),
     pass: summary.passed

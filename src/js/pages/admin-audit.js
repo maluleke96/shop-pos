@@ -25,7 +25,7 @@
   AdminPage.renderSection = async function (el) {
     const auditRenderers = {
       overview: async () => {
-        await this.renderBusinessDashboard(el);
+        const dashResult = await this.renderBusinessDashboard(el);
         let host = el.querySelector('#admin-overview-quick-panel');
         if (!host) {
           host = document.createElement('div');
@@ -34,7 +34,7 @@
           el.appendChild(host);
         }
         if (typeof this.renderOverviewQuickPanel === 'function') {
-          await this.renderOverviewQuickPanel(host);
+          await this.renderOverviewQuickPanel(host, { dashboardRes: dashResult });
         }
       },
       salesmgmt: () => this.renderSalesManagement(el),
@@ -185,9 +185,10 @@
         Utils.bindDateFilter('biz-dash-filter', (f, t) => this.renderBusinessDashboard(el, f, t));
         document.getElementById('dash-retry')?.addEventListener('click', () => this.renderBusinessDashboard(el, rangeFrom, rangeTo));
       }
-      return;
+      return res;
     }
     paintDashboard(res.data || {});
+    return res;
   };
 
   AdminPage.renderSalesChart = function (data, currency) {

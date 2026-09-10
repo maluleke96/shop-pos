@@ -10,25 +10,49 @@ function softAlter(sql) {
   }
 }
 
-function tableExists(name) {
+function isPgMode() {
   try {
-    return !!getDb().prepare(
-      "SELECT 1 AS v FROM sqlite_master WHERE type='table' AND name = ? LIMIT 1"
-    ).get(name);
+    return require('../database/pg-db').isPgMode();
   } catch (_) {
-    try {
-      getDb().prepare(`SELECT 1 AS v FROM ${name} LIMIT 1`).get();
-      return true;
-    } catch (__) {
-      return false;
+    return false;
+  }
+}
+
+function tableExists(name) {
+  const db = getDb();
+  const tbl = String(name || '').toLowerCase();
+  try {
+    if (isPgMode()) {
+      const row = db.prepare(
+        "SELECT 1 AS v FROM information_schema.tables WHERE table_schema = 'public' AND lower(table_name) = ? LIMIT 1"
+      ).get(tbl);
+      if (row?.v) return true;
+    } else {
+      const row = db.prepare(
+        "SELECT 1 AS v FROM sqlite_master WHERE type='table' AND name = ? LIMIT 1"
+      ).get(name);
+      if (row?.v) return true;
     }
+  } catch (_) { /* fall through */ }
+  try {
+    db.prepare(`SELECT 1 AS v FROM ${name} LIMIT 1`).get();
+    return true;
+  } catch (__) {
+    return false;
   }
 }
 
 function hasColumn(table, column) {
+  const col = String(column || '').toLowerCase();
   try {
+    if (isPgMode()) {
+      const row = getDb().prepare(
+        "SELECT 1 AS v FROM information_schema.columns WHERE table_schema = 'public' AND lower(table_name) = ? AND lower(column_name) = ? LIMIT 1"
+      ).get(String(table).toLowerCase(), col);
+      return !!row?.v;
+    }
     const rows = getDb().prepare(`PRAGMA table_info(${table})`).all();
-    return rows.some((r) => String(r.name || '').toLowerCase() === String(column).toLowerCase());
+    return rows.some((r) => String(r.name || '').toLowerCase() === col);
   } catch (_) {
     return false;
   }
@@ -50,6 +74,17 @@ function ensureBranchSchema() {
   softAlter('ALTER TABLE stock_movements ADD COLUMN branch_id INTEGER');
   softAlter('ALTER TABLE shifts ADD COLUMN branch_id INTEGER DEFAULT 1');
   softAlter('ALTER TABLE branches ADD COLUMN business_id INTEGER');
+  if (!tableExists('branches')) {
+    softAlter(`CREATE TABLE IF NOT EXISTS branches (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      code TEXT UNIQUE,
+      address TEXT,
+      phone TEXT,
+      is_active INTEGER DEFAULT 1,
+      created_at TEXT DEFAULT (datetime('now'))
+    )`);
+  }
   if (!tableExists('branch_stock')) {
     softAlter(`CREATE TABLE IF NOT EXISTS branch_stock (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -174,6 +209,96 @@ function getBranchByCode(code) {
   return getDb().prepare('SELECT * FROM branches WHERE code = ?').get(String(code).toUpperCase());
 }
 
+/** Create the first real branch from shop settings (shop name, address, phone). */
+function bootstrapInitialBranch() {
+  ensureBranchSchema();
+  const db = getDb();
+  const existing = db.prepare('SELECT id FROM branches ORDER BY id LIMIT 1').get();
+  if (existing?.id) return Number(existing.id);
+
+  let shopName = 'Main Branch';
+  let shopAddress = null;
+  let shopPhone = null;
+  try {
+    const shop = db.prepare('SELECT shop_name, address, phone FROM shop_settings WHERE id = 1').get() || {};
+    if (shop.shop_name?.trim()) shopName = shop.shop_name.trim();
+    shopAddress = shop.address?.trim() || null;
+    shopPhone = shop.phone?.trim() || null;
+  } catch (_) { /* optional */ }
+
+  let baseCode = String(shopName).replace(/[^A-Za-z0-9]/g, '').slice(0, 8).toUpperCase() || 'MAIN';
+  let code = baseCode;
+  let n = 1;
+  while (getBranchByCode(code)) {
+    code = `${baseCode.slice(0, 6)}${n}`;
+    n += 1;
+  }
+
+  let id = 0;
+  if (!isPgMode()) {
+    try {
+      db.prepare(
+        "INSERT INTO branches (id, name, code, address, phone, is_active) VALUES (1, ?, ?, ?, ?, 1)"
+      ).run(shopName, code, shopAddress, shopPhone);
+      id = 1;
+    } catch (_) { /* fall through to auto id */ }
+  }
+  if (!id) {
+    const r = db.prepare(
+      'INSERT INTO branches (name, code, address, phone, is_active) VALUES (?, ?, ?, ?, 1)'
+    ).run(shopName, code, shopAddress, shopPhone);
+    id = Number(r.lastInsertRowid) || 0;
+  }
+  if (!id) throw new Error('Could not create initial branch');
+
+  syncBranchesIdSequence();
+  try {
+    db.prepare('UPDATE shop_settings SET branch_id = ? WHERE id = 1').run(id);
+  } catch (_) { /* optional */ }
+  repairOrphanBranchStock(id);
+  try {
+    db.prepare(`
+      INSERT INTO branch_stock (product_id, branch_id, quantity, min_stock)
+      SELECT p.id, ?, COALESCE(p.stock_quantity, 0), COALESCE(p.min_stock, 0)
+      FROM products p
+      WHERE NOT EXISTS (
+        SELECT 1 FROM branch_stock bs WHERE bs.product_id = p.id AND bs.branch_id = ?
+      )
+    `).run(id, id);
+  } catch (_) { /* optional seed */ }
+  try {
+    const shop = db.prepare('SELECT tax_enabled, tax_rate, tax_inclusive, tax_show_on_pos, vat_number FROM shop_settings WHERE id = 1').get() || {};
+    db.prepare(`
+      INSERT INTO branch_settings (branch_id, tax_enabled, tax_rate, tax_inclusive, tax_show_on_pos, vat_number)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT (branch_id) DO NOTHING
+    `).run(
+      id,
+      shop.tax_enabled ? 1 : 0,
+      Number(shop.tax_rate) || 0,
+      shop.tax_inclusive !== 0 ? 1 : 0,
+      shop.tax_show_on_pos !== 0 ? 1 : 0,
+      shop.vat_number || null
+    );
+  } catch (_) {
+    try {
+      const shop = db.prepare('SELECT tax_enabled, tax_rate, tax_inclusive, tax_show_on_pos, vat_number FROM shop_settings WHERE id = 1').get() || {};
+      db.prepare(`
+        INSERT OR IGNORE INTO branch_settings (branch_id, tax_enabled, tax_rate, tax_inclusive, tax_show_on_pos, vat_number)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(
+        id,
+        shop.tax_enabled ? 1 : 0,
+        Number(shop.tax_rate) || 0,
+        shop.tax_inclusive !== 0 ? 1 : 0,
+        shop.tax_show_on_pos !== 0 ? 1 : 0,
+        shop.vat_number || null
+      );
+    } catch (__) { /* ignore */ }
+  }
+  return id;
+}
+
 /** Ensure a real branch exists and shop_settings.branch_id points at it (fixes Railway stock overlay). */
 function ensureDefaultBranch() {
   ensureBranchSchema();
@@ -182,44 +307,47 @@ function ensureDefaultBranch() {
   const repaired = repairShopSettingsBranchId();
   if (repaired) return repaired;
 
+  let count = 0;
+  try {
+    count = Number(db.prepare('SELECT COUNT(*) AS c FROM branches').get()?.c) || 0;
+  } catch (_) {
+    count = 0;
+  }
+  if (count === 0) {
+    try {
+      return bootstrapInitialBranch();
+    } catch (_) {
+      /* fall through */
+    }
+  }
+
   let row = null;
   try {
-    row = db.prepare('SELECT id FROM branches WHERE id = 1').get();
+    row = db.prepare('SELECT id FROM branches ORDER BY id LIMIT 1').get();
   } catch (_) { /* table missing */ }
   if (row?.id) {
+    const id = Number(row.id);
     try {
-      db.prepare('UPDATE shop_settings SET branch_id = 1 WHERE id = 1').run();
+      db.prepare('UPDATE shop_settings SET branch_id = ? WHERE id = 1').run(id);
     } catch (_) { /* optional */ }
-    repairOrphanBranchStock(1);
-    return 1;
+    repairOrphanBranchStock(id);
+    return id;
   }
 
   try {
-    db.prepare(
-      "INSERT INTO branches (id, name, code, address, phone, is_active) VALUES (1, 'Main Branch', 'MAIN', NULL, NULL, 1)"
-    ).run();
-    syncBranchesIdSequence();
-    try {
-      db.prepare('UPDATE shop_settings SET branch_id = 1 WHERE id = 1').run();
-    } catch (_) { /* optional */ }
-    repairOrphanBranchStock(1);
-    return 1;
+    return bootstrapInitialBranch();
   } catch (_) {
-    try {
-      const r2 = db.prepare(
-        "INSERT INTO branches (name, code, address, phone, is_active) VALUES ('Main Branch', 'MAIN', NULL, NULL, 1)"
-      ).run();
-      const id = Number(r2.lastInsertRowid) || 1;
-      syncBranchesIdSequence();
-      try {
-        db.prepare('UPDATE shop_settings SET branch_id = ? WHERE id = 1').run(id);
-      } catch (__) { /* optional */ }
-      repairOrphanBranchStock(id, 1);
-      return id;
-    } catch (err) {
-      return 1;
-    }
+    return 1;
   }
+}
+
+/** Resolve till branch for sales/shifts — prefers explicit till_branch_id from client (multi-POS cloud). */
+function resolveTillBranchId(actor = null, opts = {}) {
+  const explicit = opts.tillBranchId ?? opts.till_branch_id ?? opts.branch_id;
+  if (explicit != null && explicit !== '' && getBranch(Number(explicit))) {
+    return Number(explicit);
+  }
+  return resolveBranchScope(actor, { forceTill: true }).stampId;
 }
 
 function saveBranch(data) {
@@ -564,6 +692,8 @@ module.exports = {
   getBranchStockQuantity,
   adjustBranchStock,
   ensureDefaultBranch,
+  bootstrapInitialBranch,
+  resolveTillBranchId,
   assertBranchRoleSlot,
   ensureBranchSchema,
   hasColumn,

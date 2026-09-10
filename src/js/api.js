@@ -1313,11 +1313,51 @@ const API = {
   deleteCustomerRewardRule: (id, actor) => invoke('rewards:deleteRule', id, actor),
 
   getBranches: () => invoke('branches:get'),
-  getActiveBranch: () => invoke('branches:getActive'),
+  getActiveBranch: async () => {
+    const localId = (() => {
+      try {
+        const id = Utils.getLocalDeviceSettings?.()?.branch_id;
+        return id != null && id !== '' ? Number(id) : null;
+      } catch (_) { return null; }
+    })();
+    if (window.__SHOP_POS_CLOUD__ && localId) {
+      try {
+        const branches = await invoke('branches:get');
+        const list = branches?.data || branches || [];
+        const match = list.find((b) => Number(b.id) === localId);
+        if (match) return { success: true, data: match };
+      } catch (_) { /* fall through */ }
+    }
+    return invoke('branches:getActive');
+  },
   getViewBranch: () => invoke('branches:getView'),
   setViewBranch: (branchId, actor) => invoke('branches:setView', branchId, actor),
   saveBranch: (data, actor) => invoke('branches:save', data, actor),
-  setActiveBranch: (branchId, actor) => invoke('branches:setActive', branchId, actor),
+  setActiveBranch: async (branchId, actor) => {
+    const id = Number(branchId);
+    if (window.__SHOP_POS_CLOUD__) {
+      try { Utils.saveLocalDeviceSettings?.({ branch_id: id }); } catch (_) { /* ignore */ }
+      try {
+        const branches = await invoke('branches:get');
+        const list = branches?.data || branches || [];
+        const match = list.find((b) => Number(b.id) === id);
+        if (match) return { success: true, data: match };
+      } catch (_) { /* ignore */ }
+      return { success: true, data: { id, name: 'Branch', code: '' } };
+    }
+    return invoke('branches:setActive', branchId, actor);
+  },
+  getTillBranchId: async () => {
+    const localId = (() => {
+      try {
+        const id = Utils.getLocalDeviceSettings?.()?.branch_id;
+        return id != null && id !== '' ? Number(id) : null;
+      } catch (_) { return null; }
+    })();
+    if (localId) return localId;
+    const res = await invoke('branches:getActive');
+    return Number(res?.data?.id || res?.id || 0) || null;
+  },
   saveBranchSettings: (branchId, data, actor) => invoke('branches:saveSettings', branchId, data, actor),
   getSyncStatus: () => invoke('sync:getStatus'),
   saveSyncSettings: (data, actor) => invoke('sync:saveSettings', data, actor),

@@ -189,8 +189,15 @@ function installApiReadCache() {
   wrap('getPromoRequestHistory', 'promoHistory', 45000, (a) => [a[0] || {}]);
   wrap('getCombos', 'combosList', 60000, (a) => [a[0] || {}]);
 
+  let catalogBroadcast = null;
+  try {
+    if (typeof BroadcastChannel !== 'undefined') {
+      catalogBroadcast = new BroadcastChannel('shop-pos-catalog');
+    }
+  } catch (_) { /* ignore */ }
+
   /** Invalidate menu/catalog caches and notify POS, Recipe, and embedded admin views instantly. */
-  const notifyCatalogChanged = () => {
+  const notifyCatalogChanged = (detail = {}) => {
     DataCache.invalidate(
       'products', 'stockReport', 'stockHistory', 'dashboard', 'pos', 'categories',
       'promoHistory', 'combos', 'combosList', 'campaigns'
@@ -199,11 +206,18 @@ function installApiReadCache() {
       Utils.sessionCacheClear?.('products_page');
       Utils.sessionCacheClear?.('pos_');
     } catch (_) { /* ignore */ }
+    const stamp = String(Date.now());
+    const payload = { stamp, ...detail };
     try {
-      window.dispatchEvent(new CustomEvent('shop-pos-catalog-updated'));
-      window.dispatchEvent(new CustomEvent('shop-pos-stock-updated'));
-      window.dispatchEvent(new CustomEvent('shop-pos-combos-updated'));
-      localStorage.setItem('shop-pos-catalog-ts', String(Date.now()));
+      localStorage.setItem('shop-pos-catalog-ts', stamp);
+    } catch (_) { /* ignore */ }
+    try {
+      window.dispatchEvent(new CustomEvent('shop-pos-catalog-updated', { detail: payload }));
+      window.dispatchEvent(new CustomEvent('shop-pos-stock-updated', { detail: payload }));
+      window.dispatchEvent(new CustomEvent('shop-pos-combos-updated', { detail: payload }));
+    } catch (_) { /* ignore */ }
+    try {
+      catalogBroadcast?.postMessage({ type: 'catalog-updated', ...payload });
     } catch (_) { /* ignore */ }
   };
 

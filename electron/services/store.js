@@ -1101,6 +1101,14 @@ function completeSetup(data) {
   ['Food', 'Drinks', 'Snacks'].forEach((name, i) => {
     getDb().prepare('INSERT OR IGNORE INTO categories (name, sort_order) VALUES (?, ?)').run(name, i);
   });
+
+  try {
+    branchesSvc.ensureBranchSchema();
+    branchesSvc.bootstrapInitialBranch();
+  } catch (err) {
+    console.warn('[completeSetup] branch bootstrap:', err.message || err);
+  }
+
   return { success: true };
 }
 
@@ -2240,7 +2248,10 @@ function completeSale(saleData, actorId, actorName, actorRole) {
   const branchId = (() => {
     try {
       const actor = actorId ? getDb().prepare('SELECT id, role, branch_id FROM users WHERE id = ?').get(actorId) : null;
-      return branchesSvc.resolveBranchScope(actor, { forceTill: true }).stampId;
+      return branchesSvc.resolveTillBranchId(actor, {
+        till_branch_id: saleData?.till_branch_id ?? saleData?.branch_id,
+        branch_id: saleData?.branch_id
+      });
     } catch (_) {
       return features.getBranchId();
     }
@@ -4057,10 +4068,21 @@ function confirmCashDrop(id, actor) {
   return db.prepare('SELECT * FROM cash_drops WHERE id = ?').get(id);
 }
 
-function openShift(userId, openingFloat) {
+function openShift(userId, openingFloat, opts = {}) {
   const existing = getDb().prepare("SELECT id FROM shifts WHERE user_id = ? AND status = 'open'").get(userId);
   if (existing) return getOpenShift(userId);
-  getDb().prepare('INSERT INTO shifts (user_id, opening_float) VALUES (?, ?)').run(userId, openingFloat || 0);
+  branchesSvc.ensureBranchSchema();
+  const user = getDb().prepare('SELECT id, role, branch_id FROM users WHERE id = ?').get(userId);
+  const branchId = branchesSvc.resolveTillBranchId(user, {
+    till_branch_id: opts?.till_branch_id ?? opts?.branch_id,
+    branch_id: opts?.branch_id
+  });
+  if (branchesSvc.hasColumn('shifts', 'branch_id')) {
+    getDb().prepare('INSERT INTO shifts (user_id, opening_float, branch_id) VALUES (?, ?, ?)')
+      .run(userId, openingFloat || 0, branchId);
+  } else {
+    getDb().prepare('INSERT INTO shifts (user_id, opening_float) VALUES (?, ?)').run(userId, openingFloat || 0);
+  }
   return getOpenShift(userId);
 }
 
@@ -4496,6 +4518,12 @@ function processScheduledDocuments() {
 }
 
 function runStartupTasks() {
+  try {
+    branchesSvc.ensureBranchSchema();
+    branchesSvc.ensureDefaultBranch();
+  } catch (err) {
+    console.warn('[startup] branch bootstrap:', err.message || err);
+  }
   try { maybeSyncMenuHighlights(true); } catch (_) { /* ignore */ }
   try { processScheduledDocuments(); } catch (_) { /* ignore */ }
   try { if (typeof staffExports.autoCloseOpenAttendance === 'function') staffExports.autoCloseOpenAttendance(); } catch (_) { /* ignore */ }
