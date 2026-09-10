@@ -122,6 +122,12 @@ const POSPage = {
       if (cfg.tabs?.[settingKey]?.pos === false) continue;
       if ((counts[catKey] || 0) > 0) return catKey;
     }
+    if ((this.products || []).length) {
+      const withCat = this.products.find((p) => p.category_id != null && p.category_id !== '');
+      if (withCat) return String(withCat.category_id);
+    }
+    const firstCat = (this.categories || [])[0];
+    if (firstCat?.id != null) return String(firstCat.id);
     return '__all';
   },
 
@@ -182,6 +188,7 @@ const POSPage = {
     const tabs = document.getElementById('pos-categories');
     if (!tabs) return;
     tabs.innerHTML = `
+      ${cat === '__all' ? `<button class="cat-tab active" data-cat="__all">All</button>` : ''}
       ${this._buildHighlightTabsHtml(cat)}
       ${this.combos?.length ? `<button class="cat-tab cat-tab-sale ${cat === 'combos' ? 'active' : ''}" data-cat="combos" style="border-color:#ef4444">COMBOS<span class="menu-tab-count sale">${this.combos.length}</span></button>` : ''}
       ${(this.categories || []).map((c) => `<button class="cat-tab ${String(cat) === String(c.id) ? 'active' : ''}" data-cat="${c.id}" style="border-color:${c.color}">
@@ -278,14 +285,7 @@ const POSPage = {
     this.bindEvents(el);
     this.bindMoreMenu(el);
     this.startAdvertReminderMonitor();
-    this._catalogRefreshHandler = () => {
-      clearTimeout(this._catalogRefreshDebounce);
-      this._catalogRefreshDebounce = setTimeout(() => this.reloadCatalog?.(), 250);
-    };
-    window.addEventListener('shop-pos-stock-updated', this._catalogRefreshHandler);
-    window.addEventListener('shop-pos-catalog-updated', this._catalogRefreshHandler);
-    this._comboRefreshHandler = () => this.reloadCombosOnly?.();
-    window.addEventListener('shop-pos-combos-updated', this._comboRefreshHandler);
+    this._bindCatalogLiveSync();
     this._bindComboLiveRefresh();
     if (isKiosk) this.ensureKioskLogout(el);
 
@@ -414,6 +414,19 @@ const POSPage = {
       } catch (_) { /* optional */ }
       this.updateShiftBar().catch(() => {});
     });
+  },
+
+  _bindCatalogLiveSync() {
+    if (this._catalogLiveSyncBound) return;
+    this._catalogLiveSyncBound = true;
+    this._catalogRefreshHandler = () => {
+      clearTimeout(this._catalogRefreshDebounce);
+      this._catalogRefreshDebounce = setTimeout(() => this.reloadCatalog?.(), 250);
+    };
+    window.addEventListener('shop-pos-stock-updated', this._catalogRefreshHandler);
+    window.addEventListener('shop-pos-catalog-updated', this._catalogRefreshHandler);
+    this._comboRefreshHandler = () => this.reloadCombosOnly?.();
+    window.addEventListener('shop-pos-combos-updated', this._comboRefreshHandler);
   },
 
   async fetchTodaySalesTotal() {
@@ -629,13 +642,22 @@ const POSPage = {
       API.getCategories(filters),
       API.getProducts(filters),
       API.getOpenShift(app.user),
-      this.fetchPosCombos(true)
-    ]).then(([catRes, prodRes, shiftRes, comboRes]) => {
+      this.fetchPosCombos(true),
+      API.getActiveCampaigns(app.user?.branch_id).catch(() => ({ success: false }))
+    ]).then(([catRes, prodRes, shiftRes, comboRes, campRes]) => {
       this.categories = catRes?.data || catRes || [];
       this.products = this._unwrapRpcList(prodRes);
       this.setPosCombos(comboRes);
       this.openShift = shiftRes?.data || shiftRes || null;
+      if (campRes?.success) {
+        this.activeCampaigns = campRes.data || [];
+        this._updateCampaignBanners();
+      }
+      this._menuTabCountCache = null;
+      this._invalidateProductGridCache();
       this.rebuildProductLookups();
+      this.ensureDefaultCategory();
+      this.renderCategoryTabs(this.selectedCategory || '');
       this.renderProducts(document.getElementById('pos-search')?.value || '');
       this.refreshShiftBarQuick?.();
       this.updateShiftGate?.();
@@ -1485,25 +1507,54 @@ const POSPage = {
     };
   },
 
+  _updateCampaignBanners() {
+    const layout = document.querySelector('.pos-layout');
+    if (!layout) return;
+    const html = (this.activeCampaigns || []).slice(0, 2).map((c) =>
+      `<div class="pos-campaign-banner">🔥 ${c.title}${c.end_date ? ` — ends ${c.end_date}` : ''}</div>`
+    ).join('');
+    let el = layout.querySelector('.pos-campaign-banners');
+    if (!html) {
+      el?.remove();
+      return;
+    }
+    if (el) el.innerHTML = html;
+    else layout.insertAdjacentHTML('afterbegin', `<div class="pos-campaign-banners">${html}</div>`);
+  },
+
   async reloadCatalog() {
     if (!this.app?.user) return;
     try {
       const filters = { for_pos: true, actor: this.app.user };
       const uncached = (fn, ...args) => (fn?._uncached ? fn._uncached(...args) : fn(...args));
-      const [catRes, prodRes, comboRes] = await Promise.all([
+      const [catRes, prodRes, comboRes, hlRes, campRes] = await Promise.all([
         uncached(API.getCategories, { for_pos: true }),
         uncached(API.getProducts, filters),
-        this.fetchPosCombos(true)
+        this.fetchPosCombos(true),
+        uncached(API.getMenuHighlightSettings).catch(() => null),
+        uncached(API.getActiveCampaigns, this.app.user?.branch_id).catch(() => null)
       ]);
+      if (hlRes?.success && hlRes.data) {
+        this.app.settings = this.app.settings || {};
+        this.app.settings.customization = {
+          ...(this.app.settings.customization || {}),
+          menu_highlight_settings: hlRes.data
+        };
+      }
+      if (campRes?.success) this.activeCampaigns = campRes.data || [];
       this.categories = catRes?.data || catRes || this.categories || [];
       this.products = this._unwrapRpcList(prodRes);
       this.setPosCombos(comboRes);
+      this._menuTabCountCache = null;
       this._invalidateProductGridCache();
       this.rebuildProductLookups();
       this.ensureDefaultCategory();
       this.renderCategoryTabs(this.selectedCategory || '');
       this.renderProducts(document.getElementById('pos-search')?.value || '');
-    } catch (_) { /* ignore */ }
+      this._updateCampaignBanners();
+    } catch (err) {
+      Utils.toast?.(err?.message || 'Menu refresh failed — showing last loaded menu', 'warning');
+    }
   },
 
   comboNeedsOptions(combo) {
@@ -1924,7 +1975,7 @@ const POSPage = {
       this.setActiveCategoryTab(catKey);
       return;
     }
-    let items = this._productsForCategory(catKey);
+    let items = filter ? (this.products || []) : this._productsForCategory(catKey);
     if (filter) {
       const q = filter.toLowerCase();
       items = items.filter(p => p.name.toLowerCase().includes(q) || p.barcode?.includes(q) || p.sku?.toLowerCase().includes(q));
@@ -3420,17 +3471,14 @@ const POSPage = {
       const product = r.data;
       if (!product?.id) return Utils.toast('Could not create other item', 'error');
       if (!this.products.find(p => p.id === product.id)) this.products.push(product);
+      this._invalidateProductGridCache();
       this.rebuildProductLookups();
-      // Ensure Other Items category tab exists
       if (product.category_id && !this.categories.find(c => c.id === product.category_id)) {
-        const cats = await API.getCategories({ for_pos: true });
-        this.categories = cats.data || this.categories;
-        const tabs = document.getElementById('pos-categories');
-        if (tabs && !tabs.querySelector(`[data-cat="${product.category_id}"]`)) {
-          const cat = this.categories.find(c => c.id === product.category_id);
-          if (cat) tabs.insertAdjacentHTML('beforeend', `<button class="cat-tab" data-cat="${cat.id}" style="border-color:${cat.color || '#64748b'}">${cat.name}</button>`);
-        }
+        const cats = await API.getCategories({ for_pos: true, actor: this.app.user });
+        this.categories = cats.data || cats || this.categories;
       }
+      this.renderCategoryTabs(this.selectedCategory || '');
+      this.renderProducts(document.getElementById('pos-search')?.value || '');
       await this.addToCart(product);
       if (qty > 1) {
         const line = this.cart.find(i => i.product_id === product.id && !i.combo_id);

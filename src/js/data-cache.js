@@ -193,7 +193,7 @@ function installApiReadCache() {
   const notifyCatalogChanged = () => {
     DataCache.invalidate(
       'products', 'stockReport', 'stockHistory', 'dashboard', 'pos', 'categories',
-      'promoHistory', 'combos', 'combosList'
+      'promoHistory', 'combos', 'combosList', 'campaigns'
     );
     try {
       Utils.sessionCacheClear?.('products_page');
@@ -240,6 +240,12 @@ function installApiReadCache() {
   after('saveProduct', (res) => {
     if (res?.success !== false) invalidateProducts();
   });
+  after('saveOtherSellItem', (res) => {
+    if (res?.success !== false && res?.data?.id) invalidateProducts();
+  });
+  after('importProducts', (res) => {
+    if (res?.success !== false) invalidateProducts();
+  });
   after('deleteProduct', (res) => {
     if (res?.success !== false) invalidateProducts();
   });
@@ -256,6 +262,12 @@ function installApiReadCache() {
     if (res?.success !== false) invalidateProducts();
   });
   after('recipeRestockIngredient', (res) => {
+    if (res?.success !== false) invalidateProducts();
+  });
+  after('recipeSetAvailableToday', (res) => {
+    if (res?.success !== false) invalidateProducts();
+  });
+  after('recipePromoSave', (res) => {
     if (res?.success !== false) invalidateProducts();
   });
   after('proposeProductPromo', (res) => {
@@ -292,6 +304,15 @@ function installApiReadCache() {
     if (res?.success !== false) notifyCatalogChanged();
   });
   after('rejectPromoRequest', (res) => {
+    if (res?.success !== false) notifyCatalogChanged();
+  });
+  after('cancelPromoRequest', (res) => {
+    if (res?.success !== false) notifyCatalogChanged();
+  });
+  after('markProductPromo', (res) => {
+    if (res?.success !== false) notifyCatalogChanged();
+  });
+  after('syncPromoStatuses', (res) => {
     if (res?.success !== false) notifyCatalogChanged();
   });
   after('saveCustomer', (res) => {
