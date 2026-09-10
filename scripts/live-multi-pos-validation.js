@@ -61,7 +61,19 @@ function unwrap(r) {
     }, owner], token));
     pass('create-test-branch', { detail: `id=${testBranch.id}` });
   } else {
-    pass('test-branch-exists', { detail: `id=${testBranch.id}` });
+    if (testBranch.is_active === 0 || testBranch.is_active === false) {
+      testBranch = unwrap(await rpc('branches:save', [{
+        id: testBranch.id,
+        name: testBranch.name,
+        code: testBranch.code,
+        address: testBranch.address,
+        phone: testBranch.phone,
+        is_active: true
+      }, owner], token));
+      pass('reactivate-test-branch', { detail: `id=${testBranch.id}` });
+    } else {
+      pass('test-branch-exists', { detail: `id=${testBranch.id}` });
+    }
   }
 
   const products = unwrap(await rpc('products:get', [{ for_pos: true }], token));
@@ -198,6 +210,13 @@ function unwrap(r) {
     }, owner], token));
     testCashier = created;
     pass('create-test-cashier', { detail: `branch ${testBranch.id}` });
+  } else if (testCashier.is_active === 0 || testCashier.is_active === false) {
+    testCashier = unwrap(await rpc('auth:updateUser', [testCashier.id, {
+      is_active: true,
+      branch_id: testBranch.id,
+      role: 'cashier'
+    }, owner], token));
+    pass('reactivate-test-cashier', { detail: testUserName });
   } else {
     pass('test-cashier-exists', { detail: testUserName });
   }

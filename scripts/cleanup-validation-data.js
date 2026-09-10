@@ -95,16 +95,17 @@ function ok(r) {
     actions.push({ step: 'test-branch-not-found', code: TEST_BRANCH_CODE });
   }
 
-  const verifyBranches = (await rpc('branches:getActive', [], token)).json?.data || [];
-  const verifyMain = verifyBranches.find((b) => Number(b.id) === 2);
-  const testStillActive = verifyBranches.find((b) =>
-    String(b.code || '').toUpperCase() === TEST_BRANCH_CODE
+  const allBranches = (await rpc('branches:get', [], token)).json?.data || [];
+  const verifyMain = allBranches.find((b) => Number(b.id) === 2 && b.is_active !== 0 && b.is_active !== false);
+  const testBranchRow = allBranches.find((b) =>
+    String(b.code || '').toUpperCase() === TEST_BRANCH_CODE || Number(b.id) === 3
   );
+  const testStillActive = testBranchRow && testBranchRow.is_active !== 0 && testBranchRow.is_active !== false;
 
   const report = {
     ok: !!verifyMain && !testStillActive,
     actions,
-    activeBranches: verifyBranches.map((b) => ({ id: b.id, name: b.name, code: b.code })),
+    branches: allBranches.map((b) => ({ id: b.id, name: b.name, code: b.code, is_active: b.is_active })),
     mainBranchPreserved: !!verifyMain,
     testBranchRemovedFromActive: !testStillActive
   };
