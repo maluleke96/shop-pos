@@ -1,1 +1,1 @@
-deploy-20260910-customer-search-edit-delete-v2.10.34
+deploy-20260910-loyalty-points-expiry-reminders-v2.10.35

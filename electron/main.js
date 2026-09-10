@@ -1188,6 +1188,13 @@ function registerIpc() {
   // Loyalty & credit
   ipcMain.handle('loyalty:history', wrapF((id) => store.getLoyaltyHistory(id)));
   ipcMain.handle('loyalty:adjust', wrapF((customerId, pointsDelta, notes, actor) => store.adjustLoyaltyPoints(customerId, pointsDelta, notes, actor?.id)));
+  ipcMain.handle('loyalty:pointsSummary', wrapF((id) => store.getCustomerPointsSummary(id)));
+  ipcMain.handle('loyalty:reminders', wrapF(() => store.listLoyaltyReminders()));
+  ipcMain.handle('loyalty:reminderWhatsApp', wrapF((customerId, lotId) => store.getLoyaltyReminderWhatsApp(customerId, lotId)));
+  ipcMain.handle('loyalty:markReminderSent', wrapF((lotId, actor) => {
+    store.requireActor(actor, ['owner', 'manager', 'supervisor', 'assistant_manager']);
+    return store.markLoyaltyReminderSent(lotId);
+  }));
   ipcMain.handle('credit:ledger', wrapF((id) => { requireSession(); return store.getCustomerCreditLedger(id); }));
   ipcMain.handle('credit:pay', wrapF((id, amount, notes, actor) => {
     const user = store.requireActor(actor, ['owner', 'manager', 'cashier', 'supervisor', 'assistant_manager']);

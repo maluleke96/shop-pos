@@ -2594,6 +2594,9 @@ const App = {
     if (sectionId === 'staffhr' && tabId && window.AdminPage) {
       AdminPage.staffTab = tabId;
     }
+    if (sectionId === 'loyalty' && tabId && window.AdminPage) {
+      AdminPage._loyaltyTab = tabId;
+    }
     this.navigate('admin');
     setTimeout(() => {
       const btn = document.querySelector(`.admin-nav-btn[data-section="${sectionId}"]`)
@@ -2689,6 +2692,38 @@ const App = {
       else if (canPage('dashboard')) this.navigate('dashboard');
     };
 
+    if (page.startsWith('loyalty:whatsapp:')) {
+      if (!canAdmin()) return refuse();
+      const parts = page.split(':');
+      const customerId = parseInt(parts[2], 10);
+      const lotId = parseInt(parts[3], 10);
+      if (!customerId) return refuse('Invalid loyalty reminder');
+      (async () => {
+        try {
+          const payload = await API.getLoyaltyReminderWhatsApp(customerId, lotId || null);
+          const p = payload?.data ?? payload;
+          if (!p?.phone) return Utils.toast('Customer has no phone number', 'error');
+          const wa = await API.sendWhatsAppMessage({
+            phone: p.phone,
+            body: p.message,
+            message_type: 'loyalty_reminder',
+            customer_id: customerId,
+            recipient_type: 'customer'
+          }, this.user);
+          await Utils.deliverWhatsApp(wa, p.phone, p.message);
+          if (lotId) await API.markLoyaltyReminderSent(lotId, this.user);
+          Utils.toast('WhatsApp opened with reminder message', 'success');
+        } catch (err) {
+          Utils.toast(err.message || 'Could not open WhatsApp reminder', 'error');
+        }
+      })();
+      return;
+    }
+    if (page === 'admin:loyalty' || t === 'loyalty_reminder' || t === 'loyalty_reminder_summary') {
+      if (!canAdmin()) return refuse();
+      this.navigateToAdminSection('loyalty', 'reminders');
+      return;
+    }
     if (page.startsWith('document-hub:share:')) {
       if (!canPage('document-hub')) return refuse();
       const docId = parseInt(page.split(':')[2], 10);

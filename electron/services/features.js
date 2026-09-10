@@ -694,19 +694,19 @@ function checkGiftCardBalance(code) {
 // ─── Loyalty ────────────────────────────────────────────────────────────────
 
 function getLoyaltySettings() {
-  const row = getDb().prepare('SELECT loyalty_settings FROM shop_settings WHERE id = 1').get();
-  let raw = {};
-  try {
-    if (row?.loyalty_settings) {
-      raw = typeof row.loyalty_settings === 'string' ? JSON.parse(row.loyalty_settings) : row.loyalty_settings;
-    }
-  } catch (_) {}
+  const loyaltyPts = require('./loyalty-points');
+  const s = loyaltyPts.getExtendedLoyaltySettings();
   return {
-    enabled: raw.enabled !== false,
-    spend_amount: Number(raw.spend_amount) > 0 ? Number(raw.spend_amount) : 10,
-    points_earned: Number(raw.points_earned) > 0 ? Number(raw.points_earned) : 1,
-    min_sale_total: Number(raw.min_sale_total) || 0,
-    point_value: Number(raw.point_value) > 0 ? Number(raw.point_value) : 1
+    enabled: s.enabled,
+    spend_amount: s.spend_amount,
+    points_earned: s.points_earned,
+    min_sale_total: s.min_sale_total,
+    point_value: s.point_value,
+    points_expiry_days: s.points_expiry_days,
+    reminder_interval_days: s.reminder_interval_days,
+    expiry_enabled: s.expiry_enabled,
+    gift_message_template: s.gift_message_template,
+    reminder_message_template: s.reminder_message_template
   };
 }
 
@@ -727,22 +727,28 @@ function calcLoyaltyRedemption(customerId, pointsToRedeem, saleTotal) {
 
 function earnLoyaltyPoints(customerId, saleTotal, saleId) {
   if (!customerId) return 0;
+  const loyaltyPts = require('./loyalty-points');
   const settings = getLoyaltySettings();
   if (!settings.enabled) return 0;
   const total = Number(saleTotal) || 0;
   if (total < settings.min_sale_total) return 0;
   const points = Math.floor((total / settings.spend_amount) * settings.points_earned);
   if (points <= 0) return 0;
-  getDb().prepare('UPDATE customers SET loyalty_points = COALESCE(loyalty_points, 0) + ? WHERE id = ?').run(points, customerId);
-  getDb().prepare('INSERT INTO loyalty_transactions (customer_id, points, type, sale_id) VALUES (?,?,?,?)').run(customerId, points, 'earn', saleId);
+  const db = getDb();
+  db.prepare('UPDATE customers SET loyalty_points = COALESCE(loyalty_points, 0) + ? WHERE id = ?').run(points, customerId);
+  const txn = db.prepare('INSERT INTO loyalty_transactions (customer_id, points, type, sale_id) VALUES (?,?,?,?)')
+    .run(customerId, points, 'earn', saleId);
+  loyaltyPts.addPointLot(customerId, points, txn.lastInsertRowid);
   return points;
 }
 
 function redeemLoyaltyPoints(customerId, points, saleId) {
+  const loyaltyPts = require('./loyalty-points');
   const c = getDb().prepare('SELECT loyalty_points FROM customers WHERE id = ?').get(customerId);
   if (!c || c.loyalty_points < points) throw new Error('Insufficient points');
   getDb().prepare('UPDATE customers SET loyalty_points = loyalty_points - ? WHERE id = ?').run(points, customerId);
   getDb().prepare('INSERT INTO loyalty_transactions (customer_id, points, type, sale_id) VALUES (?,?,?,?)').run(customerId, -points, 'redeem', saleId);
+  loyaltyPts.consumeLotsFifo(customerId, points);
   return points;
 }
 
@@ -751,29 +757,49 @@ function getLoyaltyHistory(customerId) {
 }
 
 function adjustLoyaltyPoints(customerId, pointsDelta, notes, actorId) {
+  const loyaltyPts = require('./loyalty-points');
+  loyaltyPts.ensureSchema();
   const db = getDb();
   const id = Number(customerId);
   if (!id) throw new Error('Customer is required');
   const delta = Math.floor(Number(pointsDelta) || 0);
   if (!delta) throw new Error('Enter points to add or remove');
-  const row = db.prepare('SELECT id, name, loyalty_points FROM customers WHERE id = ?').get(id);
+  const row = db.prepare('SELECT id, name, phone, email, loyalty_points FROM customers WHERE id = ?').get(id);
   if (!row) throw new Error('Customer not found');
   const current = Math.floor(Number(row.loyalty_points) || 0);
   const next = current + delta;
   if (next < 0) throw new Error(`Cannot remove ${Math.abs(delta)} points — customer only has ${current}`);
   db.prepare('UPDATE customers SET loyalty_points = ?, updated_at = datetime(\'now\') WHERE id = ?').run(next, id);
-  db.prepare(`INSERT INTO loyalty_transactions (customer_id, points, type, notes)
+  const txn = db.prepare(`INSERT INTO loyalty_transactions (customer_id, points, type, notes)
     VALUES (?, ?, 'adjust', ?)`).run(id, delta, notes || (delta > 0 ? 'manual_credit' : 'manual_debit'));
+  let lotInfo = null;
+  if (delta > 0) {
+    lotInfo = loyaltyPts.addPointLot(id, delta, txn.lastInsertRowid);
+  } else {
+    loyaltyPts.consumeLotsFifo(id, Math.abs(delta));
+  }
   try {
     db.prepare('UPDATE web_customers SET loyalty_points = ? WHERE customer_id = ?').run(next, id);
   } catch (_) { /* optional */ }
+  const settings = getLoyaltySettings();
+  const summary = loyaltyPts.getCustomerPointsSummary(id);
+  const expiresAt = lotInfo?.expires_at || summary?.nearest_expiry || null;
+  const daysLeft = expiresAt ? loyaltyPts.daysUntil(expiresAt) : summary?.days_until_expiry ?? null;
   return {
     customer_id: id,
     name: row.name,
+    phone: row.phone,
+    email: row.email,
     previous: current,
     delta,
     balance: next,
-    value: next * (getLoyaltySettings().point_value || 1)
+    value: next * (settings.point_value || 1),
+    expires_at: expiresAt,
+    days_until_expiry: daysLeft,
+    gift_message: delta > 0 ? loyaltyPts.buildGiftMessage(row, delta, next, {
+      expires_at: expiresAt,
+      days_until_expiry: daysLeft
+    }) : null
   };
 }
 
@@ -1831,6 +1857,14 @@ module.exports = {
   getGiftCards, createGiftCard, updateGiftCard, deleteGiftCard, redeemGiftCard, checkGiftCardBalance,
   approveGiftCard, rejectGiftCard, getGiftCardSettings, saveGiftCardSettings,
   earnLoyaltyPoints, redeemLoyaltyPoints, reverseSaleBenefits, getLoyaltyHistory, getLoyaltySettings, calcLoyaltyRedemption, adjustLoyaltyPoints,
+  getCustomerPointsSummary: (...args) => require('./loyalty-points').getCustomerPointsSummary(...args),
+  listLoyaltyReminders: () => require('./loyalty-points').listCustomersNeedingReminder(),
+  getLoyaltyReminderWhatsApp: (customerId, lotId) => require('./loyalty-points').getReminderWhatsAppPayload(customerId, lotId),
+  markLoyaltyReminderSent: (lotId) => require('./loyalty-points').markLotReminderSent(lotId),
+  expireLoyaltyPoints: () => require('./loyalty-points').expireDueLots(),
+  buildLoyaltyGiftMessage: (customer, delta, balance, opts) => require('./loyalty-points').buildGiftMessage(customer, delta, balance, opts),
+  buildLoyaltyReminderMessage: (customer, opts) => require('./loyalty-points').buildReminderMessage(customer, opts),
+  ensureLoyaltyReminderNotifications: (fn) => require('./loyalty-points').ensureLoyaltyReminderNotifications(fn),
   addCustomerCreditCharge, addCustomerCreditPayment, getCustomerCreditLedger,
   getStockCounts, createStockCount, updateStockCountLine, completeStockCount, getStockCount,
   recordWaste, getWasteRecords, approveWaste, rejectWaste, returnWasteToStock,

@@ -21,7 +21,8 @@ const promoRequestsSvc = require('./promo-requests');
 const combosSvc = require('./combos');
 const flyersSvc = require('./flyers');
 const marketingAgentSvc = require('./marketing-agent');
-const marketingPlatformSvc = require('./marketing-platform');
+const marketingPlatformRaw = require('./marketing-platform');
+const { adjustLoyaltyPoints: adjustMarketingLoyaltyPoints, ...marketingPlatformSvc } = marketingPlatformRaw;
 const whatsappSvc = require('./whatsapp');
 const documentHubSvc = require('./document-hub');
 const customerRewardsSvc = require('./customer-rewards');
@@ -935,7 +936,8 @@ function getSettingsParsed() {
     discount_settings: parseJsonField(s.discount_settings),
     backup_settings: parseJsonField(s.backup_settings),
     loyalty_settings: parseJsonField(s.loyalty_settings, {
-      enabled: true, spend_amount: 10, points_earned: 1, min_sale_total: 0, point_value: 1
+      enabled: true, spend_amount: 10, points_earned: 1, min_sale_total: 0, point_value: 1,
+      points_expiry_days: 30, reminder_interval_days: 3, expiry_enabled: true
     }),
     payment_settings: parseJsonField(s.payment_settings, {
       enabled_methods: ['cash', 'card', 'eft', 'mobile', 'account', 'giftcard', 'other'],
@@ -4431,6 +4433,8 @@ function refreshPaymentDueNotifications() {
   try { flyersSvc.syncFlyerStatuses(); } catch (_) { /* ignore */ }
   try { documentHubSvc.processScheduledDocuments(); } catch (_) { /* ignore */ }
   try { promoRequestsSvc.syncPromoStatuses(); } catch (_) { /* ignore */ }
+  try { features.expireLoyaltyPoints(); } catch (_) { /* ignore */ }
+  try { features.ensureLoyaltyReminderNotifications?.(addNotification); } catch (_) { /* ignore */ }
 }
 
 function processScheduledDocuments() {
@@ -4463,6 +4467,8 @@ function runStartupTasks() {
   try { processScheduledDocuments(); } catch (_) { /* ignore */ }
   try { if (typeof staffExports.autoCloseOpenAttendance === 'function') staffExports.autoCloseOpenAttendance(); } catch (_) { /* ignore */ }
   try { enforceShiftCashoutDeadlines(); } catch (_) { /* ignore */ }
+  try { features.expireLoyaltyPoints(); } catch (_) { /* ignore */ }
+  try { features.ensureLoyaltyReminderNotifications?.(addNotification); } catch (_) { /* ignore */ }
   try {
     if (process.env.SHOP_POS_LOCAL_INSTALLER === '1') {
       const central = require('./accounting-central');
@@ -4852,6 +4858,8 @@ module.exports = {
   getFlyerTemplates,
   ...marketingAgentSvc,
   ...marketingPlatformSvc,
+  adjustMarketingLoyaltyPoints,
+  adjustLoyaltyPoints: features.adjustLoyaltyPoints,
   ...(() => {
     const acc = require('./accounting-platform');
     const { getSettings: _gs, saveSettings: _ss, getDashboard: getAccDashboard, ...rest } = acc;

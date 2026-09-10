@@ -212,9 +212,13 @@ const CustomersPage = {
     try {
       const raw = this.app.settings?.loyalty_settings;
       const ls = typeof raw === 'string' ? JSON.parse(raw) : (raw || {});
-      return { point_value: Number(ls.point_value) > 0 ? Number(ls.point_value) : 1 };
+      return {
+        point_value: Number(ls.point_value) > 0 ? Number(ls.point_value) : 1,
+        points_expiry_days: Math.max(0, Math.floor(Number(ls.points_expiry_days) ?? 30)),
+        expiry_enabled: ls.expiry_enabled !== false
+      };
     } catch (_) {
-      return { point_value: 1 };
+      return { point_value: 1, points_expiry_days: 30, expiry_enabled: true };
     }
   },
 
@@ -223,21 +227,43 @@ const CustomersPage = {
     return Utils.formatMoney((Number(points) || 0) * pv, this.app.settings?.currency || 'R');
   },
 
-  giftPointsMessage(customer, delta, balance) {
+  defaultGiftMessage(customer, delta, balance, opts = {}) {
     const shop = this.app.settings?.shop_name || 'Our shop';
     const name = (customer?.name || 'Customer').split(' ')[0];
     const absDelta = Math.abs(Number(delta) || 0);
     const bal = Math.floor(Number(balance) || customer?.loyalty_points || 0);
+    const orderUrl = `${window.location.origin.replace(/\/$/, '')}/order/`;
+    const expiryLine = opts.expires_at && this.loyaltySettings().expiry_enabled
+      ? `\n\nPlease use your points before ${Utils.formatDateTime(opts.expires_at).slice(0, 12)}${opts.days_until_expiry != null ? ` (${opts.days_until_expiry} day(s) remaining)` : ''}.`
+      : '';
     if (delta > 0) {
-      return `Hi ${name},\n\n${shop} has gifted you ${absDelta} loyalty points (worth ${this.pointsValue(absDelta)}).\n\nYour new balance is ${bal} points (${this.pointsValue(bal)}).\n\nUse them in-store or when ordering online.\n\nThank you!`;
+      return `Hi ${name},\n\nGreat news from ${shop}!\n\nWe have added ${absDelta} loyalty points to your account (worth ${this.pointsValue(absDelta)}).\n\nYour total balance is now ${bal} points (${this.pointsValue(bal)}).${expiryLine}\n\nOrder online: ${orderUrl}\n\nThank you for your loyalty!\n${shop}`;
     }
-    return `Hi ${name},\n\nYour loyalty points at ${shop} have been updated.\n\nCurrent balance: ${bal} points (${this.pointsValue(bal)}).\n\nThank you!`;
+    return `Hi ${name},\n\nYour loyalty points at ${shop} have been updated.\n\nCurrent balance: ${bal} points (${this.pointsValue(bal)}).\n\nOrder online: ${orderUrl}\n\nThank you!`;
   },
 
-  async notifyPointsWhatsApp(customer, delta, balance) {
+  refreshPointsBalanceDisplay(balance, opts = {}) {
+    const el = document.getElementById('cu-pts-balance');
+    if (el) {
+      el.innerHTML = `<strong style="font-size:1.25rem">${Math.floor(balance || 0)}</strong> pts · ${this.pointsValue(balance)}`;
+    }
+    const exp = document.getElementById('cu-pts-expiry');
+    if (exp) {
+      if (opts.expires_at && this.loyaltySettings().expiry_enabled) {
+        const days = opts.days_until_expiry != null ? opts.days_until_expiry : '—';
+        exp.textContent = `Nearest expiry: ${Utils.formatDateTime(opts.expires_at).slice(0, 12)} · ${days} day(s) left`;
+        exp.style.display = 'block';
+      } else {
+        exp.style.display = 'none';
+      }
+    }
+  },
+
+  async notifyPointsWhatsApp(customer, message) {
     const phone = String(customer?.phone || '').trim();
     if (!phone) return Utils.toast('Add a phone number first', 'error');
-    const body = this.giftPointsMessage(customer, delta, balance);
+    const body = String(message || '').trim();
+    if (!body) return Utils.toast('Message is empty', 'error');
     try {
       const wa = await API.sendWhatsAppMessage({
         phone,
@@ -252,26 +278,37 @@ const CustomersPage = {
     }
   },
 
-  notifyPointsEmail(customer, delta, balance) {
+  notifyPointsEmail(customer, message) {
     const email = String(customer?.email || '').trim();
     if (!email) return Utils.toast('Add an email address first', 'error');
     const shop = this.app.settings?.shop_name || 'Our shop';
     const subject = encodeURIComponent(`${shop} — your loyalty points`);
-    const body = encodeURIComponent(this.giftPointsMessage(customer, delta, balance));
+    const body = encodeURIComponent(String(message || '').trim());
     const url = `mailto:${encodeURIComponent(email)}?subject=${subject}&body=${body}`;
     if (window.API?.openExternal) API.openExternal(url);
     else window.open(url, '_blank');
     Utils.toast('Email opened — review and send', 'success');
   },
 
-  showForm(c = null) {
+  async showForm(c = null) {
     const currency = this.app.settings?.currency || 'R';
+    let pointsSummary = null;
+    if (c?.id) {
+      try {
+        const r = await API.getCustomerPointsSummary(c.id);
+        pointsSummary = r?.data ?? r;
+        if (pointsSummary?.balance != null) c.loyalty_points = pointsSummary.balance;
+      } catch (_) { /* ignore */ }
+    }
     const points = Math.floor(c?.loyalty_points || 0);
+    const expiryHint = pointsSummary?.nearest_expiry && this.loyaltySettings().expiry_enabled
+      ? `<div id="cu-pts-expiry" class="muted" style="font-size:13px;margin-top:4px">Nearest expiry: ${Utils.formatDateTime(pointsSummary.nearest_expiry).slice(0, 12)} · ${pointsSummary.days_until_expiry ?? '—'} day(s) left</div>`
+      : `<div id="cu-pts-expiry" class="muted" style="font-size:13px;margin-top:4px;display:none"></div>`;
     const pointsBlock = c ? `
       <div class="field full" style="margin-top:8px;padding:14px;border:1px solid var(--border);border-radius:10px;background:var(--bg-secondary,#f8fafc)">
         <label style="font-weight:700;margin-bottom:8px;display:block">Loyalty points</label>
         <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-bottom:10px">
-          <div><span class="muted">Current balance</span><br><strong style="font-size:1.25rem">${points}</strong> pts · ${this.pointsValue(points)}</div>
+          <div><span class="muted">Current balance</span><br><span id="cu-pts-balance"><strong style="font-size:1.25rem">${points}</strong> pts · ${this.pointsValue(points)}</span>${expiryHint}</div>
         </div>
         <div class="form-grid" style="margin-bottom:10px">
           <div class="field"><label>Add points</label><input type="number" id="cu-pts-add" min="0" step="1" placeholder="e.g. 50"></div>
@@ -279,11 +316,12 @@ const CustomersPage = {
           <div class="field full"><label>Note (optional)</label><input id="cu-pts-note" placeholder="Birthday gift, correction…"></div>
         </div>
         <button type="button" class="btn btn-sm btn-primary" id="cu-pts-apply">Apply points change</button>
-        <div id="cu-pts-notify" style="margin-top:12px;display:none">
-          <p class="muted" style="margin:0 0 8px">Notify customer about this points update:</p>
-          <div style="display:flex;flex-wrap:wrap;gap:8px">
-            <button type="button" class="btn btn-sm btn-success" id="cu-wa-gift">💬 WhatsApp</button>
-            <button type="button" class="btn btn-sm btn-ghost" id="cu-em-gift">✉️ Email</button>
+        <div id="cu-pts-notify" style="margin-top:14px">
+          <p class="muted" style="margin:0 0 6px">Customer message (edit before sending):</p>
+          <textarea id="cu-pts-message" rows="7" style="width:100%;font-size:13px;line-height:1.45">${Utils.escHtml(this.defaultGiftMessage(c, 0, points, pointsSummary || {}))}</textarea>
+          <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px">
+            <button type="button" class="btn btn-sm btn-success" id="cu-wa-gift">💬 Send WhatsApp</button>
+            <button type="button" class="btn btn-sm btn-ghost" id="cu-em-gift">✉️ Send Email</button>
           </div>
         </div>
       </div>` : '';
@@ -304,7 +342,7 @@ const CustomersPage = {
       </div>`,
       '<button class="btn btn-primary" id="save-cust">Save</button>');
 
-    let lastPointChange = null;
+    let lastPointChange = { delta: 0, balance: points, expires_at: pointsSummary?.nearest_expiry, days_until_expiry: pointsSummary?.days_until_expiry };
 
     document.getElementById('cu-pts-apply')?.addEventListener('click', async () => {
       const add = parseInt(document.getElementById('cu-pts-add')?.value, 10) || 0;
@@ -316,23 +354,44 @@ const CustomersPage = {
       const r = await API.adjustLoyaltyPoints(c.id, delta, note, this.app.user);
       if (!r.success) return Utils.toast(r.error || 'Could not update points', 'error');
       const data = r.data || r;
-      lastPointChange = { delta: data.delta, balance: data.balance };
+      lastPointChange = {
+        delta: data.delta,
+        balance: data.balance,
+        expires_at: data.expires_at,
+        days_until_expiry: data.days_until_expiry
+      };
       c.loyalty_points = data.balance;
-      const notify = document.getElementById('cu-pts-notify');
-      if (notify) notify.style.display = 'block';
+      const inList = this.customers.find((x) => String(x.id) === String(c.id));
+      if (inList) inList.loyalty_points = data.balance;
+      window.DataCache?.invalidate?.('customers');
+      this.refreshPointsBalanceDisplay(data.balance, data);
       document.getElementById('cu-pts-add').value = '';
       document.getElementById('cu-pts-remove').value = '';
+      const msgEl = document.getElementById('cu-pts-message');
+      if (msgEl) {
+        msgEl.value = data.gift_message || this.defaultGiftMessage(
+          { ...c, phone: document.getElementById('cu-phone')?.value.trim() || c.phone },
+          data.delta,
+          data.balance,
+          data
+        );
+      }
+      const tbody = document.getElementById('cust-table');
+      if (tbody) {
+        tbody.innerHTML = this.renderRows();
+        this.bindEvents();
+      }
       Utils.toast(`${delta > 0 ? 'Added' : 'Removed'} ${Math.abs(delta)} points — new balance: ${data.balance}`, 'success');
     });
 
     document.getElementById('cu-wa-gift')?.addEventListener('click', () => {
-      const ch = lastPointChange || { delta: 0, balance: c.loyalty_points };
-      this.notifyPointsWhatsApp({ ...c, phone: document.getElementById('cu-phone')?.value.trim() || c.phone }, ch.delta, ch.balance);
+      const message = document.getElementById('cu-pts-message')?.value || '';
+      this.notifyPointsWhatsApp({ ...c, phone: document.getElementById('cu-phone')?.value.trim() || c.phone }, message);
     });
 
     document.getElementById('cu-em-gift')?.addEventListener('click', () => {
-      const ch = lastPointChange || { delta: 0, balance: c.loyalty_points };
-      this.notifyPointsEmail({ ...c, email: document.getElementById('cu-email')?.value.trim() || c.email }, ch.delta, ch.balance);
+      const message = document.getElementById('cu-pts-message')?.value || '';
+      this.notifyPointsEmail({ ...c, email: document.getElementById('cu-email')?.value.trim() || c.email }, message);
     });
 
     document.getElementById('save-cust').addEventListener('click', async () => {

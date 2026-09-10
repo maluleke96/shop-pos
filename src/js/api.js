@@ -536,6 +536,10 @@ const API = {
 
   getLoyaltyHistory: (id) => invoke('loyalty:history', id),
   adjustLoyaltyPoints: (customerId, pointsDelta, notes, actor) => invoke('loyalty:adjust', customerId, pointsDelta, notes, actor),
+  getCustomerPointsSummary: (id) => invoke('loyalty:pointsSummary', id),
+  getLoyaltyReminders: () => invoke('loyalty:reminders'),
+  getLoyaltyReminderWhatsApp: (customerId, lotId) => invoke('loyalty:reminderWhatsApp', customerId, lotId),
+  markLoyaltyReminderSent: (lotId, actor) => invoke('loyalty:markReminderSent', lotId, actor),
   getCreditLedger: (id) => invoke('credit:ledger', id),
   payCustomerCredit: (id, amount, notes, actor) => invoke('credit:pay', id, amount, notes, actor),
 

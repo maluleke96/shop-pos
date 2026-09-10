@@ -967,6 +967,13 @@ function buildHandlers(store) {
     const user = s.requireActor(actor, ['owner', 'manager', 'supervisor', 'assistant_manager']);
     return s.adjustLoyaltyPoints(customerId, pointsDelta, notes, user.id);
   }));
+  add('loyalty:pointsSummary', wrapSync(id => s.getCustomerPointsSummary(id)));
+  add('loyalty:reminders', wrapSync(() => s.listLoyaltyReminders()));
+  add('loyalty:reminderWhatsApp', wrapSync((customerId, lotId) => s.getLoyaltyReminderWhatsApp(customerId, lotId)));
+  add('loyalty:markReminderSent', wrapSync((lotId, actor) => {
+    s.requireActor(actor, ['owner', 'manager', 'supervisor', 'assistant_manager']);
+    return s.markLoyaltyReminderSent(lotId);
+  }));
   add('credit:ledger', wrapSync(id => { requireSession(); return s.getCustomerCreditLedger(id); }));
   add('credit:pay', wrapSync((id, amt, n, a) => {
     const user = s.requireActor(a, ['owner', 'manager', 'cashier', 'supervisor', 'assistant_manager']);

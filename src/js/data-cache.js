@@ -243,6 +243,9 @@ function installApiReadCache() {
   after('deleteCustomer', (res) => {
     if (res?.success !== false) DataCache.invalidate('customers');
   });
+  after('adjustLoyaltyPoints', (res) => {
+    if (res?.success !== false) DataCache.invalidate('customers');
+  });
   after('saveSettings', (res) => {
     if (res?.success !== false) DataCache.invalidate('settings');
   });

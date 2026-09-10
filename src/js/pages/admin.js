@@ -2646,6 +2646,7 @@ const AdminPage = {
     const tab = this._loyaltyTab || 'points';
     const tabs = [
       { id: 'points', label: 'Loyalty Points' },
+      { id: 'reminders', label: 'Expiry Reminders' },
       { id: 'giftcards', label: 'Gift Cards' },
       { id: 'rewards', label: 'Auto Gift Rewards' },
       { id: 'online', label: 'Online Store' }
@@ -2679,6 +2680,7 @@ const AdminPage = {
 
   async renderLoyaltyHubTab(body, tab) {
     if (tab === 'points') return this.renderLoyaltyPoints(body);
+    if (tab === 'reminders') return this.renderLoyaltyReminders(body);
     if (tab === 'giftcards') return this.renderLoyaltyGiftCards(body);
     if (tab === 'rewards') return this.renderCustomerRewards(body);
     if (tab === 'online') return this.renderLoyaltyOnline(body);
@@ -2690,6 +2692,10 @@ const AdminPage = {
     const earned = ls.points_earned ?? 1;
     const minSale = ls.min_sale_total ?? 0;
     const pointValue = ls.point_value ?? 1;
+    const expiryDays = ls.points_expiry_days ?? 30;
+    const reminderDays = ls.reminder_interval_days ?? 3;
+    const giftTpl = ls.gift_message_template || '';
+    const reminderTpl = ls.reminder_message_template || '';
     const currency = this.settings.currency || 'R';
     el.innerHTML = `<div class="card"><div class="card-body"><div class="form-grid">
         <div class="field full"><label><input type="checkbox" id="loy-enabled" ${ls.enabled !== false ? 'checked' : ''}> Enable loyalty points</label></div>
@@ -2701,10 +2707,23 @@ const AdminPage = {
           <input type="number" id="loy-value" step="0.01" min="0.01" value="${pointValue}"></div>
         <div class="field"><label>Minimum sale total (${currency})</label>
           <input type="number" id="loy-min" step="0.01" min="0" value="${minSale}"></div>
+        <div class="field full" style="margin-top:8px;padding-top:12px;border-top:1px solid var(--border)">
+          <label><input type="checkbox" id="loy-expiry-enabled" ${ls.expiry_enabled !== false ? 'checked' : ''}> Points expire after a set number of days</label>
+        </div>
+        <div class="field"><label>Points validity (days)</label>
+          <input type="number" id="loy-expiry-days" min="1" max="730" value="${expiryDays}" placeholder="e.g. 30, 60, 5"></div>
+        <div class="field"><label>Reminder every (days)</label>
+          <input type="number" id="loy-reminder-days" min="1" max="30" value="${reminderDays}" title="How often to remind customers before points expire"></div>
         <div class="field full">
           <div class="stat-card" style="margin-top:8px"><div class="label">Example</div>
             <div class="value" style="font-size:16px" id="loy-preview">—</div></div>
         </div>
+        <div class="field full"><label>Gift / points-added message template</label>
+          <textarea id="loy-gift-tpl" rows="6" placeholder="Leave blank for professional default">${Utils.escHtml(giftTpl)}</textarea>
+          <p class="muted" style="font-size:12px;margin:4px 0 0">Variables: {{CustomerName}}, {{ShopName}}, {{PointsAdded}}, {{PointsAddedValue}}, {{PointsBalance}}, {{PointsBalanceValue}}, {{ExpiryDate}}, {{DaysRemaining}}, {{OrderOnlineLink}}</p></div>
+        <div class="field full"><label>Expiry reminder message template</label>
+          <textarea id="loy-reminder-tpl" rows="6" placeholder="Leave blank for professional default">${Utils.escHtml(reminderTpl)}</textarea>
+          <p class="muted" style="font-size:12px;margin:4px 0 0">Variables: {{CustomerName}}, {{ShopName}}, {{PointsBalance}}, {{PointsBalanceValue}}, {{PointsExpiring}}, {{ExpiryDate}}, {{DaysRemaining}}, {{OrderOnlineLink}}</p></div>
       </div>
       <button class="btn btn-primary" id="save-loyalty" style="margin-top:16px">Save Loyalty Settings</button>
       </div></div>`;
@@ -2722,18 +2741,69 @@ const AdminPage = {
     updatePreview();
 
     document.getElementById('save-loyalty').addEventListener('click', async () => {
+      const giftTpl = document.getElementById('loy-gift-tpl')?.value.trim() || '';
+      const reminderTpl = document.getElementById('loy-reminder-tpl')?.value.trim() || '';
       const data = {
         enabled: document.getElementById('loy-enabled').checked,
         spend_amount: parseFloat(document.getElementById('loy-spend').value) || 10,
         points_earned: parseInt(document.getElementById('loy-earned').value) || 1,
         point_value: parseFloat(document.getElementById('loy-value').value) || 1,
-        min_sale_total: parseFloat(document.getElementById('loy-min').value) || 0
+        min_sale_total: parseFloat(document.getElementById('loy-min').value) || 0,
+        expiry_enabled: document.getElementById('loy-expiry-enabled').checked,
+        points_expiry_days: parseInt(document.getElementById('loy-expiry-days').value, 10) || 30,
+        reminder_interval_days: parseInt(document.getElementById('loy-reminder-days').value, 10) || 3,
+        ...(giftTpl ? { gift_message_template: giftTpl } : {}),
+        ...(reminderTpl ? { reminder_message_template: reminderTpl } : {})
       };
       const r = await this.awaitSave(API.saveJsonSetting('loyalty_settings', data, this.app.user), 'Loyalty settings saved', 'Could not save loyalty settings');
       if (!r) return;
       this.settings.loyalty_settings = data;
       if (this.app) this.app.settings = { ...this.app.settings, loyalty_settings: data };
     });
+  },
+
+  async renderLoyaltyReminders(el) {
+    el.innerHTML = '<p class="muted">Loading reminders…</p>';
+    try {
+      const res = await API.getLoyaltyReminders();
+      const rows = res?.data ?? (Array.isArray(res) ? res : []);
+      el.innerHTML = `<div class="card"><div class="card-body">
+        <h4 style="margin-top:0">Customers to remind today</h4>
+        <p class="muted">Based on your reminder interval in Loyalty Points settings. Click WhatsApp to open a pre-filled professional message.</p>
+        ${rows.length ? `<div class="table-wrap"><table><thead><tr><th>Customer</th><th>Phone</th><th>Points expiring</th><th>Days left</th><th>Expires</th><th></th></tr></thead><tbody>
+          ${rows.map((r) => `<tr>
+            <td><strong>${Utils.escHtml(r.name)}</strong></td>
+            <td>${Utils.escHtml(r.phone || '—')}</td>
+            <td>${r.points_remaining}</td>
+            <td>${r.days_remaining}</td>
+            <td>${Utils.formatDateTime(r.expires_at).slice(0, 12)}</td>
+            <td><button class="btn btn-sm btn-success loy-wa-remind" data-cid="${r.customer_id}" data-lid="${r.lot_id}">WhatsApp</button></td>
+          </tr>`).join('')}
+        </tbody></table></div>` : '<p class="muted">No customers need reminders right now.</p>'}
+      </div></div>`;
+      el.querySelectorAll('.loy-wa-remind').forEach((b) => b.addEventListener('click', async () => {
+        try {
+          const payload = await API.getLoyaltyReminderWhatsApp(parseInt(b.dataset.cid, 10), parseInt(b.dataset.lid, 10));
+          const p = payload?.data ?? payload;
+          if (!p?.phone) return Utils.toast('Customer has no phone number', 'error');
+          const wa = await API.sendWhatsAppMessage({
+            phone: p.phone,
+            body: p.message,
+            message_type: 'loyalty_reminder',
+            customer_id: parseInt(b.dataset.cid, 10),
+            recipient_type: 'customer'
+          }, this.app.user);
+          await Utils.deliverWhatsApp(wa, p.phone, p.message);
+          await API.markLoyaltyReminderSent(parseInt(b.dataset.lid, 10), this.app.user);
+          Utils.toast('Reminder sent', 'success');
+          this.renderLoyaltyReminders(el);
+        } catch (err) {
+          Utils.toast(err.message || 'Could not send reminder', 'error');
+        }
+      }));
+    } catch (err) {
+      el.innerHTML = `<p class="muted">${Utils.escHtml(err.message || 'Could not load reminders')}</p>`;
+    }
   },
 
   async renderLoyaltyGiftCards(el) {
