@@ -3138,21 +3138,32 @@ function phonesMatch(a, b) {
 }
 
 function getCustomers(search) {
+  const pgDb = require('../database/pg-db');
+  const isPg = pgDb.isPgMode();
   let sql = 'SELECT * FROM customers WHERE 1=1';
   const params = [];
   const q = typeof search === 'string' ? search.trim() : '';
   if (q) {
+    const like = `%${q}%`;
     const digits = q.replace(/\D/g, '');
-    if (digits.length >= 3) {
-      sql += ` AND (name LIKE ? OR phone LIKE ? OR email LIKE ?
-        OR REPLACE(REPLACE(REPLACE(REPLACE(phone, ' ', ''), '-', ''), '+', ''), '(', '') LIKE ?)`;
-      params.push(`%${q}%`, `%${q}%`, `%${q}%`, `%${digits}%`);
+    if (isPg) {
+      sql += ` AND (name ILIKE ? OR phone ILIKE ? OR email ILIKE ?`;
+      params.push(like, like, like);
+      if (digits.length >= 2) {
+        sql += ` OR regexp_replace(COALESCE(phone, ''), '[^0-9]', '', 'g') LIKE ?`;
+        params.push(`%${digits}%`);
+      }
+      sql += ')';
+    } else if (digits.length >= 2) {
+      sql += ` AND (name LIKE ? COLLATE NOCASE OR phone LIKE ? OR email LIKE ? COLLATE NOCASE
+        OR REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(phone, ''), ' ', ''), '-', ''), '+', ''), '(', '') LIKE ?)`;
+      params.push(like, like, like, `%${digits}%`);
     } else {
-      sql += ' AND (name LIKE ? OR phone LIKE ? OR email LIKE ?)';
-      params.push(`%${q}%`, `%${q}%`, `%${q}%`);
+      sql += ' AND (name LIKE ? COLLATE NOCASE OR phone LIKE ? OR email LIKE ? COLLATE NOCASE)';
+      params.push(like, like, like);
     }
   }
-  sql += ' ORDER BY name';
+  sql += ' ORDER BY name LIMIT 500';
   return getDb().prepare(sql).all(...params);
 }
 
@@ -3169,20 +3180,29 @@ function saveCustomer(data, actorId, actorName) {
   }
   if (data.id) {
     getDb().prepare(`UPDATE customers SET name=?, phone=?, email=?, address=?, balance=?, notes=?,
-      allow_on_account=?, credit_limit=?, on_account_frozen=?, on_account_approved=?,
+      birthday=?, is_vip=?, allow_on_account=?, credit_limit=?, on_account_frozen=?, on_account_approved=?,
       on_account_period_days=?, on_account_due_date=?, updated_at=datetime('now') WHERE id=?`)
-      .run(data.name, data.phone, data.email, data.address, data.balance || 0, data.notes,
+      .run(data.name, data.phone, data.email, data.address, data.balance || 0, data.notes || null,
+        data.birthday || null, data.is_vip ? 1 : 0,
         data.allow_on_account ? 1 : 0, data.credit_limit != null ? data.credit_limit : null,
         data.on_account_frozen ? 1 : 0, data.on_account_approved ? 1 : 0,
         data.on_account_period_days != null ? data.on_account_period_days : null,
         data.on_account_due_date || null, data.id);
+    try {
+      const parts = String(data.name || '').trim().split(/\s+/);
+      const first = parts[0] || data.name;
+      const last = parts.slice(1).join(' ') || '';
+      getDb().prepare(`UPDATE web_customers SET first_name=?, last_name=?, email=?, phone=?, updated_at=datetime('now')
+        WHERE customer_id=? AND is_active=1`).run(first, last, data.email || null, data.phone || null, data.id);
+    } catch (_) { /* optional */ }
     audit(actorId, actorName, 'update_customer', 'customer', data.id, { name: data.name });
     return getDb().prepare('SELECT * FROM customers WHERE id = ?').get(data.id);
   }
-  const r = getDb().prepare(`INSERT INTO customers (name, phone, email, address, balance, notes, allow_on_account, credit_limit,
-    on_account_frozen, on_account_approved, on_account_period_days, on_account_due_date)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(data.name, data.phone, data.email, data.address, data.balance || 0, data.notes,
+  const r = getDb().prepare(`INSERT INTO customers (name, phone, email, address, balance, notes, birthday, is_vip,
+    allow_on_account, credit_limit, on_account_frozen, on_account_approved, on_account_period_days, on_account_due_date)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(data.name, data.phone, data.email, data.address, data.balance || 0, data.notes || null,
+      data.birthday || null, data.is_vip ? 1 : 0,
       data.allow_on_account ? 1 : 0, data.credit_limit != null ? data.credit_limit : null,
       data.on_account_frozen ? 1 : 0, data.on_account_approved ? 1 : 0,
       data.on_account_period_days != null ? data.on_account_period_days : null,
@@ -3204,8 +3224,6 @@ function findDuplicateCustomer(data) {
     const byEmail = db.prepare('SELECT * FROM customers WHERE LOWER(email) = LOWER(?) AND id != ?').get(data.email.trim(), excludeId);
     if (byEmail) return { field: 'email', customer: byEmail };
   }
-  const byName = db.prepare('SELECT * FROM customers WHERE LOWER(name) = LOWER(?) AND id != ?').get(data.name.trim(), excludeId);
-  if (byName) return { field: 'name', customer: byName };
   return null;
 }
 
@@ -3213,12 +3231,51 @@ function deleteCustomer(id, actorId, actorName) {
   const db = getDb();
   const customer = db.prepare('SELECT * FROM customers WHERE id = ?').get(id);
   if (!customer) throw new Error('Customer not found');
-  const salesCount = db.prepare('SELECT COUNT(*) as c FROM sales WHERE customer_id = ?').get(id).c;
-  if (salesCount > 0) throw new Error('Cannot delete — customer has purchase history. Edit instead.');
-  db.prepare('DELETE FROM customer_credit_ledger WHERE customer_id = ?').run(id);
-  db.prepare('DELETE FROM loyalty_transactions WHERE customer_id = ?').run(id);
-  db.prepare('DELETE FROM customers WHERE id = ?').run(id);
-  audit(actorId, actorName, 'delete_customer', 'customer', id, { name: customer.name });
+
+  const run = () => {
+    db.prepare('UPDATE sales SET customer_id = NULL WHERE customer_id = ?').run(id);
+    for (const sql of [
+      'UPDATE quotes SET customer_id = NULL WHERE customer_id = ?',
+      'UPDATE online_orders_local SET customer_id = NULL WHERE customer_id = ?',
+      'UPDATE gift_cards SET customer_id = NULL WHERE customer_id = ?',
+      'UPDATE held_orders SET customer_id = NULL WHERE customer_id = ?',
+      'UPDATE returns SET customer_id = NULL WHERE customer_id = ?'
+    ]) {
+      try { db.prepare(sql).run(id); } catch (_) { /* table may not exist */ }
+    }
+    try {
+      const laybyIds = db.prepare('SELECT id FROM laybyes WHERE customer_id = ?').all(id).map((r) => r.id);
+      for (const lid of laybyIds) {
+        db.prepare('DELETE FROM layby_payments WHERE layby_id = ?').run(lid);
+        db.prepare('DELETE FROM layby_items WHERE layby_id = ?').run(lid);
+      }
+      db.prepare('DELETE FROM laybyes WHERE customer_id = ?').run(id);
+    } catch (_) { /* optional */ }
+    for (const sql of [
+      'DELETE FROM customer_reward_grants WHERE customer_id = ?',
+      'DELETE FROM web_registration_codes WHERE customer_id = ?'
+    ]) {
+      try { db.prepare(sql).run(id); } catch (_) { /* optional */ }
+    }
+    try {
+      db.prepare(`UPDATE web_customers SET is_active = 0, customer_id = NULL, updated_at = datetime('now') WHERE customer_id = ?`).run(id);
+    } catch (_) { /* optional */ }
+    db.prepare('DELETE FROM customer_credit_ledger WHERE customer_id = ?').run(id);
+    db.prepare('DELETE FROM loyalty_transactions WHERE customer_id = ?').run(id);
+    db.prepare('DELETE FROM customers WHERE id = ?').run(id);
+  };
+
+  if (typeof db.transaction === 'function') {
+    db.transaction(run)();
+  } else {
+    run();
+  }
+
+  audit(actorId, actorName, 'delete_customer', 'customer', id, {
+    name: customer.name,
+    balance: customer.balance,
+    loyalty_points: customer.loyalty_points
+  });
   return { success: true };
 }
 
@@ -4424,8 +4481,12 @@ function saveKdsNotificationSound(soundPath, actorId, actorName) {
 // ─── Search ─────────────────────────────────────────────────────────────────
 
 function globalSearch(query) {
-  const q = `%${query}%`;
-  const ql = String(query).toLowerCase();
+  const pgDb = require('../database/pg-db');
+  const isPg = pgDb.isPgMode();
+  const raw = String(query || '').trim();
+  const q = `%${raw}%`;
+  const ql = raw.toLowerCase();
+  const digits = raw.replace(/\D/g, '');
   const db = getDb();
   const settings = db.prepare('SELECT shop_name, address, phone, email FROM shop_settings WHERE id = 1').get();
   const settingsMatches = [];
@@ -4447,7 +4508,22 @@ function globalSearch(query) {
   };
   return {
     products: db.prepare('SELECT id, name, barcode, sku, selling_price, stock_quantity FROM products WHERE is_active=1 AND (name LIKE ? OR barcode LIKE ? OR sku LIKE ?) LIMIT 20').all(q, q, q),
-    customers: db.prepare('SELECT id, name, phone FROM customers WHERE name LIKE ? OR phone LIKE ? LIMIT 10').all(q, q),
+    customers: (() => {
+      if (isPg) {
+        const params = [q, q, q];
+        let sql = 'SELECT id, name, phone, email FROM customers WHERE name ILIKE ? OR phone ILIKE ? OR email ILIKE ?';
+        if (digits.length >= 2) {
+          sql += ` OR regexp_replace(COALESCE(phone, ''), '[^0-9]', '', 'g') LIKE ?`;
+          params.push(`%${digits}%`);
+        }
+        return db.prepare(`${sql} ORDER BY name LIMIT 15`).all(...params);
+      }
+      if (digits.length >= 2) {
+        return db.prepare(`SELECT id, name, phone, email FROM customers WHERE name LIKE ? COLLATE NOCASE OR phone LIKE ? OR email LIKE ? COLLATE NOCASE
+          OR REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(phone, ''), ' ', ''), '-', ''), '+', ''), '(', '') LIKE ? ORDER BY name LIMIT 15`).all(q, q, q, `%${digits}%`);
+      }
+      return db.prepare('SELECT id, name, phone, email FROM customers WHERE name LIKE ? COLLATE NOCASE OR phone LIKE ? OR email LIKE ? COLLATE NOCASE ORDER BY name LIMIT 15').all(q, q, q);
+    })(),
     suppliers: db.prepare('SELECT id, name, phone FROM suppliers WHERE name LIKE ? OR phone LIKE ? LIMIT 10').all(q, q),
     receipts: db.prepare('SELECT id, receipt_number, order_number, total, created_at FROM sales WHERE receipt_number LIKE ? OR order_number LIKE ? LIMIT 10').all(q, q),
     employees: db.prepare(`SELECT id, full_name, employee_code, phone, position FROM employees WHERE status = 'Active' AND (full_name LIKE ? OR employee_code LIKE ? OR phone LIKE ? OR email LIKE ?) LIMIT 10`).all(q, q, q, q),

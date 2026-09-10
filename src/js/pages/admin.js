@@ -1978,6 +1978,117 @@ const AdminPage = {
     });
   },
 
+  bindTopCustomerActions(container, onRefresh) {
+    if (!container) return;
+    container.querySelectorAll('.tc-edit').forEach((b) => b.addEventListener('click', async () => {
+      const detail = await API.getCustomer(parseInt(b.dataset.id, 10));
+      const c = detail?.data ?? detail;
+      if (!c?.id) return Utils.toast('Customer not found', 'error');
+      this.showTopCustomerEditModal(c, onRefresh);
+    }));
+    container.querySelectorAll('.tc-hist').forEach((b) => b.addEventListener('click', () =>
+      this.showTopCustomerHistory(parseInt(b.dataset.id, 10))));
+    container.querySelectorAll('.tc-del').forEach((b) => b.addEventListener('click', async () => {
+      const currency = this.settings?.currency || 'R';
+      const bal = Number(b.dataset.balance) || 0;
+      const pts = Number(b.dataset.points) || 0;
+      let msg = `Permanently delete "${b.dataset.name}"?`;
+      if (bal > 0 || pts > 0) {
+        msg += `\n\nThis customer has ${bal > 0 ? `balance ${Utils.formatMoney(bal, currency)}` : ''}${bal > 0 && pts > 0 ? ' and ' : ''}${pts > 0 ? `${pts} loyalty points` : ''}. They will be removed from the system. Past sales stay in reports but will no longer be linked to this customer.`;
+      } else {
+        msg += '\n\nPast sales stay in reports but will no longer be linked to this customer.';
+      }
+      if (!confirm(msg)) return;
+      const r = await API.deleteCustomer(parseInt(b.dataset.id, 10), this.app.user);
+      if (!r.success) return Utils.toast(r.error || 'Could not delete', 'error');
+      Utils.toast('Customer deleted', 'success');
+      window.DataCache?.invalidate?.('customers');
+      if (onRefresh) await onRefresh();
+      const q = document.getElementById('tc-cust-search')?.value?.trim();
+      if (q) document.getElementById('tc-cust-search')?.dispatchEvent(new Event('input'));
+    }));
+  },
+
+  showTopCustomerEditModal(c, onRefresh) {
+    const currency = this.settings?.currency || 'R';
+    Utils.showModal('Edit Customer', `<div class="form-grid">
+      <div class="field"><label>Name *</label><input id="tc-ed-name" value="${Utils.escHtml(c.name || '')}"></div>
+      <div class="field"><label>Phone</label><input id="tc-ed-phone" type="tel" value="${Utils.escHtml(c.phone || '')}"></div>
+      <div class="field"><label>Email</label><input id="tc-ed-email" type="email" value="${Utils.escHtml(c.email || '')}"></div>
+      <div class="field"><label>Birthday</label><input id="tc-ed-birthday" type="date" value="${Utils.escHtml((c.birthday || '').slice(0, 10))}"></div>
+      <div class="field"><label>Balance owed (${currency})</label><input type="number" id="tc-ed-balance" step="0.01" value="${c.balance ?? 0}"></div>
+      <div class="field"><label>Credit Limit (${currency})</label><input type="number" id="tc-ed-credit-limit" step="0.01" min="0" placeholder="Use shop default" value="${c.credit_limit ?? ''}"></div>
+      <div class="field full"><label><input type="checkbox" id="tc-ed-on-account" ${c.allow_on_account ? 'checked' : ''}> Approved for On Account purchases</label></div>
+      <div class="field full"><label><input type="checkbox" id="tc-ed-vip" ${c.is_vip ? 'checked' : ''}> VIP customer</label></div>
+      <div class="field full"><label>Address</label><input id="tc-ed-address" value="${Utils.escHtml(c.address || '')}"></div>
+      <div class="field full"><label>Notes</label><textarea id="tc-ed-notes" rows="2">${Utils.escHtml(c.notes || '')}</textarea></div>
+    </div>`, '<button class="btn btn-primary" id="tc-ed-save">Save Customer</button>');
+    document.getElementById('tc-ed-save').addEventListener('click', async () => {
+      const name = document.getElementById('tc-ed-name')?.value.trim();
+      if (!name) return Utils.toast('Name is required', 'error');
+      const limitVal = document.getElementById('tc-ed-credit-limit')?.value;
+      const r = await API.saveCustomer({
+        id: c.id,
+        name,
+        phone: document.getElementById('tc-ed-phone')?.value.trim(),
+        email: document.getElementById('tc-ed-email')?.value.trim(),
+        address: document.getElementById('tc-ed-address')?.value.trim(),
+        birthday: document.getElementById('tc-ed-birthday')?.value || null,
+        notes: document.getElementById('tc-ed-notes')?.value.trim(),
+        balance: parseFloat(document.getElementById('tc-ed-balance')?.value) || 0,
+        allow_on_account: document.getElementById('tc-ed-on-account')?.checked,
+        is_vip: document.getElementById('tc-ed-vip')?.checked,
+        credit_limit: limitVal !== '' ? parseFloat(limitVal) : null
+      }, this.app.user);
+      if (!r.success) return Utils.toast(r.error || 'Could not save', 'error');
+      Utils.hideModal();
+      Utils.toast('Customer updated', 'success');
+      window.DataCache?.invalidate?.('customers');
+      if (onRefresh) await onRefresh();
+    });
+  },
+
+  async showTopCustomerHistory(customerId) {
+    let customer = null;
+    try {
+      const r = await API.getCustomer(customerId);
+      customer = r?.data ?? r;
+    } catch (_) { /* ignore */ }
+    try {
+      const [summaryRes, ledgerRes, loyaltyRes] = await Promise.all([
+        API.getCustomerPurchaseSummary(customerId),
+        API.getCreditLedger(customerId),
+        API.getLoyaltyHistory(customerId)
+      ]);
+      const s = summaryRes?.data ?? summaryRes ?? {};
+      const currency = this.settings?.currency || 'R';
+      const sales = s.sales || [];
+      const ledger = ledgerRes?.data ?? ledgerRes ?? [];
+      const loyalty = loyaltyRes?.data ?? loyaltyRes ?? [];
+      Utils.showModal(`Customer: ${Utils.escHtml(customer?.name || '')}`, `
+        <div class="stats-grid" style="margin-bottom:16px">
+          <div class="stat-card"><div class="label">Total Spent</div><div class="value">${Utils.formatMoney(s.totalSpent || 0, currency)}</div></div>
+          <div class="stat-card"><div class="label">Orders</div><div class="value">${s.orderCount || 0}</div></div>
+          <div class="stat-card"><div class="label">Balance Owed</div><div class="value">${Utils.formatMoney(customer?.balance || 0, currency)}</div></div>
+          <div class="stat-card"><div class="label">Loyalty Points</div><div class="value">${Math.floor(customer?.loyalty_points || 0)}</div></div>
+        </div>
+        <h4>Purchase History</h4>
+        ${sales.length ? `<div class="table-wrap"><table style="width:100%"><tr><th>Receipt</th><th>Total</th><th>Date</th></tr>
+          ${sales.map((x) => `<tr><td>${Utils.escHtml(x.receipt_number || '—')}</td><td>${Utils.formatMoney(x.total, currency)}</td><td>${Utils.formatDateTime(x.created_at)}</td></tr>`).join('')}</table></div>`
+          : '<p class="muted">No purchases yet</p>'}
+        ${ledger.length ? `<h4 style="margin-top:16px">Credit Ledger</h4><div class="table-wrap"><table style="width:100%"><tr><th>Date</th><th>Type</th><th>Amount</th></tr>
+          ${ledger.map((l) => `<tr><td>${Utils.formatDateTime(l.created_at)}</td><td>${Utils.escHtml(l.type || '—')}</td><td>${Utils.formatMoney(l.amount, currency)}</td></tr>`).join('')}
+          </table></div>` : ''}
+        ${loyalty.length ? `<h4 style="margin-top:16px">Loyalty Points History</h4><div class="table-wrap"><table style="width:100%"><tr><th>Date</th><th>Type</th><th>Points</th></tr>
+          ${loyalty.map((l) => `<tr><td>${Utils.formatDateTime(l.created_at)}</td><td>${Utils.escHtml(l.type || '—')}</td><td>${l.points > 0 ? '+' : ''}${l.points}</td></tr>`).join('')}
+          </table></div>` : ''}`,
+        '<button class="btn btn-ghost" id="tc-hist-close">Close</button>');
+      document.getElementById('tc-hist-close')?.addEventListener('click', Utils.hideModal);
+    } catch (err) {
+      Utils.toast(err.message || 'Could not load customer history', 'error');
+    }
+  },
+
   async renderTopCustomers(el) {
     if (!['owner', 'manager'].includes(this.app.user?.role)) {
       el.innerHTML = '<div class="admin-section"><p class="muted">Top Customers is available to owner and manager only.</p></div>';
@@ -1988,7 +2099,12 @@ const AdminPage = {
     const limit = this._tcLimit || 50;
     const currency = this.settings.currency || 'R';
     el.innerHTML = `<div class="admin-section"><h3>Top Customers</h3>
-      <p class="muted">Full admin control — edit customer details, delete, reward with gift cards, or message on WhatsApp.</p>
+      <p class="muted">Full admin control — search any customer, edit all details, view history, delete (even with balance or points), reward with gift cards, or message on WhatsApp.</p>
+      <div style="margin-bottom:20px;padding:16px;border:1px solid var(--border);border-radius:10px;background:var(--bg-secondary,#f8fafc)">
+        <h4 style="margin:0 0 8px">Search Customers</h4>
+        <input type="search" id="tc-cust-search" placeholder="Search by name, phone or email…" style="padding:8px 14px;border:1.5px solid var(--border);border-radius:8px;width:min(100%,360px)">
+        <div id="tc-cust-results" style="margin-top:12px"></div>
+      </div>
       <div style="display:flex;gap:8px;align-items:end;margin-bottom:12px;flex-wrap:wrap">
         <div class="field"><label>From</label><input type="date" id="tc-from" value="${from}"></div>
         <div class="field"><label>To</label><input type="date" id="tc-to" value="${to}"></div>
@@ -1997,6 +2113,47 @@ const AdminPage = {
         <button class="btn btn-ghost" id="tc-excel">Excel</button>
       </div>
       <div id="tc-table"><p class="muted">Loading…</p></div></div>`;
+    let custSearchTimer = null;
+    const renderCustSearch = (rows) => {
+      const box = document.getElementById('tc-cust-results');
+      if (!box) return;
+      if (!rows.length) {
+        box.innerHTML = '<p class="muted">No customers match your search</p>';
+        return;
+      }
+      box.innerHTML = `<div class="table-wrap"><table><thead><tr><th>Name</th><th>Phone</th><th>Email</th><th>Balance</th><th>Points</th><th></th></tr></thead><tbody>
+        ${rows.map((c) => `<tr>
+          <td><strong>${Utils.escHtml(c.name)}</strong></td>
+          <td>${Utils.escHtml(c.phone || '—')}</td>
+          <td>${Utils.escHtml(c.email || '—')}</td>
+          <td>${Utils.formatMoney(c.balance, currency)}</td>
+          <td>${Math.floor(c.loyalty_points || 0)}</td>
+          <td style="white-space:nowrap">
+            <button class="btn btn-sm btn-primary tc-edit" data-id="${c.id}">Edit</button>
+            <button class="btn btn-sm btn-ghost tc-hist" data-id="${c.id}">History</button>
+            <button class="btn btn-sm btn-danger tc-del" data-id="${c.id}" data-name="${Utils.escHtml(c.name)}" data-balance="${c.balance || 0}" data-points="${Math.floor(c.loyalty_points || 0)}">Delete</button>
+          </td></tr>`).join('')}
+        </tbody></table></div>`;
+      this.bindTopCustomerActions(box, load);
+    };
+    document.getElementById('tc-cust-search')?.addEventListener('input', (e) => {
+      clearTimeout(custSearchTimer);
+      const q = e.target.value.trim();
+      custSearchTimer = setTimeout(async () => {
+        const box = document.getElementById('tc-cust-results');
+        if (!q) {
+          if (box) box.innerHTML = '';
+          return;
+        }
+        if (box) box.innerHTML = '<p class="muted">Searching…</p>';
+        try {
+          const res = await API.getCustomers(q);
+          renderCustSearch(res?.data ?? (Array.isArray(res) ? res : []));
+        } catch (err) {
+          if (box) box.innerHTML = `<p class="muted">${Utils.escHtml(err.message || 'Search failed')}</p>`;
+        }
+      }, 200);
+    });
     const load = async () => {
       const f = document.getElementById('tc-from').value;
       const t = document.getElementById('tc-to').value;
@@ -2015,45 +2172,14 @@ const AdminPage = {
           <td><strong>${Utils.formatMoney(c.total_spent, currency)}</strong></td><td>${c.visits}</td>
           <td style="white-space:nowrap">
             ${c.id ? `<button class="btn btn-sm btn-primary tc-edit" data-id="${c.id}">Edit</button>` : ''}
+            ${c.id ? `<button class="btn btn-sm btn-ghost tc-hist" data-id="${c.id}">History</button>` : ''}
             <button class="btn btn-sm btn-ghost tc-gift" data-id="${c.id || ''}" data-phone="${Utils.escHtml(c.phone || '')}" data-name="${Utils.escHtml(c.name)}">Gift Card</button>
             ${c.phone ? `<button class="btn btn-sm btn-success tc-wa" data-id="${c.id || ''}" data-name="${Utils.escHtml(c.name)}" data-phone="${Utils.escHtml(c.phone)}">WhatsApp</button>` : ''}
-            ${c.id ? `<button class="btn btn-sm btn-danger tc-del" data-id="${c.id}" data-name="${Utils.escHtml(c.name)}">Delete</button>` : ''}
+            ${c.id ? `<button class="btn btn-sm btn-danger tc-del" data-id="${c.id}" data-name="${Utils.escHtml(c.name)}" data-balance="${c.balance || 0}" data-points="${Math.floor(c.loyalty_points || 0)}">Delete</button>` : ''}
           </td></tr>`).join('') || '<tr><td colspan="8" class="muted">No customers in this period</td></tr>'}
         </tbody></table></div>
         <p class="muted" style="padding:12px;font-size:13px">Ranked highest to lowest — includes POS sales and online orders. Use Top N to set list size.</p></div>`;
-      document.querySelectorAll('.tc-edit').forEach(b => b.addEventListener('click', async () => {
-        const detail = await API.getCustomer(parseInt(b.dataset.id, 10));
-        const c = detail.data || rows.find(x => String(x.id) === b.dataset.id);
-        if (!c) return Utils.toast('Customer not found', 'error');
-        Utils.showModal('Edit Customer', `<div class="form-grid">
-          <div class="field"><label>Name *</label><input id="tc-ed-name" value="${Utils.escHtml(c.name || '')}"></div>
-          <div class="field"><label>Phone</label><input id="tc-ed-phone" value="${Utils.escHtml(c.phone || '')}"></div>
-          <div class="field"><label>Email</label><input id="tc-ed-email" value="${Utils.escHtml(c.email || '')}"></div>
-          <div class="field"><label>Address</label><input id="tc-ed-address" value="${Utils.escHtml(c.address || '')}"></div>
-          <div class="field full"><label>Notes</label><textarea id="tc-ed-notes" rows="2">${Utils.escHtml(c.notes || '')}</textarea></div>
-        </div>`, '<button class="btn btn-primary" id="tc-ed-save">Save Customer</button>');
-        document.getElementById('tc-ed-save').addEventListener('click', async () => {
-          const r = await API.saveCustomer({
-            id: c.id,
-            name: document.getElementById('tc-ed-name').value.trim(),
-            phone: document.getElementById('tc-ed-phone').value.trim(),
-            email: document.getElementById('tc-ed-email').value.trim(),
-            address: document.getElementById('tc-ed-address').value.trim(),
-            notes: document.getElementById('tc-ed-notes').value.trim()
-          }, this.app.user);
-          if (!r.success) return Utils.toast(r.error || 'Could not save', 'error');
-          Utils.hideModal();
-          Utils.toast('Customer updated', 'success');
-          load();
-        });
-      }));
-      document.querySelectorAll('.tc-del').forEach(b => b.addEventListener('click', async () => {
-        if (!confirm(`Delete customer "${b.dataset.name}"? Sales history stays; the customer profile is removed.`)) return;
-        const r = await API.deleteCustomer(parseInt(b.dataset.id, 10), this.app.user);
-        if (!r.success) return Utils.toast(r.error || 'Could not delete', 'error');
-        Utils.toast('Customer deleted', 'success');
-        load();
-      }));
+      this.bindTopCustomerActions(document.getElementById('tc-table'), load);
       document.querySelectorAll('.tc-gift').forEach(b => b.addEventListener('click', async () => {
         const customerId = parseInt(b.dataset.id, 10);
         const customerName = b.dataset.name;

@@ -170,7 +170,7 @@ function installApiReadCache() {
 
   wrap('getProducts', 'products', 90000, (a) => [a[0] || {}]);
   wrap('getCategories', 'categories', 300000, (a) => [a[0] || {}]);
-  wrap('getCustomers', 'customers', 120000, (a) => [a[0] || '']);
+  wrap('getCustomers', 'customers', 120000, (a) => [typeof a[0] === 'string' ? a[0] : '']);
   wrap('getSuppliers', 'suppliers', 300000, (a) => [a[0] || '']);
   wrap('getDashboardStats', 'dashboard', 60000, (a) => [a[0], a[1]]);
   wrap('getStockReport', 'stockReport', 60000, () => []);
