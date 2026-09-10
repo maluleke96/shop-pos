@@ -423,7 +423,7 @@ function getModifiersForProduct(productId, branchId) {
   return Object.values(groups);
 }
 
-function mapProductForWeb(p, branchId, promos = [], productPromo = null) {
+function mapProductForWeb(p, branchId, promos = [], productPromo = null, modifierIds = null) {
   const price = Number(p.selling_price) || 0;
   const promo = promos.find((pr) => String(pr.product_id) === String(p.id));
   let salePrice = promo ? round2(price * (1 - (Number(promo.discount_percent) || 0) / 100)) : null;
@@ -455,7 +455,7 @@ function mapProductForWeb(p, branchId, promos = [], productPromo = null) {
     on_sale: !!(salePrice && salePrice < displayPrice),
     available,
     stock_qty: qty,
-    has_modifiers: !!dbGet('SELECT 1 FROM product_modifiers WHERE product_id = ? LIMIT 1', [p.id]),
+    has_modifiers: modifierIds ? modifierIds.has(p.id) : !!dbGet('SELECT 1 FROM product_modifiers WHERE product_id = ? LIMIT 1', [p.id]),
     is_combo: false,
     available_today: Number(p.available_today) === 1,
     is_new_arrival: Number(p.is_new_arrival) === 1 && (!p.new_arrival_until || p.new_arrival_until >= todayStr),
@@ -492,7 +492,7 @@ function comboItemImageUrl(ci) {
   return null;
 }
 
-function mapComboForWeb(combo, branchId) {
+function mapComboForWeb(combo, branchId, modifierIds = null) {
   const combosSvc = require('./combos');
   const availUnits = combosSvc.comboAvailableUnits(combo, branchId);
   const normal = Number(combo.normal_price) || 0;
@@ -503,7 +503,7 @@ function mapComboForWeb(combo, branchId) {
   const gallery = (combo.gallery_paths || []).map(publicAssetImageUrl).filter(Boolean).slice(0, 6);
   let hasModifiers = combo.combo_kind === 'custom' ? false : false;
   for (const ci of items) {
-    if (ci.allow_pap_choice || (ci.product_id && dbGet('SELECT 1 FROM product_modifiers WHERE product_id = ? LIMIT 1', [ci.product_id]))) {
+    if (ci.allow_pap_choice || (ci.product_id && (modifierIds ? modifierIds.has(ci.product_id) : dbGet('SELECT 1 FROM product_modifiers WHERE product_id = ? LIMIT 1', [ci.product_id])))) {
       hasModifiers = true;
       break;
     }
@@ -516,7 +516,7 @@ function mapComboForWeb(combo, branchId) {
     name: combo.name,
     description: combo.description || '',
     category_id: 'combos',
-    image: pic ? publicAssetImageUrl(pic) || publicProductImageUrl(combo.id, true) : (thumbs[0] || gallery[0] || null),
+    image: pic ? publicProductImageUrl(combo.id, true) : (thumbs[0] || gallery[0] || null),
     combo_thumbs: [...gallery, ...thumbs].filter(Boolean).slice(0, 6),
     price: normal,
     sale_price: finalPrice < normal ? finalPrice : null,
@@ -643,9 +643,12 @@ function getBranchMenu(branchId, filters = {}) {
     const promoIds = new Set(promos.map((pr) => String(pr.product_id)));
     products = products.filter((p) => promoIds.has(String(p.id)) || productPromoMap[p.id]);
   }
-  const mapped = products.map((p) => mapProductForWeb(p, branchId, promos, productPromoMap[p.id]));
+  const modifierIds = new Set(
+    dbAll('SELECT DISTINCT product_id FROM product_modifiers WHERE product_id IS NOT NULL').map((r) => r.product_id)
+  );
+  const mapped = products.map((p) => mapProductForWeb(p, branchId, promos, productPromoMap[p.id], modifierIds));
   const combos = getActiveCombos(branchId);
-  let comboMapped = combos.map((c) => mapComboForWeb(c, branchId));
+  let comboMapped = combos.map((c) => mapComboForWeb(c, branchId, modifierIds));
   if (filters.q) {
     const q = String(filters.q).toLowerCase();
     comboMapped = comboMapped.filter((c) => c.name.toLowerCase().includes(q));

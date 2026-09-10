@@ -317,6 +317,7 @@ function saveCombo(data, actor) {
     } catch (_) {
       try { db.prepare('UPDATE combos SET show_on_pos=?, show_on_online=? WHERE id=?').run(showOnPos, showOnOnline, data.id); } catch (_2) { /* */ }
     }
+    try { require('../../lib/product-images').invalidateComboImage(data.id); } catch (_) { /* optional */ }
     return getCombo(data.id);
   }
   const code = nextComboCode();
@@ -354,6 +355,7 @@ function saveCombo(data, actor) {
   } catch (_) {
     try { db.prepare('UPDATE combos SET show_on_pos=?, show_on_online=? WHERE id=?').run(showOnPos, showOnOnline, comboId); } catch (_2) { /* */ }
   }
+  try { require('../../lib/product-images').invalidateComboImage(comboId); } catch (_) { /* optional */ }
   return getCombo(comboId);
 }
 

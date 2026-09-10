@@ -1723,6 +1723,7 @@ function saveProduct(data, actorId, actorName) {
     }
     checkLowStock(data.id);
     try { require('../database/db').persistNow?.(); } catch (_) { /* optional */ }
+    try { require('../../lib/product-images').invalidateProductImage(data.id); } catch (_) { /* optional */ }
     return getProduct(data.id) || data.id;
   }
 
@@ -1820,6 +1821,7 @@ function saveProduct(data, actorId, actorName) {
 function deleteProduct(id, actorId, actorName) {
   getDb().prepare('UPDATE products SET is_active = 0 WHERE id = ?').run(id);
   audit(actorId, actorName, 'delete_product', 'product', id, null);
+  try { require('../../lib/product-images').invalidateProductImage(id); } catch (_) { /* optional */ }
 }
 
 function checkLowStock(productId, prevStock = null) {

@@ -841,20 +841,15 @@ async function main() {
       }
     }
 
+    const PUBLIC_IMAGE_CACHE = 'public, max-age=86400, stale-while-revalidate=604800';
+
     if (urlPath.startsWith('/api/product-image/')) {
       const productId = urlPath.replace('/api/product-image/', '').split('?')[0];
       try {
         const { getProductImage } = require('./lib/product-images');
         const file = getProductImage(Number(productId));
-        if (file.buffer) {
-          res.writeHead(200, { 'Content-Type': file.mime, 'Cache-Control': 'public, max-age=3600', ...corsHeaders() });
-          return res.end(file.buffer);
-        }
-        return fs.readFile(file.path, (err, buf) => {
-          if (err) { res.writeHead(404); return res.end('Not found'); }
-          res.writeHead(200, { 'Content-Type': file.mime, 'Cache-Control': 'public, max-age=3600', ...corsHeaders() });
-          res.end(buf);
-        });
+        res.writeHead(200, { 'Content-Type': file.mime, 'Cache-Control': PUBLIC_IMAGE_CACHE, ...corsHeaders() });
+        return res.end(file.buffer);
       } catch (e) {
         res.writeHead(e.message === 'Product not found' || e.message === 'Image not available' ? 404 : 500);
         return res.end(String(e.message || 'Error'));
@@ -866,15 +861,8 @@ async function main() {
       try {
         const { getComboImage } = require('./lib/product-images');
         const file = getComboImage(Number(comboId));
-        if (file.buffer) {
-          res.writeHead(200, { 'Content-Type': file.mime, 'Cache-Control': 'public, max-age=3600', ...corsHeaders() });
-          return res.end(file.buffer);
-        }
-        return fs.readFile(file.path, (err, buf) => {
-          if (err) { res.writeHead(404); return res.end('Not found'); }
-          res.writeHead(200, { 'Content-Type': file.mime, 'Cache-Control': 'public, max-age=3600', ...corsHeaders() });
-          res.end(buf);
-        });
+        res.writeHead(200, { 'Content-Type': file.mime, 'Cache-Control': PUBLIC_IMAGE_CACHE, ...corsHeaders() });
+        return res.end(file.buffer);
       } catch (e) {
         res.writeHead(e.message === 'Combo not found' || e.message === 'Image not available' ? 404 : 500);
         return res.end(String(e.message || 'Error'));
@@ -887,15 +875,8 @@ async function main() {
       try {
         const { getAppImage } = require('./lib/product-images');
         const file = getAppImage(p);
-        if (file.buffer) {
-          res.writeHead(200, { 'Content-Type': file.mime, 'Cache-Control': 'public, max-age=3600', ...corsHeaders() });
-          return res.end(file.buffer);
-        }
-        return fs.readFile(file.path, (err, buf) => {
-          if (err) { res.writeHead(404); return res.end('Not found'); }
-          res.writeHead(200, { 'Content-Type': file.mime, 'Cache-Control': 'public, max-age=3600', ...corsHeaders() });
-          res.end(buf);
-        });
+        res.writeHead(200, { 'Content-Type': file.mime, 'Cache-Control': PUBLIC_IMAGE_CACHE, ...corsHeaders() });
+        return res.end(file.buffer);
       } catch (e) {
         res.writeHead(e.message === 'Image not available' ? 404 : 500);
         return res.end(String(e.message || 'Error'));

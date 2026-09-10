@@ -553,7 +553,22 @@ const OrderApp = {
     try {
       await this._menuLoadPromise;
       this.updateMenuDom(scrollLeft);
+      this.prefetchMenuImages(this.menu?.products || []);
     } catch (err) { this.toast(err.message, 'error'); }
+  },
+
+  prefetchMenuImages(products, limit = 32) {
+    const urls = [];
+    for (const p of products || []) {
+      if (p.image) urls.push(p.image);
+      if (p.combo_thumbs?.length) urls.push(...p.combo_thumbs.slice(0, 3));
+      if (urls.length >= limit) break;
+    }
+    for (const url of urls.slice(0, limit)) {
+      const img = new Image();
+      img.decoding = 'async';
+      img.src = url;
+    }
   },
 
   filterMenuProducts(allProducts, categoryId, search) {
@@ -1764,10 +1779,10 @@ const OrderApp = {
     const btnAct = p.has_modifiers && !p.is_combo ? 'open-product' : (p.is_combo ? 'open-product' : 'quick-add');
     const badges = (p.badges || []).map((b) => `<span class="pc-badge" style="background:${b.color || '#64748b'}">${this.esc(b.label)}</span>`).join('');
     const imgTag = p.image
-      ? `<img src="${this.esc(p.image)}" alt="" ${idx < 16 ? 'loading="eager" fetchpriority="high"' : 'loading="lazy"'}>`
+      ? `<img src="${this.esc(p.image)}" alt="" decoding="async" ${idx < 24 ? 'loading="eager" fetchpriority="high"' : 'loading="lazy"'}>`
       : `<div class="thumb">${p.is_combo ? '🎁' : '🍽️'}</div>`;
     const comboThumbs = p.is_combo && p.combo_thumbs?.length
-      ? `<div class="combo-mini-thumbs">${p.combo_thumbs.slice(0, 3).map((u) => `<img src="${this.esc(u)}" alt="" loading="eager">`).join('')}</div>`
+      ? `<div class="combo-mini-thumbs">${p.combo_thumbs.slice(0, 3).map((u) => `<img src="${this.esc(u)}" alt="" decoding="async" loading="eager">`).join('')}</div>`
       : '';
     return `<article class="product-card ${p.available ? '' : 'unavailable'} ${p.is_combo ? 'combo-card' : ''}" data-product-id="${this.esc(p.id)}" role="button" tabindex="0">
       ${imgTag}
