@@ -1758,7 +1758,7 @@ const App = {
         : (this.navItems.map(n => n.id).find(id => Utils.canAccess(this.user, id)) || 'pos');
     }
     if (startPage === 'admin' && savedNav?.adminSection && typeof AdminPage !== 'undefined') {
-      AdminPage.section = savedNav.adminSection;
+      AdminPage.section = savedNav.adminSection === 'deliveries' ? 'delivery-dept' : savedNav.adminSection;
       if (savedNav.adminLoyaltyTab) AdminPage._loyaltyTab = savedNav.adminLoyaltyTab;
       if (savedNav.adminComboTab && typeof AdminCombosPage !== 'undefined') AdminCombosPage.tab = savedNav.adminComboTab;
     }
@@ -1891,10 +1891,6 @@ const App = {
     if (page !== 'pos') window.POSPage?.stopAdvertReminderMonitor?.();
     if (page === 'pos') this.ensureFeatureCss('css/pos-till.css').catch(() => {});
     const navGen = (this._navGen = (this._navGen || 0) + 1);
-    if (page === 'admin' && !this.isPosKiosk?.()) {
-      this.initPanelNotify();
-      this.checkNotificationSounds().catch(() => {});
-    }
     if (page === 'admin' && !this.isPosKiosk?.()) {
       this.initPanelNotify();
       this.checkNotificationSounds().catch(() => {});

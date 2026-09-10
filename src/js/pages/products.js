@@ -26,7 +26,12 @@ const ProductsPage = {
     if (!productId) return false;
     const catName = this.categories.find((c) => c.id === (saved?.category_id ?? formData?.category_id))?.name
       || saved?.category_name || '';
-    const row = { ...(typeof saved === 'object' ? saved : {}), category_name: catName };
+    const row = {
+      ...(typeof saved === 'object' ? saved : {}),
+      category_name: catName,
+      show_on_pos: saved?.show_on_pos ?? formData?.show_on_pos,
+      online_enabled: saved?.online_enabled ?? formData?.online_enabled
+    };
     const active = saved?.is_active !== undefined ? saved.is_active : formData?.is_active;
     if (active === 0 || active === false) {
       this.products = this.products.filter((p) => p.id !== productId);
@@ -136,9 +141,12 @@ const ProductsPage = {
       const unit = p.stock_unit || p.unit || 'each';
       const optCount = (p.options?.length || 0) + (p.extras?.length || 0) + (p.removals?.length || 0);
       const optTag = optCount ? `<span class="tag tag-ok">${optCount} option${optCount !== 1 ? 's' : ''}</span>` : '—';
+      const posOff = Number(p.show_on_pos) === 0;
+      const onlineOff = Number(p.online_enabled) === 0;
+      const visTags = `${posOff ? '<span class="tag tag-warn">POS off</span> ' : ''}${onlineOff ? '<span class="tag tag-warn">Online off</span>' : ''}`;
       return `<tr>
       <td>${p.picture_path ? `<img data-image-path="${p.picture_path}" class="prod-thumb">` : ''}</td>
-      <td><strong>${p.name}</strong>${p.sku ? `<br><small class="muted">${p.sku}</small>` : ''}</td>
+      <td><strong>${p.name}</strong>${p.sku ? `<br><small class="muted">${p.sku}</small>` : ''}${visTags ? `<br>${visTags}` : ''}</td>
       <td>${p.category_name || '—'}</td>
       <td>${Utils.formatMoney(p.selling_price, currency)}</td>
       <td>${Utils.formatMoney(p.buying_price, currency)}</td>
@@ -324,6 +332,11 @@ const ProductsPage = {
           <div class="field"><label>Selling Price *</label><input type="number" id="pf-price" step="0.01" min="0.01" value="${product?.selling_price || ''}"></div>
           <div class="field"><label>Cost Price</label><input type="number" id="pf-cost" step="0.01" value="${product?.buying_price || ''}"></div>
           <div class="field"><label>Status</label><select id="pf-status"><option value="1" ${product?.is_active !== 0 ? 'selected' : ''}>Active</option><option value="0" ${product?.is_active === 0 ? 'selected' : ''}>Inactive</option></select></div>
+          <div class="field full"><label>Visibility</label>
+            <label style="display:block;margin:6px 0"><input type="checkbox" id="pf-show-pos" ${product && Number(product.show_on_pos) === 0 ? '' : 'checked'}> Show on POS till</label>
+            <label style="display:block;margin:6px 0"><input type="checkbox" id="pf-show-online" ${product && Number(product.online_enabled) === 0 ? '' : 'checked'}> Show on online menu</label>
+            <small class="muted">Uncheck to hide from POS or customer online ordering without deleting the product.</small>
+          </div>
           <div class="field full"><label>Description</label><textarea id="pf-desc" rows="2">${product?.description || ''}</textarea></div>
           <div class="field full"><label>Product Photo</label>
             <div style="display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap">
@@ -623,6 +636,8 @@ const ProductsPage = {
       picture_path: this.picturePath,
       description: document.getElementById('pf-desc').value.trim(),
       is_active: parseInt(document.getElementById('pf-status').value),
+      show_on_pos: document.getElementById('pf-show-pos')?.checked ? 1 : 0,
+      online_enabled: document.getElementById('pf-show-online')?.checked ? 1 : 0,
       requires_options: !!(this._optionGroupsMeta || []).some(g => g.is_required),
       options_style: document.getElementById('pf-options-style')?.value || 'radio',
       option_groups_meta: this._optionGroupsMeta || [],

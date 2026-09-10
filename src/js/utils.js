@@ -326,7 +326,7 @@ const Utils = {
     'overview', 'staffhr', 'staffportal', 'hrcontracts', 'recruitment', 'marketing-mgmt', 'employee-of-month', 'opscompliance', 'combos',
     'quotes', 'approvals', 'recipe', 'tax', 'tax-hub', 'cashiers', 'branches',
     'mobile-app', 'business-manager', 'business-modules', 'digital-signage', 'online-orders', 'hr-workspace', 'hr-approvals', 'accounting-workspace',
-    'delivery-dept', 'deliveries', 'loyalty', 'discounts', 'payments', 'inventory', 'shifts', 'operating', 'cashdrawer', 'customize', 'onaccount',
+    'delivery-dept', 'loyalty', 'discounts', 'payments', 'inventory', 'shifts', 'operating', 'cashdrawer', 'customize', 'onaccount',
     'printer', 'receipt', 'security', 'permissions', 'sales-targets', 'top-customers',
     'salesmgmt', 'pos-menu', 'saleexplorer', 'soldproducts', 'returnsmgmt', 'activity', 'exceptions', 'alerts', 'dailyclose', 'discount-report'
   ]),
@@ -343,8 +343,9 @@ const Utils = {
 
   canAccessAdminSection(user, sectionId) {
     if (!Utils.canAccessAdmin(user)) return false;
+    if (sectionId === 'deliveries') sectionId = 'delivery-dept';
     if (user.role === 'delivery_manager') {
-      return ['delivery-dept', 'deliveries', 'online-orders'].includes(sectionId);
+      return ['delivery-dept', 'online-orders'].includes(sectionId);
     }
     if (user.role === 'owner') return true;
     if (sectionId === 'permissions' && user.role === 'manager') return true;

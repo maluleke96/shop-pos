@@ -69,6 +69,7 @@ const AdminPage = {
 
   async render(el, app) {
     this.app = app;
+    if (this.section === 'deliveries') this.section = 'delivery-dept';
     // Paint shell immediately from in-memory settings — never blank-wait on RPC
     this.settings = this.settings || app.settings || {};
 
@@ -168,7 +169,21 @@ const AdminPage = {
     ).join('');
   },
 
+  async saveWebGlobalSettings(payload) {
+    if (typeof API.webSaveGlobalSettings !== 'function') {
+      Utils.toast('Online settings are not available on this server — update the app or redeploy', 'error');
+      return null;
+    }
+    const r = await API.webSaveGlobalSettings(payload, this.app?.user);
+    if (r?.success === false) {
+      Utils.toast(r.error || 'Save failed', 'error');
+      return null;
+    }
+    return r;
+  },
+
   async renderSection(el) {
+    if (this.section === 'deliveries') this.section = 'delivery-dept';
     const lazySections = new Set([
       'hrcontracts', 'recruitment', 'marketing-mgmt', 'employee-of-month', 'staffhr', 'hr-workspace', 'hr-approvals', 'staffportal', 'payroll',
       'opscompliance', 'combos', 'recipe', 'quotes',
@@ -1572,7 +1587,8 @@ const AdminPage = {
       <div class="card"><div class="card-body">
         <h4>Default Role Access</h4>
         <p><strong>Owner:</strong> Full access to everything</p>
-        <p><strong>Manager:</strong> Reports, stock, ops — <em>Staff Portal</em> and extra pages need explicit permission</p>
+        <p><strong>Manager:</strong> Reports, stock, ops — <em>Staff Portal</em> and extra pages need explicit permission. Managers cannot open Payroll, Backup, Analytics, Import/Export, Database, Developer, or Device settings (owner only).</p>
+        <p><strong>Supervisor:</strong> Whitelisted admin sections only — no owner-only tools.</p>
         <p><strong>Assistant Manager:</strong> Access granted per permission checkbox only</p>
         <p><strong>Marketing Agent:</strong> Marketing & flyers page only</p>
         <p><strong>Cashier:</strong> POS only by default — grant <em>Process returns</em> for Returns, and <em>Staff Portal</em> for the sidebar Staff Portal</p>
@@ -2573,6 +2589,8 @@ const AdminPage = {
     const inv = res.data || {};
     const currency = this.settings.currency || 'R';
     el.innerHTML = `<div class="admin-section"><h3>Inventory Dashboard</h3>
+      <p class="muted" style="margin-bottom:12px">Read-only overview. To adjust stock, receive goods, or record waste, use <strong>Stock Management</strong> in the sidebar.</p>
+      <button type="button" class="btn btn-primary btn-sm" id="inv-go-stock" style="margin-bottom:16px">Open Stock Management →</button>
       <div class="stats-grid">
         <div class="stat-card primary"><div class="label">Total Stock Value</div><div class="value">${Utils.formatMoney(inv.totalValue, currency)}</div><small>At buying cost</small></div>
         <div class="stat-card warning"><div class="label">Low Stock</div><div class="value">${inv.lowStock || 0}</div><small>At or below minimum</small></div>
@@ -2594,6 +2612,7 @@ const AdminPage = {
           ${(inv.slowMoving||[]).map(p=>`<div style="padding:6px 0;border-bottom:1px solid var(--border)">${Utils.escHtml(p.name)} — ${p.stock_quantity} in stock</div>`).join('')||'<p class="muted">No data</p>'}
         </div></div>
       </div></div>`;
+    document.getElementById('inv-go-stock')?.addEventListener('click', () => window.App?.navigate?.('stock'));
   },
 
   renderDiscounts(el) {
@@ -2877,12 +2896,12 @@ const AdminPage = {
       <button type="button" class="btn btn-ghost btn-sm" id="loy-on-orders" style="margin-top:8px;margin-left:8px">Open Online Orders</button>
     </div></div>`;
     el.querySelector('#loy-on-save')?.addEventListener('click', async () => {
-      const r = await API.webSaveGlobalSettings?.({
+      const r = await this.saveWebGlobalSettings({
         loyalty_enabled: document.getElementById('loy-on-loyalty').checked,
         gift_cards_enabled: document.getElementById('loy-on-giftcards').checked,
         coupons_enabled: document.getElementById('loy-on-coupons').checked
-      }, this.app.user);
-      if (r?.success === false) return Utils.toast(r.error || 'Save failed', 'error');
+      });
+      if (!r) return;
       Utils.toast('Online loyalty & gift card settings saved', 'success');
       this._loyaltyOnlinePrefetch = null;
     });
@@ -3106,7 +3125,7 @@ const AdminPage = {
         <div class="field"><label>Social Media</label><input id="cu-social" value="${s.social_media||''}"></div>
         <div class="field full"><label>Company Logo</label>
           <button class="btn btn-ghost" id="cu-logo-btn">Upload Logo</button>
-          ${s.logo_path ? `<img id="cu-logo-preview" src="file://${s.logo_path.replace(/\\/g, '/')}" style="max-height:60px;margin-top:8px;border-radius:8px;display:block">` : ''}</div>
+          <div id="cu-logo-preview">${s.logo_path ? '<span class="muted">Loading logo…</span>' : ''}</div></div>
       </div>
       <h4 style="margin-top:24px">Login &amp; home</h4>
       <div class="form-grid">
@@ -3139,19 +3158,12 @@ const AdminPage = {
       </div></div></div>`;
 
     let logoPath = s.logo_path;
-    const logoPreviewId = 'cu-logo-preview';
+    if (logoPath) Utils.setImagePreview('cu-logo-preview', logoPath, 'max-height:60px;margin-top:8px;border-radius:8px');
     document.getElementById('cu-logo-btn').addEventListener('click', async () => {
       const r = await API.selectImage('logo');
       if (r.success) {
         logoPath = r.path;
-        let preview = document.getElementById(logoPreviewId);
-        if (!preview) {
-          preview = document.createElement('img');
-          preview.id = logoPreviewId;
-          preview.style.cssText = 'max-height:60px;margin-top:8px;border-radius:8px;display:block';
-          document.getElementById('cu-logo-btn').after(preview);
-        }
-        preview.src = `file://${logoPath.replace(/\\/g, '/')}`;
+        await Utils.setImagePreview('cu-logo-preview', logoPath, 'max-height:60px;margin-top:8px;border-radius:8px');
         Utils.toast('Logo uploaded — click Save to apply', 'success');
       }
     });
@@ -3775,7 +3787,7 @@ const AdminPage = {
       else window.print();
     });
     document.getElementById('oo-save-settings')?.addEventListener('click', async () => {
-      const r = await API.webSaveGlobalSettings?.({
+      const r = await this.saveWebGlobalSettings({
         enabled: document.getElementById('oo-enabled').checked,
         coupons_enabled: document.getElementById('oo-coupons').checked,
         loyalty_enabled: document.getElementById('oo-loyalty').checked,
@@ -3783,8 +3795,8 @@ const AdminPage = {
         reviews_enabled: document.getElementById('oo-reviews').checked,
         scheduled_enabled: document.getElementById('oo-scheduled').checked,
         pos_reminder_minutes: Math.max(1, parseInt(document.getElementById('oo-reminder-min')?.value, 10) || 2)
-      }, this.app?.user);
-      if (r?.success === false) return Utils.toast(r.error, 'error');
+      });
+      if (!r) return;
       Utils.toast('Online settings saved', 'success');
     });
     document.getElementById('oo-open-loyalty')?.addEventListener('click', () => {

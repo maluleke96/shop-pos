@@ -925,12 +925,32 @@
     el.querySelectorAll('input[name="pm-hl-mode"]').forEach((r) => r.addEventListener('change', syncHlModeUi));
     syncHlModeUi();
 
+    let pmFlagsFilter = '';
+    let pmFlagsPage = 0;
+    const PM_FLAGS_PAGE = 100;
+
+    const filteredFlagProducts = () => {
+      const q = pmFlagsFilter.trim().toLowerCase();
+      if (!q) return products;
+      return products.filter((p) => p.name.toLowerCase().includes(q) || String(p.sku || '').toLowerCase().includes(q));
+    };
+
     const renderFlagsTable = () => {
       const wrap = document.getElementById('pm-flags-wrap');
       if (!wrap) return;
       const today = Utils.today();
-      wrap.innerHTML = `<div class="table-wrap" style="margin-top:12px"><table><thead><tr><th>Product</th><th>Price</th><th>Available Today</th><th>New Arrival</th><th>New until</th><th>Best Seller</th></tr></thead>
-      <tbody>${products.slice(0, 300).map((p) => {
+      const list = filteredFlagProducts();
+      const totalPages = Math.max(1, Math.ceil(list.length / PM_FLAGS_PAGE));
+      if (pmFlagsPage >= totalPages) pmFlagsPage = totalPages - 1;
+      const pageItems = list.slice(pmFlagsPage * PM_FLAGS_PAGE, (pmFlagsPage + 1) * PM_FLAGS_PAGE);
+      wrap.innerHTML = `<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px">
+        <input type="search" id="pm-flags-search" placeholder="Search products…" value="${Utils.escHtml(pmFlagsFilter)}" style="max-width:280px">
+        <span class="muted">${list.length} product${list.length === 1 ? '' : 's'} · page ${pmFlagsPage + 1} of ${totalPages}</span>
+        <button type="button" class="btn btn-ghost btn-sm" id="pm-flags-prev" ${pmFlagsPage <= 0 ? 'disabled' : ''}>← Previous</button>
+        <button type="button" class="btn btn-ghost btn-sm" id="pm-flags-next" ${pmFlagsPage >= totalPages - 1 ? 'disabled' : ''}>Next →</button>
+      </div>
+      <div class="table-wrap" style="margin-top:12px"><table><thead><tr><th>Product</th><th>Price</th><th>Available Today</th><th>New Arrival</th><th>New until</th><th>Best Seller</th></tr></thead>
+      <tbody>${pageItems.map((p) => {
         const isNew = Number(p.is_new_arrival);
         const untilVal = p.new_arrival_until || defaultUntil;
         return `<tr data-pid="${p.id}">
@@ -939,25 +959,47 @@
         <td><input type="checkbox" class="pm-new" ${isNew ? 'checked' : ''}></td>
         <td><input type="date" class="pm-new-until" value="${untilVal >= today ? untilVal : defaultUntil}" min="${today}" ${isNew ? '' : 'disabled'}></td>
         <td><span class="tag ${Number(p.is_best_seller) ? 'tag-ok' : ''}">${Number(p.is_best_seller) ? 'Auto' : '—'}</span></td></tr>`;
-      }).join('')}</tbody></table></div>
-      <button class="btn btn-primary" id="pm-save-flags" style="margin-top:12px">Save menu flags</button>`;
-      wrap.querySelectorAll('.pm-new').forEach((cb) => {
-        cb.addEventListener('change', () => {
-          const dateEl = cb.closest('tr')?.querySelector('.pm-new-until');
-          if (dateEl) dateEl.disabled = !cb.checked;
+      }).join('') || `<tr><td colspan="6" class="muted">No products match your search.</td></tr>`}</tbody></table></div>
+      <button class="btn btn-primary" id="pm-save-flags" style="margin-top:12px">Save menu flags (all ${products.length} products)</button>`;
+      pageItems.forEach((p) => {
+        const tr = wrap.querySelector(`tr[data-pid="${p.id}"]`);
+        if (!tr) return;
+        tr.querySelector('.pm-avail')?.addEventListener('change', (e) => {
+          p.available_today = e.target.checked ? 1 : 0;
         });
+        tr.querySelector('.pm-new')?.addEventListener('change', (e) => {
+          p.is_new_arrival = e.target.checked ? 1 : 0;
+          const dateEl = tr.querySelector('.pm-new-until');
+          if (dateEl) dateEl.disabled = !e.target.checked;
+        });
+        tr.querySelector('.pm-new-until')?.addEventListener('change', (e) => {
+          p.new_arrival_until = e.target.value;
+        });
+      });
+      let searchTimer;
+      wrap.querySelector('#pm-flags-search')?.addEventListener('input', (e) => {
+        clearTimeout(searchTimer);
+        searchTimer = setTimeout(() => {
+          pmFlagsFilter = e.target.value;
+          pmFlagsPage = 0;
+          renderFlagsTable();
+        }, 200);
+      });
+      wrap.querySelector('#pm-flags-prev')?.addEventListener('click', () => {
+        if (pmFlagsPage > 0) { pmFlagsPage -= 1; renderFlagsTable(); }
+      });
+      wrap.querySelector('#pm-flags-next')?.addEventListener('click', () => {
+        if (pmFlagsPage < totalPages - 1) { pmFlagsPage += 1; renderFlagsTable(); }
       });
       document.getElementById('pm-save-flags')?.addEventListener('click', async () => {
         const available_today = [];
         const new_arrival = [];
         const new_arrival_dates = {};
-        wrap.querySelectorAll('tbody tr[data-pid]').forEach((tr) => {
-          const id = Number(tr.dataset.pid);
-          if (tr.querySelector('.pm-avail')?.checked) available_today.push(id);
-          if (tr.querySelector('.pm-new')?.checked) {
-            new_arrival.push(id);
-            const d = tr.querySelector('.pm-new-until')?.value;
-            if (d) new_arrival_dates[id] = d;
+        products.forEach((p) => {
+          if (Number(p.available_today) === 1) available_today.push(p.id);
+          if (Number(p.is_new_arrival) === 1) {
+            new_arrival.push(p.id);
+            if (p.new_arrival_until) new_arrival_dates[p.id] = p.new_arrival_until;
           }
         });
         const r = await API.recipeSetPosMenuFlags({

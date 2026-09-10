@@ -1148,10 +1148,23 @@ function ensureCategoryPosSchema() {
   for (const sql of [
     'ALTER TABLE categories ADD COLUMN show_on_pos INTEGER DEFAULT 1',
     'ALTER TABLE products ADD COLUMN is_best_seller INTEGER DEFAULT 0',
-    'ALTER TABLE products ADD COLUMN show_on_pos INTEGER DEFAULT 1'
+    'ALTER TABLE products ADD COLUMN show_on_pos INTEGER DEFAULT 1',
+    'ALTER TABLE products ADD COLUMN online_enabled INTEGER DEFAULT 1'
   ]) {
     try { db.exec(sql); } catch (_) { /* exists */ }
   }
+}
+
+function syncProductChannelFlags(productId, data, existing) {
+  const showOnPos = data.show_on_pos !== undefined
+    ? (data.show_on_pos ? 1 : 0)
+    : (existing?.show_on_pos != null ? (Number(existing.show_on_pos) !== 0 ? 1 : 0) : 1);
+  const onlineEnabled = data.online_enabled !== undefined
+    ? (data.online_enabled ? 1 : 0)
+    : (existing?.online_enabled != null ? (Number(existing.online_enabled) !== 0 ? 1 : 0) : 1);
+  try {
+    getDb().prepare('UPDATE products SET show_on_pos = ?, online_enabled = ? WHERE id = ?').run(showOnPos, onlineEnabled, productId);
+  } catch (_) { /* columns may not exist on older DBs */ }
 }
 
 function getCategories(filters = {}) {
@@ -1489,7 +1502,9 @@ function ensureProductSchema() {
     'ALTER TABLE products ADD COLUMN requires_options INTEGER DEFAULT 0',
     "ALTER TABLE products ADD COLUMN options_style TEXT DEFAULT 'radio'",
     'ALTER TABLE product_modifiers ADD COLUMN option_group TEXT',
-    "ALTER TABLE product_modifiers ADD COLUMN modifier_type TEXT DEFAULT 'extra'"
+    "ALTER TABLE product_modifiers ADD COLUMN modifier_type TEXT DEFAULT 'extra'",
+    'ALTER TABLE products ADD COLUMN show_on_pos INTEGER DEFAULT 1',
+    'ALTER TABLE products ADD COLUMN online_enabled INTEGER DEFAULT 1'
   ];
   for (const sql of alters) {
     try { db.exec(sql); } catch (_) {}
@@ -1721,6 +1736,7 @@ function saveProduct(data, actorId, actorName) {
     if (data.stock_quantity !== undefined) {
       syncProductBranchStock(data.id, data.stock_quantity, actorId, 'Product edit');
     }
+    syncProductChannelFlags(data.id, data, existing);
     checkLowStock(data.id);
     try { require('../database/db').persistNow?.(); } catch (_) { /* optional */ }
     try { require('../../lib/product-images').invalidateProductImage(data.id); } catch (_) { /* optional */ }
@@ -1808,6 +1824,7 @@ function saveProduct(data, actorId, actorName) {
   if (fields.stock_quantity != null) {
     syncProductBranchStock(newId, fields.stock_quantity, actorId, 'Product create');
   }
+  syncProductChannelFlags(newId, data, null);
   checkLowStock(newId);
   try {
     if (fields.item_type !== 'ingredient') {

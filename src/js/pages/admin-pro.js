@@ -109,24 +109,33 @@
       <div class="card"><div class="table-wrap"><table>
         <thead><tr><th>Name</th><th>Trigger</th><th>Active</th><th></th></tr></thead>
         <tbody>${rules.map(r => `<tr><td>${r.name}</td><td>${r.trigger_type}</td><td>${r.is_active?'Yes':'No'}</td>
-          <td><button class="btn btn-sm btn-ghost del-rule" data-id="${r.id}">Delete</button></td></tr>`).join('')||'<tr><td colspan="4" class="muted">No rules yet</td></tr>'}
+          <td style="white-space:nowrap">
+            <button class="btn btn-sm btn-ghost edit-rule" data-id="${r.id}">Edit</button>
+            <button class="btn btn-sm btn-ghost del-rule" data-id="${r.id}">Delete</button>
+          </td></tr>`).join('')||'<tr><td colspan="4" class="muted">No rules yet</td></tr>'}
         </tbody></table></div></div>
       <div class="card" style="margin-top:16px"><div class="card-body"><h4>Example Rules</h4>
         <ul><li>If stock below 10 → show warning</li><li>If sale above R5,000 → require manager approval</li><li>If discount above 20% → require admin PIN</li><li>At closing → remind to backup</li></ul>
       </div></div></div>`;
 
-    document.getElementById('add-rule').addEventListener('click', () => {
-      Utils.showModal('New Automation Rule', `
-        <div class="field"><label>Name</label><input id="ar-name"></div>
+    const showRuleModal = (rule = null) => {
+      let cond = {};
+      try { cond = typeof rule?.condition_json === 'string' ? JSON.parse(rule.condition_json) : (rule?.condition || {}); } catch (_) { cond = {}; }
+      Utils.showModal(rule ? 'Edit Automation Rule' : 'New Automation Rule', `
+        <div class="field"><label>Name</label><input id="ar-name" value="${Utils.escHtml(rule?.name || '')}"></div>
         <div class="field"><label>Trigger</label><select id="ar-trigger">
-          <option value="before_sale">Before Sale</option><option value="low_stock">Low Stock</option><option value="shift_close">Shift Close</option></select></div>
-        <div class="field"><label>Min Amount (for sales)</label><input type="number" id="ar-min" placeholder="5000"></div>
-        <div class="field"><label>Max Discount %</label><input type="number" id="ar-disc" placeholder="20"></div>
-        <div class="field"><label>Alert when stock is below</label><input type="number" id="ar-stock" placeholder="10"></div>`,
+          <option value="before_sale" ${rule?.trigger_type === 'before_sale' ? 'selected' : ''}>Before Sale</option>
+          <option value="low_stock" ${rule?.trigger_type === 'low_stock' ? 'selected' : ''}>Low Stock</option>
+          <option value="shift_close" ${rule?.trigger_type === 'shift_close' ? 'selected' : ''}>Shift Close</option></select></div>
+        <div class="field"><label>Min Amount (for sales)</label><input type="number" id="ar-min" placeholder="5000" value="${cond.min_amount || ''}"></div>
+        <div class="field"><label>Max Discount %</label><input type="number" id="ar-disc" placeholder="20" value="${cond.max_discount_pct || ''}"></div>
+        <div class="field"><label>Alert when stock is below</label><input type="number" id="ar-stock" placeholder="10" value="${cond.min_stock ?? ''}"></div>
+        <div class="field"><label><input type="checkbox" id="ar-active" ${rule?.is_active !== 0 && rule?.is_active !== false ? 'checked' : ''}> Active</label></div>`,
         '<button class="btn btn-primary" id="save-rule">Save</button>');
       document.getElementById('save-rule').addEventListener('click', async () => {
         const trigger = document.getElementById('ar-trigger').value;
         await API.saveAutomationRule({
+          id: rule?.id,
           name: document.getElementById('ar-name').value.trim(),
           trigger_type: trigger,
           condition: {
@@ -135,13 +144,18 @@
             min_stock: parseFloat(document.getElementById('ar-stock').value) || 0
           },
           action: { require_manager: trigger === 'before_sale', notify: true },
-          is_active: true
+          is_active: document.getElementById('ar-active').checked
         });
         Utils.hideModal();
         this.renderAutomation(el);
-        Utils.toast('Rule saved', 'success');
+        Utils.toast(rule ? 'Rule updated' : 'Rule saved', 'success');
       });
-    });
+    };
+    document.getElementById('add-rule').addEventListener('click', () => showRuleModal());
+    el.querySelectorAll('.edit-rule').forEach((b) => b.addEventListener('click', () => {
+      const rule = rules.find((r) => String(r.id) === String(b.dataset.id));
+      if (rule) showRuleModal(rule);
+    }));
     el.querySelectorAll('.del-rule').forEach(b => b.addEventListener('click', async () => {
       await API.deleteAutomationRule(parseInt(b.dataset.id));
       this.renderAutomation(el);

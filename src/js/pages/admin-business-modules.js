@@ -395,7 +395,7 @@ window.AdminBusinessModulesPage = {
           <td>${this.esc(u.role)}</td><td>${u.is_active ? 'Yes' : 'No'}</td>
         </tr>`).join('') || '<tr><td colspan="4" class="muted">No users — add one to access Meeting Centre</td></tr>'}
       </tbody></table></div>
-      <p class="muted" style="margin-top:12px">Audio recording works in the Meeting Centre portal. AI transcription requires server API key. Video conferencing: NOT IMPLEMENTED.</p>`;
+      <p class="muted" style="margin-top:12px">Audio recording works in the Meeting Centre portal. AI transcription requires a server API key. Video conferencing is planned — use audio notes for now.</p>`;
     body.querySelector('#bm-add-mtg-user')?.addEventListener('click', () => {
       this.openForm('Add Meeting Centre user', `
         <div class="field"><label>Username *</label><input id="bm-mtg-user" autocomplete="off"></div>
