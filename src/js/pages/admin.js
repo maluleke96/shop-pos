@@ -414,13 +414,27 @@ const AdminPage = {
         });
       },
       'menu-builder': async () => {
-        await this._ensureAdminScripts(() => window.AdminMenuBuilderPage);
-        if (window.AdminMenuBuilderPage) return window.AdminMenuBuilderPage.render(el, this);
+        const ensureMenu = async () => {
+          if (window.AdminMenuBuilderPage) return true;
+          try {
+            if (!window.PromoPoster && typeof Utils?.loadScript === 'function') {
+              await Utils.loadScript('js/promo-poster.js').catch(() => {});
+            }
+            if (typeof Utils?.loadScript === 'function') {
+              await Utils.loadScript('js/pages/admin-menu-builder.js');
+            } else {
+              await this._ensureAdminScripts(() => window.AdminMenuBuilderPage);
+            }
+          } catch (_) {
+            await this._ensureAdminScripts(() => window.AdminMenuBuilderPage);
+          }
+          return !!window.AdminMenuBuilderPage;
+        };
+        if (await ensureMenu()) return window.AdminMenuBuilderPage.render(el, this);
         el.innerHTML = `<div class="admin-section"><h3>Menu Builder</h3><p class="muted">Loading…</p>
           <button type="button" class="btn btn-primary" id="admin-reload-menu">Reload</button></div>`;
         document.getElementById('admin-reload-menu')?.addEventListener('click', async () => {
-          await this._ensureAdminScripts(() => window.AdminMenuBuilderPage);
-          if (window.AdminMenuBuilderPage) return window.AdminMenuBuilderPage.render(el, this);
+          if (await ensureMenu()) return window.AdminMenuBuilderPage.render(el, this);
           Utils.toast('Could not load Menu Builder — hard refresh the page', 'error');
         });
       },

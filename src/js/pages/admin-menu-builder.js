@@ -74,29 +74,44 @@ window.AdminMenuBuilderPage = {
     this.ensureCss();
     this.mode = 'home';
     this.generatedPages = [];
-    el.innerHTML = `<div class="mb-root"><div class="mb-loading muted">Loading Menu Builder…</div></div>`;
-    await this.loadData();
+    this.productsLoading = false;
+    // Instant paint — never block the section on product RPC
+    this.settings = this.settings?.shop_name
+      ? this.settings
+      : (this.app?.settings || {});
+    if (!this.draft.footerText) {
+      this.draft.footerText = this.settings.receipt_footer
+        || this.settings.slogan
+        || 'Taste the fire. Feel the flavour.';
+    }
     this.paint();
+    this.bootstrapData();
   },
 
-  async loadData() {
-    const [pr, br, st, wa] = await Promise.all([
-      API.getProducts?.({ admin_list: true, all_branches: true }).catch(() => null),
+  bootstrapData() {
+    // Branches + settings first (light). Products load in parallel with retries.
+    this.loadMeta().catch(() => {});
+    this.loadProducts().then(() => {
+      if (this.mode === 'home') this.paintHome();
+      else if (this.mode === 'builder') this.refreshSelectedPanel();
+    }).catch(() => {});
+    // WhatsApp settings only needed at share time
+    if (!this.waSettings) {
+      API.getWhatsAppSettings?.().then((wa) => {
+        this.waSettings = wa?.data || wa || {};
+      }).catch(() => { this.waSettings = {}; });
+    }
+  },
+
+  async loadMeta() {
+    const [br, st] = await Promise.all([
       API.getBranches?.().catch(() => null),
-      API.getSettingsParsed?.().catch(() => null),
-      API.getWhatsAppSettings?.().catch(() => null)
+      API.getSettingsParsed?.().catch(() => null)
     ]);
-    let list = pr?.success !== false ? (pr?.data ?? pr ?? []) : [];
-    if (!Array.isArray(list)) list = [];
-    this.products = list
-      .filter((p) => p && (p.is_active === undefined || p.is_active === 1 || p.is_active === true || p.is_active === '1')
-        && String(p.item_type || '') !== 'ingredient')
-      .sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
     let branches = br?.success !== false ? (br?.data ?? br ?? []) : [];
     if (!Array.isArray(branches)) branches = [];
     this.branches = branches;
-    this.settings = st?.data || st || this.app?.settings || {};
-    this.waSettings = wa?.data || wa || {};
+    this.settings = st?.data || st || this.app?.settings || this.settings || {};
     if (!this.draft.footerText) {
       this.draft.footerText = this.settings.receipt_footer
         || this.settings.slogan
@@ -107,6 +122,72 @@ window.AdminMenuBuilderPage = {
       this.branchId = String(userBranch);
     } else if (this.branches.length === 1) {
       this.branchId = String(this.branches[0].id);
+    }
+  },
+
+  normalizeProductList(rawList) {
+    if (!Array.isArray(rawList)) return [];
+    return rawList
+      .filter((p) => p && p.id != null
+        && (p.is_active === undefined || p.is_active === 1 || p.is_active === true
+          || p.is_active === '1' || p.is_active === 't')
+        && String(p.item_type || '') !== 'ingredient')
+      .map((p) => ({
+        id: Number(p.id),
+        name: p.name || `#${p.id}`,
+        selling_price: Number(p.selling_price) || 0,
+        sku: p.sku || '',
+        barcode: p.barcode || '',
+        description: p.description || p.category_name || '',
+        picture_path: p.picture_path,
+        has_picture: p.has_picture || p._hasImage,
+        category_name: p.category_name || ''
+      }))
+      .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  },
+
+  async loadProducts() {
+    if (this.productsLoading) return this.products;
+    this.productsLoading = true;
+    try {
+      const get = API.getProducts?._uncached || API.getProducts;
+      if (typeof get !== 'function') {
+        this.products = [];
+        return [];
+      }
+      const attempts = [
+        { admin_list: true, omit_images: true, all_branches: true },
+        { admin_list: true, all_branches: true },
+        { admin_list: true, omit_images: true },
+        { admin_list: true },
+        { combo_picker: true },
+        { omit_images: true, all_branches: true },
+        {}
+      ];
+      for (const filters of attempts) {
+        try {
+          const pr = await get(filters);
+          if (!pr || pr.success === false) continue;
+          const list = this.normalizeProductList(pr.data ?? pr);
+          if (list.length) {
+            this.products = list;
+            return list;
+          }
+        } catch (_) { /* try next */ }
+      }
+      try {
+        const search = await API.globalSearch?.('a');
+        const hits = search?.data?.products || search?.products || [];
+        const list = this.normalizeProductList(hits);
+        if (list.length) {
+          this.products = list;
+          return list;
+        }
+      } catch (_) { /* ignore */ }
+      this.products = [];
+      return [];
+    } finally {
+      this.productsLoading = false;
     }
   },
 
@@ -144,6 +225,10 @@ window.AdminMenuBuilderPage = {
 
   paintHome() {
     const shop = this.shopBlock();
+    const prodCount = this.products.length;
+    const prodHint = this.productsLoading
+      ? 'Loading catalog…'
+      : (prodCount ? `${prodCount} sellable products available` : 'Catalog will load when you create a menu');
     this.el.innerHTML = `<div class="mb-root">
       <div class="mb-header">
         <div>
@@ -156,7 +241,7 @@ window.AdminMenuBuilderPage = {
         <div class="mb-info-card">
           <h4>How it works</h4>
           <ol>
-            <li>Pick products from your catalog</li>
+            <li>Search and pick products from your catalog</li>
             <li>Choose page size & orientation</li>
             <li>Optional theme colour</li>
             <li>Generate → Preview, PDF, Print, Share</li>
@@ -168,33 +253,66 @@ window.AdminMenuBuilderPage = {
           <p class="muted">${this.esc(shop.branchName || 'Default branch')}</p>
           <p class="muted">${this.esc(shop.address || 'Address from settings')}</p>
           <p class="muted">${this.esc(shop.phone || 'Phone from settings')}</p>
-          <p class="muted">${this.products.length} sellable products available</p>
+          <p class="muted" id="mb-home-prod-count">${this.esc(prodHint)}</p>
         </div>
       </div>
     </div>`;
-    document.getElementById('mb-create')?.addEventListener('click', () => {
+    document.getElementById('mb-create')?.addEventListener('click', async () => {
       this.mode = 'builder';
       this.selectedIds = new Set();
       this.generatedPages = [];
-      this.paint();
+      this.searchQ = '';
+      this.paintBuilder();
+      if (!this.products.length) {
+        await this.loadProducts();
+        this.refreshSelectedPanel();
+        this.paintSearchPlaceholder();
+      }
     });
   },
 
-  filteredProducts() {
-    const q = String(this.searchQ || '').trim().toLowerCase();
-    if (!q) return this.products;
+  selectedProducts() {
+    return this.products.filter((p) => this.selectedIds.has(Number(p.id)));
+  },
+
+  filteredProducts(q) {
+    const query = String(q != null ? q : this.searchQ || '').trim().toLowerCase();
+    if (!query) return this.products.slice(0, 60);
     return this.products.filter((p) => {
       const name = String(p.name || '').toLowerCase();
       const sku = String(p.sku || '').toLowerCase();
-      return name.includes(q) || sku.includes(q);
-    });
+      const barcode = String(p.barcode || '').toLowerCase();
+      return name.includes(query) || sku.includes(query) || barcode.includes(query);
+    }).slice(0, 40);
+  },
+
+  selectedListHtml() {
+    const selected = this.selectedProducts();
+    if (!selected.length) {
+      return `<p class="muted mb-selected-empty">No products marked yet — search above and click a product to add it.</p>`;
+    }
+    return selected.map((p) => {
+      const img = this.productImageUrl(p);
+      return `<div class="mb-selected-row" data-pid="${p.id}">
+        <span class="mb-thumb">${img ? `<img src="${this.esc(img)}" alt="" loading="lazy" onerror="this.style.display='none'">` : ''}</span>
+        <span class="mb-prod-meta">
+          <strong>${this.esc(p.name)}</strong>
+          <small>${this.money(p.selling_price)}</small>
+        </span>
+        <button type="button" class="btn btn-ghost btn-sm mb-rm" data-pid="${p.id}" title="Remove">✕</button>
+      </div>`;
+    }).join('');
   },
 
   paintBuilder() {
     const shop = this.shopBlock();
     const theme = this.THEMES[this.draft.theme] || this.THEMES.red;
-    const filtered = this.filteredProducts();
     const step = this.generatedPages.length ? 4 : (this.selectedIds.size ? 2 : 1);
+    const catalogHint = this.productsLoading
+      ? 'Loading products…'
+      : (this.products.length
+        ? `Type to find a product (${this.products.length} available)…`
+        : 'No products found — add products in Products first');
 
     this.el.innerHTML = `<div class="mb-root mb-builder">
       <div class="mb-topbar">
@@ -218,26 +336,18 @@ window.AdminMenuBuilderPage = {
       <div class="mb-workspace">
         <section class="mb-col mb-col-products">
           <h3>Select Products</h3>
-          <input type="search" id="mb-search" class="mb-search" placeholder="Search products…" value="${this.esc(this.searchQ)}" autocomplete="off">
-          <div class="mb-prod-actions">
-            <button type="button" class="btn btn-ghost btn-sm" id="mb-select-all">Select all shown</button>
-            <button type="button" class="btn btn-ghost btn-sm" id="mb-clear">Clear</button>
-            <span class="muted">${this.selectedIds.size} selected</span>
+          <div class="mb-search-wrap">
+            <input type="search" id="mb-search" class="mb-search" placeholder="${this.esc(catalogHint)}"
+              value="${this.esc(this.searchQ)}" autocomplete="off" ${this.products.length || this.productsLoading ? '' : 'disabled'}>
+            <div id="mb-search-results" class="mb-search-dropdown hidden" role="listbox"></div>
           </div>
-          <div class="mb-prod-list" id="mb-prod-list">
-            ${filtered.length ? filtered.map((p) => {
-              const id = Number(p.id);
-              const checked = this.selectedIds.has(id) ? 'checked' : '';
-              const img = this.productImageUrl(p);
-              return `<label class="mb-prod-row">
-                <input type="checkbox" data-pid="${id}" ${checked}>
-                <span class="mb-thumb">${img ? `<img src="${this.esc(img)}" alt="" loading="lazy" onerror="this.style.display='none'">` : ''}</span>
-                <span class="mb-prod-meta">
-                  <strong>${this.esc(p.name)}</strong>
-                  <small>${this.money(p.selling_price)}</small>
-                </span>
-              </label>`;
-            }).join('') : '<p class="muted">No products match.</p>'}
+          <div class="mb-prod-actions">
+            <button type="button" class="btn btn-ghost btn-sm" id="mb-reload-prods">Refresh catalog</button>
+            <button type="button" class="btn btn-ghost btn-sm" id="mb-clear">Clear all</button>
+            <span class="muted" id="mb-sel-count">${this.selectedIds.size} marked</span>
+          </div>
+          <div class="mb-selected-list" id="mb-selected-list">
+            ${this.selectedListHtml()}
           </div>
         </section>
 
@@ -296,7 +406,7 @@ window.AdminMenuBuilderPage = {
                 `<div class="mb-preview-page"><img src="${pg.dataUrl}" alt="Menu page ${i + 1}"><span class="mb-page-tag">Page ${i + 1}</span></div>`
               ).join('')
               : `<div class="mb-preview-empty">
-                  <p>Select products and click <strong>Generate Menu</strong></p>
+                  <p>Mark products, choose design, then click <strong>Generate Menu</strong></p>
                   <p class="muted">Layout adjusts automatically to size and product count.</p>
                 </div>`}
           </div>
@@ -305,6 +415,58 @@ window.AdminMenuBuilderPage = {
       ${this.generatedPages.length ? this.actionBarHtml() : ''}
     </div>`;
     this.bindBuilder();
+  },
+
+  paintSearchPlaceholder() {
+    const input = document.getElementById('mb-search');
+    if (!input) return;
+    input.disabled = !this.products.length && !this.productsLoading;
+    input.placeholder = this.productsLoading
+      ? 'Loading products…'
+      : (this.products.length
+        ? `Type to find a product (${this.products.length} available)…`
+        : 'No products found — add products in Products first');
+  },
+
+  refreshSelectedPanel() {
+    const list = document.getElementById('mb-selected-list');
+    if (list) list.innerHTML = this.selectedListHtml();
+    const count = document.getElementById('mb-sel-count');
+    if (count) count.textContent = `${this.selectedIds.size} marked`;
+    this.bindSelectedRemove();
+    this.paintSearchPlaceholder();
+  },
+
+  paintSearchResults(q) {
+    const resultsEl = document.getElementById('mb-search-results');
+    if (!resultsEl) return;
+    const query = String(q || '').trim();
+    const list = query ? this.filteredProducts(query) : this.products.slice(0, 40);
+    if (!list.length) {
+      resultsEl.innerHTML = `<div class="mb-search-empty">${this.products.length ? 'No matching products' : (this.productsLoading ? 'Loading catalog…' : 'No products in catalog')}</div>`;
+      resultsEl.classList.remove('hidden');
+      return;
+    }
+    resultsEl.innerHTML = list.map((p) => {
+      const id = Number(p.id);
+      const marked = this.selectedIds.has(id);
+      return `<button type="button" class="mb-search-item ${marked ? 'marked' : ''}" data-pid="${id}" role="option">
+        <span class="mb-search-check">${marked ? '✓' : '+'}</span>
+        <span class="mb-search-name">${this.esc(p.name)}</span>
+        <span class="mb-search-price">${this.money(p.selling_price)}</span>
+      </button>`;
+    }).join('');
+    resultsEl.classList.remove('hidden');
+    resultsEl.querySelectorAll('.mb-search-item').forEach((btn) => {
+      btn.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        const id = Number(btn.dataset.pid);
+        if (this.selectedIds.has(id)) this.selectedIds.delete(id);
+        else this.selectedIds.add(id);
+        this.refreshSelectedPanel();
+        this.paintSearchResults(document.getElementById('mb-search')?.value || '');
+      });
+    });
   },
 
   actionBarHtml() {
@@ -344,32 +506,36 @@ window.AdminMenuBuilderPage = {
     document.getElementById('mb-branch')?.addEventListener('change', (e) => {
       this.branchId = e.target.value;
       this.readDraftFromDom();
-      this.paintBuilder();
     });
-    document.getElementById('mb-search')?.addEventListener('input', (e) => {
+    const searchInput = document.getElementById('mb-search');
+    const resultsEl = document.getElementById('mb-search-results');
+    searchInput?.addEventListener('input', (e) => {
       this.searchQ = e.target.value;
-      this.readDraftFromDom();
-      this.paintBuilder();
+      this.paintSearchResults(e.target.value);
     });
-    document.getElementById('mb-select-all')?.addEventListener('click', () => {
-      this.filteredProducts().forEach((p) => this.selectedIds.add(Number(p.id)));
-      this.readDraftFromDom();
-      this.paintBuilder();
+    searchInput?.addEventListener('focus', () => {
+      this.paintSearchResults(searchInput.value);
+    });
+    searchInput?.addEventListener('click', () => {
+      this.paintSearchResults(searchInput.value);
+    });
+    searchInput?.addEventListener('blur', () => {
+      setTimeout(() => resultsEl?.classList.add('hidden'), 180);
+    });
+    document.getElementById('mb-reload-prods')?.addEventListener('click', async () => {
+      this.products = [];
+      this.paintSearchPlaceholder();
+      await this.loadProducts();
+      this.refreshSelectedPanel();
+      this.paintSearchResults(searchInput?.value || '');
+      this.toast(this.products.length ? `${this.products.length} products loaded` : 'No products found', this.products.length ? 'success' : 'error');
     });
     document.getElementById('mb-clear')?.addEventListener('click', () => {
       this.selectedIds.clear();
-      this.readDraftFromDom();
-      this.paintBuilder();
+      this.refreshSelectedPanel();
+      if (searchInput?.value) this.paintSearchResults(searchInput.value);
     });
-    this.el.querySelectorAll('#mb-prod-list input[data-pid]').forEach((inp) => {
-      inp.addEventListener('change', () => {
-        const id = Number(inp.dataset.pid);
-        if (inp.checked) this.selectedIds.add(id);
-        else this.selectedIds.delete(id);
-        const count = this.el.querySelector('.mb-prod-actions .muted');
-        if (count) count.textContent = `${this.selectedIds.size} selected`;
-      });
-    });
+    this.bindSelectedRemove();
     document.getElementById('mb-swatches')?.addEventListener('click', (e) => {
       const btn = e.target.closest('[data-theme]');
       if (!btn) return;
@@ -379,6 +545,15 @@ window.AdminMenuBuilderPage = {
     });
     document.getElementById('mb-generate')?.addEventListener('click', () => this.generate());
     this.bindActions();
+  },
+
+  bindSelectedRemove() {
+    this.el?.querySelectorAll('.mb-rm').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        this.selectedIds.delete(Number(btn.dataset.pid));
+        this.refreshSelectedPanel();
+      });
+    });
   },
 
   bindActions() {
@@ -417,8 +592,11 @@ window.AdminMenuBuilderPage = {
 
   async generate() {
     this.readDraftFromDom();
-    const selected = this.products.filter((p) => this.selectedIds.has(Number(p.id)));
-    if (!selected.length) return this.toast('Select at least one product', 'error');
+    if (!this.products.length) {
+      await this.loadProducts();
+    }
+    const selected = this.selectedProducts();
+    if (!selected.length) return this.toast('Search and mark at least one product', 'error');
     const btn = document.getElementById('mb-generate');
     if (btn) { btn.disabled = true; btn.textContent = 'Generating…'; }
     try {
@@ -752,6 +930,12 @@ window.AdminMenuBuilderPage = {
 
   async shareWhatsApp(toGroup) {
     if (!this.generatedPages.length) return this.toast('Generate a menu first', 'error');
+    if (!this.waSettings || (!this.waSettings.business_group_link && !this.waSettings.whatsapp_business_group_link)) {
+      try {
+        const wa = await API.getWhatsAppSettings?.();
+        this.waSettings = wa?.data || wa || this.waSettings || {};
+      } catch (_) { this.waSettings = this.waSettings || {}; }
+    }
     const shop = this.shopBlock();
     const msg = `${shop.shopName} — ${this.draft.customTitle || 'Our Menu'}\n${shop.branchName ? shop.branchName + '\n' : ''}${shop.phone ? 'Call/WhatsApp: ' + shop.phone + '\n' : ''}See our latest menu.`;
 
