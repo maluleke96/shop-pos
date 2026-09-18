@@ -50,8 +50,6 @@ const AdminPage = {
     { id: 'customize', label: '🎨 Customization', icon: 'customize' },
     { id: 'branches', label: '🏢 Branches', icon: 'branches' },
     { id: 'online-orders', label: '🛒 Online Orders', icon: 'online' },
-    { id: 'referral-dept', label: 'Referral & Commission', icon: 'referral' },
-    { id: 'customer-reports', label: '📣 Customer Reports', icon: 'online' },
     { id: 'business-modules', label: '🏢 Business Modules', icon: 'business' },
     { id: 'digital-signage', label: '📺 Digital Signage', icon: 'signage' },
     { id: 'mobile-app', label: '📱 Mobile App Users', icon: 'mobile' },
@@ -65,21 +63,15 @@ const AdminPage = {
     { id: 'staffhr', label: '👷 Staff & HR', icon: 'staffhr' },
     { id: 'hr-workspace', label: '📋 HR, Payroll & Documents', icon: 'staffhr' },
     { id: 'hr-approvals', label: '✅ HR Approvals', icon: 'staffhr' },
-    { id: 'accounting-workspace', label: '💼 Bookkeeping & Accounting', icon: 'accounting' },
+    { id: 'accounting-workspace', label: '💼 Accounting & Bookkeeping', icon: 'accounting' },
     { id: 'staffportal', label: '👷 Staff Portal', icon: 'staffportal' },
     { id: 'onaccount', label: '📒 On Account', icon: 'onaccount' },
-    { id: 'taken-orders', label: '🥡 Taken / Unpaid Orders', icon: 'onaccount' },
     { id: 'hrcontracts', label: '📄 Contracts & Probation', icon: 'hrcontracts' },
     { id: 'recruitment', label: '💼 Recruitment', icon: 'recruitment' },
+    { id: 'marketing-mgmt', label: '📣 Marketing Command Centre', icon: 'marketing' },
     { id: 'delivery-dept', label: '🚚 Deliveries', icon: 'delivery' },
     { id: 'payroll', label: '💼 Payroll & Compliance', icon: 'payroll' },
-    { id: 'employee-of-month', label: '🏆 Employee of Month', icon: 'employee-of-month' },
-    { id: 'database', label: '🗄️ Database Manager', icon: 'database' },
-    { id: 'system-health', label: '🩺 System Health · Database & Storage', icon: 'database' },
-    { id: 'automation', label: '⚡ Automation Rules', icon: 'automation' },
-    { id: 'customfields', label: '📝 Custom Fields', icon: 'customfields' },
-    { id: 'formats', label: '📅 Formats & Numbering', icon: 'formats' },
-    { id: 'developer', label: '🔧 Developer Mode', icon: 'developer' }
+    { id: 'employee-of-month', label: '🏆 Employee of Month', icon: 'employee-of-month' }
   ],
 
   async render(el, app) {
@@ -160,37 +152,24 @@ const AdminPage = {
     }
   },
 
-  /** Keep each admin section in its own host so nav clicks stay instant. */
-  _sectionHost(el) {
-    if (!el) return null;
-    if (el.classList?.contains('admin-section-host')) return el;
-    let hosts = el.querySelector(':scope > .admin-section-hosts');
-    if (!hosts) {
-      hosts = document.createElement('div');
-      hosts.className = 'admin-section-hosts';
-      el.appendChild(hosts);
-    }
-    hosts.querySelectorAll(':scope > .admin-section-host').forEach((h) => {
-      h.hidden = h.dataset.section !== this.section;
-    });
-    let host = hosts.querySelector(`:scope > .admin-section-host[data-section="${this.section}"]`);
-    if (!host) {
-      host = document.createElement('div');
-      host.className = 'admin-section-host';
-      host.dataset.section = this.section;
-      hosts.appendChild(host);
-    }
-    host.hidden = false;
-    return host;
-  },
-
-  /** Instant nav feedback + cancel stale section renders. Never wipe a painted section. */
+  /** Instant nav feedback + cancel stale section renders. */
   _beginSectionRender(el) {
     const prev = this._activeSection;
     if (prev && prev !== this.section) this._leaveSection(prev);
     this._activeSection = this.section;
     this._sectionGen = (this._sectionGen || 0) + 1;
-    return this._sectionGen;
+    const gen = this._sectionGen;
+    if (!el) return gen;
+    const today = Utils.today();
+    const cachedDash = this.section === 'overview'
+      && window.DataCache?.peek?.('adminDashboard', [today, today]);
+    const syncSections = new Set([
+      'printer', 'payments', 'receipt', 'security', 'permissions', 'tax', 'customize', 'device'
+    ]);
+    if (!cachedDash && !syncSections.has(this.section)) {
+      el.innerHTML = `<div class="admin-section">${Utils.pageSkeleton(3)}</div>`;
+    }
+    return gen;
   },
 
   _prefetchAdmin() {
@@ -229,7 +208,7 @@ const AdminPage = {
       b.classList.toggle('active', b.dataset.section === this.section);
     });
     this.toggleOpsComplianceLayout(this.section === 'opscompliance');
-    this.renderSection(document.getElementById('admin-content'));
+    await this.renderSection(document.getElementById('admin-content'));
   },
 
   async _ensureAdminScripts(checkFn) {
@@ -265,30 +244,17 @@ const AdminPage = {
   },
 
   async renderSection(el) {
-    if (!el) return;
-    this.toggleOpsComplianceLayout?.(this.section === 'opscompliance');
-    const host = this._sectionHost(el);
-    const reused = !!(host && host.childElementCount);
-    const gen = this._beginSectionRender(host || el);
-    if (reused) {
-      const liveSections = new Set([
-        'overview', 'analytics', 'inventory', 'tax-hub', 'shifts', 'online-orders', 'customer-reports',
-        'delivery-dept', 'salesmgmt', 'top-customers', 'approvals', 'hr-approvals'
-      ]);
-      if (!liveSections.has(this.section)) return;
-      this._renderSectionCore(host, gen).catch(() => {});
-      return;
-    }
-    await this._renderSectionCore(host || el, gen);
+    const gen = this._beginSectionRender(el);
+    await this._renderSectionCore(el, gen);
   },
 
   async _renderSectionCore(el, gen) {
     if (this.section === 'deliveries') this.section = 'delivery-dept';
     const lazySections = new Set([
-      'hrcontracts', 'recruitment', 'employee-of-month', 'staffhr', 'hr-workspace', 'hr-approvals', 'staffportal', 'payroll',
+      'hrcontracts', 'recruitment', 'marketing-mgmt', 'employee-of-month', 'staffhr', 'hr-workspace', 'hr-approvals', 'staffportal', 'payroll',
       'opscompliance', 'combos', 'recipe', 'quotes', 'menu-builder',
       'salesmgmt', 'saleexplorer', 'soldproducts', 'returnsmgmt', 'activity',
-      'exceptions', 'alerts', 'dailyclose', 'discount-report', 'delivery-dept', 'referral-dept', 'taken-orders'
+      'exceptions', 'alerts', 'dailyclose', 'discount-report', 'delivery-dept'
     ]);
     if (lazySections.has(this.section)) {
       this._prefetchAdmin();
@@ -299,53 +265,14 @@ const AdminPage = {
     }
 
     const tryModule = async (getPage, renderFn, label) => {
-      if (!el.querySelector('h2, h3')) {
-        el.innerHTML = `<div class="admin-section"><h3>${label}</h3><p class="muted">Opening…</p></div>`;
-      }
       if (getPage()) return renderFn();
       await this._ensureAdminScripts(getPage);
       if (getPage()) return renderFn();
-      el.innerHTML = `<div class="admin-section"><h3>${label}</h3><p class="muted">${label} is ready after a refresh if this stays empty.</p>
-        <button type="button" class="btn btn-primary" id="admin-retry-mod">Retry</button></div>`;
-      el.querySelector('#admin-retry-mod')?.addEventListener('click', async () => {
-        this._adminScriptsP = null;
-        if (window.Utils?._loadedScripts) {
-          [...Utils._loadedScripts].filter((s) => /admin-/.test(s)).forEach((s) => Utils._loadedScripts.delete(s));
-        }
-        await this._ensureAdminScripts(getPage);
-        if (getPage()) return renderFn();
-        Utils.toast('Hard refresh the page (Ctrl+Shift+R)', 'error');
-      });
+      el.innerHTML = `<div class="admin-section"><p class="muted">${label} module not loaded. Try refreshing the page.</p></div>`;
     };
 
     const renderers = {
-      overview: async () => {
-        if (typeof this.renderBusinessDashboard === 'function') {
-          const dashResult = await this.renderBusinessDashboard(el);
-          let host = el.querySelector('#admin-overview-quick-panel');
-          if (!host) {
-            host = document.createElement('div');
-            host.id = 'admin-overview-quick-panel';
-            host.style.marginTop = '16px';
-            el.appendChild(host);
-          }
-          if (typeof this.renderOverviewQuickPanel === 'function') {
-            await this.renderOverviewQuickPanel(host, { dashboardRes: dashResult });
-          }
-          return;
-        }
-        return this.renderOverview(el);
-      },
-      salesmgmt: () => tryModule(() => typeof this.renderSalesManagement === 'function', () => this.renderSalesManagement(el), 'Sales Management'),
-      saleexplorer: () => tryModule(() => typeof this.renderSalesExplorer === 'function', () => this.renderSalesExplorer(el), 'Sales Explorer'),
-      soldproducts: () => tryModule(() => typeof this.renderSoldProducts === 'function', () => this.renderSoldProducts(el), 'Sold Products'),
-      returnsmgmt: () => tryModule(() => typeof this.renderReturnsMgmt === 'function', () => this.renderReturnsMgmt(el), 'Returns'),
-      activity: () => tryModule(() => typeof this.renderActivityLog === 'function', () => this.renderActivityLog(el), 'Activity Log'),
-      exceptions: () => tryModule(() => typeof this.renderExceptions === 'function', () => this.renderExceptions(el), 'Exceptions'),
-      alerts: () => tryModule(() => typeof this.renderAlertsCenter === 'function', () => this.renderAlertsCenter(el), 'Alerts Center'),
-      dailyclose: () => tryModule(() => typeof this.renderDailyClosing === 'function', () => this.renderDailyClosing(el), 'Daily Closing'),
-      'discount-report': () => tryModule(() => typeof this.renderDiscountReport === 'function', () => this.renderDiscountReport(el), 'Discount Report'),
-      'pos-menu': () => tryModule(() => typeof this.renderPosMenuPromos === 'function', () => this.renderPosMenuPromos(el), 'POS Menu & Promos'),
+      overview: () => this.renderOverview(el),
       printer: () => this.renderPrinter(el),
       payments: () => this.renderPaymentMethods(el),
       receipt: () => this.renderReceiptDesigner(el),
@@ -369,7 +296,6 @@ const AdminPage = {
       customize: () => this.renderCustomize(el),
       branches: () => this.renderBranchesSync(el),
       'online-orders': () => this.renderOnlineOrders(el),
-      'customer-reports': () => this.renderCustomerReports(el),
       'mobile-app': () => this.renderMobileAppUsers(el),
       'business-modules': async () => tryModule(
         () => window.AdminBusinessModulesPage,
@@ -413,15 +339,15 @@ const AdminPage = {
         () => window.AdminRecruitmentPage.render(el, this),
         'Recruitment'
       ),
+      'marketing-mgmt': async () => tryModule(
+        () => window.AdminMarketingPage,
+        () => window.AdminMarketingPage.render(el, this.app || this),
+        'Marketing Management'
+      ),
       'delivery-dept': async () => tryModule(
         () => window.AdminDeliveryPage,
         () => window.AdminDeliveryPage.render(el, this.app || this),
         'Delivery Department'
-      ),
-      'referral-dept': async () => tryModule(
-        () => window.AdminReferralPage,
-        () => window.AdminReferralPage.render(el, this.app || this),
-        'Referral & Commission'
       ),
       'employee-of-month': async () => tryModule(
         () => window.AdminEmployeeMonthPage,
@@ -462,26 +388,19 @@ const AdminPage = {
       'hr-approvals': () => this.renderHrApprovals(el),
       'accounting-workspace': () => {
         el.innerHTML = `<div class="admin-section">
-          <h2>Bookkeeping &amp; Accounting</h2>
-          <p class="muted">Bookkeeping is your day-to-day cash book, income, expenses, budgets, donations, and reports. Accounting is the full command centre for journals, invoices, bank reconciliation, and trial balance.</p>
-          <div class="admin-quick-actions" style="margin:16px 0;display:flex;gap:8px;flex-wrap:wrap">
-            <button type="button" class="btn btn-primary" id="admin-open-bookkeeping">Open Bookkeeping</button>
-            <button type="button" class="btn btn-ghost" id="admin-open-accounting">Open Accounting Command Centre</button>
+          <h2>Accounting &amp; Bookkeeping</h2>
+          <p class="muted">Central accounting &amp; bookkeeping — journals, invoices, bank reconciliation, VAT, payroll posting, and POS integration. One shared ledger across your devices. Uses your Admin login when opened from here.</p>
+          <div class="admin-quick-actions" style="margin:16px 0">
+            <button type="button" class="btn btn-primary" id="admin-open-accounting">Open Accounting &amp; Bookkeeping</button>
           </div>
-          <p class="muted" style="font-size:13px">Inside Bookkeeping there is also an Accounting tab. POS sales, online orders, expenses, payroll and cash-ups can post to both bookkeeping and the central GL.</p>
+          <p class="muted" style="font-size:13px">POS sales, online orders, expenses, payroll and cash-ups post automatically to the central books when transactions complete.</p>
         </div>`;
-        el.querySelector('#admin-open-bookkeeping')?.addEventListener('click', () => this.app?.navigate('bookkeeping'));
         el.querySelector('#admin-open-accounting')?.addEventListener('click', () => this.app?.openAccounting?.({ fromApp: true, skipLogin: true }));
       },
       onaccount: () => tryModule(
         () => typeof this.renderOnAccount === 'function',
         () => this.renderOnAccount(el),
         'On Account'
-      ),
-      'taken-orders': () => tryModule(
-        () => typeof this.renderTakenOrders === 'function',
-        () => this.renderTakenOrders(el),
-        'Taken / Unpaid Orders'
       ),
       combos: async () => {
         await this._ensureAdminScripts(() => window.AdminCombosPage);
@@ -495,26 +414,26 @@ const AdminPage = {
         });
       },
       'menu-builder': async () => {
-        // Paint shell immediately so the section never feels stuck on "Loading…"
         el.innerHTML = `<div class="mb-root" style="padding:16px">
           <h2 style="margin:0 0 6px">Menu Builder</h2>
           <p class="muted" style="margin:0 0 12px">Create professional menus in seconds.</p>
-          <div class="mb-skel" style="height:14px;background:var(--border,#e2e8f0);border-radius:6px;margin-bottom:8px;opacity:.6"></div>
-          <div class="mb-skel" style="height:14px;background:var(--border,#e2e8f0);border-radius:6px;width:70%;opacity:.5"></div>
+          <div style="height:14px;background:var(--border,#e2e8f0);border-radius:6px;margin-bottom:8px;opacity:.6"></div>
+          <div style="height:14px;background:var(--border,#e2e8f0);border-radius:6px;width:70%;opacity:.5"></div>
         </div>`;
         const ensureMenu = async () => {
-          const load = async (src) => {
-            if (typeof Utils?.reloadScript === 'function') {
-              try { await Utils.reloadScript(src); return; } catch (_) { /* fall through */ }
-            }
-            if (typeof Utils?.loadScript === 'function') await Utils.loadScript(src);
-          };
           try {
-            if (!window.PromoPoster) await load('js/promo-poster.js').catch(() => {});
+            if (!window.PromoPoster && typeof Utils?.loadScript === 'function') {
+              await Utils.loadScript('js/promo-poster.js').catch(() => {});
+            }
             // Always reload so deploys replace any stale in-memory Menu Builder
             delete window.AdminMenuBuilderPage;
-            if (typeof Utils?.reloadScript === 'function') await Utils.reloadScript('js/pages/admin-menu-builder.js');
-            else await load('js/pages/admin-menu-builder.js');
+            if (typeof Utils?.reloadScript === 'function') {
+              await Utils.reloadScript('js/pages/admin-menu-builder.js');
+            } else if (typeof Utils?.loadScript === 'function') {
+              await Utils.loadScript('js/pages/admin-menu-builder.js');
+            } else {
+              await this._ensureAdminScripts(() => window.AdminMenuBuilderPage);
+            }
           } catch (_) {
             await this._ensureAdminScripts(() => window.AdminMenuBuilderPage);
           }
@@ -530,6 +449,7 @@ const AdminPage = {
           <button type="button" class="btn btn-primary" id="admin-reload-menu">Retry</button></div>`;
         document.getElementById('admin-reload-menu')?.addEventListener('click', async () => {
           try {
+            delete window.AdminMenuBuilderPage;
             if (await ensureMenu()) return window.AdminMenuBuilderPage.render(el, this);
           } catch (_) { /* */ }
           Utils.toast('Hard refresh the page (Ctrl+Shift+R)', 'error');
@@ -539,41 +459,6 @@ const AdminPage = {
         () => typeof this.renderOpsCompliance === 'function',
         () => this.renderOpsCompliance(el),
         'Operations & Compliance'
-      ),
-      payroll: () => tryModule(
-        () => typeof this.renderPayrollCompliance === 'function',
-        () => this.renderPayrollCompliance(el),
-        'Payroll & Compliance'
-      ),
-      developer: () => tryModule(
-        () => typeof this.renderDeveloper === 'function',
-        () => this.renderDeveloper(el),
-        'Developer Mode'
-      ),
-      formats: () => tryModule(
-        () => typeof this.renderFormats === 'function',
-        () => this.renderFormats(el),
-        'Formats & Numbering'
-      ),
-      automation: () => tryModule(
-        () => typeof this.renderAutomation === 'function',
-        () => this.renderAutomation(el),
-        'Automation Rules'
-      ),
-      customfields: () => tryModule(
-        () => typeof this.renderCustomFields === 'function',
-        () => this.renderCustomFields(el),
-        'Custom Fields'
-      ),
-      database: () => tryModule(
-        () => typeof this.renderDatabase === 'function',
-        () => this.renderDatabase(el),
-        'Database Manager'
-      ),
-      'system-health': () => tryModule(
-        () => typeof this.renderSystemHealthStorage === 'function',
-        () => this.renderSystemHealthStorage(el),
-        'System Health · Database & Storage'
       )
     };
     const renderer = renderers[this.section];
@@ -596,25 +481,32 @@ const AdminPage = {
     const el = container || document.createElement('div');
     if (!container) el.className = 'admin-section';
     const s = this.settings;
+    el.innerHTML = `<p class="muted">Loading quick links…</p>`;
     const today = Utils.today();
     let dashRes = opts.dashboardRes || null;
     if (!dashRes?.success) {
       const cached = window.DataCache?.peek?.('adminDashboard', [today, today]);
       if (cached?.data) dashRes = { success: true, data: cached.data };
     }
+    if (!dashRes?.success) {
+      dashRes = await API.getAdminDashboard(today, today).catch(() => ({ success: false }));
+    }
+    let todayRes = { success: false };
+    if (!dashRes.success) {
+      todayRes = await API.getDashboardStats(today, today, this.app.user).catch(() => ({ success: false }));
+    }
+    const d = dashRes.success ? (dashRes.data || {}) : {};
+    const todayStats = todayRes.success ? (todayRes.data || {}) : {};
     const currency = s.currency || 'R';
-    const paintOverview = (d, todayStats, dashErr, targetInfo = null) => {
-    const todaySalesAmt = Number(d.today?.sales ?? todayStats.todaySales ?? 0) || 0;
-    const dailyTarget = Number(targetInfo?.amount || 0) || 0;
-    const targetPct = dailyTarget > 0 ? Math.min(100, Math.round((todaySalesAmt / dailyTarget) * 100)) : 0;
-    const targetMet = dailyTarget > 0 && todaySalesAmt >= dailyTarget;
+    const dashErr = !dashRes.success && !todayRes.success
+      ? `<p class="muted" style="color:var(--danger)">Stats unavailable: ${Utils.escHtml(dashRes.error || todayRes.error || 'error')}</p>`
+      : '';
     el.innerHTML = `${container ? '' : '<div class="admin-section">'}
       <h4 style="margin-top:0">Quick admin snapshot</h4>
       <p class="muted">Till rules, printers, PINs, loyalty, and staff live here. Shop name / theme / backup is under sidebar <strong>Settings</strong>.</p>
       ${dashErr}
       <div class="stats-grid" style="margin-top:20px">
-        <div class="stat-card primary"><div class="label">Today's Sales</div><div class="value">${Utils.formatMoney(todaySalesAmt, currency)}</div><small>${d.today?.orders ?? todayStats.todayCount ?? 0} orders</small></div>
-        <div class="stat-card ${targetMet ? 'success' : ''}"><div class="label">Today's Sales Target</div><div class="value">${dailyTarget > 0 ? `${targetPct}%` : '—'}</div><small>${dailyTarget > 0 ? `${Utils.formatMoney(todaySalesAmt, currency)} / ${Utils.formatMoney(dailyTarget, currency)}${targetMet ? ' · Met' : ''}` : 'Set under Sales Targets'}</small></div>
+        <div class="stat-card primary"><div class="label">Today's Sales</div><div class="value">${Utils.formatMoney(d.today?.sales ?? todayStats.todaySales ?? 0, currency)}</div><small>${d.today?.orders ?? todayStats.todayCount ?? 0} orders</small></div>
         <div class="stat-card success"><div class="label">Gross Profit Today</div><div class="value">${Utils.formatMoney(d.today?.grossProfit ?? todayStats.profit ?? 0, currency)}</div></div>
         <div class="stat-card"><div class="label">This Month</div><div class="value">${Utils.formatMoney(d.month?.sales ?? 0, currency)}</div></div>
         <div class="stat-card warning"><div class="label">Low Stock</div><div class="value">${d.lowStock?.length ?? todayStats.lowStockCount ?? 0}</div></div>
@@ -634,7 +526,6 @@ const AdminPage = {
         </div>
       </div></div>
     ${container ? '' : '</div>'}`;
-    delete el.dataset.ovActionsBound;
     this._bindOverviewQuickActions(el);
     Promise.all([
       API.recipeFoodCostAlerts(this.app.user).catch(() => ({ success: false })),
@@ -709,47 +600,6 @@ const AdminPage = {
         });
       }
     }).catch(() => {});
-    };
-    const d = dashRes?.success ? (dashRes.data || {}) : {};
-    const resolveDailyTarget = async () => {
-      try {
-        const res = await API.getSalesTargets();
-        const raw = res?.data || res || {};
-        const daily = raw.daily;
-        if (daily != null && typeof daily === 'object') {
-          const amount = Number(daily.amount) || 0;
-          const active = daily.active !== false;
-          const expired = daily.expires_at && String(daily.expires_at).slice(0, 10) < today;
-          if (active && amount > 0 && !expired) return { amount };
-          return { amount: 0 };
-        }
-        const amount = Number(daily) || 0;
-        return { amount: amount > 0 ? amount : 0 };
-      } catch (_) {
-        return { amount: 0 };
-      }
-    };
-    paintOverview(d, {}, '', null);
-    (async () => {
-      const targetInfo = await resolveDailyTarget();
-      if (!el.isConnected) return;
-      if (dashRes?.success) {
-        paintOverview(d, {}, '', targetInfo);
-        return;
-      }
-      const nextDash = await API.getAdminDashboard(today, today).catch(() => ({ success: false }));
-      let todayRes = { success: false };
-      if (!nextDash.success) {
-        todayRes = await API.getDashboardStats(today, today, this.app.user).catch(() => ({ success: false }));
-      }
-      if (!el.isConnected) return;
-      const nextData = nextDash.success ? (nextDash.data || {}) : {};
-      const todayStats = todayRes.success ? (todayRes.data || {}) : {};
-      const dashErr = !nextDash.success && !todayRes.success
-        ? `<p class="muted" style="color:var(--danger)">Stats unavailable: ${Utils.escHtml(nextDash.error || todayRes.error || 'error')}</p>`
-        : '';
-      paintOverview(nextData, todayStats, dashErr, targetInfo);
-    })();
     return el;
   },
 
@@ -1191,55 +1041,13 @@ const AdminPage = {
           <p class="muted" style="margin-top:8px;font-size:12px">Test Sound plays an 8-second preview. You can also test from the bell icon (Notifications).</p>
           <button type="button" class="btn btn-primary" id="save-notif-sound" style="margin-top:12px">Save Notification Settings</button>
           <hr style="margin:20px 0;border-color:var(--border)">
-          <h4 style="margin:0 0 8px">Alert types (on / off)</h4>
-          <p class="muted" style="margin:0 0 12px">Turn each alert type on or off. Off means Admin will not create or show that notification (sound included).</p>
-          <div class="form-grid" id="ns-type-toggles">${(() => {
-            const toggles = ns.type_toggles || {};
-            const catalog = [
-              ['low_stock', 'Low stock'],
-              ['out_of_stock', 'Out of stock'],
-              ['reorder', 'Reorder level'],
-              ['loyalty_reminder', 'Loyalty / points reminders'],
-              ['loyalty_reminder_summary', 'Loyalty reminder summary'],
-              ['taken_unpaid', 'Unpaid / Taken – Pay Later'],
-              ['cashout', 'Shift cash-out'],
-              ['cashup', 'Cash-up'],
-              ['cashout_penalty', 'Late cash-out penalty'],
-              ['target_met', 'Daily target met'],
-              ['target_missed', 'Daily target missed'],
-              ['payroll_due', 'Staff pay day'],
-              ['owner_salary_due', 'Owner salary due'],
-              ['owner_salary_overdue', 'Owner salary overdue'],
-              ['document_share', 'Document hub shares'],
-              ['referral', 'Referral & Commission'],
-              ['delivery_order', 'Delivery orders'],
-              ['compliance', 'Ops compliance'],
-              ['checklist_reminder', 'Checklist reminders'],
-              ['checklist_overdue', 'Checklist overdue'],
-              ['contract_expired', 'Contract expired'],
-              ['probation_eval_due', 'Probation evaluation due'],
-              ['probation_ending', 'Probation ending'],
-              ['attendance_auto_close', 'Missed clock-out'],
-              ['attendance_penalty', 'Attendance penalty'],
-              ['donation', 'Donations'],
-              ['stock_count', 'Stock counts'],
-              ['test', 'Test notifications']
-            ];
-            return catalog.map(([id, label]) => {
-              const on = toggles[id] !== false;
-              return `<div class="field full"><label><input type="checkbox" class="ns-type-toggle" data-type="${id}" ${on ? 'checked' : ''}> ${Utils.escHtml(label)}</label></div>`;
-            }).join('');
-          })()}</div>
-          <button type="button" class="btn btn-primary" id="save-notif-types" style="margin-top:12px">Save alert type toggles</button>
-          <hr style="margin:20px 0;border-color:var(--border)">
           <h4 style="margin:0 0 8px">Per-panel notification sounds</h4>
           <p class="muted" style="margin:0 0 12px">Upload a custom sound for each app. If none is uploaded, a unique demo tone plays for that panel.</p>
           <div class="form-grid" id="panel-sound-grid">${(() => {
             const ps = ns.panel_sounds || {};
             const panels = [
               ['pos', 'POS'], ['admin', 'Admin'], ['driver', 'Driver app'], ['manager', 'Business Manager'],
-              ['online', 'Order Online'], ['delivery', 'Delivery dept'], ['staff', 'Staff portal'], ['recipe', 'Recipe & Production'],
-              ['referral', 'Referral Agent'], ['referral-commission', 'Referral Commission']
+              ['online', 'Order Online'], ['delivery', 'Delivery dept'], ['staff', 'Staff portal'], ['recipe', 'Recipe & Production']
             ];
             return panels.map(([id, label]) => {
               const row = ps[id] || {};
@@ -1530,8 +1338,7 @@ const AdminPage = {
         sound_enabled: document.getElementById('ns-enabled').checked,
         loop_until_read: document.getElementById('ns-loop').checked,
         panel_sounds: { ...(this.settings.notification_settings?.panel_sounds || {}), ...(this._pendingPanelSounds || {}) },
-        pos_advert_reminders: (this.settings.notification_settings || {}).pos_advert_reminders,
-        type_toggles: (this.settings.notification_settings || {}).type_toggles || {}
+        pos_advert_reminders: (this.settings.notification_settings || {}).pos_advert_reminders
       };
       if (this._pendingSoundPath) ns.sound_path = this._pendingSoundPath;
       await API.saveJsonSetting('notification_settings', ns, this.app.user);
@@ -1539,24 +1346,6 @@ const AdminPage = {
       this.app.settings = { ...this.app.settings, notification_settings: ns };
       this._pendingPanelSounds = {};
       Utils.toast('Notification sound settings saved', 'success');
-      this.renderSecurity(el);
-    });
-
-    document.getElementById('save-notif-types')?.addEventListener('click', async () => {
-      const type_toggles = { ...((this.settings.notification_settings || {}).type_toggles || {}) };
-      document.querySelectorAll('.ns-type-toggle').forEach((cb) => {
-        const t = cb.dataset.type;
-        if (t) type_toggles[t] = !!cb.checked;
-      });
-      const ns = {
-        ...(this.settings.notification_settings || {}),
-        type_toggles
-      };
-      await API.saveJsonSetting('notification_settings', ns, this.app.user);
-      this.settings.notification_settings = ns;
-      this.app.settings = { ...this.app.settings, notification_settings: ns };
-      Utils.toast('Alert type toggles saved', 'success');
-      this.app.loadNotifications?.();
       this.renderSecurity(el);
     });
 
@@ -1945,7 +1734,7 @@ const AdminPage = {
           <button class="btn btn-sm btn-ghost edit-user" data-id="${u.id}">Edit</button>
           ${!isSelf && u.is_active ? `<button class="btn btn-sm btn-warning del-user" data-id="${u.id}">Deactivate</button>` : ''}
           ${!isSelf && !u.is_active ? `<button class="btn btn-sm btn-primary restore-user" data-id="${u.id}">Restore</button>` : ''}
-          ${!isSelf ? `<button class="btn btn-sm btn-danger purge-user" data-id="${u.id}">Delete</button>` : ''}
+          ${!isSelf ? `<button class="btn btn-sm btn-danger purge-user" data-id="${u.id}">Delete permanently</button>` : ''}
         </td></tr>`;
     };
 
@@ -1967,6 +1756,7 @@ const AdminPage = {
         <p><strong>Manager:</strong> Reports, stock, ops — <em>Staff Portal</em> and extra pages need explicit permission. Managers cannot open Payroll, Backup, Analytics, Import/Export, Database, Developer, or Device settings (owner only).</p>
         <p><strong>Supervisor:</strong> Whitelisted admin sections only — no owner-only tools.</p>
         <p><strong>Assistant Manager:</strong> Access granted per permission checkbox only</p>
+        <p><strong>Marketing Agent:</strong> Marketing & flyers page only</p>
         <p><strong>Cashier:</strong> POS only by default — grant <em>Process returns</em> for Returns, and <em>Staff Portal</em> for the sidebar Staff Portal</p>
         <p class="muted" style="margin-top:8px">Staff UIF/PAYE/SDL only apply after you enable them under Payroll <strong>and</strong> mark each employee as registered on their HR profile. Owner salary needs both Payroll enable and the Owner Salary checkboxes.</p>
       </div></div></div>`;
@@ -2165,7 +1955,7 @@ const AdminPage = {
 
     document.getElementById('tax-hub-refresh')?.addEventListener('click', load);
     document.getElementById('tax-hub-branch')?.addEventListener('change', load);
-    document.getElementById('tax-hub-bookkeeping')?.addEventListener('click', () => this.app?.navigate('bookkeeping'));
+    document.getElementById('tax-hub-bookkeeping')?.addEventListener('click', () => this.app?.openAccounting?.({ fromApp: true, skipLogin: true }));
     document.getElementById('tax-hub-pdf')?.addEventListener('click', async () => {
       const t = this._lastTaxReport;
       if (!t) return Utils.toast('Refresh the report first', 'error');
@@ -2322,417 +2112,54 @@ const AdminPage = {
 
   async renderSalesTargets(el) {
     const res = await API.getSalesTargets();
-    const raw = res?.data || res || {};
+    const raw = res.data || {};
     const periodVal = (p) => {
       const v = raw[p];
-      if (v != null && typeof v === 'object') {
-        return { amount: Number(v.amount) || 0, active: v.active !== false, expires_at: v.expires_at || '' };
-      }
+      if (v != null && typeof v === 'object') return { amount: v.amount || 0, active: v.active !== false, expires_at: v.expires_at || '' };
       return { amount: Number(v) || 0, active: p === 'daily' && Number(v) > 0, expires_at: '' };
     };
     const periods = ['daily', 'weekly', 'monthly', 'yearly'];
-    const t = Object.fromEntries(periods.map((p) => [p, periodVal(p)]));
+    const t = Object.fromEntries(periods.map(p => [p, periodVal(p)]));
     const currency = this.settings.currency || 'R';
     const today = Utils.today();
-    const loadTargetProducts = async () => {
-      const get = API.getProducts?._uncached || API.getProducts;
-      if (typeof get !== 'function') return [];
-      const attempts = [
-        { admin_list: true, all_branches: true },
-        { admin_list: true },
-        { admin_list: true, omit_images: true, all_branches: true },
-        { omit_images: true, all_branches: true },
-        {}
-      ];
-      for (const filters of attempts) {
-        try {
-          const pr = await get(filters);
-          if (!pr || pr.success === false) continue;
-          const rawList = pr.data ?? pr;
-          if (!Array.isArray(rawList) || !rawList.length) continue;
-          return rawList
-            .filter((p) => p && p.id != null
-              && (p.is_active === undefined || p.is_active === 1 || p.is_active === true || p.is_active === '1' || p.is_active === 't')
-              && String(p.item_type || '') !== 'ingredient')
-            .slice(0, 3000);
-        } catch (_) { /* try next */ }
-      }
-      try {
-        const search = await API.globalSearch?.('a');
-        const hits = search?.data?.products || search?.products || [];
-        if (Array.isArray(hits) && hits.length) {
-          return hits.map((p) => ({
-            id: p.id,
-            name: p.name,
-            selling_price: p.selling_price,
-            sku: p.sku,
-            barcode: p.barcode,
-            is_active: 1
-          }));
-        }
-      } catch (_) { /* ignore */ }
-      return [];
-    };
-
-    const [br, dash, productCatalogRaw, progressRes] = await Promise.all([
-      API.getBranches?.().catch(() => null),
-      API.getDashboardStats(today, today, this.app.user).catch(() => null),
-      loadTargetProducts(),
-      API.getTodayTargetProgress?.(this._salesTargetBranchId === 'all' ? null : this._salesTargetBranchId).catch(() => null)
-    ]);
-    let branches = [];
-    try { branches = br?.success !== false ? (br?.data || br || []) : []; } catch (_) { branches = []; }
-    if (!Array.isArray(branches)) branches = [];
-    const branchId = this._salesTargetBranchId != null ? this._salesTargetBranchId : 'all';
-    const branchSlice = branchId !== 'all' ? (raw.by_branch?.[String(branchId)] || {}) : null;
-    const dailyForEdit = branchSlice?.daily
-      ? {
-        amount: Number(branchSlice.daily.amount) || 0,
-        active: branchSlice.daily.active !== false,
-        expires_at: branchSlice.daily.expires_at || ''
-      }
-      : t.daily;
-    let productTargets = Array.isArray(branchSlice?.product_targets)
-      ? branchSlice.product_targets
-      : (Array.isArray(raw.product_targets) ? raw.product_targets : []);
-    productTargets = productTargets.map((p) => ({
-      product_id: Number(p.product_id),
-      target_qty: Number(p.target_qty) || 0,
-      product_name: p.product_name || p.name || '',
-      selling_price: Number(p.selling_price) || 0
-    })).filter((p) => p.product_id > 0 && p.target_qty > 0);
-    const productMetaSrc = branchSlice?.product_targets_meta || raw.product_targets_meta || {};
-    const productMeta = {
-      active: productMetaSrc.active === true
-        || (productTargets.length > 0 && productMetaSrc.active == null),
-      expires_at: productMetaSrc.expires_at || ''
-    };
-
-    let todaySales = 0;
-    try {
-      const data = dash?.data ?? dash ?? {};
-      todaySales = Number(data.todaySales ?? data.today?.sales ?? 0) || 0;
-    } catch (_) { /* */ }
-    const progress = progressRes?.success !== false ? (progressRes?.data || progressRes) : null;
-    if (progress && Number(progress.sales_achieved) >= 0) {
-      todaySales = Number(progress.sales_achieved) || todaySales;
-    }
-    const dailyAmt = dailyForEdit.active && !(dailyForEdit.expires_at && String(dailyForEdit.expires_at).slice(0, 10) < today)
-      ? Number(dailyForEdit.amount) || 0
-      : 0;
-    const dailyPct = dailyAmt > 0 ? Math.min(100, Math.round((todaySales / dailyAmt) * 100)) : 0;
-    const dailyMet = dailyAmt > 0 && todaySales >= dailyAmt;
-
-    let productCatalog = Array.isArray(productCatalogRaw) ? productCatalogRaw : [];
-
-    const productValueTotal = productTargets.reduce(
-      (s, p) => s + (Number(p.target_qty) || 0) * (Number(p.selling_price) || 0),
-      0
-    );
-    const productQtyTotal = productTargets.reduce((s, p) => s + (Number(p.target_qty) || 0), 0);
-    const prodProgressActive = !!(progress?.product_targets_active && (progress.products || []).length);
-    const prodSoldQty = Number(progress?.product_sold_qty) || 0;
-    const prodTargetQty = Number(progress?.product_target_qty) || productQtyTotal;
-    const prodSoldVal = Number(progress?.product_sold_value) || 0;
-    const prodTargetVal = Number(progress?.product_target_value) || productValueTotal;
-
-    const rowHtml = (p) => {
-      const lineTotal = (Number(p.target_qty) || 0) * (Number(p.selling_price) || 0);
-      return `<tr data-id="${p.product_id}" data-price="${Number(p.selling_price) || 0}" data-name="${Utils.escHtml(p.product_name || '')}">
-        <td>${Utils.escHtml(p.product_name || ('#' + p.product_id))}</td>
-        <td>${Utils.formatMoney(p.selling_price || 0, currency)}</td>
-        <td><input type="number" class="st-pt-qty" min="1" value="${p.target_qty}" style="width:80px"></td>
-        <td class="st-pt-line">${Utils.formatMoney(lineTotal, currency)}</td>
-        <td><button type="button" class="btn btn-sm btn-ghost st-pt-rm">Remove</button></td>
-      </tr>`;
-    };
-
     el.innerHTML = `<div class="admin-section"><h3>Sales Targets</h3>
-      <p class="muted">Daily money target and product quantity targets work separately. Enable only what you want POS to show. Set an expiry if the target should end on a date.</p>
-      <div class="card" style="margin-bottom:16px"><div class="card-body">
-        <div class="field" style="max-width:280px;margin-bottom:12px">
-          <label>Branch</label>
-          <select id="st-branch">
-            <option value="all" ${branchId === 'all' ? 'selected' : ''}>All / shop default</option>
-            ${branches.map((b) => `<option value="${b.id}" ${String(branchId) === String(b.id) ? 'selected' : ''}>${Utils.escHtml(b.name)}</option>`).join('')}
-          </select>
-        </div>
-        <h4 style="margin:0 0 8px">Today's progress</h4>
-        <div style="display:grid;gap:12px">
-          <div>
-            <div class="muted" style="font-size:12px;margin-bottom:4px">Daily money</div>
-            ${dailyAmt > 0
-              ? `<p style="margin:0 0 8px"><strong>${Utils.formatMoney(todaySales, currency)}</strong> / ${Utils.formatMoney(dailyAmt, currency)}
-                  <span style="margin-left:8px">${dailyPct}%${dailyMet ? ' · Met' : ''}</span></p>
-                 <div style="height:10px;background:var(--border,#e5e7eb);border-radius:6px;overflow:hidden">
-                   <div style="height:100%;width:${dailyPct}%;background:${dailyMet ? 'var(--success,#16a34a)' : 'var(--primary,#2563eb)'}"></div>
-                 </div>`
-              : `<p class="muted" style="margin:0">Not active — enable Daily money target below.</p>`}
-          </div>
-          <div>
-            <div class="muted" style="font-size:12px;margin-bottom:4px">Product quantity</div>
-            ${prodProgressActive
-              ? `<p style="margin:0">Qty <strong>${prodSoldQty}</strong> / ${prodTargetQty}
-                   · Value <strong>${Utils.formatMoney(prodSoldVal, currency)}</strong> / ${Utils.formatMoney(prodTargetVal, currency)}</p>`
-              : `<p class="muted" style="margin:0">Not active — enable Product targets below.</p>`}
-          </div>
-        </div>
+      <p class="muted">Set shop-wide sales targets with optional expiry dates. Active targets show on POS (daily, weekly, monthly progress).</p>
+      <div class="card"><div class="card-body"><div class="form-grid">
+        ${periods.map(p => `<div class="field">
+          <label>${p.charAt(0).toUpperCase() + p.slice(1)} Target (${currency})</label>
+          <input type="number" id="st-${p}" step="0.01" min="0" value="${t[p].amount}">
+          <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-weight:normal">
+            <input type="checkbox" id="st-${p}-active" ${t[p].active ? 'checked' : ''}> Active
+          </label>
+          <label style="margin-top:6px;font-size:12px">Expires (optional)</label>
+          <input type="date" id="st-${p}-exp" value="${t[p].expires_at || ''}" min="${today}">
+        </div>`).join('')}
+      </div>
+      <button class="btn btn-primary" id="save-targets" style="margin-top:16px">Save Targets</button>
       </div></div>
-
-      <div class="card" style="margin-bottom:16px"><div class="card-body">
-        <h4 style="margin:0 0 12px">Daily money target</h4>
-        <p class="muted" style="margin:0 0 10px">Only this section controls the money target on POS. Product targets do not affect it.</p>
-        <div class="form-grid">
-          <div class="field">
-            <label>Daily Target (${currency})</label>
-            <input type="number" id="st-daily" step="0.01" min="0" value="${dailyForEdit.amount}">
-            <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-weight:normal">
-              <input type="checkbox" id="st-daily-active" ${dailyForEdit.active ? 'checked' : ''}> Active (show on POS)
-            </label>
-            <label style="margin-top:6px;font-size:12px">Expires until (optional)</label>
-            <input type="date" id="st-daily-exp" value="${dailyForEdit.expires_at ? String(dailyForEdit.expires_at).slice(0, 10) : ''}" min="${today}">
-          </div>
-          ${periods.filter((p) => p !== 'daily').map((p) => `<div class="field">
-            <label>${p.charAt(0).toUpperCase() + p.slice(1)} Target (${currency})</label>
-            <input type="number" id="st-${p}" step="0.01" min="0" value="${t[p].amount}">
-            <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-weight:normal">
-              <input type="checkbox" id="st-${p}-active" ${t[p].active ? 'checked' : ''}> Active
-            </label>
-            <label style="margin-top:6px;font-size:12px">Expires until (optional)</label>
-            <input type="date" id="st-${p}-exp" value="${t[p].expires_at ? String(t[p].expires_at).slice(0, 10) : ''}" min="${today}">
-          </div>`).join('')}
-        </div>
-      </div></div>
-
-      <div class="card"><div class="card-body">
-        <h4 style="margin:0 0 8px">Product quantity targets</h4>
-        <p class="muted" style="margin:0 0 10px">Search and pick catalog products. Target qty × price = line total. Totals update live.</p>
-        <label style="display:flex;align-items:center;gap:8px;margin-bottom:10px;font-weight:normal">
-          <input type="checkbox" id="st-prod-active" ${productMeta.active ? 'checked' : ''}> Active (show product targets on POS)
-        </label>
-        <div class="field" style="max-width:280px;margin-bottom:12px">
-          <label style="font-size:12px">Expires until (optional)</label>
-          <input type="date" id="st-prod-exp" value="${productMeta.expires_at ? String(productMeta.expires_at).slice(0, 10) : ''}" min="${today}">
-        </div>
-        <div class="form-grid" style="align-items:end;margin-bottom:10px;position:relative">
-          <div class="field" style="flex:2;position:relative">
-            <label>Search product</label>
-            <input type="search" id="st-prod-search" placeholder="${productCatalog.length ? `Type to find a product (${productCatalog.length} available)…` : 'No products found — add products first'}" autocomplete="off" ${productCatalog.length ? '' : 'disabled'}>
-            <div id="st-prod-results" class="search-dropdown hidden" style="position:absolute;left:0;right:0;top:100%;z-index:20;max-height:260px;overflow:auto"></div>
-            <input type="hidden" id="st-prod-pick-id" value="">
-            <input type="hidden" id="st-prod-pick-name" value="">
-            <input type="hidden" id="st-prod-pick-price" value="0">
-            <p id="st-prod-picked" class="muted" style="margin:6px 0 0;font-size:12px">No product selected</p>
-          </div>
-          <div class="field"><label>Target qty</label><input type="number" id="st-prod-qty" min="1" step="1" value="1"></div>
-          <div class="field"><button type="button" class="btn btn-primary" id="st-prod-add">Add</button></div>
-        </div>
-        <div class="table-wrap"><table class="table-compact"><thead><tr><th>Product</th><th>Price</th><th>Target qty</th><th>Line total</th><th></th></tr></thead>
-          <tbody id="st-prod-rows">${productTargets.map(rowHtml).join('') || '<tr class="st-pt-empty"><td colspan="5" class="muted">No product targets yet</td></tr>'}
-          </tbody>
-          <tfoot>
-            <tr>
-              <td colspan="2"><strong>Totals to target</strong></td>
-              <td id="st-prod-qty-total"><strong>${productQtyTotal}</strong></td>
-              <td id="st-prod-val-total"><strong>${Utils.formatMoney(productValueTotal, currency)}</strong></td>
-              <td></td>
-            </tr>
-          </tfoot>
-        </table></div>
-        <button class="btn btn-primary" id="save-targets" style="margin-top:16px">Save Targets</button>
-      </div></div>
-    </div>`;
-
-    const collectProductTargets = () => [...el.querySelectorAll('#st-prod-rows tr[data-id]')].map((tr) => ({
-      product_id: Number(tr.dataset.id),
-      target_qty: Number(tr.querySelector('.st-pt-qty')?.value) || 0,
-      product_name: tr.dataset.name || tr.querySelector('td')?.textContent?.trim() || '',
-      selling_price: Number(tr.dataset.price) || 0
-    })).filter((p) => p.product_id > 0 && p.target_qty > 0);
-
-    const refreshProductTotals = () => {
-      const rows = collectProductTargets();
-      const qty = rows.reduce((s, p) => s + p.target_qty, 0);
-      const val = rows.reduce((s, p) => s + p.target_qty * (Number(p.selling_price) || 0), 0);
-      const qtyEl = document.getElementById('st-prod-qty-total');
-      const valEl = document.getElementById('st-prod-val-total');
-      if (qtyEl) qtyEl.innerHTML = `<strong>${qty}</strong>`;
-      if (valEl) valEl.innerHTML = `<strong>${Utils.formatMoney(val, currency)}</strong>`;
-      el.querySelectorAll('#st-prod-rows tr[data-id]').forEach((tr) => {
-        const q = Number(tr.querySelector('.st-pt-qty')?.value) || 0;
-        const price = Number(tr.dataset.price) || 0;
-        const line = tr.querySelector('.st-pt-line');
-        if (line) line.textContent = Utils.formatMoney(q * price, currency);
-      });
-    };
-
-    const bindRowRemove = (btn) => {
-      btn?.addEventListener('click', () => {
-        const tbody = document.getElementById('st-prod-rows');
-        btn.closest('tr')?.remove();
-        if (!tbody.querySelector('tr[data-id]')) {
-          tbody.innerHTML = '<tr class="st-pt-empty"><td colspan="5" class="muted">No product targets yet</td></tr>';
-        }
-        refreshProductTotals();
-      });
-    };
-
-    document.getElementById('st-branch')?.addEventListener('change', (e) => {
-      this._salesTargetBranchId = e.target.value === 'all' ? 'all' : Number(e.target.value);
-      this.renderSalesTargets(el);
-    });
-
-    const searchInput = document.getElementById('st-prod-search');
-    const resultsEl = document.getElementById('st-prod-results');
-    const setPicked = (p) => {
-      document.getElementById('st-prod-pick-id').value = p?.id || '';
-      document.getElementById('st-prod-pick-name').value = p?.name || '';
-      document.getElementById('st-prod-pick-price').value = String(p?.selling_price || 0);
-      const label = document.getElementById('st-prod-picked');
-      if (label) {
-        label.textContent = p
-          ? `Selected: ${p.name} · ${Utils.formatMoney(p.selling_price || 0, currency)}`
-          : 'No product selected';
-      }
-      if (searchInput && p) searchInput.value = p.name;
-      resultsEl?.classList.add('hidden');
-    };
-
-    const paintProductResults = (q) => {
-      if (!resultsEl) return;
-      const query = String(q || '').trim().toLowerCase();
-      if (!query) {
-        resultsEl.classList.add('hidden');
-        resultsEl.innerHTML = '';
-        return;
-      }
-      const hits = productCatalog.filter((p) => {
-        const name = String(p.name || '').toLowerCase();
-        const sku = String(p.sku || '').toLowerCase();
-        const barcode = String(p.barcode || '').toLowerCase();
-        return name.includes(query) || sku.includes(query) || barcode.includes(query);
-      }).slice(0, 40);
-      if (!hits.length) {
-        resultsEl.innerHTML = '<div class="search-group"><p class="muted" style="padding:8px">No matching products</p></div>';
-        resultsEl.classList.remove('hidden');
-        return;
-      }
-      resultsEl.innerHTML = '<div class="search-group">' + hits.map((p) =>
-        `<div class="search-item st-prod-hit" data-id="${p.id}" data-name="${Utils.escHtml(p.name)}" data-price="${Number(p.selling_price) || 0}">
-          ${Utils.escHtml(p.name)} · ${Utils.formatMoney(p.selling_price || 0, currency)}
-        </div>`
-      ).join('') + '</div>';
-      resultsEl.classList.remove('hidden');
-      resultsEl.querySelectorAll('.st-prod-hit').forEach((item) => {
-        item.addEventListener('mousedown', (e) => {
-          e.preventDefault();
-          setPicked({
-            id: Number(item.dataset.id),
-            name: item.dataset.name,
-            selling_price: Number(item.dataset.price) || 0
-          });
-        });
-      });
-    };
-
-    searchInput?.addEventListener('input', (e) => {
-      document.getElementById('st-prod-pick-id').value = '';
-      paintProductResults(e.target.value);
-    });
-    searchInput?.addEventListener('focus', () => {
-      if (searchInput.value.trim()) paintProductResults(searchInput.value);
-    });
-    searchInput?.addEventListener('blur', () => {
-      setTimeout(() => resultsEl?.classList.add('hidden'), 180);
-    });
-
-    document.getElementById('st-prod-add')?.addEventListener('click', () => {
-      const id = Number(document.getElementById('st-prod-pick-id')?.value);
-      const qty = Number(document.getElementById('st-prod-qty')?.value) || 0;
-      if (!id || qty <= 0) return Utils.toast('Search and select a product, then set quantity', 'error');
-      const tbody = document.getElementById('st-prod-rows');
-      tbody.querySelector('.st-pt-empty')?.remove();
-      if (tbody.querySelector(`tr[data-id="${id}"]`)) return Utils.toast('Product already on the list — edit the qty', 'error');
-      const name = document.getElementById('st-prod-pick-name')?.value || `#${id}`;
-      const price = Number(document.getElementById('st-prod-pick-price')?.value) || 0;
-      tbody.insertAdjacentHTML('beforeend', rowHtml({
-        product_id: id,
-        product_name: name,
-        selling_price: price,
-        target_qty: qty
-      }));
-      bindRowRemove(tbody.querySelector(`tr[data-id="${id}"] .st-pt-rm`));
-      tbody.querySelector(`tr[data-id="${id}"] .st-pt-qty`)?.addEventListener('input', refreshProductTotals);
-      setPicked(null);
-      if (searchInput) searchInput.value = '';
-      document.getElementById('st-prod-qty').value = '1';
-      const activeCb = document.getElementById('st-prod-active');
-      if (activeCb) activeCb.checked = true;
-      refreshProductTotals();
-    });
-
-    el.querySelectorAll('.st-pt-rm').forEach(bindRowRemove);
-    el.querySelectorAll('.st-pt-qty').forEach((inp) => inp.addEventListener('input', refreshProductTotals));
-
+      <div class="card" style="margin-top:16px"><div class="card-header"><h4>Saved Targets</h4></div>
+      <div class="table-wrap"><table class="table-compact"><thead><tr><th>Period</th><th>Amount</th><th>Active</th><th>Expires</th><th>Status</th></tr></thead>
+      <tbody>${periods.map(p => {
+        const row = t[p];
+        const expired = row.expires_at && row.expires_at < today;
+        const status = !row.active ? 'Inactive' : (expired ? 'Expired' : 'Live on POS');
+        return `<tr><td>${p.charAt(0).toUpperCase() + p.slice(1)}</td><td>${Utils.formatMoney(row.amount, currency)}</td>
+          <td>${row.active ? 'Yes' : 'No'}</td><td>${row.expires_at || '—'}</td><td>${status}</td></tr>`;
+      }).join('')}</tbody></table></div></div></div>`;
     document.getElementById('save-targets').addEventListener('click', async () => {
-      const btn = document.getElementById('save-targets');
-      if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
-      const payload = {
-        weekly: {
-          amount: parseFloat(document.getElementById('st-weekly')?.value) || 0,
-          active: !!document.getElementById('st-weekly-active')?.checked,
-          expires_at: document.getElementById('st-weekly-exp')?.value || null
-        },
-        monthly: {
-          amount: parseFloat(document.getElementById('st-monthly')?.value) || 0,
-          active: !!document.getElementById('st-monthly-active')?.checked,
-          expires_at: document.getElementById('st-monthly-exp')?.value || null
-        },
-        yearly: {
-          amount: parseFloat(document.getElementById('st-yearly')?.value) || 0,
-          active: !!document.getElementById('st-yearly-active')?.checked,
-          expires_at: document.getElementById('st-yearly-exp')?.value || null
-        }
-      };
-      const dailyPayload = {
-        amount: parseFloat(document.getElementById('st-daily')?.value) || 0,
-        active: !!document.getElementById('st-daily-active')?.checked,
-        expires_at: document.getElementById('st-daily-exp')?.value || null
-      };
-      const pts = collectProductTargets();
-      const productMetaPayload = {
-        active: !!document.getElementById('st-prod-active')?.checked && pts.length > 0,
-        expires_at: document.getElementById('st-prod-exp')?.value || null
-      };
-      const bid = document.getElementById('st-branch')?.value || 'all';
-      if (bid === 'all') {
-        payload.daily = dailyPayload;
-        payload.product_targets = pts;
-        payload.product_targets_meta = productMetaPayload;
-      } else {
-        payload.daily = t.daily;
-        payload.product_targets = raw.product_targets || [];
-        payload.product_targets_meta = raw.product_targets_meta || { active: false, expires_at: null };
-        payload.by_branch = { ...(raw.by_branch || {}) };
-        payload.by_branch[String(bid)] = {
-          daily: dailyPayload,
-          product_targets: pts,
-          product_targets_meta: productMetaPayload
+      const payload = {};
+      periods.forEach(p => {
+        const exp = document.getElementById(`st-${p}-exp`)?.value || null;
+        payload[p] = {
+          amount: parseFloat(document.getElementById(`st-${p}`).value) || 0,
+          active: document.getElementById(`st-${p}-active`).checked,
+          expires_at: exp || null
         };
-        payload.branch_id = Number(bid);
-        payload.branch_daily = dailyPayload;
-        payload.branch_product_targets = pts;
-        payload.branch_product_targets_meta = productMetaPayload;
-      }
-      const r = await this.awaitSave(
-        API.saveSalesTargets(payload, this.app.user),
-        'Sales targets saved',
-        'Could not save targets'
-      );
-      if (btn) { btn.disabled = false; btn.textContent = 'Save Targets'; }
-      if (!r) return;
+      });
+      const r = await API.saveSalesTargets(payload, this.app.user);
+      if (!r.success) return Utils.toast(r.error, 'error');
+      Utils.toast('Sales targets saved', 'success');
       try { window.dispatchEvent(new CustomEvent('shop-pos-targets-updated')); } catch (_) { /* */ }
-      await this.renderSalesTargets(el);
     });
   },
 
@@ -2831,14 +2258,14 @@ const AdminPage = {
           <div class="stat-card"><div class="label">Loyalty Points</div><div class="value">${Math.floor(customer?.loyalty_points || 0)}</div></div>
         </div>
         <h4>Purchase History</h4>
-        ${sales.length ? `<div class="table-wrap"><table style="width:100%"><tr><th>Receipt / Order</th><th>Source</th><th>Total</th><th>Status</th><th>Date</th></tr>
-          ${sales.map((x) => `<tr><td>${Utils.escHtml(x.receipt_number || x.order_number || '—')}</td><td>${x.source === 'online' ? 'Online' : 'POS'}</td><td>${Utils.formatMoney(x.total, currency)}</td><td>${Utils.escHtml(x.status || 'completed')}</td><td>${Utils.formatDateTime(x.created_at)}</td></tr>`).join('')}</table></div>`
+        ${sales.length ? `<div class="table-wrap"><table style="width:100%"><tr><th>Receipt</th><th>Total</th><th>Date</th></tr>
+          ${sales.map((x) => `<tr><td>${Utils.escHtml(x.receipt_number || '—')}</td><td>${Utils.formatMoney(x.total, currency)}</td><td>${Utils.formatDateTime(x.created_at)}</td></tr>`).join('')}</table></div>`
           : '<p class="muted">No purchases yet</p>'}
         ${ledger.length ? `<h4 style="margin-top:16px">Credit Ledger</h4><div class="table-wrap"><table style="width:100%"><tr><th>Date</th><th>Type</th><th>Amount</th></tr>
           ${ledger.map((l) => `<tr><td>${Utils.formatDateTime(l.created_at)}</td><td>${Utils.escHtml(l.type || '—')}</td><td>${Utils.formatMoney(l.amount, currency)}</td></tr>`).join('')}
           </table></div>` : ''}
-        ${loyalty.length ? `<h4 style="margin-top:16px">Loyalty Points History (POS &amp; Online)</h4><div class="table-wrap"><table style="width:100%"><tr><th>Date</th><th>Source</th><th>Type</th><th>Points</th></tr>
-          ${loyalty.map((l) => `<tr><td>${Utils.formatDateTime(l.created_at)}</td><td>${Utils.escHtml(l.source || '—')}</td><td>${Utils.escHtml(l.type || '—')}</td><td>${l.points > 0 ? '+' : ''}${l.points}</td></tr>`).join('')}
+        ${loyalty.length ? `<h4 style="margin-top:16px">Loyalty Points History</h4><div class="table-wrap"><table style="width:100%"><tr><th>Date</th><th>Type</th><th>Points</th></tr>
+          ${loyalty.map((l) => `<tr><td>${Utils.formatDateTime(l.created_at)}</td><td>${Utils.escHtml(l.type || '—')}</td><td>${l.points > 0 ? '+' : ''}${l.points}</td></tr>`).join('')}
           </table></div>` : ''}`,
         '<button class="btn btn-ghost" id="tc-hist-close">Close</button>');
       document.getElementById('tc-hist-close')?.addEventListener('click', Utils.hideModal);
@@ -2917,26 +2344,14 @@ const AdminPage = {
       const t = document.getElementById('tc-to').value;
       const lim = parseInt(document.getElementById('tc-limit').value, 10) || 50;
       this._tcFrom = f; this._tcTo = t; this._tcLimit = lim;
-      const tableEl = document.getElementById('tc-table');
-      if (tableEl) tableEl.innerHTML = '<p class="muted">Loading top customers and syncing loyalty points…</p>';
-      let rows = [];
-      try {
-        try { await API.syncMissingLoyaltyPoints(this.app.user); } catch (_) { /* best effort */ }
-        const res = await API.getTopCustomers(f, t, lim);
-        if (res?.success === false) throw new Error(res.error || 'Could not load top customers');
-        rows = Array.isArray(res) ? res : (res?.data || []);
-      } catch (err) {
-        Utils.toast(err.message || 'Could not load top customers', 'error');
-      }
-      document.getElementById('tc-table').innerHTML = `
-        <h4 style="margin:0 0 12px">Top ${lim} customers — ${f} to ${t}</h4>
-        <div class="card"><div class="table-wrap"><table>
-        <thead><tr><th>#</th><th>Customer</th><th>Phone</th><th>Points</th><th>POS</th><th>Online</th><th>Total Spent</th><th>Visits</th><th></th></tr></thead>
+      const res = await API.getTopCustomers(f, t, lim);
+      const rows = res.data || [];
+      document.getElementById('tc-table').innerHTML = `<div class="card"><div class="table-wrap"><table>
+        <thead><tr><th>#</th><th>Customer</th><th>Phone</th><th>POS</th><th>Online</th><th>Total Spent</th><th>Visits</th><th></th></tr></thead>
         <tbody>${rows.map((c) => `<tr>
           <td>${c.rank || ''}</td>
           <td><strong>${Utils.escHtml(c.name)}</strong>${Number(c.total_spent) >= lim * 10 ? ' <span class="tag tag-ok">Top</span>' : ''}</td>
           <td>${Utils.escHtml(c.phone || '—')}</td>
-          <td><strong>${Math.floor(c.loyalty_points || 0)}</strong></td>
           <td>${Utils.formatMoney(c.pos_spent || 0, currency)}</td>
           <td>${Utils.formatMoney(c.online_spent || 0, currency)}</td>
           <td><strong>${Utils.formatMoney(c.total_spent, currency)}</strong></td><td>${c.visits}</td>
@@ -2946,9 +2361,9 @@ const AdminPage = {
             <button class="btn btn-sm btn-ghost tc-gift" data-id="${c.id || ''}" data-phone="${Utils.escHtml(c.phone || '')}" data-name="${Utils.escHtml(c.name)}">Gift Card</button>
             ${c.phone ? `<button class="btn btn-sm btn-success tc-wa" data-id="${c.id || ''}" data-name="${Utils.escHtml(c.name)}" data-phone="${Utils.escHtml(c.phone)}">WhatsApp</button>` : ''}
             ${c.id ? `<button class="btn btn-sm btn-danger tc-del" data-id="${c.id}" data-name="${Utils.escHtml(c.name)}" data-balance="${c.balance || 0}" data-points="${Math.floor(c.loyalty_points || 0)}">Delete</button>` : ''}
-          </td></tr>`).join('') || '<tr><td colspan="9" class="muted">No customers in this period</td></tr>'}
+          </td></tr>`).join('') || '<tr><td colspan="8" class="muted">No customers in this period</td></tr>'}
         </tbody></table></div>
-        <p class="muted" style="padding:12px;font-size:13px">Ranked highest to lowest — includes POS sales and online orders. Change Top N and click Load to refresh the list above.</p></div>`;
+        <p class="muted" style="padding:12px;font-size:13px">Ranked highest to lowest — includes POS sales and online orders. Use Top N to set list size.</p></div>`;
       this.bindTopCustomerActions(document.getElementById('tc-table'), load);
       document.querySelectorAll('.tc-gift').forEach(b => b.addEventListener('click', async () => {
         const customerId = parseInt(b.dataset.id, 10);
@@ -3218,42 +2633,10 @@ const AdminPage = {
       { day: 5, name: 'Friday', open: '08:00', close: '18:00', closed: false },
       { day: 6, name: 'Saturday', open: '08:00', close: '18:00', closed: false }
     ];
-    const forceOnline = oh.force_online || 'auto';
-    const forcePos = oh.force_pos || 'auto';
-    const forceLogin = oh.force_login || 'auto';
-    const onlineLabel = forceOnline === 'open' ? 'forced open' : forceOnline === 'closed' ? 'forced closed' : 'follows schedule (countdown)';
-    const posLabel = forcePos === 'open' ? 'forced open' : forcePos === 'closed' ? 'closing alert on' : 'follows schedule (countdown)';
-    const loginLabel = forceLogin === 'open' ? 'always allow sign-in' : 'follows schedule (still typeable)';
-    const anyForced = forceOnline !== 'auto' || forcePos !== 'auto' || forceLogin !== 'auto';
     el.innerHTML = `<div class="admin-section"><h3>Operating Hours — Weekly Schedule</h3>
-      <p class="muted">Save the weekly times to apply them immediately. Order Online closes on schedule. POS stays open and only shows a professional closing alert. Use the force buttons to override right now — they take effect immediately, no refresh. When you want the normal countdown again (open/close by the times below), use <strong>Follow schedule</strong>.</p>
-      <div class="card" style="margin-bottom:12px;border-color:var(--warning)"><div class="card-body">
-        <h4 style="margin:0 0 8px">Force open / close now</h4>
-        <p class="muted" style="margin:0 0 10px;font-size:13px">Current: Order Online <strong>${onlineLabel}</strong>
-          · POS <strong>${posLabel}</strong>
-          · Logins <strong>${loginLabel}</strong></p>
-        ${anyForced ? `<p style="margin:0 0 12px;padding:10px 12px;background:rgba(245,158,11,.12);border-radius:8px;font-size:13px">A force override is active. To go back to the countdown page (system opens/closes by the weekly times), tap <strong>Follow schedule</strong> for that area — or <strong>All follow schedule</strong>.</p>` : ''}
-        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
-          <button type="button" class="btn btn-success" id="oh-force-open-online">Force open Order Online</button>
-          <button type="button" class="btn btn-warning" id="oh-force-close-online">Force close Order Online</button>
-          <button type="button" class="btn btn-ghost" id="oh-force-auto-online">Order Online follow schedule</button>
-        </div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
-          <button type="button" class="btn btn-success" id="oh-force-open-pos">Force open POS</button>
-          <button type="button" class="btn btn-warning" id="oh-force-close-pos">Force close POS</button>
-          <button type="button" class="btn btn-ghost" id="oh-force-auto-pos">POS follow schedule</button>
-        </div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
-          <button type="button" class="btn btn-success" id="oh-force-open-login">Allow all logins (override hours)</button>
-          <button type="button" class="btn btn-ghost" id="oh-force-auto-login">Logins follow schedule</button>
-        </div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;padding-top:8px;border-top:1px solid var(--border)">
-          <button type="button" class="btn btn-primary" id="oh-force-auto-all">All follow schedule (countdown)</button>
-        </div>
-      </div></div>
+      <p class="muted">Set open and close times for each day of the week. Cashiers see a countdown and hear the alert sound at closing time.</p>
       <div class="card"><div class="card-body"><div class="form-grid">
-        <div class="field full"><label><input type="checkbox" id="oh-enabled" ${oh.enabled ? 'checked' : ''}> Enable POS closing countdown banner</label></div>
-        <div class="field full"><label><input type="checkbox" id="oh-online" ${oh.apply_to_online !== false ? 'checked' : ''}> Close online ordering at these times (customers see a large closed popup with countdown)</label></div>
+        <div class="field full"><label><input type="checkbox" id="oh-enabled" ${oh.enabled ? 'checked' : ''}> Enable closing countdown banner</label></div>
         <div class="field"><label>Warning Before Close (minutes)</label><input type="number" id="oh-warn" min="1" max="120" value="${oh.warn_minutes ?? 15}"></div>
         <div class="field full"><label><input type="checkbox" id="oh-alert" ${oh.alert_at_close !== false ? 'checked' : ''}> Alert & play sound when closing time is reached</label></div>
       </div>
@@ -3268,7 +2651,7 @@ const AdminPage = {
       <button class="btn btn-primary" id="save-operating" style="margin-top:16px">Save Operating Hours</button>
       </div></div></div>`;
 
-    const collectHours = (overrides = {}) => {
+    document.getElementById('save-operating').addEventListener('click', async () => {
       const weekly = days.map(d => ({
         day: d.day, name: d.name,
         closed: document.querySelector(`.oh-closed[data-day="${d.day}"]`)?.checked || false,
@@ -3276,64 +2659,19 @@ const AdminPage = {
         close: document.querySelector(`.oh-close[data-day="${d.day}"]`)?.value || '18:00'
       }));
       const today = weekly.find(w => w.day === new Date().getDay()) || weekly[0];
-      return {
+      const data = {
         enabled: document.getElementById('oh-enabled').checked,
-        apply_to_online: document.getElementById('oh-online')?.checked !== false,
         open_time: today.open,
         close_time: today.close,
         warn_minutes: parseInt(document.getElementById('oh-warn').value, 10) || 15,
         alert_at_close: document.getElementById('oh-alert').checked,
-        weekly,
-        force_online: overrides.force_online != null ? overrides.force_online : (oh.force_online || 'auto'),
-        force_pos: overrides.force_pos != null ? overrides.force_pos : (oh.force_pos || 'auto'),
-        force_login: overrides.force_login != null ? overrides.force_login : (oh.force_login || 'auto')
+        weekly
       };
-    };
-    const persistHours = async (data, okMsg) => {
-      data.hours_revision = Date.now();
+      await API.saveJsonSetting('operating_hours_settings', data, this.app.user);
       this.settings.operating_hours_settings = data;
-      this.app.settings = { ...(this.app.settings || {}), operating_hours_settings: data };
-      try { new BroadcastChannel('shop-pos-hours').postMessage(data); } catch (_) { /* */ }
-      this.app.applyOperatingHours?.(data);
+      this.app.settings = { ...this.app.settings, operating_hours_settings: data };
       this.app.startOperatingTimer?.();
-      this.renderOperatingHours(el);
-      const r = await API.saveJsonSetting('operating_hours_settings', data, this.app.user);
-      if (!r?.success) return Utils.toast(r?.error || 'Could not save operating hours — sign in again and retry', 'error');
-      Utils.toast(okMsg, 'success');
-    };
-
-    document.getElementById('save-operating').addEventListener('click', async () => {
-      await persistHours(collectHours({}), 'Operating hours saved — the schedule is live now');
-    });
-    document.getElementById('oh-force-open-online')?.addEventListener('click', async () => {
-      await persistHours(collectHours({ force_online: 'open' }), 'Order Online is forced open now');
-    });
-    document.getElementById('oh-force-close-online')?.addEventListener('click', async () => {
-      await persistHours(collectHours({ force_online: 'closed' }), 'Order Online forced closed — hiring and reports are closed too');
-    });
-    document.getElementById('oh-force-auto-online')?.addEventListener('click', async () => {
-      await persistHours(collectHours({ force_online: 'auto' }), 'Order Online follows the weekly schedule again — countdown is back');
-    });
-    document.getElementById('oh-force-open-pos')?.addEventListener('click', async () => {
-      await persistHours(collectHours({ force_pos: 'open' }), 'POS is forced open now — tills can sell');
-    });
-    document.getElementById('oh-force-close-pos')?.addEventListener('click', async () => {
-      await persistHours(collectHours({ force_pos: 'closed' }), 'POS closing alert is on — tills can still sell');
-    });
-    document.getElementById('oh-force-auto-pos')?.addEventListener('click', async () => {
-      await persistHours(collectHours({ force_pos: 'auto' }), 'POS follows the weekly schedule again — countdown banner is back');
-    });
-    document.getElementById('oh-force-open-login')?.addEventListener('click', async () => {
-      await persistHours(collectHours({ force_login: 'open', force_pos: 'open' }), 'All panel logins stay open — shop hours will not block sign-in');
-    });
-    document.getElementById('oh-force-auto-login')?.addEventListener('click', async () => {
-      await persistHours(collectHours({ force_login: 'auto' }), 'Login banner follows schedule again (typing still allowed)');
-    });
-    document.getElementById('oh-force-auto-all')?.addEventListener('click', async () => {
-      await persistHours(
-        collectHours({ force_online: 'auto', force_pos: 'auto', force_login: 'auto' }),
-        'Everything follows the weekly schedule again — open/close by the times you set'
-      );
+      Utils.toast('Weekly operating hours saved', 'success');
     });
   },
 
@@ -3413,8 +2751,9 @@ const AdminPage = {
 
   async renderInventory(el) {
     const branchId = this.app?.viewBranchId;
+    const res = await API.getInventoryStats(branchId);
+    const inv = res.data || {};
     const currency = this.settings.currency || 'R';
-    const paintInv = (inv) => {
     el.innerHTML = `<div class="admin-section"><h3>Inventory Dashboard</h3>
       <p class="muted" style="margin-bottom:12px">Read-only overview. To adjust stock, receive goods, or record waste, use <strong>Stock Management</strong> in the sidebar.</p>
       <button type="button" class="btn btn-primary btn-sm" id="inv-go-stock" style="margin-bottom:16px">Open Stock Management →</button>
@@ -3440,14 +2779,6 @@ const AdminPage = {
         </div></div>
       </div></div>`;
     document.getElementById('inv-go-stock')?.addEventListener('click', () => window.App?.navigate?.('stock'));
-    };
-    const peek = window.DataCache?.peek?.('inventoryStats', [branchId]);
-    if (peek?.data) paintInv(peek.data);
-    else el.innerHTML = `<div class="admin-section"><h3>Inventory Dashboard</h3></div>`;
-    try {
-      const res = await API.getInventoryStats(branchId);
-      if (el.isConnected) paintInv(res.data || {});
-    } catch (_) { /* keep last paint */ }
   },
 
   renderDiscounts(el) {
@@ -3499,107 +2830,12 @@ const AdminPage = {
     return `<code>${Utils.escHtml(o.gift_card_code)}</code><br><small>-${Utils.formatMoney(amt, currency)}</small>`;
   },
 
-  async showOnlineOrderDetail(orderId, onRefresh) {
-    const currency = this.settings?.currency || 'R';
-    const r = await API.webAdminOrderDetail?.(orderId, this.app?.user);
-    const o = r?.data ?? r;
-    if (!o || !o.id) return Utils.toast(r?.error || 'Order not found', 'error');
-    const items = Array.isArray(o.items) ? o.items : [];
-    const events = Array.isArray(o.events) ? o.events : [];
-    Utils.showModal(`Online order — ${Utils.escHtml(o.order_number || '')}`, `
-      <div class="stats-grid" style="margin-bottom:12px">
-        <div class="stat-card"><div class="label">Total</div><div class="value">${Utils.formatMoney(o.total, currency)}</div></div>
-        <div class="stat-card"><div class="label">Status</div><div class="value">${Utils.escHtml(o.status || '—')}</div></div>
-        <div class="stat-card"><div class="label">Branch</div><div class="value" style="font-size:14px">${Utils.escHtml(o.branch_name || String(o.branch_id || '—'))}</div></div>
-        <div class="stat-card"><div class="label">Payment</div><div class="value" style="font-size:14px">${Utils.escHtml(o.payment_method || '—')}</div></div>
-      </div>
-      <p><strong>Customer:</strong> ${Utils.escHtml(o.customer_name || '—')}
-        ${o.customer_phone ? ` · ${Utils.escHtml(o.customer_phone)}` : ''}
-        ${o.customer_email ? `<br><span class="muted">${Utils.escHtml(o.customer_email)}</span>` : ''}</p>
-      ${o.delivery_address ? `<p><strong>Delivery:</strong> ${Utils.escHtml(o.delivery_address)}</p>` : ''}
-      ${o.notes ? `<p><strong>Notes:</strong> ${Utils.escHtml(o.notes)}</p>` : ''}
-      ${o.scheduled_for ? `<p><strong>Scheduled:</strong> ${Utils.formatDateTime(o.scheduled_for)}</p>` : ''}
-      <h4>Items</h4>
-      <div class="table-wrap"><table class="table"><tr><th>Product</th><th>Qty</th><th>Price</th><th>Line total</th></tr>
-        ${items.map((it) => `<tr><td>${Utils.escHtml(it.name || it.product_name || '—')}</td><td>${it.quantity || 1}</td><td>${Utils.formatMoney(it.price || it.unit_price || 0, currency)}</td><td>${Utils.formatMoney((it.line_total != null ? it.line_total : (Number(it.price || it.unit_price || 0) * Number(it.quantity || 1))), currency)}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">No items</td></tr>'}
-      </table></div>
-      <p class="muted" style="margin-top:8px">Subtotal ${Utils.formatMoney(o.subtotal || 0, currency)} · Discount ${Utils.formatMoney(o.discount || 0, currency)} · Tax ${Utils.formatMoney(o.tax_amount || 0, currency)}</p>
-      ${this.formatOnlineOrderGiftCard(o, currency) !== '—' ? `<p>Gift card: ${this.formatOnlineOrderGiftCard(o, currency)}</p>` : ''}
-      ${o.sale_id ? `<p class="muted">Linked POS sale #${o.sale_id}${o.accepted_by ? ` · accepted by ${Utils.escHtml(o.accepted_by)}` : ''}</p>` : ''}
-      ${events.length ? `<h4 style="margin-top:16px">History</h4><div class="table-wrap"><table class="table"><tr><th>When</th><th>Status</th><th>Note</th></tr>
-        ${events.map((ev) => `<tr><td>${Utils.formatDateTime(ev.created_at)}</td><td>${Utils.escHtml(ev.status || '—')}</td><td>${Utils.escHtml(ev.note || ev.message || '—')}</td></tr>`).join('')}
-      </table></div>` : ''}`,
-      `<button type="button" class="btn btn-ghost" id="oo-detail-close">Close</button>
-       ${['owner', 'manager'].includes(this.app?.user?.role) ? `<button type="button" class="btn btn-primary" id="oo-detail-edit">Edit</button>` : ''}`);
-    document.getElementById('oo-detail-close')?.addEventListener('click', Utils.hideModal);
-    document.getElementById('oo-detail-edit')?.addEventListener('click', () => {
-      Utils.hideModal();
-      this.showOnlineOrderEdit(orderId, onRefresh);
-    });
-  },
-
-  async showOnlineOrderEdit(orderId, onRefresh) {
-    const currency = this.settings?.currency || 'R';
-    const r = await API.webAdminOrderDetail?.(orderId, this.app?.user);
-    const o = r?.data ?? r;
-    if (!o || !o.id) return Utils.toast(r?.error || 'Order not found', 'error');
-    const statuses = ['pending', 'accepted', 'preparing', 'ready', 'completed', 'rejected', 'cancelled'];
-    Utils.showModal(`Edit order — ${Utils.escHtml(o.order_number || '')}`, `
-      <div class="form-grid">
-        <div class="field"><label>Customer name</label><input id="ooe-name" value="${Utils.escHtml(o.customer_name || '')}"></div>
-        <div class="field"><label>Phone</label><input id="ooe-phone" value="${Utils.escHtml(o.customer_phone || '')}"></div>
-        <div class="field"><label>Email</label><input id="ooe-email" value="${Utils.escHtml(o.customer_email || '')}"></div>
-        <div class="field full"><label>Delivery address</label><input id="ooe-address" value="${Utils.escHtml(o.delivery_address || '')}"></div>
-        <div class="field full"><label>Notes</label><textarea id="ooe-notes" rows="2">${Utils.escHtml(o.notes || '')}</textarea></div>
-        <div class="field"><label>Status</label><select id="ooe-status">${statuses.map((s) => `<option value="${s}" ${String(o.status).toLowerCase() === s ? 'selected' : ''}>${s}</option>`).join('')}</select></div>
-        <div class="field"><label>Payment method</label><input id="ooe-payment" value="${Utils.escHtml(o.payment_method || '')}"></div>
-        <div class="field"><label>Fulfilment</label><select id="ooe-fulfillment"><option value="pickup" ${(o.fulfillment_type || o.fulfillment) === 'pickup' ? 'selected' : ''}>Pickup</option><option value="delivery" ${(o.fulfillment_type || o.fulfillment) === 'delivery' ? 'selected' : ''}>Delivery</option></select></div>
-        <div class="field"><label>Total (${currency})</label><input type="number" step="0.01" id="ooe-total" value="${Number(o.total) || 0}"></div>
-        <div class="field"><label>Subtotal</label><input type="number" step="0.01" id="ooe-subtotal" value="${Number(o.subtotal) || 0}"></div>
-        <div class="field"><label>Discount</label><input type="number" step="0.01" id="ooe-discount" value="${Number(o.discount) || 0}"></div>
-        <div class="field full" id="ooe-reject-wrap" style="display:none"><label>Reject / cancel reason</label><textarea id="ooe-reject-reason" rows="2">${Utils.escHtml(o.reject_reason || '')}</textarea></div>
-      </div>
-      ${o.sale_id ? '<p class="muted">This order was accepted on POS — status and totals may be limited.</p>' : ''}`,
-      '<button type="button" class="btn btn-primary" id="ooe-save">Save changes</button>');
-    const statusEl = document.getElementById('ooe-status');
-    const rejectWrap = document.getElementById('ooe-reject-wrap');
-    const syncReject = () => {
-      if (rejectWrap) rejectWrap.style.display = ['rejected', 'cancelled'].includes(statusEl?.value) ? '' : 'none';
-    };
-    statusEl?.addEventListener('change', syncReject);
-    syncReject();
-    document.getElementById('ooe-save')?.addEventListener('click', async () => {
-      const patch = {
-        customer_name: document.getElementById('ooe-name')?.value.trim(),
-        customer_phone: document.getElementById('ooe-phone')?.value.trim(),
-        customer_email: document.getElementById('ooe-email')?.value.trim(),
-        delivery_address: document.getElementById('ooe-address')?.value.trim(),
-        notes: document.getElementById('ooe-notes')?.value.trim(),
-        status: statusEl?.value,
-        payment_method: document.getElementById('ooe-payment')?.value.trim(),
-        fulfillment_type: document.getElementById('ooe-fulfillment')?.value,
-        total: parseFloat(document.getElementById('ooe-total')?.value) || 0,
-        subtotal: parseFloat(document.getElementById('ooe-subtotal')?.value) || 0,
-        discount: parseFloat(document.getElementById('ooe-discount')?.value) || 0,
-        reject_reason: document.getElementById('ooe-reject-reason')?.value.trim() || null
-      };
-      const ur = await API.webAdminUpdateOrder?.(orderId, patch, this.app?.user);
-      if (ur?.success === false || ur?.error) return Utils.toast(ur?.error || 'Update failed', 'error');
-      Utils.hideModal();
-      Utils.toast('Order updated — customer history will reflect changes', 'success');
-      if (typeof onRefresh === 'function') onRefresh();
-    });
-  },
-
   async renderLoyaltyHub(el) {
     const tab = this._loyaltyTab || 'points';
-    const isOwner = this.app.user?.role === 'owner';
     const tabs = [
       { id: 'points', label: 'Loyalty Points' },
-      ...(isOwner ? [{ id: 'restore', label: 'Restore Points' }] : []),
       { id: 'reminders', label: 'Expiry Reminders' },
       { id: 'giftcards', label: 'Gift Cards' },
-      { id: 'first-gift', label: '🎁 First Online Customer Gift' },
       { id: 'rewards', label: 'Auto Gift Rewards' },
       { id: 'online', label: 'Online Store' }
     ];
@@ -3632,10 +2868,8 @@ const AdminPage = {
 
   async renderLoyaltyHubTab(body, tab) {
     if (tab === 'points') return this.renderLoyaltyPoints(body);
-    if (tab === 'restore') return this.renderLoyaltyRestore(body);
     if (tab === 'reminders') return this.renderLoyaltyReminders(body);
     if (tab === 'giftcards') return this.renderLoyaltyGiftCards(body);
-    if (tab === 'first-gift') return this.renderFirstOnlineGift(body);
     if (tab === 'rewards') return this.renderCustomerRewards(body);
     if (tab === 'online') return this.renderLoyaltyOnline(body);
   },
@@ -3646,8 +2880,7 @@ const AdminPage = {
     const earned = ls.points_earned ?? 1;
     const minSale = ls.min_sale_total ?? 0;
     const pointValue = ls.point_value ?? 1;
-    const expiryUnit = ls.expiry_period_unit === 'months' ? 'months' : 'days';
-    const expiryValue = ls.expiry_period_value ?? ls.points_expiry_days ?? 30;
+    const expiryDays = ls.points_expiry_days ?? 30;
     const reminderDays = ls.reminder_interval_days ?? 3;
     const giftTpl = ls.gift_message_template || '';
     const reminderTpl = ls.reminder_message_template || '';
@@ -3663,24 +2896,14 @@ const AdminPage = {
         <div class="field"><label>Minimum sale total (${currency})</label>
           <input type="number" id="loy-min" step="0.01" min="0" value="${minSale}"></div>
         <div class="field full" style="margin-top:8px;padding-top:12px;border-top:1px solid var(--border)">
-          <label><input type="checkbox" id="loy-expiry-enabled" ${ls.expiry_enabled !== false ? 'checked' : ''}> Points expire after a set period</label>
-          <p class="muted" style="font-size:12px;margin:4px 0 0">The system automatically expires points when the expiry date is reached. You can restore expired points from the Restore Points tab (admin only).</p>
+          <label><input type="checkbox" id="loy-expiry-enabled" ${ls.expiry_enabled !== false ? 'checked' : ''}> Points expire after a set number of days</label>
         </div>
-        <div class="field"><label>Expiry period</label>
-          <input type="number" id="loy-expiry-value" min="1" max="365" value="${expiryValue}" placeholder="e.g. 30, 3, 6"></div>
-        <div class="field"><label>Period unit</label>
-          <select id="loy-expiry-unit">
-            <option value="days" ${expiryUnit === 'days' ? 'selected' : ''}>Days</option>
-            <option value="months" ${expiryUnit === 'months' ? 'selected' : ''}>Months</option>
-          </select></div>
+        <div class="field"><label>Points validity (days)</label>
+          <input type="number" id="loy-expiry-days" min="1" max="730" value="${expiryDays}" placeholder="e.g. 30, 60, 5"></div>
         <div class="field"><label>Reminder every (days)</label>
           <input type="number" id="loy-reminder-days" min="1" max="30" value="${reminderDays}" title="How often to remind customers before points expire"></div>
         <div class="field full">
-          <div class="stat-card" style="margin-top:8px"><div class="label">Expiry example</div>
-            <div class="value" style="font-size:16px" id="loy-expiry-preview">—</div></div>
-        </div>
-        <div class="field full">
-          <div class="stat-card" style="margin-top:8px"><div class="label">Earn example</div>
+          <div class="stat-card" style="margin-top:8px"><div class="label">Example</div>
             <div class="value" style="font-size:16px" id="loy-preview">—</div></div>
         </div>
         <div class="field full"><label>Gift / points-added message template</label>
@@ -3690,11 +2913,7 @@ const AdminPage = {
           <textarea id="loy-reminder-tpl" rows="6" placeholder="Leave blank for professional default">${Utils.escHtml(reminderTpl)}</textarea>
           <p class="muted" style="font-size:12px;margin:4px 0 0">Variables: {{CustomerName}}, {{ShopName}}, {{PointsBalance}}, {{PointsBalanceValue}}, {{PointsExpiring}}, {{ExpiryDate}}, {{DaysRemaining}}, {{OrderOnlineLink}}</p></div>
       </div>
-      <div style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap">
-        <button class="btn btn-primary" id="save-loyalty">Save Loyalty Settings</button>
-        <button class="btn btn-ghost" id="sync-loyalty-points">Assign missing points from orders</button>
-      </div>
-      <p class="muted" id="sync-loyalty-result" style="font-size:13px;margin-top:8px"></p>
+      <button class="btn btn-primary" id="save-loyalty" style="margin-top:16px">Save Loyalty Settings</button>
       </div></div>`;
 
     const updatePreview = () => {
@@ -3705,46 +2924,13 @@ const AdminPage = {
       const pts = Math.floor((exampleTotal / s) * p);
       document.getElementById('loy-preview').textContent =
         `${currency}${exampleTotal} sale → earn ${pts} pts · 100 pts redeem = ${Utils.formatMoney(100 * pv, currency)}`;
-      const ev = parseInt(document.getElementById('loy-expiry-value').value, 10) || 30;
-      const eu = document.getElementById('loy-expiry-unit').value;
-      const unitLabel = ev === 1 ? eu.slice(0, -1) : eu;
-      document.getElementById('loy-expiry-preview').textContent =
-        document.getElementById('loy-expiry-enabled').checked
-          ? `Points earned today expire after ${ev} ${unitLabel}`
-          : 'Expiry is off — points do not expire';
     };
-    ['loy-spend', 'loy-earned', 'loy-value', 'loy-expiry-value', 'loy-expiry-unit', 'loy-expiry-enabled'].forEach(id => {
-      document.getElementById(id)?.addEventListener('input', updatePreview);
-      document.getElementById(id)?.addEventListener('change', updatePreview);
-    });
+    ['loy-spend', 'loy-earned', 'loy-value'].forEach(id => document.getElementById(id).addEventListener('input', updatePreview));
     updatePreview();
-
-    document.getElementById('sync-loyalty-points')?.addEventListener('click', async () => {
-      const btn = document.getElementById('sync-loyalty-points');
-      const out = document.getElementById('sync-loyalty-result');
-      if (btn) btn.disabled = true;
-      if (out) out.textContent = 'Checking completed POS and online orders…';
-      try {
-        const r = await API.syncMissingLoyaltyPoints(this.app.user);
-        if (r?.success === false) throw new Error(r.error || 'Sync failed');
-        const d = r?.data ?? r ?? {};
-        if (out) {
-          out.textContent = `Done — ${d.synced || 0} sales awarded points, ${d.linked || 0} customers linked, ${d.restored || 0} premature expiries fixed, ${d.reconciled || 0} balances corrected.`;
-        }
-        Utils.toast('Loyalty points updated from existing orders', 'success');
-      } catch (err) {
-        if (out) out.textContent = err.message || 'Could not sync loyalty points';
-        Utils.toast(err.message || 'Could not sync loyalty points', 'error');
-      } finally {
-        if (btn) btn.disabled = false;
-      }
-    });
 
     document.getElementById('save-loyalty').addEventListener('click', async () => {
       const giftTpl = document.getElementById('loy-gift-tpl')?.value.trim() || '';
       const reminderTpl = document.getElementById('loy-reminder-tpl')?.value.trim() || '';
-      const expiryValue = parseInt(document.getElementById('loy-expiry-value').value, 10) || 30;
-      const expiryUnit = document.getElementById('loy-expiry-unit').value === 'months' ? 'months' : 'days';
       const data = {
         enabled: document.getElementById('loy-enabled').checked,
         spend_amount: parseFloat(document.getElementById('loy-spend').value) || 10,
@@ -3752,9 +2938,7 @@ const AdminPage = {
         point_value: parseFloat(document.getElementById('loy-value').value) || 1,
         min_sale_total: parseFloat(document.getElementById('loy-min').value) || 0,
         expiry_enabled: document.getElementById('loy-expiry-enabled').checked,
-        expiry_period_value: expiryValue,
-        expiry_period_unit: expiryUnit,
-        points_expiry_days: expiryUnit === 'months' ? expiryValue * 30 : expiryValue,
+        points_expiry_days: parseInt(document.getElementById('loy-expiry-days').value, 10) || 30,
         reminder_interval_days: parseInt(document.getElementById('loy-reminder-days').value, 10) || 3,
         ...(giftTpl ? { gift_message_template: giftTpl } : {}),
         ...(reminderTpl ? { reminder_message_template: reminderTpl } : {})
@@ -3764,55 +2948,6 @@ const AdminPage = {
       this.settings.loyalty_settings = data;
       if (this.app) this.app.settings = { ...this.app.settings, loyalty_settings: data };
     });
-  },
-
-  async renderLoyaltyRestore(el) {
-    if (this.app.user?.role !== 'owner') {
-      el.innerHTML = '<p class="muted">Only the shop owner (admin) can restore expired loyalty points.</p>';
-      return;
-    }
-    el.innerHTML = '<p class="muted">Loading expired points…</p>';
-    try {
-      const res = await API.listRestorableExpiredPoints({ limit: 200 }, this.app.user);
-      const rows = res?.data ?? (Array.isArray(res) ? res : []);
-      el.innerHTML = `<div class="card"><div class="card-body">
-        <h4 style="margin-top:0">Restore expired points</h4>
-        <p class="muted">When points expire automatically, they appear here. Restoring credits the customer again with a fresh expiry based on your current loyalty settings. Only the admin (owner) can do this.</p>
-        ${rows.length ? `<div class="table-wrap"><table><thead><tr>
-          <th>Customer</th><th>Phone</th><th>Expired</th><th>When</th><th>Current balance</th><th></th>
-        </tr></thead><tbody>
-          ${rows.map((r) => `<tr>
-            <td><strong>${Utils.escHtml(r.customer_name || '—')}</strong></td>
-            <td>${Utils.escHtml(r.phone || '—')}</td>
-            <td>${r.points_expired} pts</td>
-            <td>${Utils.formatDateTime(r.created_at).slice(0, 16)}</td>
-            <td>${Math.floor(Number(r.current_balance) || 0)} pts</td>
-            <td><button class="btn btn-sm btn-primary loy-restore-exp" data-id="${r.id}" data-pts="${r.points_expired}" data-name="${Utils.escHtml(r.customer_name || '')}">Restore</button></td>
-          </tr>`).join('')}
-        </tbody></table></div>` : '<p class="muted">No expired points waiting to be restored.</p>'}
-        <button class="btn btn-ghost" id="loy-restore-refresh" style="margin-top:12px">Refresh list</button>
-      </div></div>`;
-      el.querySelector('#loy-restore-refresh')?.addEventListener('click', () => this.renderLoyaltyRestore(el));
-      el.querySelectorAll('.loy-restore-exp').forEach((b) => b.addEventListener('click', async () => {
-        const pts = parseInt(b.dataset.pts, 10) || 0;
-        const name = b.dataset.name || 'customer';
-        if (!confirm(`Restore ${pts} expired points for ${name}? They will get a new expiry date from your current settings.`)) return;
-        b.disabled = true;
-        try {
-          const r = await API.restoreExpiredLoyaltyPoints(parseInt(b.dataset.id, 10), this.app.user);
-          if (r?.success === false) throw new Error(r.error || 'Restore failed');
-          const d = r?.data ?? r ?? {};
-          Utils.toast(`Restored ${d.points_restored || pts} points — new balance: ${d.balance ?? '—'}`, 'success');
-          window.DataCache?.invalidate?.('customers');
-          this.renderLoyaltyRestore(el);
-        } catch (err) {
-          Utils.toast(err.message || 'Could not restore points', 'error');
-          b.disabled = false;
-        }
-      }));
-    } catch (err) {
-      el.innerHTML = `<p class="muted">${Utils.escHtml(err.message || 'Could not load expired points')}</p>`;
-    }
   },
 
   async renderLoyaltyReminders(el) {
@@ -3922,140 +3057,6 @@ const AdminPage = {
       this.section = 'online-orders';
       document.querySelectorAll('.admin-nav-btn').forEach((b) => b.classList.toggle('active', b.dataset.section === 'online-orders'));
       this.renderSection(document.getElementById('admin-content'));
-    });
-  },
-
-  async renderFirstOnlineGift(el) {
-    const currency = this.settings.currency || 'R';
-    const date = this._fogDate || new Date().toLocaleDateString('en-CA');
-    const res = await API.getFirstOnlineGiftDashboard({ date }, this.app.user);
-    if (!res.success) {
-      el.innerHTML = `<p class="muted">${Utils.escHtml(res.error || 'Could not load campaign')}</p>`;
-      return;
-    }
-    const dash = res.data || {};
-    const c = dash.campaign || {};
-    const p = dash.progress || {};
-    const winners = dash.winners || [];
-    const money = (n) => Utils.formatMoney(n || 0, currency);
-    const on = !!c.enabled;
-    const live = !!p.live;
-    el.innerHTML = `<div>
-      <div class="card" style="margin-bottom:16px"><div class="card-body">
-        <div style="display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;align-items:center">
-          <div>
-            <h3 style="margin:0 0 4px">First Online Customer Gift Campaign</h3>
-            <p class="muted" style="margin:0">Automatically awards a real gift card to the first qualifying online customers each day.</p>
-          </div>
-          <button type="button" class="btn ${on ? 'btn-primary' : 'btn-danger'}" id="fog-toggle" style="min-width:120px;font-weight:800">
-            ${on ? '🟢 ON' : '🔴 OFF'}
-          </button>
-        </div>
-        <p class="muted" style="margin:10px 0 0">${on
-          ? (live ? 'Campaign is live — qualifying online orders receive gift cards until the daily limit is reached.'
-            : 'Campaign is ON, but today’s date is outside the start/end period, so no gifts will be issued.')
-          : 'Campaign is OFF. No gift cards are issued automatically. Existing gift cards stay valid.'}</p>
-      </div></div>
-
-      <div class="card" style="margin-bottom:16px"><div class="card-body">
-        <h4 style="margin-top:0">Today's Progress</h4>
-        <div class="form-grid">
-          <div class="field"><strong>🎁 Daily limit:</strong> ${p.daily_limit || 0}</div>
-          <div class="field"><strong>👥 Winners:</strong> ${p.winners_awarded || 0} / ${p.daily_limit || 0}</div>
-          <div class="field"><strong>💰 Gift value:</strong> ${money(p.gift_amount)} each</div>
-          <div class="field"><strong>💰 Today's issued value:</strong> ${money(p.issued_value)}</div>
-          <div class="field"><strong>🎯 Remaining winners:</strong> ${p.remaining || 0}</div>
-          <div class="field"><strong>Next winner:</strong> #${Math.min((p.next_position || 1), (p.daily_limit || 1))} of ${p.daily_limit || 0}</div>
-        </div>
-        <p style="margin:12px 0 0">Total campaign liability: <strong>${p.daily_limit || 0} × ${money(c.gift_amount)} = ${money(p.liability)}</strong></p>
-        <p class="muted" style="margin:6px 0 0">Shop day uses Africa/Johannesburg. The winner counter resets automatically at midnight — you do not reset it yourself.</p>
-      </div></div>
-
-      <div class="card" style="margin-bottom:16px"><div class="card-body">
-        <h4 style="margin-top:0">Campaign settings</h4>
-        <div class="form-grid">
-          <div class="field"><label>Gift amount (${currency})</label>
-            <input type="number" id="fog-amount" min="0.01" step="0.01" value="${c.gift_amount ?? 10}">
-            <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">${[5, 10, 20, 50, 100].map((n) =>
-              `<button type="button" class="btn btn-sm btn-ghost fog-amt" data-amt="${n}">${currency}${n}</button>`).join('')}</div></div>
-          <div class="field"><label>Daily winner limit</label>
-            <input type="number" id="fog-limit" min="1" step="1" value="${c.daily_limit ?? 10}">
-            <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">${[1, 5, 10, 20, 50].map((n) =>
-              `<button type="button" class="btn btn-sm btn-ghost fog-lim" data-lim="${n}">${n}</button>`).join('')}</div></div>
-          <div class="field"><label>Minimum qualifying order (${currency}) — optional</label>
-            <input type="number" id="fog-min" min="0" step="0.01" value="${c.min_order_amount ?? 0}"></div>
-          <div class="field"><label>Gift expiry (days) — optional</label>
-            <input type="number" id="fog-expiry" min="1" step="1" value="${c.expiry_days ?? ''}" placeholder="Leave blank for no expiry"></div>
-          <div class="field"><label>Start date</label>
-            <input type="date" id="fog-start" value="${c.start_date ? String(c.start_date).slice(0, 10) : ''}">
-            <p class="muted" style="font-size:12px;margin:4px 0 0">Leave blank to start immediately while ON.</p></div>
-          <div class="field"><label>End date</label>
-            <input type="date" id="fog-end" value="${c.end_date ? String(c.end_date).slice(0, 10) : ''}">
-            <p class="muted" style="font-size:12px;margin:4px 0 0">Leave blank to keep running until you turn it OFF.</p></div>
-          <div class="field"><label>Online orders only</label><input type="text" value="YES" disabled></div>
-          <div class="field"><label>One gift per account per campaign</label><input type="text" value="YES" disabled></div>
-        </div>
-        <button type="button" class="btn btn-primary" id="fog-save" style="margin-top:12px">Save campaign settings</button>
-      </div></div>
-
-      <div class="card"><div class="card-body">
-        <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:end">
-          <div>
-            <h4 style="margin:0 0 4px">Winners</h4>
-            <p class="muted" style="margin:0">Every automatic award is stored with the customer account, order, gift card, and winner number.</p>
-          </div>
-          <div class="field" style="margin:0"><label>Date</label>
-            <input type="date" id="fog-date" value="${date}"></div>
-        </div>
-        <div class="table-wrap" style="margin-top:12px"><table>
-          <thead><tr><th>Position</th><th>Customer</th><th>Order</th><th>Gift</th><th>Gift card</th><th>Status</th></tr></thead>
-          <tbody>${winners.length ? winners.map((w) => `<tr>
-            <td>#${w.position}</td>
-            <td>${Utils.escHtml(w.customer_name || `Account ${w.web_customer_id}`)}</td>
-            <td>${Utils.escHtml(w.order_number || String(w.order_id || '—'))}</td>
-            <td>${money(w.amount)}</td>
-            <td><code>${Utils.escHtml(w.gift_card_code || '—')}</code></td>
-            <td>${w.status === 'issued' ? 'Issued' : Utils.escHtml(String(w.status || '—').replace(/_/g, ' '))}${w.gift_status && w.status === 'issued' ? ` · ${String(w.gift_status).toUpperCase()}` : ''}</td>
-          </tr>`).join('') : `<tr><td colspan="6" class="muted">No winners on ${Utils.escHtml(date)}.</td></tr>`}</tbody>
-        </table></div>
-        ${this.app.user?.role === 'owner' ? `<button type="button" class="btn btn-ghost btn-sm" id="fog-selftest" style="margin-top:12px">Run campaign self-test</button>` : ''}
-      </div></div>
-    </div>`;
-
-    const reload = () => this.renderLoyaltyHubTab(el, 'first-gift');
-    const readForm = (enabled) => ({
-      enabled: enabled != null ? enabled : on,
-      gift_amount: parseFloat(document.getElementById('fog-amount').value),
-      daily_limit: parseInt(document.getElementById('fog-limit').value, 10),
-      min_order_amount: parseFloat(document.getElementById('fog-min').value) || 0,
-      expiry_days: document.getElementById('fog-expiry').value ? parseInt(document.getElementById('fog-expiry').value, 10) : null,
-      start_date: document.getElementById('fog-start').value || null,
-      end_date: document.getElementById('fog-end').value || null
-    });
-    const save = async (data) => {
-      const r = await API.saveFirstOnlineGift(data, this.app.user);
-      if (!r.success) return Utils.toast(r.error, 'error');
-      Utils.toast('Campaign saved', 'success');
-      reload();
-    };
-    document.getElementById('fog-toggle')?.addEventListener('click', () => save({ ...readForm(!on), enabled: !on }));
-    document.getElementById('fog-save')?.addEventListener('click', () => save(readForm()));
-    el.querySelectorAll('.fog-amt').forEach((b) => b.addEventListener('click', () => {
-      document.getElementById('fog-amount').value = b.dataset.amt;
-    }));
-    el.querySelectorAll('.fog-lim').forEach((b) => b.addEventListener('click', () => {
-      document.getElementById('fog-limit').value = b.dataset.lim;
-    }));
-    document.getElementById('fog-date')?.addEventListener('change', (e) => {
-      this._fogDate = e.target.value;
-      reload();
-    });
-    document.getElementById('fog-selftest')?.addEventListener('click', async () => {
-      const r = await API.selfTestFirstOnlineGift(this.app.user);
-      if (!r.success) return Utils.toast(r.error, 'error');
-      const findings = r.data?.findings || [];
-      const failed = findings.filter((f) => !f.ok);
-      Utils.toast(failed.length ? `Self-test failed: ${failed.map((f) => f.name).join(', ')}` : 'Self-test passed', failed.length ? 'error' : 'success');
     });
   },
 
@@ -4178,42 +3179,12 @@ const AdminPage = {
   },
 
   renderPaymentMethods(el) {
-    const tab = this._paymentsTab || 'methods';
-    const tabs = [
-      { id: 'methods', label: 'POS Methods' },
-      { id: 'gateways', label: 'Payment Gateways' },
-      { id: 'transactions', label: 'Payment Transactions' }
-    ];
-    el.innerHTML = `<div class="admin-section">
-      <h3>Payment Methods</h3>
-      <p class="muted">POS tender types, online payment gateways (Yoco first), and payment transaction history.</p>
-      <div class="admin-tabs" id="payments-tabs">
-        ${tabs.map((t) => `<button class="admin-tab ${tab === t.id ? 'active' : ''}" data-pay-tab="${t.id}">${t.label}</button>`).join('')}
-      </div>
-      <div id="payments-tab-body"></div>
-    </div>`;
-    el.querySelector('#payments-tabs').onclick = (e) => {
-      const b = e.target.closest('[data-pay-tab]');
-      if (!b) return;
-      this._paymentsTab = b.dataset.payTab;
-      el.querySelectorAll('#payments-tabs .admin-tab').forEach((x) => x.classList.toggle('active', x.dataset.payTab === this._paymentsTab));
-      this.renderPaymentMethodsTab(el.querySelector('#payments-tab-body'), this._paymentsTab);
-    };
-    this.renderPaymentMethodsTab(el.querySelector('#payments-tab-body'), tab);
-  },
-
-  renderPaymentMethodsTab(body, tab) {
-    if (tab === 'gateways') return this.renderPaymentGateways(body);
-    if (tab === 'transactions') return this.renderPaymentTransactions(body);
-    return this.renderPosPaymentMethods(body);
-  },
-
-  renderPosPaymentMethods(el) {
     const pm = this.settings.payment_settings || {};
     const enabled = pm.enabled_methods || Utils.paymentTypes;
     const custom = pm.custom_methods || [];
-    el.innerHTML = `<div class="card"><div class="card-body">
-        <p class="muted" style="margin-top:0">Enable payment types available at POS checkout. Online “Pay Online” is configured under <strong>Payment Gateways</strong>.</p>
+    el.innerHTML = `<div class="admin-section"><h3>Payment Methods</h3>
+      <p class="muted">Enable payment types available at checkout. Add custom methods (e.g. SnapScan, PayFast) — any string is accepted at sale completion.</p>
+      <div class="card"><div class="card-body">
         <div class="form-grid">
           ${Utils.paymentTypes.map(t => `<div class="field"><label>
             <input type="checkbox" class="pm-enable" data-type="${t}" ${enabled.includes(t) ? 'checked' : ''}>
@@ -4233,7 +3204,7 @@ const AdminPage = {
           </div>`).join('') || '<p class="muted" id="custom-pm-empty">No custom methods yet</p>'}</div>
         <button type="button" class="btn btn-ghost btn-sm" id="add-custom-pm" style="margin-top:8px">+ Add Custom Method</button>
         <button class="btn btn-primary" id="save-payments" style="margin-top:16px">Save Payment Settings</button>
-      </div></div>`;
+      </div></div></div>`;
 
     document.getElementById('add-custom-pm').addEventListener('click', () => {
       const list = document.getElementById('custom-pm-list');
@@ -4272,183 +3243,6 @@ const AdminPage = {
       if (this.app) this.app.settings = { ...this.app.settings, payment_settings: data };
       Utils.toast('Payment settings saved — online checkout updated', 'success');
     });
-  },
-
-  async renderPaymentGateways(el) {
-    el.innerHTML = `<div class="card"><div class="card-body"><p class="muted">Loading payment gateways…</p></div></div>`;
-    let gateways = [];
-    try {
-      const res = await API.listPaymentGateways(this.app.user);
-      gateways = res?.data || res || [];
-      if (!Array.isArray(gateways)) gateways = [];
-    } catch (err) {
-      el.innerHTML = `<div class="card"><div class="card-body"><p class="muted" style="color:var(--danger)">${Utils.escHtml(err.message || 'Could not load gateways')}</p></div></div>`;
-      return;
-    }
-
-    const g = gateways.find((x) => x.provider === 'yoco') || gateways[0] || {
-      provider: 'yoco', name: 'Yoco', enabled: false, test_mode: true, currency: 'ZAR'
-    };
-
-    const testBanner = g.test_mode !== false
-      ? `<div style="background:#fef3c7;color:#92400e;padding:10px 14px;border-radius:8px;margin-bottom:14px;font-weight:600">TEST MODE — NO REAL MONEY</div>`
-      : `<div style="background:#fee2e2;color:#991b1b;padding:10px 14px;border-radius:8px;margin-bottom:14px;font-weight:600">LIVE MODE — REAL MONEY</div>`;
-
-    el.innerHTML = `<div class="card"><div class="card-body">
-      <h4 style="margin-top:0">Payment Gateways</h4>
-      <p class="muted">Enable and configure online gateways without changing checkout code. Secrets stay on the server and are never sent to customers or cashiers.</p>
-      ${testBanner}
-      <div class="form-grid" id="gw-form" data-provider="${Utils.escHtml(g.provider)}">
-        <div class="field"><label>Gateway name</label><input id="gw-name" value="${Utils.escHtml(g.name || 'Yoco')}"></div>
-        <div class="field"><label>Provider</label><input value="${Utils.escHtml(g.provider || 'yoco')}" disabled></div>
-        <div class="field full"><label><input type="checkbox" id="gw-enabled" ${g.enabled ? 'checked' : ''}> Enabled (show “Pay Online” at website checkout)</label></div>
-        <div class="field full"><label><input type="checkbox" id="gw-test" ${g.test_mode !== false ? 'checked' : ''}> Test Mode</label></div>
-        <div class="field"><label>Public / API key</label><input id="gw-public" value="${Utils.escHtml(g.public_key || '')}" placeholder="pk_test_… or pk_live_…" autocomplete="off"></div>
-        <div class="field"><label>Currency</label><input id="gw-currency" value="${Utils.escHtml(g.currency || 'ZAR')}"></div>
-        <div class="field full"><label>Secret key ${g.has_secret_key ? `<span class="muted">(saved: ${Utils.escHtml(g.secret_key_masked || '••••')})</span>` : ''}</label>
-          <input id="gw-secret" type="password" value="" placeholder="${g.has_secret_key ? 'Leave blank to keep existing secret' : 'sk_test_… or sk_live_…'}" autocomplete="new-password"></div>
-        <div class="field full"><label>Webhook secret ${g.has_webhook_secret ? `<span class="muted">(saved: ${Utils.escHtml(g.webhook_secret_masked || '••••')})</span>` : ''}</label>
-          <input id="gw-webhook-secret" type="password" value="" placeholder="${g.has_webhook_secret ? 'Leave blank to keep existing secret' : 'whsec_…'}" autocomplete="new-password"></div>
-        <div class="field full"><label>Webhook URL (register this in Yoco)</label>
-          <input id="gw-webhook-url" value="${Utils.escHtml(g.webhook_url || '')}" readonly onclick="this.select()"></div>
-      </div>
-      <div style="margin-top:12px;display:flex;flex-wrap:wrap;gap:8px">
-        <button type="button" class="btn btn-primary" id="gw-save">Save configuration</button>
-        <button type="button" class="btn btn-ghost" id="gw-test-btn">Test connection</button>
-        <button type="button" class="btn btn-ghost" id="gw-register-wh">Register webhook with Yoco</button>
-      </div>
-      <div style="margin-top:16px;font-size:13px;color:var(--muted)">
-        <div><strong>Status:</strong> ${Utils.escHtml(g.status_message || '—')}</div>
-        <div><strong>Last successful connection:</strong> ${Utils.escHtml(g.last_successful_connection_at || '—')}</div>
-        <div><strong>Last webhook received:</strong> ${Utils.escHtml(g.last_webhook_at || '—')}</div>
-        ${g.last_error ? `<div style="color:var(--danger)"><strong>Error:</strong> ${Utils.escHtml(g.last_error)}</div>` : ''}
-      </div>
-      <p class="muted" style="margin-top:16px;font-size:12px">Configure <strong>TEST</strong> keys first in the Yoco App. After testing, uncheck Test Mode and confirm the live warning. Domain verification is required for live keys.</p>
-    </div></div>`;
-
-    const reload = () => this.renderPaymentGateways(el);
-
-    el.querySelector('#gw-save')?.addEventListener('click', async () => {
-      const testMode = el.querySelector('#gw-test')?.checked !== false;
-      const enabled = el.querySelector('#gw-enabled')?.checked === true;
-      let confirmLive = false;
-      if (enabled && !testMode) {
-        confirmLive = window.confirm(
-          'WARNING: You are about to enable LIVE MODE.\n\nReal customer payments will be charged.\n\nOnly continue after successful TEST MODE payments and Yoco domain verification.\n\nEnable LIVE MODE?'
-        );
-        if (!confirmLive) {
-          el.querySelector('#gw-test').checked = true;
-          return Utils.toast('Kept TEST MODE — live not enabled', 'info');
-        }
-      }
-      const payload = {
-        name: el.querySelector('#gw-name')?.value.trim() || 'Yoco',
-        enabled,
-        test_mode: testMode,
-        public_key: el.querySelector('#gw-public')?.value.trim() || '',
-        currency: el.querySelector('#gw-currency')?.value.trim() || 'ZAR',
-        confirm_live: confirmLive
-      };
-      const sk = el.querySelector('#gw-secret')?.value.trim();
-      const wh = el.querySelector('#gw-webhook-secret')?.value.trim();
-      if (sk) payload.secret_key = sk;
-      if (wh) payload.webhook_secret = wh;
-      try {
-        await API.savePaymentGateway(g.provider || 'yoco', payload, this.app.user);
-        Utils.toast('Gateway configuration saved', 'success');
-        reload();
-      } catch (err) {
-        Utils.toast(err.message || 'Could not save gateway', 'error');
-      }
-    });
-
-    el.querySelector('#gw-test-btn')?.addEventListener('click', async () => {
-      try {
-        const r = await API.testPaymentGateway(g.provider || 'yoco', this.app.user);
-        const data = r?.data || r;
-        if (data?.success) Utils.toast(data.message || 'Connection OK', 'success');
-        else Utils.toast(data?.error || 'Connection failed', 'error');
-        reload();
-      } catch (err) {
-        Utils.toast(err.message || 'Connection failed', 'error');
-      }
-    });
-
-    el.querySelector('#gw-register-wh')?.addEventListener('click', async () => {
-      try {
-        const r = await API.registerPaymentGatewayWebhook(g.provider || 'yoco', this.app.user);
-        const data = r?.data || r;
-        Utils.toast(data?.note || data?.gateway?.status_message || 'Webhook registered', 'success');
-        reload();
-      } catch (err) {
-        Utils.toast(err.message || 'Could not register webhook', 'error');
-      }
-    });
-  },
-
-  async renderPaymentTransactions(el) {
-    el.innerHTML = `<div class="card"><div class="card-body">
-      <div class="form-grid" id="ptx-filters" style="margin-bottom:12px">
-        <div class="field"><label>Date from</label><input type="date" id="ptx-from"></div>
-        <div class="field"><label>Date to</label><input type="date" id="ptx-to"></div>
-        <div class="field"><label>Gateway</label>
-          <select id="ptx-gateway"><option value="">All</option><option value="yoco">Yoco</option></select></div>
-        <div class="field"><label>Status</label>
-          <select id="ptx-status">
-            <option value="">All</option>
-            ${['PENDING','AUTHORIZED','PAID','FAILED','CANCELLED','EXPIRED','REFUNDED','PARTIALLY_REFUNDED']
-              .map((s) => `<option value="${s}">${s}</option>`).join('')}
-          </select></div>
-        <div class="field"><label>Order number</label><input id="ptx-order" placeholder="ONLINE-…"></div>
-        <div class="field" style="display:flex;align-items:flex-end"><button type="button" class="btn btn-primary" id="ptx-refresh">Filter</button></div>
-      </div>
-      <div id="ptx-table"><p class="muted">Loading…</p></div>
-    </div></div>`;
-
-    const load = async () => {
-      const filters = {
-        date_from: el.querySelector('#ptx-from')?.value || undefined,
-        date_to: el.querySelector('#ptx-to')?.value ? `${el.querySelector('#ptx-to').value}T23:59:59` : undefined,
-        gateway: el.querySelector('#ptx-gateway')?.value || undefined,
-        status: el.querySelector('#ptx-status')?.value || undefined,
-        order_number: el.querySelector('#ptx-order')?.value.trim() || undefined,
-        limit: 100
-      };
-      const box = el.querySelector('#ptx-table');
-      box.innerHTML = `<p class="muted">Loading…</p>`;
-      try {
-        const res = await API.listPaymentTransactions(filters, this.app.user);
-        const rows = res?.data || res || [];
-        if (!rows.length) {
-          box.innerHTML = `<p class="muted">No payment transactions yet.</p>`;
-          return;
-        }
-        box.innerHTML = `<div class="table-wrap"><table class="data-table">
-          <thead><tr>
-            <th>Order</th><th>Customer</th><th>Gateway</th><th>Txn ID</th>
-            <th>Amount</th><th>Currency</th><th>Status</th>
-            <th>Created</th><th>Paid</th><th>Failure</th><th>Refund</th>
-          </tr></thead>
-          <tbody>${rows.map((r) => `<tr>
-            <td>${Utils.escHtml(r.order_number || r.order_id || '—')}</td>
-            <td>${Utils.escHtml(r.customer_name || '—')}</td>
-            <td>${Utils.escHtml(r.gateway_provider || '—')}</td>
-            <td style="font-size:11px;max-width:140px;overflow:hidden;text-overflow:ellipsis">${Utils.escHtml(r.gateway_transaction_id || r.gateway_payment_id || r.gateway_checkout_id || '—')}</td>
-            <td>${Utils.formatMoney?.(r.amount, this.settings.currency || 'R') ?? r.amount}</td>
-            <td>${Utils.escHtml(r.currency || 'ZAR')}</td>
-            <td><span class="tag">${Utils.escHtml(r.status || '—')}</span></td>
-            <td>${Utils.escHtml((r.created_at || '').toString().slice(0, 19))}</td>
-            <td>${Utils.escHtml((r.paid_at || '').toString().slice(0, 19) || '—')}</td>
-            <td style="font-size:11px">${Utils.escHtml(r.failure_reason || '—')}</td>
-            <td>${Utils.escHtml(r.refund_status || '—')}</td>
-          </tr>`).join('')}</tbody></table></div>`;
-      } catch (err) {
-        box.innerHTML = `<p class="muted" style="color:var(--danger)">${Utils.escHtml(err.message || 'Failed to load')}</p>`;
-      }
-    };
-
-    el.querySelector('#ptx-refresh')?.addEventListener('click', load);
-    await load();
   },
 
   renderCustomize(el) {
@@ -4576,82 +3370,30 @@ const AdminPage = {
   },
 
   async renderBranchesSync(el) {
-    const [branchesRes, tillsRes] = await Promise.all([
-      API.getBranches(),
-      API.listBranchTills?.().catch(() => [])
-    ]);
+    const branchesRes = await API.getBranches();
     const branches = branchesRes.data || [];
-    const allTills = tillsRes?.data ?? tillsRes ?? [];
-    const tillsByBranch = {};
-    (Array.isArray(allTills) ? allTills : []).forEach((t) => {
-      const bid = Number(t.branch_id);
-      if (!tillsByBranch[bid]) tillsByBranch[bid] = [];
-      tillsByBranch[bid].push(t);
-    });
     const activeRes = await API.getActiveBranch?.() || {};
     const active = activeRes.data || branches.find((b) => b.is_active) || branches[0] || { id: 1, name: 'Main Branch', code: 'MAIN' };
     const viewRes = await API.getViewBranch?.() || {};
     const view = viewRes.data || {};
     const currency = this.settings?.currency || 'R';
-    const role = this.app?.user?.role;
-    const canManage = ['owner', 'manager'].includes(role);
-    const canDeleteBranch = role === 'owner';
-    const thisDeviceId = Utils.getDeviceId?.() || '';
-    const thisDeviceName = Utils.mergeDeviceSettings?.(this.settings)?.device_name
-      || this.settings?.device_settings?.device_name || 'This computer';
-    const branchOpts = branches.map((b) => `<option value="${b.id}">${Utils.escHtml(b.name)} (${Utils.escHtml(b.code || '')})</option>`).join('');
+    const isOwner = this.app?.user?.role === 'owner';
 
-    el.innerHTML = `<div class="admin-section"><h3>Branches &amp; Tills</h3>
-      <p class="muted">Create branches, register POS tills, connect this computer, and manage tax per branch.
-        Assign manager, supervisor and cashiers in <strong>Users</strong>.</p>
+    el.innerHTML = `<div class="admin-section"><h3>Branches</h3>
+      <p class="muted">Each branch has its own manager (1), supervisor (1), cashiers (many), stock, sales, tax and expenses.
+        Marketing agents can be shared. Use the top <strong>Branch</strong> filter to view one shop or all.</p>
       <div class="card" style="margin-bottom:12px"><div class="card-body">
         <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center">
-          <div><span class="muted">This till sells as:</span> <strong>${Utils.escHtml(active.name || '—')}</strong> <span class="tag tag-ok">Active branch</span></div>
+          <div><span class="muted">Till connected to:</span> <strong>${Utils.escHtml(active.name || '—')}</strong> <span class="tag tag-ok">Active till</span></div>
           <div><span class="muted">Admin viewing:</span> <strong>${view.view_all || view.view_branch_id == null ? 'All branches' : Utils.escHtml(view.branch?.name || '—')}</strong></div>
-          <div><span class="muted">Device ID:</span> <code style="font-size:11px">${Utils.escHtml(thisDeviceId)}</code></div>
         </div>
       </div></div>
-      ${canManage ? `<div class="card" style="margin-bottom:12px"><div class="card-body">
-        <h4 style="margin-top:0">Connect this computer</h4>
-        <p class="muted" style="font-size:12px">Registers this device as a till and sets which branch it sells for.</p>
-        <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end">
-          <div class="field" style="margin:0;min-width:180px"><label>Till display name</label>
-            <input id="br-this-name" value="${Utils.escHtml(thisDeviceName)}"></div>
-          <div class="field" style="margin:0;min-width:180px"><label>Branch</label>
-            <select id="br-this-branch">${branchOpts}</select></div>
-          <button type="button" class="btn btn-primary" id="br-connect-this">Connect this till</button>
-        </div>
-        <h4 style="margin-top:20px">Register a till</h4>
-        <p class="muted" style="font-size:12px">Create a till slot before installing POS on another PC/tablet. Share the device ID with that device or let it auto-register on first connect.</p>
-        <div class="form-grid">
-          <div class="field"><label>Till name *</label><input id="br-till-name" placeholder="e.g. Front Counter 1"></div>
-          <div class="field"><label>Branch *</label><select id="br-till-branch">${branchOpts}</select></div>
-          <div class="field"><label>Device ID (optional)</label><input id="br-till-device" placeholder="Auto-generated if blank"></div>
-        </div>
-        <button type="button" class="btn btn-primary" id="br-register-till" style="margin-top:8px">Create till</button>
-        <h4 style="margin-top:20px">All tills (${allTills.length})</h4>
-        <div class="table-wrap"><table class="table">
-          <thead><tr><th>Till name</th><th>Device ID</th><th>Branch</th><th>Status</th><th>Last seen</th><th></th></tr></thead>
-          <tbody>${(Array.isArray(allTills) ? allTills : []).map((t) => `<tr>
-            <td><strong>${Utils.escHtml(t.device_name || t.device_label || 'Till')}</strong>${t.device_id === thisDeviceId ? ' <span class="tag tag-ok">This device</span>' : ''}</td>
-            <td><code style="font-size:11px">${Utils.escHtml(t.device_id || '')}</code></td>
-            <td>${Utils.escHtml(t.branch_name || String(t.branch_id))}</td>
-            <td><span class="tag">${Utils.escHtml(t.status || 'registered')}</span></td>
-            <td class="muted">${Utils.formatDateTime(t.last_seen_at || '')}</td>
-            <td style="white-space:nowrap">
-              <button type="button" class="btn btn-sm btn-ghost br-edit-till" data-branch="${t.branch_id}" data-device="${Utils.escHtml(t.device_id || '')}">Edit</button>
-              <button type="button" class="btn btn-sm btn-primary br-use-till" data-branch="${t.branch_id}" data-device="${Utils.escHtml(t.device_id || '')}">Use here</button>
-              <button type="button" class="btn btn-sm btn-danger br-remove-till" data-branch="${t.branch_id}" data-device="${Utils.escHtml(t.device_id || '')}">Delete</button>
-            </td></tr>`).join('') || '<tr><td colspan="6" class="muted">No tills yet — register one above or connect this computer</td></tr>'}
-          </tbody></table></div>
-      </div></div>` : ''}
       <div class="card"><div class="card-body">
         <h4 style="margin-top:0">Your branches</h4>
         <div id="branch-list">${branches.map((b) => {
           const mgr = b.manager?.full_name || '— none —';
           const sup = b.supervisor?.full_name || '— none —';
           const cashiers = b.cashier_count != null ? b.cashier_count : (b.staff?.cashiers?.length || 0);
-          const tills = tillsByBranch[b.id] || [];
           return `<div style="padding:12px 0;border-bottom:1px solid var(--border)">
             <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between">
               <div>
@@ -4664,18 +3406,16 @@ const AdminPage = {
                   · Stock SKUs: ${b.stock_skus || 0}
                 </div>
                 ${b.address ? `<div class="muted" style="font-size:12px">${Utils.escHtml(b.address)}${b.phone ? ' · ' + Utils.escHtml(b.phone) : ''}</div>` : ''}
-                ${tills.length ? `<div class="muted" style="font-size:12px;margin-top:6px">${tills.length} till(s) registered — see <strong>All tills</strong> table above</div>` : `<div class="muted" style="font-size:12px;margin-top:6px">No tills yet</div>`}
               </div>
-              <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">
-                <button type="button" class="btn btn-sm btn-primary br-activate" data-id="${b.id}">Connect till</button>
-                ${canManage ? `<button type="button" class="btn btn-sm btn-ghost br-view" data-id="${b.id}">View data</button>
+              <div style="display:flex;flex-wrap:wrap;gap:6px">
+                <button type="button" class="btn btn-sm btn-ghost br-activate" data-id="${b.id}">Connect till</button>
+                ${isOwner ? `<button type="button" class="btn btn-sm btn-ghost br-view" data-id="${b.id}">View data</button>
                 <button type="button" class="btn btn-sm btn-ghost br-edit" data-id="${b.id}">Edit</button>` : ''}
-                ${canDeleteBranch ? `<button type="button" class="btn btn-sm btn-danger br-delete" data-id="${b.id}">Delete</button>` : ''}
               </div>
             </div>
           </div>`;
         }).join('') || '<p class="muted">No branches yet — add your first shop below.</p>'}</div>
-        ${canManage ? `<h4 style="margin-top:16px">Add / connect a branch</h4>
+        ${isOwner ? `<h4 style="margin-top:16px">Add / connect a branch</h4>
         <div class="form-grid">
           <div class="field"><label>Branch Name *</label><input id="br-name" placeholder="e.g. Sandton Mall"></div>
           <div class="field"><label>Branch Code *</label><input id="br-code" placeholder="e.g. SANDTON"></div>
@@ -4716,9 +3456,6 @@ const AdminPage = {
       this.renderSection(document.getElementById('admin-content'));
     });
 
-    const thisBranchSel = document.getElementById('br-this-branch');
-    if (thisBranchSel && active?.id) thisBranchSel.value = String(active.id);
-
     document.getElementById('br-add')?.addEventListener('click', async () => {
       const name = document.getElementById('br-name').value.trim();
       const code = document.getElementById('br-code').value.trim();
@@ -4754,39 +3491,21 @@ const AdminPage = {
     });
 
     el.querySelectorAll('.br-edit').forEach((btn) => {
-      btn.addEventListener('click', async () => {
+      btn.addEventListener('click', () => {
         const b = branches.find((x) => String(x.id) === String(btn.dataset.id));
         if (!b) return;
-        let detail = b;
-        try {
-          const fresh = await API.getBranches();
-          detail = (fresh?.data || fresh || []).find((x) => String(x.id) === String(b.id)) || b;
-        } catch (_) { /* use cached */ }
-        const st = detail.settings || {};
-        const staff = detail.staff || {};
-        Utils.showModal(`Edit branch — ${Utils.escHtml(detail.name || '')}`, `
-          <h4 style="margin:0 0 8px">Branch details</h4>
+        Utils.showModal(`Edit branch — ${b.name}`, `
           <div class="form-grid">
-            <div class="field"><label>Name *</label><input id="be-name" value="${Utils.escHtml(detail.name || '')}"></div>
-            <div class="field"><label>Code *</label><input id="be-code" value="${Utils.escHtml(detail.code || '')}"></div>
-            <div class="field full"><label>Address</label><input id="be-address" value="${Utils.escHtml(detail.address || '')}"></div>
-            <div class="field"><label>Phone</label><input id="be-phone" value="${Utils.escHtml(detail.phone || '')}"></div>
-            <div class="field"><label><input type="checkbox" id="be-active" ${detail.is_active !== 0 ? 'checked' : ''}> Branch active</label></div>
-          </div>
-          <h4 style="margin:16px 0 8px">Tax &amp; VAT (this branch)</h4>
-          <div class="form-grid">
-            <div class="field"><label><input type="checkbox" id="be-tax-enabled" ${st.tax_enabled ? 'checked' : ''}> Enable tax on this branch</label></div>
-            <div class="field"><label>Tax rate %</label><input type="number" step="0.01" id="be-tax-rate" value="${Number(st.tax_rate) || 0}"></div>
-            <div class="field"><label>VAT number</label><input id="be-vat" value="${Utils.escHtml(st.vat_number || '')}"></div>
-            <div class="field"><label><input type="checkbox" id="be-tax-inclusive" ${st.tax_inclusive !== 0 ? 'checked' : ''}> Prices tax-inclusive</label></div>
-            <div class="field"><label><input type="checkbox" id="be-tax-pos" ${st.tax_show_on_pos !== 0 ? 'checked' : ''}> Show tax on POS</label></div>
-          </div>
-          <h4 style="margin:16px 0 8px">Staff on this branch</h4>
-          <p class="muted" style="font-size:12px;margin:0 0 8px">Manager: ${Utils.escHtml(staff.managers?.[0]?.full_name || '—')} · Supervisor: ${Utils.escHtml(staff.supervisors?.[0]?.full_name || '—')} · Cashiers: ${staff.cashiers?.length || 0}. Change assignments in <strong>Users</strong>.</p>`,
-          '<button class="btn btn-primary" id="be-save">Save all changes</button>');
+            <div class="field"><label>Name</label><input id="be-name" value="${Utils.escHtml(b.name || '')}"></div>
+            <div class="field"><label>Code</label><input id="be-code" value="${Utils.escHtml(b.code || '')}"></div>
+            <div class="field"><label>Address</label><input id="be-address" value="${Utils.escHtml(b.address || '')}"></div>
+            <div class="field"><label>Phone</label><input id="be-phone" value="${Utils.escHtml(b.phone || '')}"></div>
+            <div class="field full"><label><input type="checkbox" id="be-active" ${b.is_active !== 0 ? 'checked' : ''}> Active</label></div>
+          </div>`,
+          '<button class="btn btn-primary" id="be-save">Save</button>');
         document.getElementById('be-save')?.addEventListener('click', async () => {
           const r = await API.saveBranch({
-            id: detail.id,
+            id: b.id,
             name: document.getElementById('be-name').value.trim(),
             code: document.getElementById('be-code').value.trim(),
             address: document.getElementById('be-address').value.trim(),
@@ -4794,114 +3513,10 @@ const AdminPage = {
             is_active: document.getElementById('be-active').checked
           }, this.app.user);
           if (!r.success) return Utils.toast(r.error || 'Save failed', 'error');
-          const r2 = await API.saveBranchSettings(detail.id, {
-            tax_enabled: document.getElementById('be-tax-enabled').checked,
-            tax_rate: parseFloat(document.getElementById('be-tax-rate').value) || 0,
-            vat_number: document.getElementById('be-vat').value.trim(),
-            tax_inclusive: document.getElementById('be-tax-inclusive').checked,
-            tax_show_on_pos: document.getElementById('be-tax-pos').checked
-          }, this.app.user);
-          if (r2?.success === false) return Utils.toast(r2.error || 'Tax settings save failed', 'error');
           Utils.hideModal();
-          Utils.toast('Branch and tax settings updated', 'success');
+          Utils.toast('Branch updated', 'success');
           this.renderBranchesSync(el);
         });
-      });
-    });
-
-    document.getElementById('br-connect-this')?.addEventListener('click', async () => {
-      const branchId = parseInt(document.getElementById('br-this-branch')?.value, 10);
-      const label = document.getElementById('br-this-name')?.value.trim() || thisDeviceName;
-      if (!branchId) return Utils.toast('Select a branch', 'error');
-      try { Utils.saveLocalDeviceSettings?.({ device_name: label, branch_id: branchId }); } catch (_) { /* */ }
-      const tr = await API.saveBranchTill?.(branchId, { device_id: thisDeviceId, device_label: label }, this.app.user);
-      if (tr?.success === false || tr?.error) return Utils.toast(tr?.error || 'Till registration failed', 'error');
-      const r = await API.setActiveBranch(branchId, this.app.user);
-      if (r && r.success === false) return Utils.toast(r.error || 'Failed', 'error');
-      Utils.toast('This computer is now connected as a till', 'success');
-      this.app?.refreshBranchSwitcher?.();
-      this.renderBranchesSync(el);
-    });
-
-    document.getElementById('br-register-till')?.addEventListener('click', async () => {
-      const name = document.getElementById('br-till-name')?.value.trim();
-      const branchId = parseInt(document.getElementById('br-till-branch')?.value, 10);
-      const deviceId = document.getElementById('br-till-device')?.value.trim();
-      if (!name || !branchId) return Utils.toast('Till name and branch required', 'error');
-      const r = await API.saveBranchTill?.(branchId, { device_label: name, device_id: deviceId || undefined }, this.app.user);
-      if (r?.success === false || r?.error) return Utils.toast(r?.error || 'Create failed', 'error');
-      Utils.toast(`Till created — Device ID: ${r?.device_id || r?.data?.device_id || deviceId || 'see table'}`, 'success');
-      this.renderBranchesSync(el);
-    });
-
-    el.querySelectorAll('.br-edit-till').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const branchId = parseInt(btn.dataset.branch, 10);
-        const deviceId = btn.dataset.device;
-        const till = (Array.isArray(allTills) ? allTills : []).find((t) => String(t.device_id) === String(deviceId) && Number(t.branch_id) === branchId);
-        Utils.showModal('Edit till', `
-          <div class="form-grid">
-            <div class="field"><label>Till name</label><input id="bt-name" value="${Utils.escHtml(till?.device_name || till?.device_label || '')}"></div>
-            <div class="field"><label>Branch</label><select id="bt-branch">${branches.map((b) => `<option value="${b.id}" ${Number(b.id) === branchId ? 'selected' : ''}>${Utils.escHtml(b.name)}</option>`).join('')}</select></div>
-            <div class="field full"><label>Device ID</label><input value="${Utils.escHtml(deviceId)}" readonly></div>
-          </div>`,
-          '<button class="btn btn-primary" id="bt-save">Save till</button>');
-        document.getElementById('bt-save')?.addEventListener('click', async () => {
-          const r = await API.updateBranchTill?.(branchId, deviceId, {
-            device_label: document.getElementById('bt-name')?.value.trim(),
-            branch_id: parseInt(document.getElementById('bt-branch')?.value, 10)
-          }, this.app.user);
-          if (r?.success === false || r?.error) return Utils.toast(r?.error || 'Update failed', 'error');
-          Utils.hideModal();
-          Utils.toast('Till updated', 'success');
-          this.renderBranchesSync(el);
-        });
-      });
-    });
-
-    el.querySelectorAll('.br-use-till').forEach((btn) => {
-      btn.addEventListener('click', async () => {
-        const branchId = parseInt(btn.dataset.branch, 10);
-        const deviceId = btn.dataset.device;
-        if (deviceId !== thisDeviceId && !confirm('This till belongs to another device ID. Connect this computer anyway using its own device ID?')) return;
-        const till = (Array.isArray(allTills) ? allTills : []).find((t) => String(t.device_id) === String(deviceId));
-        const label = till?.device_name || till?.device_label || thisDeviceName;
-        try { Utils.saveLocalDeviceSettings?.({ device_name: label, branch_id: branchId }); } catch (_) { /* */ }
-        await API.saveBranchTill?.(branchId, { device_id: thisDeviceId, device_label: label }, this.app.user);
-        const r = await API.setActiveBranch(branchId, this.app.user);
-        if (r && r.success === false) return Utils.toast(r.error || 'Failed', 'error');
-        Utils.toast('Connected to branch', 'success');
-        this.app?.refreshBranchSwitcher?.();
-        this.renderBranchesSync(el);
-      });
-    });
-
-    el.querySelectorAll('.br-delete').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const b = branches.find((x) => String(x.id) === String(btn.dataset.id));
-        if (!b) return;
-        if (!confirm(`Delete branch "${b.name}"? Branches with sales history are deactivated instead of removed.`)) return;
-        (async () => {
-          const r = await API.deleteBranch?.(b.id, this.app.user);
-          if (r?.success === false || r?.error) return Utils.toast(r?.error || 'Delete failed', 'error');
-          Utils.toast(r?.message || (r?.deactivated ? 'Branch deactivated (has sales history)' : 'Branch deleted'), 'success');
-          this.app?.refreshBranchSwitcher?.();
-          this.renderBranchesSync(el);
-        })();
-      });
-    });
-
-    el.querySelectorAll('.br-remove-till').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const branchId = parseInt(btn.dataset.branch, 10);
-        const deviceId = btn.dataset.device;
-        if (!deviceId || !confirm('Delete this till? The device can register again later.')) return;
-        (async () => {
-          const r = await API.deleteBranchTill?.(branchId, deviceId, this.app.user);
-          if (r?.success === false || r?.error) return Utils.toast(r?.error || 'Remove failed', 'error');
-          Utils.toast('Till removed', 'success');
-          this.renderBranchesSync(el);
-        })();
       });
     });
 
@@ -5098,90 +3713,9 @@ const AdminPage = {
     });
   },
 
-  _adminSearchSeq: 0,
-
-  /** Extra keywords so admin search finds every feature by common words. */
-  _sectionSearchKeywords(id) {
-    const map = {
-      receipt: ['slip', 'sleeve', 'receipt design', 'footer', 'till slip'],
-      security: ['pin', 'password', 'lock'],
-      quotes: ['quotation', 'estimate'],
-      permissions: ['roles', 'access', 'users'],
-      'sales-targets': ['target', 'targets', 'daily target', 'product target', 'goal', 'sales goal', 'quota', 'quantity target'],
-      'top-customers': ['vip', 'customer', 'loyalty customer'],
-      approvals: ['approve', 'pending settings'],
-      tax: ['vat', 'currency', 'rand'],
-      'tax-hub': ['tax calc', 'vat report'],
-      cashiers: ['cashier', 'manager', 'till user'],
-      shifts: ['shift', 'float', 'cashout', 'till'],
-      operating: ['hours', 'open', 'close', 'trading hours'],
-      cashdrawer: ['drawer', 'cash drop'],
-      analytics: ['report', 'sales report', 'charts'],
-      inventory: ['stock', 'restock', 'products stock', 'ingredient'],
-      discounts: ['promo', 'markdown', 'coupon'],
-      loyalty: ['gift card', 'points', 'rewards'],
-      importexport: ['import', 'export', 'csv', 'backup products'],
-      customize: ['theme', 'branding', 'logo', 'colour', 'color'],
-      branches: ['branch', 'store', 'location'],
-      'online-orders': ['online', 'website order', 'delivery order'],
-      'referral-dept': ['referral', 'commission', 'agent'],
-      'customer-reports': ['complaint', 'issue', 'feedback'],
-      'business-modules': ['module', 'business'],
-      'digital-signage': ['tv', 'screen', 'display', 'signage'],
-      'mobile-app': ['mobile', 'app user'],
-      'business-manager': ['kpi', 'manager dashboard'],
-      device: ['device', 'tablet', 'kiosk'],
-      backup: ['restore', 'backup'],
-      opscompliance: ['checklist', 'opening', 'closing', 'rules', 'compliance', 'company rules'],
-      combos: ['combo', 'meal deal', 'promo meal'],
-      'menu-builder': ['menu', 'menu builder', 'flyer menu', 'print menu', 'restaurant menu', 'generate menu', 'pdf menu'],
-      recipe: ['recipe', 'ingredient', 'production', 'kitchen recipe', 'bom', 'meal'],
-      staffhr: ['staff', 'employee', 'leave', 'sleeve', 'attendance', 'hr', 'clock', 'shift schedule', 'payslip'],
-      'hr-workspace': ['payroll', 'documents', 'hr workspace', 'leave'],
-      'hr-approvals': ['leave approve', 'hr approve'],
-      'accounting-workspace': ['bookkeeping', 'accounting', 'ledger', 'expenses'],
-      staffportal: ['portal', 'staff portal', 'leave request', 'my shifts', 'sign rules'],
-      onaccount: ['on account', 'credit', 'debtor'],
-      'taken-orders': ['unpaid', 'taken order', 'held account'],
-      hrcontracts: ['contract', 'probation', 'employment'],
-      recruitment: ['hire', 'recruit', 'cv', 'applicant'],
-      'delivery-dept': ['delivery', 'driver', 'dispatch'],
-      payroll: ['salary', 'uif', 'paye', 'payslip'],
-      'employee-of-month': ['eom', 'award', 'employee of the month'],
-      database: ['sql', 'database', 'tables'],
-      'system-health': ['health', 'storage', 'disk'],
-      automation: ['rule', 'auto', 'automation'],
-      customfields: ['custom field', 'extra field'],
-      formats: ['date format', 'numbering', 'invoice prefix'],
-      developer: ['dev', 'debug', 'developer'],
-      printer: ['print', 'receipt printer', 'bluetooth'],
-      payments: ['pay', 'card', 'cash', 'eft', 'payment method'],
-      overview: ['home', 'dashboard', 'summary']
-    };
-    return map[id] || [];
-  },
-
-  _matchAdminSection(section, q) {
-    if (!q) return false;
-    const label = this._adminNavLabel(section.label).toLowerCase();
-    const raw = String(section.label || '').toLowerCase();
-    const id = String(section.id || '').toLowerCase();
-    const idSpaced = id.replace(/-/g, ' ');
-    const hay = `${label} ${raw} ${id} ${idSpaced}`;
-    if (hay.includes(q) || label.includes(q) || raw.includes(q) || id.includes(q) || idSpaced.includes(q)) return true;
-    const words = q.split(/\s+/).filter((w) => w.length >= 2);
-    if (words.length > 1 && words.every((w) => hay.includes(w))) return true;
-    const keywords = this._sectionSearchKeywords(section.id);
-    return keywords.some((kw) => {
-      const k = String(kw).toLowerCase();
-      if (k.includes(q) || q.includes(k)) return true;
-      return words.length > 0 && words.every((w) => k.includes(w) || hay.includes(w));
-    });
-  },
-
   handleAdminSearchDebounced(query) {
     clearTimeout(this._adminSearchDebounce);
-    this._adminSearchDebounce = setTimeout(() => this.handleAdminSearch(query), 220);
+    this._adminSearchDebounce = setTimeout(() => this.handleAdminSearch(query), 280);
     if (query && String(query).trim().length >= 1) {
       this.handleAdminSearchLocal(query);
     }
@@ -5191,31 +3725,28 @@ const AdminPage = {
     const dropdown = document.getElementById('admin-search-results');
     if (!dropdown) return;
     if (!query || !String(query).trim()) { dropdown.classList.add('hidden'); return; }
-    const q = query.toLowerCase().trim();
+    const q = query.toLowerCase();
     let html = '';
-    const sections = (this.sections || []).filter((s) =>
-      this._matchAdminSection(s, q) && Utils.canAccessAdminSection(this.app.user, s.id)
+    const sections = (this.sections || []).filter(s =>
+      (this._adminNavLabel(s.label).toLowerCase().includes(q) || s.label.toLowerCase().includes(q))
+      && Utils.canAccessAdminSection(this.app.user, s.id)
     );
     if (sections.length) {
-      html += '<div class="search-group"><h4>Features</h4>' +
-        sections.map((s) => `<div class="search-item" data-action="admin-section" data-section="${s.id}">${this._adminNavLabel(s.label)}</div>`).join('') + '</div>';
+      html += '<div class="search-group"><h4>Admin Sections</h4>' +
+        sections.map(s => `<div class="search-item" data-action="admin-section" data-section="${s.id}">${s.label}</div>`).join('') + '</div>';
     }
-    const navHits = (this.app.navItems || []).filter((item) => {
-      const label = String(item.label || '').replace(/^[^\w]+/, '').toLowerCase();
-      const id = String(item.id || '').toLowerCase();
-      return (label.includes(q) || id.includes(q) || q.includes(id)) && Utils.canAccess(this.app.user, item.id);
-    }).slice(0, 12);
+    const navHits = (this.app.navItems || []).filter(item => {
+      const label = item.label.replace(/^[^\w]+/, '').toLowerCase();
+      return (label.includes(q) || item.id.includes(q)) && Utils.canAccess(this.app.user, item.id);
+    }).slice(0, 10);
     if (navHits.length) {
       html += '<div class="search-group"><h4>App Pages</h4>' +
-        navHits.map((f) => `<div class="search-item" data-action="page" data-page="${f.id}">${f.label}</div>`).join('') + '</div>';
+        navHits.map(f => `<div class="search-item" data-action="page" data-page="${f.id}">${f.label}</div>`).join('') + '</div>';
     }
     if (html) {
-      dropdown.innerHTML = html + (q.length >= 2 ? '<p class="muted" style="padding:8px;font-size:12px">Searching records…</p>' : '');
+      dropdown.innerHTML = html + '<p class="muted" style="padding:8px;font-size:12px">Searching…</p>';
       dropdown.classList.remove('hidden');
       this._bindAdminSearchResults(dropdown);
-    } else {
-      dropdown.innerHTML = '<div class="search-group"><p class="muted">No features match — try another word</p></div>';
-      dropdown.classList.remove('hidden');
     }
   },
 
@@ -5268,12 +3799,13 @@ const AdminPage = {
     const currency = this.settings?.currency || 'R';
     let html = '';
 
-    const sections = (this.sections || []).filter((s) =>
-      this._matchAdminSection(s, q) && Utils.canAccessAdminSection(this.app.user, s.id)
+    const sections = (this.sections || []).filter(s =>
+      (this._adminNavLabel(s.label).toLowerCase().includes(q) || s.label.toLowerCase().includes(q))
+      && Utils.canAccessAdminSection(this.app.user, s.id)
     );
     if (sections.length) {
-      html += '<div class="search-group"><h4>Features</h4>' +
-        sections.map((s) => `<div class="search-item" data-action="admin-section" data-section="${s.id}">${this._adminNavLabel(s.label)}</div>`).join('') + '</div>';
+      html += '<div class="search-group"><h4>Admin Sections</h4>' +
+        sections.map(s => `<div class="search-item" data-action="admin-section" data-section="${s.id}">${s.label}</div>`).join('') + '</div>';
     }
 
     const data = needRpc ? ((await API.globalSearch(query)).data || {}) : {};
@@ -5353,80 +3885,11 @@ const AdminPage = {
     this._bindAdminSearchResults(dropdown, receiptHandler);
   },
 
-  async renderCustomerReports(el) {
-    const r = await API.webListIssues({}, this.app.user);
-    if (!r.success) {
-      el.innerHTML = `<div class="admin-section"><h3>Customer Reports</h3><p class="error-msg">${Utils.escHtml(r.error || 'Could not load reports')}</p></div>`;
-      return;
-    }
-    const rows = r.data || [];
-    el.innerHTML = `<div class="admin-section"><h3>Customer Reports</h3>
-      <p class="muted">Problems customers send from Order Online, with photos and the POS cashier who took the order.</p>
-      <div class="table-wrap"><table>
-        <thead><tr><th>When</th><th>Customer</th><th>Problem</th><th>POS cashier</th><th>Status</th><th></th></tr></thead>
-        <tbody>${rows.map((row) => `<tr>
-          <td>${Utils.formatDateTime?.(row.created_at) || row.created_at || '—'}</td>
-          <td><strong>${Utils.escHtml(row.name)}</strong><br><small>${Utils.escHtml(row.phone || '')}</small></td>
-          <td>${Utils.escHtml((row.message || '').slice(0, 120))}${row.has_photo ? '<br><small>Photo attached</small>' : ''}</td>
-          <td>${Utils.escHtml(row.pos_cashier_name || 'Not linked yet')}</td>
-          <td><span class="tag">${Utils.escHtml(row.status)}</span></td>
-          <td><button class="btn btn-sm btn-primary cr-open" data-id="${row.id}">Open</button></td>
-        </tr>`).join('') || '<tr><td colspan="6" class="muted">No customer reports yet</td></tr>'}
-      </tbody></table></div></div>`;
-    el.querySelectorAll('.cr-open').forEach((b) => b.addEventListener('click', async () => {
-      const one = await API.webGetIssue(parseInt(b.dataset.id, 10), this.app.user);
-      if (!one.success) return Utils.toast(one.error || 'Could not open', 'error');
-      const d = one.data || {};
-      Utils.showModal('Customer report', `
-        <p><strong>${Utils.escHtml(d.name)}</strong> · ${Utils.escHtml(d.phone || '')}</p>
-        <p class="muted">POS cashier: <strong>${Utils.escHtml(d.pos_cashier_name || 'Not linked yet')}</strong>${d.order_id ? ` · Order #${d.order_id}` : ''}</p>
-        <p style="white-space:pre-wrap">${Utils.escHtml(d.message)}</p>
-        ${d.photo_data ? `<p><img src="${d.photo_data}" alt="Customer photo" style="max-width:100%;border-radius:12px"></p>` : ''}
-        ${d.admin_reply ? `<div class="card" style="margin-top:12px"><div class="card-body"><strong>Your reply</strong><p>${Utils.escHtml(d.admin_reply)}</p></div></div>` : `
-          <div class="field"><label>Reply to customer</label><textarea id="cr-reply" rows="4" placeholder="We will make this right…"></textarea></div>`}`,
-        d.admin_reply
-          ? '<button class="btn btn-ghost" id="cr-close">Close</button>'
-          : '<button class="btn btn-primary" id="cr-send">Send reply</button>');
-      document.getElementById('cr-close')?.addEventListener('click', () => Utils.hideModal());
-      document.getElementById('cr-send')?.addEventListener('click', async () => {
-        const reply = document.getElementById('cr-reply')?.value.trim();
-        const sr = await API.webReplyIssue(d.id, reply, this.app.user);
-        if (!sr.success) return Utils.toast(sr.error || 'Could not reply', 'error');
-        Utils.hideModal();
-        Utils.toast('Reply sent', 'success');
-        this.renderCustomerReports(el);
-      });
-    }));
-  },
-
-  onlineOrdersTabsHtml(active) {
-    const tab = (id, label) =>
-      `<button type="button" class="btn btn-ghost btn-sm oo-tab ${active === id ? 'active' : ''}" data-oo-tab="${id}">${label}</button>`;
-    return `<div class="page-toolbar" style="gap:8px;flex-wrap:wrap;align-items:center;margin:12px 0">
-      ${tab('orders', 'Orders')}
-      ${tab('customers', 'Customers')}
-      ${tab('visitors', 'Website Visitor Analysis')}
-      ${tab('rejected', 'Rejected')}
-    </div>`;
-  },
-
   async renderOnlineOrders(el) {
     const currency = this.settings?.currency || 'R';
     const from = this._ooFrom || Utils.daysAgo(30);
     const to = this._ooTo || Utils.today();
-    const ooTab = this._ooTab === 'all' ? 'orders' : (this._ooTab || 'orders');
-    if (ooTab === 'visitors') {
-      if (typeof this.renderWebsiteVisitorAnalysis !== 'function') {
-        try { await window.App?.ensurePageScripts?.('admin'); } catch (_) { /* */ }
-      }
-      if (typeof this.renderWebsiteVisitorAnalysis === 'function') return this.renderWebsiteVisitorAnalysis(el);
-    }
-    if (ooTab === 'customers') {
-      if (typeof this.renderOnlineCustomers !== 'function') {
-        try { await window.App?.ensurePageScripts?.('admin'); } catch (_) { /* */ }
-      }
-      if (typeof this.renderOnlineCustomers === 'function') return this.renderOnlineCustomers(el);
-    }
+    const ooTab = this._ooTab || 'all';
     const [ordersRes, analyticsRes, settingsRes, rejectedRes] = await Promise.all([
       API.webAdminOrders?.({ from, to }, this.app?.user) || API.getOnlineOrdersLocal?.(''),
       API.webAdminAnalytics?.({ from, to }, this.app?.user).catch(() => ({ data: {} })),
@@ -5435,8 +3898,6 @@ const AdminPage = {
     ]);
     const orders = ordersRes?.data || ordersRes || [];
     const list = Array.isArray(orders) ? orders : [];
-    const canManageOrders = ['owner', 'manager'].includes(this.app?.user?.role);
-    const refreshOrders = () => this.renderOnlineOrders(el);
     const stats = analyticsRes?.data || analyticsRes || {};
     const rejectedReport = rejectedRes?.data || rejectedRes || {};
     const global = settingsRes?.data || settingsRes || {};
@@ -5447,13 +3908,14 @@ const AdminPage = {
     el.innerHTML = `<div class="admin-section"><h3>Online Orders</h3>
       <p class="muted">Customer website orders flow to POS with source <strong>ONLINE</strong>. 
         <a href="${orderUrl}" target="_blank" rel="noopener">Open customer site</a></p>
-      ${this.onlineOrdersTabsHtml ? this.onlineOrdersTabsHtml(ooTab) : ''}
       <div class="page-toolbar" style="gap:8px;flex-wrap:wrap;align-items:center;margin:12px 0">
         <input type="date" id="oo-from" value="${from}">
         <input type="date" id="oo-to" value="${to}">
         <button type="button" class="btn btn-ghost btn-sm" id="oo-filter">Filter</button>
         <button type="button" class="btn btn-primary btn-sm" id="oo-pdf">Save PDF</button>
         <button type="button" class="btn btn-ghost btn-sm" id="oo-print">Print</button>
+        <button type="button" class="btn btn-ghost btn-sm oo-tab ${ooTab === 'all' ? 'active' : ''}" data-oo-tab="all">All</button>
+        <button type="button" class="btn btn-ghost btn-sm oo-tab ${ooTab === 'rejected' ? 'active' : ''}" data-oo-tab="rejected">Rejected</button>
       </div>
       <div class="stats-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin:12px 0">
         <div class="card"><div class="card-body"><div class="muted">Orders</div><strong>${stats.orders || 0}</strong></div></div>
@@ -5500,12 +3962,7 @@ const AdminPage = {
           <td>${this.formatOnlineOrderGiftCard(o, currency)}</td>
           <td><span class="tag">${Utils.escHtml(o.status)}</span></td>
           <td>${Utils.escHtml(o.order_source || 'ONLINE')}</td>
-          <td style="white-space:nowrap">
-            <button type="button" class="btn btn-sm btn-ghost oo-view" data-id="${o.id}">View</button>
-            ${canManageOrders ? `<button type="button" class="btn btn-sm btn-ghost oo-edit" data-id="${o.id}">Edit</button>` : ''}
-            ${o.status === 'pending' ? `<button type="button" class="btn btn-sm btn-primary oo-accept" data-id="${o.id}">Accept</button>` : ''}
-            ${canManageOrders ? `<button type="button" class="btn btn-sm btn-danger oo-delete" data-id="${o.id}" data-sale="${o.sale_id || ''}">Delete</button>` : ''}
-          </td>
+          <td>${o.status === 'pending' ? `<button type="button" class="btn btn-sm btn-primary oo-accept" data-id="${o.id}">Accept</button>` : ''}</td>
         </tr>`).join('') || '<tr><td colspan="9" class="muted">No online orders yet</td></tr>'}
         </tbody></table></div></div>`;
 
@@ -5576,28 +4033,6 @@ const AdminPage = {
         if (r?.success === false) return Utils.toast(r.error, 'error');
         Utils.toast('Order accepted into POS', 'success');
         this.renderOnlineOrders(el);
-      });
-    });
-    el.querySelectorAll('.oo-view').forEach((btn) => {
-      btn.addEventListener('click', () => this.showOnlineOrderDetail(parseInt(btn.dataset.id, 10), refreshOrders));
-    });
-    el.querySelectorAll('.oo-edit').forEach((btn) => {
-      btn.addEventListener('click', () => this.showOnlineOrderEdit(parseInt(btn.dataset.id, 10), refreshOrders));
-    });
-    el.querySelectorAll('.oo-delete').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const orderId = parseInt(btn.dataset.id, 10);
-        Utils.showModal('Delete online order', '<p>This permanently removes the order. Loyalty and gift card balances are restored if applicable.</p><div class="field"><label>Reason (required)</label><textarea id="oo-del-reason" rows="3"></textarea></div>',
-          '<button type="button" class="btn btn-danger" id="oo-del-confirm">Delete permanently</button>');
-        document.getElementById('oo-del-confirm')?.addEventListener('click', async () => {
-          const reason = document.getElementById('oo-del-reason')?.value.trim();
-          if (!reason) return Utils.toast('Reason required', 'error');
-          const r = await API.webAdminDeleteOrder?.(orderId, reason, this.app?.user);
-          if (r?.success === false || r?.error) return Utils.toast(r?.error || 'Delete failed', 'error');
-          Utils.hideModal();
-          Utils.toast('Order deleted', 'success');
-          refreshOrders();
-        });
       });
     });
   },
