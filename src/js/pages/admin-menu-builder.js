@@ -24,9 +24,16 @@ window.AdminMenuBuilderPage = {
     includePhone: true,
     includeDate: true,
     includeFooter: true,
+    includeOrderLink: true,
     customTitle: 'Our Menu',
-    footerText: ''
+    footerText: '',
+    deliveryText: 'FREE DELIVERY for orders R50+',
+    gridMode: 'auto', // auto | custom
+    gridCols: 2,
+    gridRows: 4,
+    headerBannerDataUrl: ''
   },
+  headerBannerImg: null,
 
   THEMES: {
     // Match PromoPoster / Combos branding (red default)
@@ -60,10 +67,10 @@ window.AdminMenuBuilderPage = {
   toast(msg, type) { if (typeof Utils !== 'undefined' && Utils.toast) Utils.toast(msg, type || 'info'); },
 
   ensureCss() {
-    const href = `css/menu-builder.css?v=2`;
+    const href = `css/menu-builder.css?v=3`;
     let l = document.getElementById('menu-builder-css');
     if (l) {
-      if (!String(l.getAttribute('href') || '').includes('v=2')) l.href = href;
+      if (!String(l.getAttribute('href') || '').includes('v=3')) l.href = href;
       return;
     }
     l = document.createElement('link');
@@ -85,6 +92,13 @@ window.AdminMenuBuilderPage = {
       this.draft.footerText = this.settings.receipt_footer
         || this.settings.slogan
         || 'Good Food • Great People • Always Connected.';
+    }
+    if (!this.draft.deliveryText) {
+      this.draft.deliveryText = 'FREE DELIVERY for orders R50+';
+    }
+    if (!this.draft.customTitle || this.draft.customTitle === 'Our Menu') {
+      if (this.draft.menuType === 'specials') this.draft.customTitle = "Today's Specials";
+      else if (this.draft.menuType === 'takeaway') this.draft.customTitle = 'Takeaway Menu';
     }
     this.paintBuilder();
     this.bootstrapData();
@@ -212,7 +226,11 @@ window.AdminMenuBuilderPage = {
       branchName: b?.name || (this.branchId === 'all' ? 'All branches' : ''),
       address: (b?.address && String(b.address).trim()) || s.address || '',
       phone: (b?.phone && String(b.phone).trim()) || s.phone || '',
-      hours: b?.opening_hours || b?.hours || s.operating_hours_text || '7 AM – 9 PM',
+      hours: (() => {
+        const raw = b?.opening_hours || b?.hours || s.operating_hours_text || '7 AM – 9 PM';
+        if (!raw) return 'Open daily 7 AM – 9 PM';
+        return String(raw).toLowerCase().includes('open') ? String(raw) : `Open daily ${raw}`;
+      })(),
       logoUrl: '/api/logo',
       currency: s.currency || 'R',
       date: (typeof Utils !== 'undefined' && Utils.today) ? Utils.today() : new Date().toLocaleDateString('en-CA')
@@ -333,6 +351,7 @@ window.AdminMenuBuilderPage = {
               <option value="specials" ${this.draft.menuType === 'specials' ? 'selected' : ''}>Specials</option>
               <option value="takeaway" ${this.draft.menuType === 'takeaway' ? 'selected' : ''}>Takeaway</option>
             </select>
+            <p class="mb-field-hint">Full, Specials and Takeaway each use a different layout style.</p>
           </div>
           <div class="field"><label>Page Size</label>
             <select id="mb-size">
@@ -346,6 +365,20 @@ window.AdminMenuBuilderPage = {
               <label><input type="radio" name="mb-ori" value="landscape" ${this.draft.orientation === 'landscape' ? 'checked' : ''}> Landscape</label>
             </div>
           </div>
+          <div class="field"><label>Products per page</label>
+            <select id="mb-grid-mode">
+              <option value="auto" ${this.draft.gridMode !== 'custom' ? 'selected' : ''}>Auto (by page size)</option>
+              <option value="custom" ${this.draft.gridMode === 'custom' ? 'selected' : ''}>Custom grid</option>
+            </select>
+            <div class="mb-grid-custom" id="mb-grid-custom" style="${this.draft.gridMode === 'custom' ? '' : 'display:none'}">
+              <label>Across (columns)
+                <input type="number" id="mb-cols" min="1" max="6" value="${Number(this.draft.gridCols) || 2}">
+              </label>
+              <label>Down (rows)
+                <input type="number" id="mb-rows" min="1" max="8" value="${Number(this.draft.gridRows) || 4}">
+              </label>
+            </div>
+          </div>
           <div class="field"><label>Theme / Colour</label>
             <div class="mb-swatches" id="mb-swatches">
               ${Object.keys(this.THEMES).map((k) =>
@@ -353,18 +386,27 @@ window.AdminMenuBuilderPage = {
               ).join('')}
             </div>
           </div>
+          <div class="field"><label>Header banner (optional)</label>
+            <input type="file" id="mb-banner" accept="image/*">
+            ${this.draft.headerBannerDataUrl ? '<p class="mb-field-hint">Custom banner ready — will show behind the logo header.</p>' : '<p class="mb-field-hint">Upload a small banner/photo for the top of the menu.</p>'}
+            ${this.draft.headerBannerDataUrl ? '<button type="button" class="btn btn-ghost btn-sm" id="mb-banner-clear">Remove banner</button>' : ''}
+          </div>
           <div class="field"><label>Include</label>
             <label class="mb-check"><input type="checkbox" id="mb-inc-logo" ${this.draft.includeLogo ? 'checked' : ''}> Shop Logo</label>
             <label class="mb-check"><input type="checkbox" id="mb-inc-branch" ${this.draft.includeBranch ? 'checked' : ''}> Branch Details</label>
             <label class="mb-check"><input type="checkbox" id="mb-inc-phone" ${this.draft.includePhone ? 'checked' : ''}> Contact Number</label>
             <label class="mb-check"><input type="checkbox" id="mb-inc-date" ${this.draft.includeDate ? 'checked' : ''}> Date</label>
-            <label class="mb-check"><input type="checkbox" id="mb-inc-footer" ${this.draft.includeFooter ? 'checked' : ''}> Footer (Slogan / Social Media)</label>
+            <label class="mb-check"><input type="checkbox" id="mb-inc-footer" ${this.draft.includeFooter ? 'checked' : ''}> Footer</label>
+            <label class="mb-check"><input type="checkbox" id="mb-inc-order" ${this.draft.includeOrderLink !== false ? 'checked' : ''}> Online order link (auto)</label>
           </div>
           <div class="field"><label>Custom Title</label>
             <input type="text" id="mb-title" value="${this.esc(this.draft.customTitle)}">
           </div>
-          <div class="field"><label>Footer Text</label>
-            <input type="text" id="mb-footer" value="${this.esc(this.draft.footerText)}">
+          <div class="field"><label>Footer text</label>
+            <input type="text" id="mb-footer" value="${this.esc(this.draft.footerText)}" placeholder="Slogan / footer line">
+          </div>
+          <div class="field"><label>Delivery badge text</label>
+            <input type="text" id="mb-delivery" value="${this.esc(this.draft.deliveryText || 'FREE DELIVERY for orders R50+')}">
           </div>
           <button type="button" class="btn btn-primary mb-generate" id="mb-generate" style="background:${theme.accent}">
             Generate Menu
@@ -472,13 +514,18 @@ window.AdminMenuBuilderPage = {
     this.draft.menuType = document.getElementById('mb-type')?.value || 'full';
     this.draft.pageSize = document.getElementById('mb-size')?.value || 'A4';
     this.draft.orientation = document.querySelector('input[name="mb-ori"]:checked')?.value || 'portrait';
+    this.draft.gridMode = document.getElementById('mb-grid-mode')?.value || 'auto';
+    this.draft.gridCols = Math.max(1, Math.min(6, Number(document.getElementById('mb-cols')?.value) || 2));
+    this.draft.gridRows = Math.max(1, Math.min(8, Number(document.getElementById('mb-rows')?.value) || 4));
     this.draft.includeLogo = !!document.getElementById('mb-inc-logo')?.checked;
     this.draft.includeBranch = !!document.getElementById('mb-inc-branch')?.checked;
     this.draft.includePhone = !!document.getElementById('mb-inc-phone')?.checked;
     this.draft.includeDate = !!document.getElementById('mb-inc-date')?.checked;
     this.draft.includeFooter = !!document.getElementById('mb-inc-footer')?.checked;
+    this.draft.includeOrderLink = !!document.getElementById('mb-inc-order')?.checked;
     this.draft.customTitle = document.getElementById('mb-title')?.value || 'Our Menu';
     this.draft.footerText = document.getElementById('mb-footer')?.value || '';
+    this.draft.deliveryText = document.getElementById('mb-delivery')?.value || 'FREE DELIVERY for orders R50+';
   },
 
   bindProductChecks() {
@@ -540,6 +587,40 @@ window.AdminMenuBuilderPage = {
       this.draft.theme = btn.dataset.theme;
       this.paintBuilder();
     });
+    document.getElementById('mb-type')?.addEventListener('change', (e) => {
+      const v = e.target.value;
+      this.draft.menuType = v;
+      if (v === 'specials') this.draft.customTitle = "Today's Specials";
+      else if (v === 'takeaway') this.draft.customTitle = 'Takeaway Menu';
+      else this.draft.customTitle = 'Our Menu';
+      const title = document.getElementById('mb-title');
+      if (title) title.value = this.draft.customTitle;
+    });
+    document.getElementById('mb-grid-mode')?.addEventListener('change', (e) => {
+      const custom = e.target.value === 'custom';
+      this.draft.gridMode = custom ? 'custom' : 'auto';
+      const box = document.getElementById('mb-grid-custom');
+      if (box) box.style.display = custom ? '' : 'none';
+    });
+    document.getElementById('mb-banner')?.addEventListener('change', (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        this.draft.headerBannerDataUrl = String(reader.result || '');
+        this.headerBannerImg = null;
+        this.toast('Header banner added', 'success');
+        this.readDraftFromDom();
+        this.paintBuilder();
+      };
+      reader.readAsDataURL(file);
+    });
+    document.getElementById('mb-banner-clear')?.addEventListener('click', () => {
+      this.draft.headerBannerDataUrl = '';
+      this.headerBannerImg = null;
+      this.readDraftFromDom();
+      this.paintBuilder();
+    });
     document.getElementById('mb-generate')?.addEventListener('click', () => this.generate());
     this.bindActions();
   },
@@ -567,8 +648,24 @@ window.AdminMenuBuilderPage = {
     return { w: Math.round(wMm * scale), h: Math.round(hMm * scale), wMm, hMm };
   },
 
-  productsPerPage(W, H) {
+  productsPerPage() {
+    if (this.draft.gridMode === 'custom') {
+      return {
+        cols: Math.max(1, Math.min(6, Number(this.draft.gridCols) || 2)),
+        rows: Math.max(1, Math.min(8, Number(this.draft.gridRows) || 4))
+      };
+    }
     const sizeKey = this.draft.pageSize;
+    const type = this.draft.menuType;
+    if (type === 'specials') {
+      if (sizeKey === 'A5' || sizeKey === 'flyer') return { cols: 2, rows: 2 };
+      if (sizeKey === 'square' || sizeKey === 'social') return { cols: 2, rows: 2 };
+      return this.draft.orientation === 'landscape' ? { cols: 3, rows: 2 } : { cols: 2, rows: 3 };
+    }
+    if (type === 'takeaway') {
+      return this.draft.orientation === 'landscape' ? { cols: 4, rows: 3 } : { cols: 3, rows: 4 };
+    }
+    // full menu
     if (sizeKey === 'social') return { cols: 2, rows: 3 };
     if (sizeKey === 'square') return { cols: 2, rows: 2 };
     if (sizeKey === 'flyer' || sizeKey === 'A5') return { cols: 2, rows: 3 };
@@ -576,6 +673,26 @@ window.AdminMenuBuilderPage = {
     if (sizeKey === 'A3') return this.draft.orientation === 'landscape' ? { cols: 4, rows: 3 } : { cols: 3, rows: 4 };
     if (sizeKey === 'A2' || sizeKey === 'A1') return this.draft.orientation === 'landscape' ? { cols: 5, rows: 3 } : { cols: 3, rows: 5 };
     return { cols: 2, rows: 4 };
+  },
+
+  menuTheme(base) {
+    const t = { ...base };
+    const type = this.draft.menuType;
+    if (type === 'specials') {
+      t.bannerStyle = 'specials';
+      t.cardStyle = 'specials';
+      t.titleFallback = "TODAY'S SPECIALS";
+      t.gold = t.gold || '#fbbf24';
+    } else if (type === 'takeaway') {
+      t.bannerStyle = 'takeaway';
+      t.cardStyle = 'takeaway';
+      t.titleFallback = 'TAKEAWAY MENU';
+    } else {
+      t.bannerStyle = 'full';
+      t.cardStyle = 'full';
+      t.titleFallback = 'OUR MENU';
+    }
+    return t;
   },
 
   async generate() {
@@ -589,17 +706,24 @@ window.AdminMenuBuilderPage = {
     if (btn) { btn.disabled = true; btn.textContent = 'Generating…'; }
     try {
       const { w: W, h: H } = this.canvasSize();
-      const grid = this.productsPerPage(W, H);
+      const grid = this.productsPerPage();
       const perPage = grid.cols * grid.rows;
       const chunks = [];
       for (let i = 0; i < selected.length; i += perPage) {
         chunks.push(selected.slice(i, i + perPage));
       }
       const shop = this.shopBlock();
-      const theme = this.THEMES[this.draft.theme] || this.THEMES.red;
+      shop.orderUrl = (typeof Utils !== 'undefined' && Utils.getOnlineOrderUrl)
+        ? Utils.getOnlineOrderUrl()
+        : '';
+      const theme = this.menuTheme(this.THEMES[this.draft.theme] || this.THEMES.red);
       const logoImg = this.draft.includeLogo
         ? await (window.PromoPoster?.loadImage?.(shop.logoUrl) || this.loadImage(shop.logoUrl))
         : null;
+      let bannerImg = null;
+      if (this.draft.headerBannerDataUrl) {
+        bannerImg = await this.loadImage(this.draft.headerBannerDataUrl);
+      }
       const pages = [];
       for (let pi = 0; pi < chunks.length; pi++) {
         const imgs = await Promise.all(chunks[pi].map(async (p) => ({
@@ -607,7 +731,7 @@ window.AdminMenuBuilderPage = {
           img: await (window.PromoPoster?.loadImage?.(this.productImageUrl(p)) || this.loadImage(this.productImageUrl(p)))
         })));
         const canvas = this.renderPage({
-          W, H, theme, shop, logoImg, items: imgs, grid, pageIndex: pi, pageCount: chunks.length
+          W, H, theme, shop, logoImg, bannerImg, items: imgs, grid, pageIndex: pi, pageCount: chunks.length
         });
         pages.push({ canvas, dataUrl: canvas.toDataURL('image/png') });
       }
@@ -655,81 +779,210 @@ window.AdminMenuBuilderPage = {
     ctx.drawImage(img, sx, sy, sw, sh, x, y, w, h);
   },
 
-  renderPage({ W, H, theme, shop, logoImg, items, grid, pageIndex, pageCount }) {
+  drawIconPin(ctx, x, y, s, color) {
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(x, y - s * 0.15, s * 0.35, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(x - s * 0.32, y - s * 0.05);
+    ctx.lineTo(x, y + s * 0.45);
+    ctx.lineTo(x + s * 0.32, y - s * 0.05);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.arc(x, y - s * 0.18, s * 0.14, 0, Math.PI * 2);
+    ctx.fill();
+  },
+
+  drawIconPhone(ctx, x, y, s, color) {
+    ctx.fillStyle = color;
+    this.roundRect(ctx, x - s * 0.28, y - s * 0.42, s * 0.56, s * 0.84, s * 0.12);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.35)';
+    this.roundRect(ctx, x - s * 0.18, y - s * 0.28, s * 0.36, s * 0.48, 2);
+    ctx.fill();
+  },
+
+  drawIconClock(ctx, x, y, s, color) {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = Math.max(2, s * 0.1);
+    ctx.beginPath();
+    ctx.arc(x, y, s * 0.4, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x, y - s * 0.22);
+    ctx.moveTo(x, y);
+    ctx.lineTo(x + s * 0.18, y + s * 0.08);
+    ctx.stroke();
+  },
+
+  renderPage({ W, H, theme, shop, logoImg, bannerImg, items, grid, pageIndex, pageCount }) {
     const canvas = document.createElement('canvas');
     canvas.width = W;
     canvas.height = H;
     const ctx = canvas.getContext('2d');
     const t = theme;
-    const pad = Math.round(W * 0.04);
+    const pad = Math.round(W * 0.035);
+    const type = this.draft.menuType;
 
     // Background
-    const g = ctx.createLinearGradient(0, 0, 0, H);
-    g.addColorStop(0, t.bg);
-    g.addColorStop(0.5, t.card);
-    g.addColorStop(1, t.bg);
-    ctx.fillStyle = g;
+    if (type === 'specials') {
+      const g = ctx.createLinearGradient(0, 0, W, H);
+      g.addColorStop(0, '#1a0a0a');
+      g.addColorStop(0.45, t.bg);
+      g.addColorStop(1, '#0f172a');
+      ctx.fillStyle = g;
+    } else if (type === 'takeaway') {
+      ctx.fillStyle = '#0b1220';
+      ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = 'rgba(255,255,255,0.03)';
+      for (let i = 0; i < 12; i++) ctx.fillRect(0, i * (H / 12), W, 2);
+    } else {
+      const g = ctx.createLinearGradient(0, 0, 0, H);
+      g.addColorStop(0, t.bg);
+      g.addColorStop(0.5, t.card);
+      g.addColorStop(1, t.bg);
+      ctx.fillStyle = g;
+    }
     ctx.fillRect(0, 0, W, H);
 
     let y = pad;
 
-    // Header: logo + shop name
-    const headerH = Math.round(H * 0.11);
+    // Optional header banner photo
+    const bannerH = bannerImg ? Math.round(H * 0.12) : 0;
+    if (bannerImg && bannerH) {
+      ctx.save();
+      this.roundRect(ctx, pad, y, W - pad * 2, bannerH, 12);
+      ctx.clip();
+      this.drawCover(ctx, bannerImg, pad, y, W - pad * 2, bannerH);
+      ctx.fillStyle = 'rgba(0,0,0,0.35)';
+      ctx.fillRect(pad, y, W - pad * 2, bannerH);
+      ctx.restore();
+      y += bannerH + Math.round(H * 0.015);
+    }
+
+    // Header: logo + shop name + slogan
+    const headerH = Math.round(H * (bannerImg ? 0.08 : 0.1));
     if (logoImg && this.draft.includeLogo) {
-      const lh = Math.round(headerH * 0.7);
+      const lh = Math.round(headerH * 0.85);
       const lw = lh;
       this.drawCover(ctx, logoImg, pad, y, lw, lh);
       ctx.fillStyle = t.text;
-      ctx.font = `bold ${Math.round(W * 0.035)}px system-ui,Segoe UI,sans-serif`;
+      ctx.font = `bold ${Math.round(W * 0.032)}px system-ui,Segoe UI,sans-serif`;
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
-      ctx.fillText(shop.shopName, pad + lw + Math.round(W * 0.02), y + lh / 2 - Math.round(H * 0.012));
+      ctx.fillText(shop.shopName, pad + lw + Math.round(W * 0.018), y + lh / 2 - Math.round(H * 0.012));
       ctx.fillStyle = t.muted;
-      ctx.font = `${Math.round(W * 0.018)}px system-ui,Segoe UI,sans-serif`;
-      ctx.fillText(this.draft.footerText || 'Taste the fire. Feel the flavour.', pad + lw + Math.round(W * 0.02), y + lh / 2 + Math.round(H * 0.018));
+      ctx.font = `${Math.round(W * 0.016)}px system-ui,Segoe UI,sans-serif`;
+      const slogan = this.draft.footerText || 'Taste the fire. Feel the flavour.';
+      ctx.fillText(slogan.length > 48 ? slogan.slice(0, 46) + '…' : slogan, pad + lw + Math.round(W * 0.018), y + lh / 2 + Math.round(H * 0.016));
     } else {
       ctx.fillStyle = t.text;
-      ctx.font = `bold ${Math.round(W * 0.045)}px system-ui,Segoe UI,sans-serif`;
+      ctx.font = `bold ${Math.round(W * 0.04)}px system-ui,Segoe UI,sans-serif`;
       ctx.textAlign = 'left';
-      ctx.fillText(shop.shopName, pad, y + Math.round(headerH * 0.35));
+      ctx.fillText(shop.shopName, pad, y + Math.round(headerH * 0.4));
     }
 
-    // Branch bar
-    y += headerH;
-    const barH = Math.round(H * 0.035);
+    // Red info bar with icons — location, phone, open daily
+    y += headerH + Math.round(H * 0.01);
+    const barH = Math.round(H * 0.042);
     ctx.fillStyle = t.accent;
-    this.roundRect(ctx, pad, y, W - pad * 2, barH, 8);
+    this.roundRect(ctx, pad, y, W - pad * 2, barH, 10);
     ctx.fill();
+
+    const iconS = barH * 0.55;
+    let ix = pad + 14;
+    const midY = y + barH / 2;
     ctx.fillStyle = '#fff';
-    ctx.font = `600 ${Math.round(W * 0.016)}px system-ui,Segoe UI,sans-serif`;
+    ctx.font = `600 ${Math.round(W * 0.014)}px system-ui,Segoe UI,sans-serif`;
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
-    const bits = [];
-    if (this.draft.includeBranch && shop.branchName) bits.push(shop.branchName);
-    if (this.draft.includeBranch && shop.address) bits.push(shop.address);
-    if (this.draft.includePhone && shop.phone) bits.push(shop.phone);
-    if (shop.hours) bits.push(shop.hours);
-    if (this.draft.includeDate) bits.push(shop.date);
-    ctx.fillText(bits.join('  ·  ') || shop.shopName, pad + 12, y + barH / 2);
 
-    // Title banner
-    y += barH + Math.round(H * 0.02);
-    const titleH = Math.round(H * 0.055);
-    ctx.fillStyle = t.accent;
-    this.roundRect(ctx, pad, y, W - pad * 2, titleH, 10);
-    ctx.fill();
-    ctx.fillStyle = '#fff';
-    ctx.font = `bold ${Math.round(W * 0.04)}px system-ui,Segoe UI,sans-serif`;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(String(this.draft.customTitle || 'OUR MENU').toUpperCase(), W / 2, y + titleH / 2);
+    const hoursLabel = shop.hours
+      ? (String(shop.hours).toLowerCase().includes('open') ? shop.hours : `Open daily ${shop.hours}`)
+      : 'Open daily 7 AM – 9 PM';
+
+    if (this.draft.includeBranch && (shop.address || shop.branchName)) {
+      this.drawIconPin(ctx, ix + iconS * 0.35, midY, iconS, '#fff');
+      ix += iconS + 8;
+      const loc = shop.address || shop.branchName;
+      const locShort = loc.length > 28 ? loc.slice(0, 26) + '…' : loc;
+      ctx.fillText(locShort, ix, midY);
+      ix += ctx.measureText(locShort).width + Math.round(W * 0.03);
+    }
+    if (this.draft.includePhone && shop.phone) {
+      this.drawIconPhone(ctx, ix + iconS * 0.3, midY, iconS, '#fff');
+      ix += iconS + 8;
+      ctx.fillText(shop.phone, ix, midY);
+      ix += ctx.measureText(shop.phone).width + Math.round(W * 0.03);
+    }
+    this.drawIconClock(ctx, ix + iconS * 0.35, midY, iconS, '#fff');
+    ix += iconS + 8;
+    const hoursShort = hoursLabel.length > 32 ? hoursLabel.slice(0, 30) + '…' : hoursLabel;
+    ctx.fillText(hoursShort, ix, midY);
+    if (this.draft.includeDate) {
+      ctx.textAlign = 'right';
+      ctx.fillText(shop.date, W - pad - 14, midY);
+      ctx.textAlign = 'left';
+    }
+
+    // Title banner — style by menu type
+    y += barH + Math.round(H * 0.018);
+    const titleH = Math.round(H * (type === 'specials' ? 0.065 : 0.052));
+    const title = String(this.draft.customTitle || t.titleFallback || 'OUR MENU').toUpperCase();
+    if (type === 'specials') {
+      // Brush / ribbon style
+      ctx.fillStyle = t.accent;
+      ctx.beginPath();
+      const tw = W - pad * 2;
+      ctx.moveTo(pad, y + titleH * 0.2);
+      ctx.quadraticCurveTo(pad + tw * 0.15, y - titleH * 0.15, pad + tw * 0.5, y + titleH * 0.1);
+      ctx.quadraticCurveTo(pad + tw * 0.85, y + titleH * 0.35, pad + tw, y + titleH * 0.15);
+      ctx.lineTo(pad + tw, y + titleH * 0.85);
+      ctx.quadraticCurveTo(pad + tw * 0.7, y + titleH * 1.05, pad + tw * 0.5, y + titleH * 0.9);
+      ctx.quadraticCurveTo(pad + tw * 0.25, y + titleH * 0.75, pad, y + titleH * 0.95);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = t.gold || '#fbbf24';
+      ctx.font = `bold ${Math.round(W * 0.018)}px system-ui,Segoe UI,sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.fillText('★ SPECIAL OFFER ★', W / 2, y + titleH * 0.28);
+      ctx.fillStyle = '#fff';
+      ctx.font = `bold ${Math.round(W * 0.038)}px system-ui,Segoe UI,sans-serif`;
+      ctx.fillText(title, W / 2, y + titleH * 0.62);
+    } else if (type === 'takeaway') {
+      ctx.fillStyle = t.accentDark || t.accent;
+      this.roundRect(ctx, pad, y, W - pad * 2, titleH, 6);
+      ctx.fill();
+      ctx.strokeStyle = t.accent;
+      ctx.lineWidth = 3;
+      this.roundRect(ctx, pad + 4, y + 4, W - pad * 2 - 8, titleH - 8, 4);
+      ctx.stroke();
+      ctx.fillStyle = '#fff';
+      ctx.font = `bold ${Math.round(W * 0.036)}px system-ui,Segoe UI,sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(title, W / 2, y + titleH / 2);
+    } else {
+      ctx.fillStyle = t.accent;
+      this.roundRect(ctx, pad, y, W - pad * 2, titleH, 10);
+      ctx.fill();
+      ctx.fillStyle = '#fff';
+      ctx.font = `bold ${Math.round(W * 0.038)}px system-ui,Segoe UI,sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(title, W / 2, y + titleH / 2);
+    }
 
     // Product grid
     y += titleH + Math.round(H * 0.02);
-    const footerReserve = this.draft.includeFooter ? Math.round(H * 0.12) : Math.round(H * 0.04);
+    const footerReserve = this.draft.includeFooter ? Math.round(H * 0.14) : Math.round(H * 0.04);
     const gridBottom = H - pad - footerReserve;
-    const gridH = gridBottom - y;
-    const gap = Math.round(W * 0.015);
+    const gridH = Math.max(40, gridBottom - y);
+    const gap = Math.round(W * 0.014);
     const cols = grid.cols;
     const rows = grid.rows;
     const cellW = (W - pad * 2 - gap * (cols - 1)) / cols;
@@ -744,32 +997,52 @@ window.AdminMenuBuilderPage = {
       this.paintProductCard(ctx, slot, x, cy, cellW, cellH, t, shop.currency);
     });
 
-    // Footer promo strip
+    // Footer
     if (this.draft.includeFooter) {
-      const fy = H - pad - Math.round(H * 0.1);
-      const fh = Math.round(H * 0.09);
-      ctx.fillStyle = 'rgba(255,255,255,0.06)';
-      this.roundRect(ctx, pad, fy, W - pad * 2, fh, 12);
+      const fy = H - pad - Math.round(H * 0.12);
+      const fh = Math.round(H * 0.105);
+      ctx.fillStyle = 'rgba(255,255,255,0.07)';
+      this.roundRect(ctx, pad, fy, W - pad * 2, fh, 14);
       ctx.fill();
+
       ctx.fillStyle = t.text;
-      ctx.font = `bold ${Math.round(W * 0.022)}px system-ui,Segoe UI,sans-serif`;
+      ctx.font = `bold ${Math.round(W * 0.02)}px system-ui,Segoe UI,sans-serif`;
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
-      ctx.fillText('ORDER NOW', pad + 20, fy + fh * 0.4);
+      ctx.fillText('ORDER NOW', pad + 18, fy + fh * 0.32);
+
       ctx.fillStyle = t.muted;
-      ctx.font = `${Math.round(W * 0.016)}px system-ui,Segoe UI,sans-serif`;
-      ctx.fillText(shop.phone ? `WhatsApp ${shop.phone}` : (this.draft.footerText || ''), pad + 20, fy + fh * 0.7);
-      // Free delivery badge
+      ctx.font = `${Math.round(W * 0.014)}px system-ui,Segoe UI,sans-serif`;
+      const orderBits = [];
+      if (shop.phone) orderBits.push(`WhatsApp ${shop.phone}`);
+      if (this.draft.includeOrderLink && shop.orderUrl) {
+        const u = String(shop.orderUrl).replace(/^https?:\/\//, '');
+        orderBits.push(u.length > 36 ? u.slice(0, 34) + '…' : u);
+      }
+      ctx.fillText(orderBits.join('  ·  ') || (this.draft.footerText || ''), pad + 18, fy + fh * 0.58);
+
+      ctx.fillStyle = t.muted;
+      ctx.font = `${Math.round(W * 0.012)}px system-ui,Segoe UI,sans-serif`;
+      ctx.fillText(this.draft.footerText || '', pad + 18, fy + fh * 0.82);
+
+      // Delivery badge
+      const badge = String(this.draft.deliveryText || 'FREE DELIVERY for orders R50+');
+      ctx.font = `bold ${Math.round(W * 0.012)}px system-ui,Segoe UI,sans-serif`;
+      const bw = Math.min(W * 0.42, ctx.measureText(badge).width + W * 0.04);
+      const bx = W - pad - bw - 10;
+      const by = fy + fh * 0.22;
+      const bh = fh * 0.56;
       ctx.fillStyle = t.accent;
-      this.roundRect(ctx, W - pad - Math.round(W * 0.22), fy + fh * 0.2, Math.round(W * 0.2), fh * 0.6, 8);
+      this.roundRect(ctx, bx, by, bw, bh, 10);
       ctx.fill();
       ctx.fillStyle = '#fff';
-      ctx.font = `bold ${Math.round(W * 0.014)}px system-ui,Segoe UI,sans-serif`;
       ctx.textAlign = 'center';
-      ctx.fillText('FREE DELIVERY', W - pad - Math.round(W * 0.12), fy + fh * 0.5);
+      ctx.textBaseline = 'middle';
+      ctx.fillText(badge.length > 34 ? badge.slice(0, 32) + '…' : badge, bx + bw / 2, by + bh / 2);
+
       if (pageCount > 1) {
         ctx.fillStyle = t.muted;
-        ctx.font = `${Math.round(W * 0.012)}px system-ui,Segoe UI,sans-serif`;
+        ctx.font = `${Math.round(W * 0.011)}px system-ui,Segoe UI,sans-serif`;
         ctx.textAlign = 'right';
         ctx.fillText(`Page ${pageIndex + 1} / ${pageCount}`, W - pad, H - pad / 2);
       }
@@ -781,13 +1054,38 @@ window.AdminMenuBuilderPage = {
   paintProductCard(ctx, slot, x, y, w, h, t, currency) {
     const p = slot.product;
     const img = slot.img;
-    ctx.fillStyle = 'rgba(255,255,255,0.07)';
-    this.roundRect(ctx, x, y, w, h, 14);
-    ctx.fill();
+    const type = this.draft.menuType;
 
-    const imgSize = Math.min(w * 0.55, h * 0.48);
+    // Card background
+    if (type === 'specials') {
+      ctx.fillStyle = 'rgba(251, 191, 36, 0.08)';
+      this.roundRect(ctx, x, y, w, h, 16);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(251, 191, 36, 0.35)';
+      ctx.lineWidth = 2;
+      this.roundRect(ctx, x, y, w, h, 16);
+      ctx.stroke();
+    } else if (type === 'takeaway') {
+      ctx.fillStyle = 'rgba(255,255,255,0.05)';
+      this.roundRect(ctx, x, y, w, h, 8);
+      ctx.fill();
+    } else {
+      ctx.fillStyle = 'rgba(255,255,255,0.07)';
+      this.roundRect(ctx, x, y, w, h, 14);
+      ctx.fill();
+    }
+
+    // Fixed layout zones so name never overlaps price
+    const priceH = Math.max(22, Math.round(h * 0.14));
+    const priceGap = Math.round(h * 0.04);
+    const priceY = y + h - priceH - Math.round(h * 0.05);
+    const textBottom = priceY - priceGap;
+    const imgTop = y + h * 0.06;
+    const imgSize = Math.min(w * 0.52, (textBottom - imgTop) * 0.62, h * 0.42);
     const ix = x + (w - imgSize) / 2;
-    const iy = y + h * 0.08;
+    const iy = imgTop;
+
+    // Circular product image
     ctx.save();
     ctx.beginPath();
     ctx.arc(ix + imgSize / 2, iy + imgSize / 2, imgSize / 2, 0, Math.PI * 2);
@@ -799,36 +1097,46 @@ window.AdminMenuBuilderPage = {
       ctx.fillRect(ix, iy, imgSize, imgSize);
     }
     ctx.restore();
+    // Ring
+    ctx.strokeStyle = type === 'specials' ? (t.gold || '#fbbf24') : 'rgba(255,255,255,0.2)';
+    ctx.lineWidth = Math.max(2, w * 0.012);
+    ctx.beginPath();
+    ctx.arc(ix + imgSize / 2, iy + imgSize / 2, imgSize / 2, 0, Math.PI * 2);
+    ctx.stroke();
 
-    const nameY = iy + imgSize + h * 0.08;
+    // Name zone (between image and price)
+    const nameTop = iy + imgSize + h * 0.04;
+    const nameMaxH = Math.max(16, textBottom - nameTop);
+    const nameSize = Math.min(Math.round(w * 0.085), Math.round(nameMaxH * 0.38));
     ctx.fillStyle = t.text;
-    ctx.font = `bold ${Math.round(w * 0.09)}px system-ui,Segoe UI,sans-serif`;
+    ctx.font = `bold ${nameSize}px system-ui,Segoe UI,sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
     const name = String(p.name || 'Item');
-    this.wrapText(ctx, name, x + w / 2, nameY, w * 0.9, Math.round(w * 0.1), 2);
+    const lineH = Math.round(nameSize * 1.15);
+    const maxNameLines = Math.max(1, Math.min(2, Math.floor(nameMaxH / lineH) - (p.description ? 1 : 0)));
+    this.wrapText(ctx, name, x + w / 2, nameTop, w * 0.88, lineH, maxNameLines);
 
     const desc = p.description || p.category_name || '';
-    if (desc) {
+    if (desc && nameMaxH > lineH * 2) {
       ctx.fillStyle = t.muted;
-      ctx.font = `${Math.round(w * 0.065)}px system-ui,Segoe UI,sans-serif`;
-      this.wrapText(ctx, String(desc), x + w / 2, nameY + Math.round(w * 0.22), w * 0.88, Math.round(w * 0.08), 1);
+      const dSize = Math.round(nameSize * 0.72);
+      ctx.font = `${dSize}px system-ui,Segoe UI,sans-serif`;
+      this.wrapText(ctx, String(desc), x + w / 2, nameTop + lineH * maxNameLines + 2, w * 0.85, Math.round(dSize * 1.1), 1);
     }
 
-    // Price badge
+    // Price badge — always at bottom, never under name
     const price = this.money(p.selling_price).replace(/\.00$/, '');
-    const pw = Math.max(w * 0.45, ctx.measureText(price).width + w * 0.15);
-    const ph = h * 0.12;
+    ctx.font = `bold ${Math.round(Math.min(w * 0.1, priceH * 0.55))}px system-ui,Segoe UI,sans-serif`;
+    const pw = Math.max(w * 0.42, ctx.measureText(price).width + w * 0.12);
     const px = x + (w - pw) / 2;
-    const py = y + h - ph - h * 0.06;
-    ctx.fillStyle = t.accent;
-    this.roundRect(ctx, px, py, pw, ph, 8);
+    ctx.fillStyle = type === 'specials' ? (t.gold || '#fbbf24') : t.accent;
+    this.roundRect(ctx, px, priceY, pw, priceH, 8);
     ctx.fill();
-    ctx.fillStyle = '#fff';
-    ctx.font = `bold ${Math.round(w * 0.1)}px system-ui,Segoe UI,sans-serif`;
+    ctx.fillStyle = type === 'specials' ? '#0f172a' : '#fff';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(price, x + w / 2, py + ph / 2);
+    ctx.fillText(price, x + w / 2, priceY + priceH / 2);
   },
 
   wrapText(ctx, text, cx, y, maxW, lineH, maxLines) {

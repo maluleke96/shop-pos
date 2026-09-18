@@ -697,7 +697,6 @@ const App = {
   /** Hide cross-app links on dedicated installers (Admin, POS, HR, etc.) */
   applyLoginChrome() {
     const mode = this.appMode();
-    const dedicated = new Set(['pos', 'staff', 'marketing', 'recipe', 'accounting', 'hr', 'delivery']);
     const crossIds = [
       'login-register-agent',
       'login-open-accounting',
@@ -705,13 +704,15 @@ const App = {
       'login-open-staff',
       'welcome-accounting',
       'welcome-hr',
-      'welcome-staff'
+      'welcome-staff',
+      'welcome-referral'
     ];
+    // Remove portal shortcuts from Admin (and other) login screens
     crossIds.forEach((id) => {
       const el = document.getElementById(id);
       if (!el) return;
-      const showMarketingAgent = mode === 'marketing' && id === 'login-register-agent';
-      el.classList.toggle('hidden', dedicated.has(mode) && !showMarketingAgent);
+      el.classList.add('hidden');
+      el.style.display = 'none';
     });
     if (mode === 'admin') {
       const loginName = document.getElementById('login-shop-name');

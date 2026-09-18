@@ -259,7 +259,21 @@
   border: none !important;
   color: #fff !important;
 }
-.mb-shop-hint { font-size: 12px; margin: 10px 0 0; color: var(--mb-muted); }
+.mb-field-hint { margin: 4px 0 0; font-size: 11px; color: var(--mb-muted); line-height: 1.35; }
+.mb-grid-custom {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px;
+}
+.mb-grid-custom label {
+  display: flex; flex-direction: column; gap: 4px;
+  font-size: 11px !important; font-weight: 700 !important;
+  text-transform: uppercase; letter-spacing: .03em; color: var(--mb-muted) !important;
+}
+.mb-grid-custom input {
+  padding: 8px 10px; border-radius: 8px; border: 1px solid var(--mb-line); font-size: 13px;
+}
+.mb-col-settings .field input[type="file"] {
+  width: 100%; font-size: 12px;
+}
 
 .mb-col-preview {
   background: linear-gradient(180deg, #0b1220 0%, #111827 100%);
