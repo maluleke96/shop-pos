@@ -58,6 +58,7 @@ const AdminPage = {
     { id: 'backup', label: '💾 Backup & Restore', icon: 'backup' },
     { id: 'opscompliance', label: '📋 Operations & Compliance', icon: 'opscompliance' },
     { id: 'combos', label: '🎁 Combos & Promos', icon: 'combos' },
+    { id: 'menu-builder', label: '📋 Menu Builder', icon: 'menu' },
     { id: 'recipe', label: '🍳 Recipe & Production', icon: 'recipe' },
     { id: 'staffhr', label: '👷 Staff & HR', icon: 'staffhr' },
     { id: 'hr-workspace', label: '📋 HR, Payroll & Documents', icon: 'staffhr' },
@@ -251,7 +252,7 @@ const AdminPage = {
     if (this.section === 'deliveries') this.section = 'delivery-dept';
     const lazySections = new Set([
       'hrcontracts', 'recruitment', 'marketing-mgmt', 'employee-of-month', 'staffhr', 'hr-workspace', 'hr-approvals', 'staffportal', 'payroll',
-      'opscompliance', 'combos', 'recipe', 'quotes',
+      'opscompliance', 'combos', 'recipe', 'quotes', 'menu-builder',
       'salesmgmt', 'saleexplorer', 'soldproducts', 'returnsmgmt', 'activity',
       'exceptions', 'alerts', 'dailyclose', 'discount-report', 'delivery-dept'
     ]);
@@ -410,6 +411,17 @@ const AdminPage = {
           await this._ensureAdminScripts(() => window.AdminCombosPage);
           if (window.AdminCombosPage) return window.AdminCombosPage.render(el, this);
           Utils.toast('Could not load combos module — hard refresh the page', 'error');
+        });
+      },
+      'menu-builder': async () => {
+        await this._ensureAdminScripts(() => window.AdminMenuBuilderPage);
+        if (window.AdminMenuBuilderPage) return window.AdminMenuBuilderPage.render(el, this);
+        el.innerHTML = `<div class="admin-section"><h3>Menu Builder</h3><p class="muted">Loading…</p>
+          <button type="button" class="btn btn-primary" id="admin-reload-menu">Reload</button></div>`;
+        document.getElementById('admin-reload-menu')?.addEventListener('click', async () => {
+          await this._ensureAdminScripts(() => window.AdminMenuBuilderPage);
+          if (window.AdminMenuBuilderPage) return window.AdminMenuBuilderPage.render(el, this);
+          Utils.toast('Could not load Menu Builder — hard refresh the page', 'error');
         });
       },
       opscompliance: () => tryModule(

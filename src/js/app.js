@@ -72,6 +72,7 @@ const App = {
       'js/pages/admin-hr.js',
       'js/pages/admin-operations.js',
       'js/pages/admin-combos.js',
+      'js/pages/admin-menu-builder.js',
       'js/pages/admin-quotes.js',
       'js/pages/admin-payroll.js',
       'js/pages/admin-employee-month.js',
