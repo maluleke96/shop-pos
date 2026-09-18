@@ -414,13 +414,21 @@ const AdminPage = {
         });
       },
       'menu-builder': async () => {
+        el.innerHTML = `<div class="mb-root" style="padding:16px">
+          <h2 style="margin:0 0 6px">Menu Builder</h2>
+          <p class="muted" style="margin:0 0 12px">Create professional menus in seconds.</p>
+          <div style="height:14px;background:var(--border,#e2e8f0);border-radius:6px;margin-bottom:8px;opacity:.6"></div>
+          <div style="height:14px;background:var(--border,#e2e8f0);border-radius:6px;width:70%;opacity:.5"></div>
+        </div>`;
         const ensureMenu = async () => {
           if (window.AdminMenuBuilderPage) return true;
           try {
             if (!window.PromoPoster && typeof Utils?.loadScript === 'function') {
               await Utils.loadScript('js/promo-poster.js').catch(() => {});
             }
-            if (typeof Utils?.loadScript === 'function') {
+            if (typeof Utils?.reloadScript === 'function') {
+              await Utils.reloadScript('js/pages/admin-menu-builder.js');
+            } else if (typeof Utils?.loadScript === 'function') {
               await Utils.loadScript('js/pages/admin-menu-builder.js');
             } else {
               await this._ensureAdminScripts(() => window.AdminMenuBuilderPage);
@@ -430,12 +438,20 @@ const AdminPage = {
           }
           return !!window.AdminMenuBuilderPage;
         };
-        if (await ensureMenu()) return window.AdminMenuBuilderPage.render(el, this);
-        el.innerHTML = `<div class="admin-section"><h3>Menu Builder</h3><p class="muted">Loading…</p>
-          <button type="button" class="btn btn-primary" id="admin-reload-menu">Reload</button></div>`;
-        document.getElementById('admin-reload-menu')?.addEventListener('click', async () => {
+        try {
           if (await ensureMenu()) return window.AdminMenuBuilderPage.render(el, this);
-          Utils.toast('Could not load Menu Builder — hard refresh the page', 'error');
+        } catch (err) {
+          console.error('Menu Builder failed', err);
+        }
+        el.innerHTML = `<div class="admin-section"><h3>Menu Builder</h3>
+          <p class="muted">Could not open Menu Builder.</p>
+          <button type="button" class="btn btn-primary" id="admin-reload-menu">Retry</button></div>`;
+        document.getElementById('admin-reload-menu')?.addEventListener('click', async () => {
+          try {
+            delete window.AdminMenuBuilderPage;
+            if (await ensureMenu()) return window.AdminMenuBuilderPage.render(el, this);
+          } catch (_) { /* */ }
+          Utils.toast('Hard refresh the page (Ctrl+Shift+R)', 'error');
         });
       },
       opscompliance: () => tryModule(

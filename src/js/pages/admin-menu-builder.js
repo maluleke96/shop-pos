@@ -60,11 +60,16 @@ window.AdminMenuBuilderPage = {
   toast(msg, type) { if (typeof Utils !== 'undefined' && Utils.toast) Utils.toast(msg, type || 'info'); },
 
   ensureCss() {
-    if (document.getElementById('menu-builder-css')) return;
-    const l = document.createElement('link');
+    const href = `css/menu-builder.css?v=2`;
+    let l = document.getElementById('menu-builder-css');
+    if (l) {
+      if (!String(l.getAttribute('href') || '').includes('v=2')) l.href = href;
+      return;
+    }
+    l = document.createElement('link');
     l.id = 'menu-builder-css';
     l.rel = 'stylesheet';
-    l.href = 'css/menu-builder.css';
+    l.href = href;
     document.head.appendChild(l);
   },
 
@@ -72,30 +77,31 @@ window.AdminMenuBuilderPage = {
     this.el = el;
     this.app = adminPage?.app || adminPage || (typeof App !== 'undefined' ? App : null);
     this.ensureCss();
-    this.mode = 'home';
-    this.generatedPages = [];
-    this.productsLoading = false;
-    // Instant paint — never block the section on product RPC
-    this.settings = this.settings?.shop_name
-      ? this.settings
-      : (this.app?.settings || {});
+    // Open straight into the builder (matches mockup) — never block on network
+    this.mode = 'builder';
+    this.productsLoading = !!this.productsLoading;
+    this.settings = this.settings?.shop_name ? this.settings : (this.app?.settings || {});
     if (!this.draft.footerText) {
       this.draft.footerText = this.settings.receipt_footer
         || this.settings.slogan
-        || 'Taste the fire. Feel the flavour.';
+        || 'Good Food • Great People • Always Connected.';
     }
-    this.paint();
+    this.paintBuilder();
     this.bootstrapData();
   },
 
   bootstrapData() {
-    // Branches + settings first (light). Products load in parallel with retries.
-    this.loadMeta().catch(() => {});
-    this.loadProducts().then(() => {
-      if (this.mode === 'home') this.paintHome();
-      else if (this.mode === 'builder') this.refreshSelectedPanel();
+    this.loadMeta().then(() => {
+      if (this.mode === 'builder' && this.el) this.updateBranchSelect();
     }).catch(() => {});
-    // WhatsApp settings only needed at share time
+    if (!this.products.length) this.productsLoading = true;
+    this.loadProducts().then(() => {
+      this.productsLoading = false;
+      if (this.mode === 'builder') this.refreshProductList();
+    }).catch(() => {
+      this.productsLoading = false;
+      if (this.mode === 'builder') this.refreshProductList();
+    });
     if (!this.waSettings) {
       API.getWhatsAppSettings?.().then((wa) => {
         this.waSettings = wa?.data || wa || {};
@@ -115,12 +121,13 @@ window.AdminMenuBuilderPage = {
     if (!this.draft.footerText) {
       this.draft.footerText = this.settings.receipt_footer
         || this.settings.slogan
-        || 'Taste the fire. Feel the flavour.';
+        || 'Good Food • Great People • Always Connected.';
     }
     const userBranch = this.app?.user?.branch_id;
-    if (userBranch && this.branches.some((b) => Number(b.id) === Number(userBranch))) {
+    if ((!this.branchId || this.branchId === 'all') && userBranch
+      && this.branches.some((b) => Number(b.id) === Number(userBranch))) {
       this.branchId = String(userBranch);
-    } else if (this.branches.length === 1) {
+    } else if ((!this.branchId || this.branchId === 'all') && this.branches.length === 1) {
       this.branchId = String(this.branches[0].id);
     }
   },
@@ -147,48 +154,49 @@ window.AdminMenuBuilderPage = {
   },
 
   async loadProducts() {
-    if (this.productsLoading) return this.products;
+    if (this._productsPromise) return this._productsPromise;
     this.productsLoading = true;
-    try {
-      const get = API.getProducts?._uncached || API.getProducts;
-      if (typeof get !== 'function') {
-        this.products = [];
-        return [];
-      }
-      const attempts = [
-        { admin_list: true, omit_images: true, all_branches: true },
-        { admin_list: true, all_branches: true },
-        { admin_list: true, omit_images: true },
-        { admin_list: true },
-        { combo_picker: true },
-        { omit_images: true, all_branches: true },
-        {}
-      ];
-      for (const filters of attempts) {
+    this._productsPromise = (async () => {
+      try {
+        const get = API.getProducts?._uncached || API.getProducts;
+        if (typeof get !== 'function') return [];
+        const attempts = [
+          { admin_list: true, omit_images: true, all_branches: true },
+          { admin_list: true, all_branches: true },
+          { admin_list: true, omit_images: true },
+          { admin_list: true },
+          { combo_picker: true },
+          { omit_images: true, all_branches: true },
+          {}
+        ];
+        for (const filters of attempts) {
+          try {
+            const pr = await get(filters);
+            if (!pr || pr.success === false) continue;
+            const list = this.normalizeProductList(pr.data ?? pr);
+            if (list.length) {
+              this.products = list;
+              return list;
+            }
+          } catch (_) { /* next */ }
+        }
         try {
-          const pr = await get(filters);
-          if (!pr || pr.success === false) continue;
-          const list = this.normalizeProductList(pr.data ?? pr);
+          const search = await API.globalSearch?.('a');
+          const hits = search?.data?.products || search?.products || [];
+          const list = this.normalizeProductList(hits);
           if (list.length) {
             this.products = list;
             return list;
           }
-        } catch (_) { /* try next */ }
+        } catch (_) { /* ignore */ }
+        this.products = this.products || [];
+        return this.products;
+      } finally {
+        this.productsLoading = false;
+        this._productsPromise = null;
       }
-      try {
-        const search = await API.globalSearch?.('a');
-        const hits = search?.data?.products || search?.products || [];
-        const list = this.normalizeProductList(hits);
-        if (list.length) {
-          this.products = list;
-          return list;
-        }
-      } catch (_) { /* ignore */ }
-      this.products = [];
-      return [];
-    } finally {
-      this.productsLoading = false;
-    }
+    })();
+    return this._productsPromise;
   },
 
   selectedBranch() {
@@ -217,58 +225,7 @@ window.AdminMenuBuilderPage = {
   },
 
   paint() {
-    if (!this.el) return;
-    if (this.mode === 'builder') return this.paintBuilder();
-    if (this.mode === 'preview') return this.paintPreview();
-    return this.paintHome();
-  },
-
-  paintHome() {
-    const shop = this.shopBlock();
-    const prodCount = this.products.length;
-    const prodHint = this.productsLoading
-      ? 'Loading catalog…'
-      : (prodCount ? `${prodCount} sellable products available` : 'Catalog will load when you create a menu');
-    this.el.innerHTML = `<div class="mb-root">
-      <div class="mb-header">
-        <div>
-          <h2 class="mb-title">Menu Builder</h2>
-          <p class="muted mb-sub">Select products → choose size & colour → generate a professional menu automatically.</p>
-        </div>
-        <button type="button" class="btn btn-primary" id="mb-create">+ Create New Menu</button>
-      </div>
-      <div class="mb-home-cards">
-        <div class="mb-info-card">
-          <h4>How it works</h4>
-          <ol>
-            <li>Search and pick products from your catalog</li>
-            <li>Choose page size & orientation</li>
-            <li>Optional theme colour</li>
-            <li>Generate → Preview, PDF, Print, Share</li>
-          </ol>
-        </div>
-        <div class="mb-info-card">
-          <h4>Shop info (auto)</h4>
-          <p><strong>${this.esc(shop.shopName)}</strong></p>
-          <p class="muted">${this.esc(shop.branchName || 'Default branch')}</p>
-          <p class="muted">${this.esc(shop.address || 'Address from settings')}</p>
-          <p class="muted">${this.esc(shop.phone || 'Phone from settings')}</p>
-          <p class="muted" id="mb-home-prod-count">${this.esc(prodHint)}</p>
-        </div>
-      </div>
-    </div>`;
-    document.getElementById('mb-create')?.addEventListener('click', async () => {
-      this.mode = 'builder';
-      this.selectedIds = new Set();
-      this.generatedPages = [];
-      this.searchQ = '';
-      this.paintBuilder();
-      if (!this.products.length) {
-        await this.loadProducts();
-        this.refreshSelectedPanel();
-        this.paintSearchPlaceholder();
-      }
-    });
+    return this.paintBuilder();
   },
 
   selectedProducts() {
@@ -277,78 +234,95 @@ window.AdminMenuBuilderPage = {
 
   filteredProducts(q) {
     const query = String(q != null ? q : this.searchQ || '').trim().toLowerCase();
-    if (!query) return this.products.slice(0, 60);
+    if (!query) return this.products;
     return this.products.filter((p) => {
       const name = String(p.name || '').toLowerCase();
       const sku = String(p.sku || '').toLowerCase();
       const barcode = String(p.barcode || '').toLowerCase();
       return name.includes(query) || sku.includes(query) || barcode.includes(query);
-    }).slice(0, 40);
+    });
   },
 
-  selectedListHtml() {
-    const selected = this.selectedProducts();
-    if (!selected.length) {
-      return `<p class="muted mb-selected-empty">No products marked yet — search above and click a product to add it.</p>`;
+  stepState() {
+    if (this.generatedPages.length) return 4;
+    if (this.selectedIds.size) return 2;
+    return 1;
+  },
+
+  stepsHtml() {
+    const step = this.stepState();
+    const labels = ['Select Products', 'Choose Design', 'Generate', 'Download & Share'];
+    return `<div class="mb-steps">${labels.map((label, i) => {
+      const n = i + 1;
+      const cls = n === step ? 'active' : (n < step ? 'done' : '');
+      const sep = i < labels.length - 1 ? '<span class="mb-step-sep"></span>' : '';
+      return `<span class="mb-step ${cls}"><span class="mb-step-num">${n < step ? '✓' : n}</span>${label}</span>${sep}`;
+    }).join('')}</div>`;
+  },
+
+  productRowsHtml() {
+    if (this.productsLoading && !this.products.length) {
+      return `<div class="mb-skel"></div><div class="mb-skel"></div><div class="mb-skel"></div>
+        <p class="mb-loading-inline">Loading products…</p>`;
     }
-    return selected.map((p) => {
+    const list = this.filteredProducts(this.searchQ);
+    if (!list.length) {
+      return `<p class="mb-empty">${this.products.length
+        ? 'No products match your search.'
+        : 'No products found. Add products in Products, then click Refresh.'}</p>`;
+    }
+    return list.slice(0, 400).map((p) => {
+      const id = Number(p.id);
+      const on = this.selectedIds.has(id);
       const img = this.productImageUrl(p);
-      return `<div class="mb-selected-row" data-pid="${p.id}">
-        <span class="mb-thumb">${img ? `<img src="${this.esc(img)}" alt="" loading="lazy" onerror="this.style.display='none'">` : ''}</span>
+      return `<label class="mb-prod-row ${on ? 'is-on' : ''}">
+        <input type="checkbox" data-pid="${id}" ${on ? 'checked' : ''}>
+        <span class="mb-thumb">${img ? `<img src="${this.esc(img)}" alt="" loading="lazy" onerror="this.parentNode.textContent='•'">` : '•'}</span>
         <span class="mb-prod-meta">
           <strong>${this.esc(p.name)}</strong>
           <small>${this.money(p.selling_price)}</small>
         </span>
-        <button type="button" class="btn btn-ghost btn-sm mb-rm" data-pid="${p.id}" title="Remove">✕</button>
-      </div>`;
+      </label>`;
     }).join('');
   },
 
   paintBuilder() {
     const shop = this.shopBlock();
     const theme = this.THEMES[this.draft.theme] || this.THEMES.red;
-    const step = this.generatedPages.length ? 4 : (this.selectedIds.size ? 2 : 1);
-    const catalogHint = this.productsLoading
-      ? 'Loading products…'
-      : (this.products.length
-        ? `Type to find a product (${this.products.length} available)…`
-        : 'No products found — add products in Products first');
+    const userName = this.app?.user?.full_name || this.app?.user?.username || 'Admin';
 
-    this.el.innerHTML = `<div class="mb-root mb-builder">
-      <div class="mb-topbar">
+    this.el.innerHTML = `<div class="mb-root mb-builder" style="--mb-accent:${theme.accent}">
+      <div class="mb-header-row">
         <div>
-          <button type="button" class="btn btn-ghost btn-sm" id="mb-back-home">← Back</button>
-          <h2 class="mb-title" style="display:inline;margin-left:8px">Menu Builder</h2>
+          <h2>Menu Builder</h2>
+          <p class="mb-sub">Create professional menus in seconds.</p>
         </div>
-        <div class="mb-top-right">
+        <div class="mb-header-right">
+          <span class="mb-branch-label">Branch</span>
           <select id="mb-branch" class="mb-select" title="Branch">
             <option value="all">All / shop default</option>
             ${this.branches.map((b) => `<option value="${b.id}" ${String(this.branchId) === String(b.id) ? 'selected' : ''}>${this.esc(b.name)}</option>`).join('')}
           </select>
+          <span class="mb-branch-label">${this.esc(userName)}</span>
         </div>
       </div>
-      <div class="mb-steps">
-        <span class="mb-step ${step === 1 ? 'active' : ''}">1. Select Products</span>
-        <span class="mb-step ${step === 2 ? 'active' : ''}">2. Choose Design</span>
-        <span class="mb-step ${step === 3 ? 'active' : ''}">3. Generate</span>
-        <span class="mb-step ${step === 4 ? 'active' : ''}">4. Download & Share</span>
-      </div>
+      ${this.stepsHtml()}
       <div class="mb-workspace">
         <section class="mb-col mb-col-products">
           <h3>Select Products</h3>
           <div class="mb-search-wrap">
-            <input type="search" id="mb-search" class="mb-search" placeholder="${this.esc(catalogHint)}"
-              value="${this.esc(this.searchQ)}" autocomplete="off" ${this.products.length || this.productsLoading ? '' : 'disabled'}>
+            <input type="search" id="mb-search" class="mb-search"
+              placeholder="${this.products.length ? `Search products (${this.products.length})…` : 'Search products…'}"
+              value="${this.esc(this.searchQ)}" autocomplete="off">
             <div id="mb-search-results" class="mb-search-dropdown hidden" role="listbox"></div>
           </div>
           <div class="mb-prod-actions">
-            <button type="button" class="btn btn-ghost btn-sm" id="mb-reload-prods">Refresh catalog</button>
-            <button type="button" class="btn btn-ghost btn-sm" id="mb-clear">Clear all</button>
-            <span class="muted" id="mb-sel-count">${this.selectedIds.size} marked</span>
+            <button type="button" class="btn btn-ghost btn-sm" id="mb-select-visible">Select visible</button>
+            <button type="button" class="btn btn-ghost btn-sm" id="mb-clear">Clear</button>
+            <button type="button" class="btn btn-ghost btn-sm" id="mb-reload-prods">Refresh</button>
+            <span class="muted" id="mb-sel-count">${this.selectedIds.size} selected</span>
           </div>
-          <div class="mb-selected-list" id="mb-selected-list">
-            ${this.selectedListHtml()}
-          </div>
+          <div class="mb-prod-list" id="mb-prod-list">${this.productRowsHtml()}</div>
         </section>
 
         <section class="mb-col mb-col-settings">
@@ -384,18 +358,18 @@ window.AdminMenuBuilderPage = {
             <label class="mb-check"><input type="checkbox" id="mb-inc-branch" ${this.draft.includeBranch ? 'checked' : ''}> Branch Details</label>
             <label class="mb-check"><input type="checkbox" id="mb-inc-phone" ${this.draft.includePhone ? 'checked' : ''}> Contact Number</label>
             <label class="mb-check"><input type="checkbox" id="mb-inc-date" ${this.draft.includeDate ? 'checked' : ''}> Date</label>
-            <label class="mb-check"><input type="checkbox" id="mb-inc-footer" ${this.draft.includeFooter ? 'checked' : ''}> Footer (Slogan / Social)</label>
+            <label class="mb-check"><input type="checkbox" id="mb-inc-footer" ${this.draft.includeFooter ? 'checked' : ''}> Footer (Slogan / Social Media)</label>
           </div>
-          <div class="field"><label>Custom Title (optional)</label>
+          <div class="field"><label>Custom Title</label>
             <input type="text" id="mb-title" value="${this.esc(this.draft.customTitle)}">
           </div>
-          <div class="field"><label>Footer Text (optional)</label>
+          <div class="field"><label>Footer Text</label>
             <input type="text" id="mb-footer" value="${this.esc(this.draft.footerText)}">
           </div>
-          <button type="button" class="btn btn-primary btn-block" id="mb-generate" style="background:${theme.accent};border-color:${theme.accent}">
+          <button type="button" class="btn btn-primary mb-generate" id="mb-generate" style="background:${theme.accent}">
             Generate Menu
           </button>
-          <p class="muted" style="font-size:12px;margin-top:8px">Shop: ${this.esc(shop.shopName)}${shop.branchName ? ` · ${this.esc(shop.branchName)}` : ''}</p>
+          <p class="mb-shop-hint">${this.esc(shop.shopName)}${shop.branchName ? ` · ${this.esc(shop.branchName)}` : ''}</p>
         </section>
 
         <section class="mb-col mb-col-preview">
@@ -406,51 +380,64 @@ window.AdminMenuBuilderPage = {
                 `<div class="mb-preview-page"><img src="${pg.dataUrl}" alt="Menu page ${i + 1}"><span class="mb-page-tag">Page ${i + 1}</span></div>`
               ).join('')
               : `<div class="mb-preview-empty">
-                  <p>Mark products, choose design, then click <strong>Generate Menu</strong></p>
-                  <p class="muted">Layout adjusts automatically to size and product count.</p>
+                  <p>Select products and click <strong>Generate Menu</strong></p>
+                  <p>Layout adjusts automatically to size and product count.</p>
                 </div>`}
           </div>
         </section>
       </div>
-      ${this.generatedPages.length ? this.actionBarHtml() : ''}
+      ${this.actionBarHtml()}
     </div>`;
     this.bindBuilder();
   },
 
-  paintSearchPlaceholder() {
-    const input = document.getElementById('mb-search');
-    if (!input) return;
-    input.disabled = !this.products.length && !this.productsLoading;
-    input.placeholder = this.productsLoading
-      ? 'Loading products…'
-      : (this.products.length
-        ? `Type to find a product (${this.products.length} available)…`
-        : 'No products found — add products in Products first');
+  updateBranchSelect() {
+    const sel = document.getElementById('mb-branch');
+    if (!sel || !this.branches.length) return;
+    const cur = this.branchId;
+    sel.innerHTML = `<option value="all">All / shop default</option>${this.branches.map((b) =>
+      `<option value="${b.id}" ${String(cur) === String(b.id) ? 'selected' : ''}>${this.esc(b.name)}</option>`
+    ).join('')}`;
   },
 
-  refreshSelectedPanel() {
-    const list = document.getElementById('mb-selected-list');
-    if (list) list.innerHTML = this.selectedListHtml();
+  refreshProductList() {
+    const list = document.getElementById('mb-prod-list');
+    if (list) list.innerHTML = this.productRowsHtml();
     const count = document.getElementById('mb-sel-count');
-    if (count) count.textContent = `${this.selectedIds.size} marked`;
-    this.bindSelectedRemove();
-    this.paintSearchPlaceholder();
+    if (count) count.textContent = `${this.selectedIds.size} selected`;
+    const search = document.getElementById('mb-search');
+    if (search && this.products.length) {
+      search.placeholder = `Search products (${this.products.length})…`;
+    }
+    this.bindProductChecks();
+    // Refresh step pills without full rebuild
+    const steps = this.el?.querySelector('.mb-steps');
+    if (steps) {
+      const wrap = document.createElement('div');
+      wrap.innerHTML = this.stepsHtml();
+      steps.replaceWith(wrap.firstElementChild);
+    }
   },
 
   paintSearchResults(q) {
     const resultsEl = document.getElementById('mb-search-results');
     if (!resultsEl) return;
     const query = String(q || '').trim();
-    const list = query ? this.filteredProducts(query) : this.products.slice(0, 40);
+    if (!query) {
+      resultsEl.classList.add('hidden');
+      resultsEl.innerHTML = '';
+      return;
+    }
+    const list = this.filteredProducts(query).slice(0, 40);
     if (!list.length) {
-      resultsEl.innerHTML = `<div class="mb-search-empty">${this.products.length ? 'No matching products' : (this.productsLoading ? 'Loading catalog…' : 'No products in catalog')}</div>`;
+      resultsEl.innerHTML = '<div class="mb-search-empty">No matching products</div>';
       resultsEl.classList.remove('hidden');
       return;
     }
     resultsEl.innerHTML = list.map((p) => {
       const id = Number(p.id);
       const marked = this.selectedIds.has(id);
-      return `<button type="button" class="mb-search-item ${marked ? 'marked' : ''}" data-pid="${id}" role="option">
+      return `<button type="button" class="mb-search-item ${marked ? 'marked' : ''}" data-pid="${id}">
         <span class="mb-search-check">${marked ? '✓' : '+'}</span>
         <span class="mb-search-name">${this.esc(p.name)}</span>
         <span class="mb-search-price">${this.money(p.selling_price)}</span>
@@ -463,26 +450,22 @@ window.AdminMenuBuilderPage = {
         const id = Number(btn.dataset.pid);
         if (this.selectedIds.has(id)) this.selectedIds.delete(id);
         else this.selectedIds.add(id);
-        this.refreshSelectedPanel();
+        this.refreshProductList();
         this.paintSearchResults(document.getElementById('mb-search')?.value || '');
       });
     });
   },
 
   actionBarHtml() {
+    const ready = this.generatedPages.length > 0;
     return `<div class="mb-action-bar">
-      <button type="button" class="btn btn-ghost" id="mb-fullscreen">View Full Screen</button>
-      <button type="button" class="btn btn-primary" id="mb-pdf">Save as PDF</button>
-      <button type="button" class="btn btn-ghost" id="mb-print">Print</button>
-      <button type="button" class="btn btn-success" id="mb-wa">Share to WhatsApp</button>
-      <button type="button" class="btn" id="mb-wa-group" style="background:#2563eb;color:#fff">Share to Group</button>
-      <span class="muted mb-action-hint">Menu will automatically adjust layout based on selected size and products.</span>
+      <button type="button" class="btn btn-ghost" id="mb-fullscreen" ${ready ? '' : 'disabled'}>View Full Screen</button>
+      <button type="button" class="btn btn-primary" id="mb-pdf" ${ready ? '' : 'disabled'}>Save as PDF</button>
+      <button type="button" class="btn btn-ghost" id="mb-print" ${ready ? '' : 'disabled'}>Print</button>
+      <button type="button" class="btn mb-btn-wa" id="mb-wa" ${ready ? '' : 'disabled'}>Share to WhatsApp</button>
+      <button type="button" class="btn mb-btn-group" id="mb-wa-group" ${ready ? '' : 'disabled'}>Share to Group</button>
+      <span class="mb-action-hint">Menu will automatically adjust layout based on selected size and products.</span>
     </div>`;
-  },
-
-  paintPreview() {
-    this.mode = 'builder';
-    this.paintBuilder();
   },
 
   readDraftFromDom() {
@@ -498,44 +481,58 @@ window.AdminMenuBuilderPage = {
     this.draft.footerText = document.getElementById('mb-footer')?.value || '';
   },
 
-  bindBuilder() {
-    document.getElementById('mb-back-home')?.addEventListener('click', () => {
-      this.mode = 'home';
-      this.paint();
+  bindProductChecks() {
+    this.el?.querySelectorAll('#mb-prod-list input[data-pid]').forEach((inp) => {
+      inp.addEventListener('change', () => {
+        const id = Number(inp.dataset.pid);
+        if (inp.checked) this.selectedIds.add(id);
+        else this.selectedIds.delete(id);
+        inp.closest('.mb-prod-row')?.classList.toggle('is-on', inp.checked);
+        const count = document.getElementById('mb-sel-count');
+        if (count) count.textContent = `${this.selectedIds.size} selected`;
+      });
     });
+  },
+
+  bindBuilder() {
     document.getElementById('mb-branch')?.addEventListener('change', (e) => {
       this.branchId = e.target.value;
       this.readDraftFromDom();
     });
     const searchInput = document.getElementById('mb-search');
     const resultsEl = document.getElementById('mb-search-results');
+    let searchTimer = null;
     searchInput?.addEventListener('input', (e) => {
       this.searchQ = e.target.value;
-      this.paintSearchResults(e.target.value);
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(() => {
+        this.refreshProductList();
+        this.paintSearchResults(this.searchQ);
+      }, 80);
     });
     searchInput?.addEventListener('focus', () => {
-      this.paintSearchResults(searchInput.value);
-    });
-    searchInput?.addEventListener('click', () => {
-      this.paintSearchResults(searchInput.value);
+      if (String(searchInput.value || '').trim()) this.paintSearchResults(searchInput.value);
     });
     searchInput?.addEventListener('blur', () => {
-      setTimeout(() => resultsEl?.classList.add('hidden'), 180);
+      setTimeout(() => resultsEl?.classList.add('hidden'), 160);
     });
-    document.getElementById('mb-reload-prods')?.addEventListener('click', async () => {
-      this.products = [];
-      this.paintSearchPlaceholder();
-      await this.loadProducts();
-      this.refreshSelectedPanel();
-      this.paintSearchResults(searchInput?.value || '');
-      this.toast(this.products.length ? `${this.products.length} products loaded` : 'No products found', this.products.length ? 'success' : 'error');
+    document.getElementById('mb-select-visible')?.addEventListener('click', () => {
+      this.filteredProducts(this.searchQ).forEach((p) => this.selectedIds.add(Number(p.id)));
+      this.refreshProductList();
     });
     document.getElementById('mb-clear')?.addEventListener('click', () => {
       this.selectedIds.clear();
-      this.refreshSelectedPanel();
-      if (searchInput?.value) this.paintSearchResults(searchInput.value);
+      this.refreshProductList();
     });
-    this.bindSelectedRemove();
+    document.getElementById('mb-reload-prods')?.addEventListener('click', async () => {
+      this.products = [];
+      this.productsLoading = true;
+      this.refreshProductList();
+      await this.loadProducts();
+      this.refreshProductList();
+      this.toast(this.products.length ? `${this.products.length} products loaded` : 'No products found', this.products.length ? 'success' : 'error');
+    });
+    this.bindProductChecks();
     document.getElementById('mb-swatches')?.addEventListener('click', (e) => {
       const btn = e.target.closest('[data-theme]');
       if (!btn) return;
@@ -545,15 +542,6 @@ window.AdminMenuBuilderPage = {
     });
     document.getElementById('mb-generate')?.addEventListener('click', () => this.generate());
     this.bindActions();
-  },
-
-  bindSelectedRemove() {
-    this.el?.querySelectorAll('.mb-rm').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        this.selectedIds.delete(Number(btn.dataset.pid));
-        this.refreshSelectedPanel();
-      });
-    });
   },
 
   bindActions() {
