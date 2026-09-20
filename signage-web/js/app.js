@@ -11,11 +11,24 @@ const SignageApp = {
 
   async init() {
     this.view = 'login';
+    // SSO from Admin → Digital Signage
+    try {
+      const q = new URLSearchParams(location.search || '');
+      const sso = q.get('sso');
+      if (sso) {
+        localStorage.setItem('signage_token', sso);
+        q.delete('sso');
+        const clean = `${location.pathname}${q.toString() ? `?${q}` : ''}${location.hash || ''}`;
+        history.replaceState({}, '', clean);
+      }
+    } catch (_) { /* */ }
     this.render();
     if (localStorage.getItem('signage_token')) {
       try {
         this.dash = await SignageAPI.dashboard();
         this.user = JSON.parse(localStorage.getItem('signage_user') || '{}');
+        if (!this.user?.username) this.user = { username: 'Admin', full_name: 'Admin', role: 'admin' };
+        localStorage.setItem('signage_user', JSON.stringify(this.user));
         this.view = 'main';
         this.render();
       } catch (_) {
@@ -31,10 +44,14 @@ const SignageApp = {
   render() {
     const app = document.getElementById('app');
     if (this.view === 'login') {
-      app.innerHTML = `<div class="portal-card"><h1>Digital Signage Centre</h1><p class="muted">Shop TVs, menus, media, music & announcements</p>
-        <label>Username<input id="sg-user"></label><label>Password<input id="sg-pass" type="password"></label>
+      app.innerHTML = `<div class="portal-card"><h1>Digital Signage Centre</h1>
+        <p class="muted">Shop TVs, menus, media, music &amp; announcements</p>
+        <p class="muted" style="line-height:1.45;margin:0 0 12px">Sign in with your <strong>Admin username &amp; password</strong> (same as Shop POS),
+          or use <code>signage</code> / <code>signage123</code>.</p>
+        <label>Username<input id="sg-user" autocomplete="username" placeholder="Your Admin username"></label>
+        <label>Password<input id="sg-pass" type="password" autocomplete="current-password"></label>
         <button class="btn" data-act="login">Sign in</button>
-        <p class="muted" style="margin-top:12px"><a href="/signage-player/" target="_blank">Open TV Player</a></p></div>`;
+        <p class="muted" style="margin-top:12px"><a href="/signage-player/" target="_blank">Open TV Player</a> — shows a pairing code for Admin to approve</p></div>`;
     } else {
       const s = this.dash?.screens || {};
       app.innerHTML = `<div class="portal-card"><div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px">

@@ -54,8 +54,9 @@ const MeetingApp = {
       app.innerHTML = `<div class="portal-card">
         <h1>AI Meeting Centre</h1>
         <p class="muted">Record meetings, transcribe, and generate minutes.</p>
-        <label>Username<input id="mtg-user"></label>
-        <label>Password<input id="mtg-pass" type="password"></label>
+        <p class="muted" style="line-height:1.4">Use your <strong>Admin username &amp; password</strong>, or <code>meeting</code> / <code>meeting123</code>.</p>
+        <label>Username<input id="mtg-user" autocomplete="username" placeholder="Admin username"></label>
+        <label>Password<input id="mtg-pass" type="password" autocomplete="current-password"></label>
         <button class="btn" data-act="login">Sign in</button>
       </div>`;
     } else if (this.view === 'list') {

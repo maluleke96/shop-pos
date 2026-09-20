@@ -470,25 +470,84 @@ const AdminPage = {
       'digital-signage': () => {
         el.innerHTML = `<div class="admin-section">
           <h2>📺 Digital Signage &amp; Shop Media Centre</h2>
-          <p class="muted">Manage shop TVs, menus, playlists, music, and voice announcements. Pair screens via the TV Player app.</p>
-          <div class="card"><div class="card-body">
+          <p class="muted" style="max-width:720px;line-height:1.5">
+            <strong>How it works:</strong> Open <em>TV Player</em> on the shop TV — it shows a 6-digit pairing code.
+            Approve that code here (or in Signage Centre). After approval the TV plays menus, playlists and music.
+            This is <strong>not</strong> a login screen for you — the code is only for linking that TV to your shop.
+          </p>
+          <div class="card" style="margin-top:12px"><div class="card-body">
+            <h4 style="margin:0 0 8px">Sign in to Signage Centre</h4>
+            <p style="margin:0 0 8px;line-height:1.5">Use your <strong>Admin username and password</strong> (same as Shop POS),
+              or the Signage account: <code>signage</code> / <code>signage123</code>.</p>
             <div class="admin-quick-actions" style="display:flex;flex-wrap:wrap;gap:8px">
-              <a class="btn btn-primary" href="/signage/" target="_blank" rel="noopener">Open Signage Centre</a>
+              <button type="button" class="btn btn-primary" id="admin-signage-open-sso">Open Signage Centre (Admin login)</button>
+              <a class="btn btn-ghost" href="/signage/" target="_blank" rel="noopener">Open Signage Centre (new tab)</a>
               <a class="btn btn-ghost" href="/signage-player/" target="_blank" rel="noopener">Open TV Player</a>
-              <button type="button" class="btn btn-ghost" id="admin-signage-embed">Manage in Admin</button>
+              <button type="button" class="btn btn-ghost" id="admin-signage-refresh-pair">Refresh pairing codes</button>
             </div>
             <div id="admin-signage-summary" class="muted" style="margin-top:12px">Loading status…</div>
           </div></div>
+          <div class="card" style="margin-top:12px"><div class="card-body">
+            <h4 style="margin:0 0 8px">TV screens waiting to pair</h4>
+            <div id="admin-signage-pending"><p class="muted">Loading…</p></div>
+          </div></div>
           <iframe id="admin-signage-frame" class="hidden" style="width:100%;height:80vh;border:1px solid var(--border);border-radius:8px;margin-top:12px" title="Digital Signage"></iframe>
         </div>`;
-        API.signageSummary(this.app.user).then((r) => {
-          const s = r?.data || r || {};
-          el.querySelector('#admin-signage-summary').innerHTML = `Screens: <strong>${s.online_screens ?? 0}</strong> online / ${s.total_screens ?? 0} total`;
-        }).catch(() => {});
-        el.querySelector('#admin-signage-embed')?.addEventListener('click', () => {
-          const frame = el.querySelector('#admin-signage-frame');
-          frame.classList.remove('hidden');
-          frame.src = '/signage/';
+
+        const paintSummary = () => {
+          API.signageSummary(this.app.user).then((r) => {
+            const s = r?.data || r || {};
+            const box = el.querySelector('#admin-signage-summary');
+            if (box) box.innerHTML = `Screens: <strong>${s.online_screens ?? 0}</strong> online / ${s.total_screens ?? 0} total`;
+          }).catch(() => {});
+        };
+
+        const paintPending = async () => {
+          const box = el.querySelector('#admin-signage-pending');
+          if (!box) return;
+          try {
+            const r = await API.signagePendingPairingsAdmin(this.app.user);
+            const list = r?.data || r || [];
+            if (!list.length) {
+              box.innerHTML = '<p class="muted">No TVs waiting. Open TV Player on a screen to get a code.</p>';
+              return;
+            }
+            box.innerHTML = `<div class="table-wrap"><table><thead><tr><th>Code</th><th>Expires</th><th></th></tr></thead><tbody>
+              ${list.map((p) => `<tr>
+                <td style="font-size:1.4rem;font-weight:700;letter-spacing:4px">${Utils.escHtml(p.pairing_code)}</td>
+                <td>${Utils.escHtml(p.expires_at || '')}</td>
+                <td><button type="button" class="btn btn-primary btn-sm" data-approve-code="${Utils.escHtml(p.pairing_code)}">Approve this TV</button></td>
+              </tr>`).join('')}
+            </tbody></table></div>`;
+            box.querySelectorAll('[data-approve-code]').forEach((btn) => {
+              btn.addEventListener('click', async () => {
+                const code = btn.dataset.approveCode;
+                const name = prompt('Name this screen (e.g. Front TV)', `Screen ${code}`) || `Screen ${code}`;
+                const res = await API.signageApprovePairingAdmin(code, { name }, this.app.user);
+                if (res?.success === false) return Utils.toast(res.error || 'Approve failed', 'error');
+                Utils.toast('TV paired — it should start playing shortly', 'success');
+                paintPending();
+                paintSummary();
+              });
+            });
+          } catch (err) {
+            box.innerHTML = `<p class="muted">${Utils.escHtml(err.message || 'Could not load pairing codes')}</p>`;
+          }
+        };
+
+        paintSummary();
+        paintPending();
+        el.querySelector('#admin-signage-refresh-pair')?.addEventListener('click', () => paintPending());
+        el.querySelector('#admin-signage-open-sso')?.addEventListener('click', async () => {
+          try {
+            const r = await API.signageLoginAsAdmin(this.app.user);
+            const data = r?.data || r;
+            if (!data?.token) throw new Error(r?.error || 'Could not open Signage Centre');
+            const url = `/signage/?sso=${encodeURIComponent(data.token)}`;
+            window.open(url, '_blank', 'noopener');
+          } catch (err) {
+            Utils.toast(err.message || 'SSO failed — open Signage Centre and use your Admin password', 'error');
+          }
         });
       },
       'business-manager': () => this.renderBusinessManager(el),

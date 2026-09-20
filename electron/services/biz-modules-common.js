@@ -95,8 +95,115 @@ function resolveModuleSession(table, usersTable, token) {
 function hashPassword(p) { return bcrypt.hashSync(String(p), 10); }
 function verifyPassword(p, hash) { return bcrypt.compareSync(String(p), hash); }
 
+/**
+ * Verify POS staff credentials (owner/manager/supervisor/assistant_manager).
+ * Returns the POS user row (without password) or null.
+ */
+function tryPosAdminLogin(username, password) {
+  const u = String(username || '').trim();
+  const pass = String(password || '');
+  if (!u || !pass) return null;
+  let user;
+  try {
+    user = dbGet('SELECT * FROM users WHERE lower(username) = lower(?)', [u]);
+  } catch (_) {
+    return null;
+  }
+  if (!user) return null;
+  const active = user.is_active !== 0 && user.is_active !== '0' && user.status !== 'inactive';
+  if (!active) return null;
+  const role = String(user.role || '').toLowerCase();
+  const allowed = new Set(['owner', 'manager', 'supervisor', 'assistant_manager']);
+  if (!allowed.has(role)) return null;
+
+  let passOk = false;
+  try {
+    if (user.password_hash) passOk = bcrypt.compareSync(pass, user.password_hash);
+  } catch (_) { passOk = false; }
+  if (!passOk && user.pin) {
+    try {
+      const { verifyPinWithUpgrade } = require('./pin');
+      passOk = !!verifyPinWithUpgrade(user.pin, pass)?.ok;
+    } catch (_) { /* */ }
+  }
+  if (!passOk) return null;
+  const { password_hash, pin, ...safe } = user;
+  return safe;
+}
+
+/**
+ * Ensure a portal admin row exists for a POS user (same username + synced password).
+ * opts: { usersTable, role, password } — password used to set/update hash when provided.
+ */
+function upsertPortalAdminFromPos(usersTable, posUser, opts = {}) {
+  const username = String(posUser.username || '').trim();
+  if (!username || !usersTable) throw new Error('Invalid portal user upsert');
+  const role = opts.role || 'admin';
+  const fullName = posUser.full_name || posUser.username || 'Admin';
+  const existing = dbGet(`SELECT * FROM ${usersTable} WHERE lower(username) = lower(?)`, [username]);
+  const password = opts.password != null ? String(opts.password) : null;
+  if (existing) {
+    if (password) {
+      try {
+        dbRun(`UPDATE ${usersTable} SET password_hash = ?, full_name = ?, role = ?, is_active = 1 WHERE id = ?`,
+          [hashPassword(password), fullName, role, existing.id]);
+      } catch (_) {
+        dbRun(`UPDATE ${usersTable} SET password_hash = ?, full_name = ?, is_active = 1 WHERE id = ?`,
+          [hashPassword(password), fullName, existing.id]);
+      }
+      return dbGet(`SELECT * FROM ${usersTable} WHERE id = ?`, [existing.id]);
+    }
+    return existing;
+  }
+  if (!password) throw new Error('Password required to create portal admin');
+  try {
+    dbRun(`INSERT INTO ${usersTable} (username, password_hash, full_name, role, is_active) VALUES (?,?,?,?,1)`,
+      [username, hashPassword(password), fullName, role]);
+  } catch (_) {
+    dbRun(`INSERT INTO ${usersTable} (username, password_hash, full_name, role) VALUES (?,?,?,?)`,
+      [username, hashPassword(password), fullName, role]);
+  }
+  return dbGet(`SELECT * FROM ${usersTable} WHERE lower(username) = lower(?)`, [username]);
+}
+
+/**
+ * Portal login with POS admin fallback.
+ * Tries module users first; if that fails, accepts owner/manager POS password and upserts a portal admin.
+ */
+function portalLoginWithPosFallback({
+  username,
+  password,
+  usersTable,
+  sessionsTable,
+  portalRole = 'admin',
+  findPortalUser,
+  onSuccess
+}) {
+  const u = String(username || '').trim();
+  const pass = String(password || '');
+  let user = typeof findPortalUser === 'function'
+    ? findPortalUser(u)
+    : dbGet(`SELECT * FROM ${usersTable} WHERE lower(username) = lower(?) AND is_active = 1`, [u]);
+
+  if (user && verifyPassword(pass, user.password_hash)) {
+    const sess = createModuleSession(sessionsTable, user.id);
+    if (onSuccess) onSuccess(user, sess, false);
+    return { user, sess, via_pos: false };
+  }
+
+  const pos = tryPosAdminLogin(u, pass);
+  if (!pos) throw new Error('Invalid username or password');
+
+  user = upsertPortalAdminFromPos(usersTable, pos, { role: portalRole, password: pass });
+  if (!user) throw new Error('Could not create portal access for Admin');
+  const sess = createModuleSession(sessionsTable, user.id);
+  if (onSuccess) onSuccess(user, sess, true);
+  return { user, sess, via_pos: true };
+}
+
 module.exports = {
   dbGet, dbAll, dbRun, nowIso, nowPlusDays, parseJson, hashToken, newToken, uid,
   ensureMigration, getModuleSettings, saveModuleSettings, moduleAudit,
-  createModuleSession, resolveModuleSession, hashPassword, verifyPassword
+  createModuleSession, resolveModuleSession, hashPassword, verifyPassword,
+  tryPosAdminLogin, upsertPortalAdminFromPos, portalLoginWithPosFallback
 };

@@ -3389,6 +3389,7 @@ ipcMain.handle('web:adminAnalytics', wrap((filters, actor) => {
   }));
 
   ipcMain.handle('signage:login', wrap((u, p) => store.signageLogin(u, p)));
+  ipcMain.handle('signage:loginAsAdmin', wrap((actor) => store.signageLoginAsAdmin(bizActor(actor))));
   ipcMain.handle('signage:logout', wrap((tok) => store.signageLogout(tok)));
   ipcMain.handle('signage:dashboard', wrap((tok) => store.signageDashboard(tok)));
   ipcMain.handle('signage:summary', wrap((actor) => {
@@ -3398,7 +3399,9 @@ ipcMain.handle('web:adminAnalytics', wrap((filters, actor) => {
   ipcMain.handle('signage:requestPairing', wrap((meta) => store.requestPairing(meta || {})));
   ipcMain.handle('signage:pairingStatus', wrap((code) => store.pairingStatus(code)));
   ipcMain.handle('signage:pendingPairings', wrap((tok) => store.listPendingPairings(tok)));
+  ipcMain.handle('signage:pendingPairingsAdmin', wrap((actor) => store.listPendingPairingsAdmin(bizActor(actor))));
   ipcMain.handle('signage:approvePairing', wrap((tok, code, data) => store.approvePairing(code, data || {}, tok)));
+  ipcMain.handle('signage:approvePairingAdmin', wrap((code, data, actor) => store.approvePairingAdmin(code, data || {}, bizActor(actor))));
   ipcMain.handle('signage:rejectPairing', wrap((tok, code) => store.rejectPairing(code, tok)));
   ipcMain.handle('signage:revokeDevice', wrap((tok, id) => store.revokeDevice(id, tok)));
   ipcMain.handle('signage:listDevices', wrap((tok) => store.listDevices(tok)));

@@ -4,7 +4,8 @@
 const { assertUserActor } = require('./authz');
 const {
   dbGet, dbAll, dbRun, nowIso, parseJson, moduleAudit,
-  createModuleSession, resolveModuleSession, hashPassword, verifyPassword, ensureMigration
+  createModuleSession, resolveModuleSession, hashPassword, verifyPassword, ensureMigration,
+  portalLoginWithPosFallback, getModuleSettings
 } = require('./biz-modules-common');
 
 const AUDIT = 'release_audit_logs';
@@ -20,14 +21,30 @@ function perms(role) { return ROLE_PERMS[role] || ROLE_PERMS.tester; }
 
 function releaseLogin(username, password) {
   ensureMigration();
-  const user = dbGet('SELECT * FROM release_centre_users WHERE lower(username) = lower(?) AND is_active = 1', [username]);
-  if (!user || !verifyPassword(password, user.password_hash)) throw new Error('Invalid username or password');
-  const sess = createModuleSession('release_sessions', user.id);
-  dbRun('UPDATE release_centre_users SET last_login_at = ? WHERE id = ?', [nowIso(), user.id]);
-  auditRelease({ user_id: user.id, user_name: user.username, action: 'login' });
+  try {
+    const c = dbGet('SELECT COUNT(*) AS c FROM release_centre_users')?.c || 0;
+    if (c === 0) {
+      dbRun('INSERT INTO release_centre_users (username, password_hash, full_name, role) VALUES (?,?,?,?)',
+        ['release', hashPassword('release123'), 'Release Administrator', 'owner']);
+    }
+  } catch (_) { /* */ }
+  const settings = getModuleSettings();
+  if (settings.release_enabled === 0) throw new Error('App Release Centre is disabled in Admin → Business Modules');
+  const { user, sess } = portalLoginWithPosFallback({
+    username,
+    password,
+    usersTable: 'release_centre_users',
+    sessionsTable: 'release_sessions',
+    portalRole: 'owner',
+    onSuccess: (u) => {
+      try { dbRun('UPDATE release_centre_users SET last_login_at = ? WHERE id = ?', [nowIso(), u.id]); } catch (_) { /* */ }
+      auditRelease({ user_id: u.id, user_name: u.username, action: 'login' });
+    }
+  });
   return {
     token: sess.token,
-    user: { id: user.id, username: user.username, full_name: user.full_name, role: user.role, permissions: perms(user.role) }
+    user: { id: user.id, username: user.username, full_name: user.full_name, role: user.role, permissions: perms(user.role) },
+    hint: 'Use your Admin username/password, or release / release123'
   };
 }
 

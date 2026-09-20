@@ -90,28 +90,43 @@ const Player = {
   hidePair() { document.getElementById('pair').style.display = 'none'; },
 
   async startPairing() {
-    const meta = { platform: navigator.platform, user_agent: navigator.userAgent, screen: `${screen.width}x${screen.height}` };
-    const r = await this.rpc('signage:requestPairing', [meta]);
-    document.getElementById('pair-code').textContent = r.pairing_code;
-    const poll = setInterval(async () => {
-      try {
-        const st = await this.rpc('signage:pairingStatus', [r.pairing_code]);
-        if (st.status === 'approved' && st.device_token) {
-          clearInterval(poll);
-          this.deviceToken = st.device_token;
-          localStorage.setItem('signage_device_token', st.device_token);
-          document.getElementById('pair-msg').textContent = 'Connected!';
-          await this.sync();
-          this.hidePair();
-          this.startPlayback();
-          this.startLoops();
-        }
-        if (st.status === 'rejected' || st.status === 'expired') {
-          clearInterval(poll);
-          document.getElementById('pair-msg').textContent = st.status;
-        }
-      } catch (_) { /* keep polling */ }
-    }, 3000);
+    const msg = document.getElementById('pair-msg');
+    const codeEl = document.getElementById('pair-code');
+    try {
+      const meta = { platform: navigator.platform, user_agent: navigator.userAgent, screen: `${screen.width}x${screen.height}` };
+      const r = await this.rpc('signage:requestPairing', [meta]);
+      if (!r?.pairing_code) throw new Error('No pairing code returned');
+      codeEl.textContent = r.pairing_code;
+      msg.textContent = 'Waiting for Admin to approve this code in Digital Signage…';
+      const poll = setInterval(async () => {
+        try {
+          const st = await this.rpc('signage:pairingStatus', [r.pairing_code]);
+          if (st.status === 'approved' && st.device_token) {
+            clearInterval(poll);
+            this.deviceToken = st.device_token;
+            localStorage.setItem('signage_device_token', st.device_token);
+            msg.textContent = 'Connected! Loading content…';
+            await this.sync();
+            this.hidePair();
+            this.startPlayback();
+            this.startLoops();
+          } else if (st.status === 'approved' && !st.device_token) {
+            msg.textContent = 'Approved but token already used — refresh this page to re-pair.';
+          } else if (st.status === 'rejected') {
+            clearInterval(poll);
+            msg.textContent = 'Pairing was rejected. Refresh to get a new code.';
+          } else if (st.status === 'expired') {
+            clearInterval(poll);
+            msg.textContent = 'Code expired. Refresh this page for a new code.';
+          } else {
+            msg.textContent = `Waiting for Admin approval… (code ${r.pairing_code})`;
+          }
+        } catch (_) { /* keep polling */ }
+      }, 3000);
+    } catch (err) {
+      codeEl.textContent = '------';
+      msg.textContent = `Could not get pairing code: ${err.message || err}. Check internet / server, then refresh.`;
+    }
   },
 
   manifestChanged(prev, next) {

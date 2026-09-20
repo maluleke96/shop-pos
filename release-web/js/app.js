@@ -41,8 +41,9 @@ const ReleaseApp = {
       app.innerHTML = `<div class="portal-card">
         <h1>App Release Centre</h1>
         <p class="muted">DEVELOPMENT → PREVIEW → TEST → APPROVE → PUBLISH → LIVE</p>
-        <label>Username<input id="rel-user"></label>
-        <label>Password<input id="rel-pass" type="password"></label>
+        <p class="muted" style="line-height:1.4">Use your <strong>Admin username &amp; password</strong>, or <code>release</code> / <code>release123</code>.</p>
+        <label>Username<input id="rel-user" autocomplete="username" placeholder="Admin username"></label>
+        <label>Password<input id="rel-pass" type="password" autocomplete="current-password"></label>
         <button class="btn" data-act="login">Sign in</button>
       </div>`;
     } else {

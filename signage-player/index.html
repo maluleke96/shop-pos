@@ -21,7 +21,15 @@
   </style>
 </head>
 <body>
-  <div id="pair"><div class="box"><h2>CONNECT THIS SCREEN</h2><p>Pairing Code:</p><div class="code" id="pair-code">------</div><p id="pair-msg">Waiting for approval…</p></div></div>
+  <div id="pair"><div class="box">
+    <h2>CONNECT THIS TV</h2>
+    <p style="opacity:.85;max-width:420px;margin:8px auto 16px;line-height:1.4">This screen is waiting to be linked to your shop.
+      On Admin → Digital Signage (or Signage Centre → Screens), enter / approve this code.</p>
+    <p>Pairing code</p>
+    <div class="code" id="pair-code">------</div>
+    <p id="pair-msg" style="margin-top:16px;opacity:.9">Getting code…</p>
+    <p style="margin-top:20px;font-size:13px;opacity:.6">Not a username login — Admin approves this code once per TV.</p>
+  </div></div>
   <div id="emergency-banner" style="position:fixed;top:0;left:0;right:0;background:#b91c1c;text-align:center;padding:10px;display:none;z-index:6;font-weight:bold"></div>
   <div id="rec-banner">🔴 Recording consent acknowledged</div>
   <div id="stage"></div>

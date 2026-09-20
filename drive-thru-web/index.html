@@ -10,7 +10,9 @@
 <body>
   <div id="login-screen" class="screen"><div class="login-box">
     <h1>Drive-Thru Station</h1>
-    <input id="dt-user" placeholder="Username"><input id="dt-pass" type="password" placeholder="Password">
+    <p class="muted" style="margin:0 0 12px;max-width:320px;line-height:1.45">Use your <strong>Admin username &amp; password</strong>, or <code>drivethru</code> / <code>dt123456</code>.</p>
+    <input id="dt-user" placeholder="Admin username" autocomplete="username">
+    <input id="dt-pass" type="password" placeholder="Password" autocomplete="current-password">
     <button id="dt-login-btn">Sign In</button>
     <p id="login-err" class="err"></p></div></div>
   <div id="station-setup" class="screen hidden"><div class="login-box">

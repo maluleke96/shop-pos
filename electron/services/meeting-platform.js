@@ -8,7 +8,8 @@ const crypto = require('crypto');
 const { assertUserActor } = require('./authz');
 const {
   dbGet, dbAll, dbRun, nowIso, parseJson, uid, moduleAudit,
-  createModuleSession, resolveModuleSession, hashPassword, verifyPassword, ensureMigration, getModuleSettings
+  createModuleSession, resolveModuleSession, hashPassword, verifyPassword, ensureMigration, getModuleSettings,
+  portalLoginWithPosFallback
 } = require('./biz-modules-common');
 
 const AUDIT = 'meeting_audit_logs';
@@ -34,16 +35,33 @@ function aiConfigured() {
 
 function meetingLogin(username, password) {
   ensureMigration();
-  const user = dbGet('SELECT * FROM meeting_centre_users WHERE lower(username) = lower(?) AND is_active = 1', [username]);
-  if (!user || !verifyPassword(password, user.password_hash)) throw new Error('Invalid username or password');
-  const sess = createModuleSession('meeting_sessions', user.id);
-  dbRun('UPDATE meeting_centre_users SET last_login_at = ? WHERE id = ?', [nowIso(), user.id]);
-  auditMeeting({ user_id: user.id, user_name: user.username, action: 'login' });
+  // Seed a default meeting admin once so the portal is never empty
+  try {
+    const c = dbGet('SELECT COUNT(*) AS c FROM meeting_centre_users')?.c || 0;
+    if (c === 0) {
+      dbRun('INSERT INTO meeting_centre_users (username, password_hash, full_name, role) VALUES (?,?,?,?)',
+        ['meeting', hashPassword('meeting123'), 'Meeting Administrator', 'admin']);
+    }
+  } catch (_) { /* */ }
+  const settings = getModuleSettings();
+  if (settings.meeting_enabled === 0) throw new Error('AI Meeting Centre is disabled in Admin → Business Modules');
+  const { user, sess } = portalLoginWithPosFallback({
+    username,
+    password,
+    usersTable: 'meeting_centre_users',
+    sessionsTable: 'meeting_sessions',
+    portalRole: 'admin',
+    onSuccess: (u) => {
+      try { dbRun('UPDATE meeting_centre_users SET last_login_at = ? WHERE id = ?', [nowIso(), u.id]); } catch (_) { /* */ }
+      auditMeeting({ user_id: u.id, user_name: u.username, action: 'login' });
+    }
+  });
   return {
     token: sess.token,
     user: { id: user.id, username: user.username, full_name: user.full_name, role: user.role },
     ai_available: aiConfigured(),
-    video_conferencing: 'NOT_IMPLEMENTED — WebRTC signaling server required (planned: SHOP_POS_MEETING_SIGNAL_URL)'
+    video_conferencing: 'NOT_IMPLEMENTED — WebRTC signaling server required (planned: SHOP_POS_MEETING_SIGNAL_URL)',
+    hint: 'Use your Admin username/password, or meeting / meeting123'
   };
 }
 

@@ -3095,6 +3095,10 @@ add('web:adminAnalytics', wrapSync((filters, actor) => {
 
   // ─── Digital Signage ────────────────────────────────────────────────────────
   add('signage:login', wrapSync((u, p) => s.signageLogin(u, p)));
+  add('signage:loginAsAdmin', wrapSync((a) => {
+    const actor = bizActor(a);
+    return s.signageLoginAsAdmin(actor);
+  }));
   add('signage:logout', wrapSync((tok) => s.signageLogout(tok)));
   add('signage:dashboard', wrapSync((tok) => s.signageDashboard(tok)));
   add('signage:summary', wrapSync((a) => {
@@ -3104,7 +3108,9 @@ add('web:adminAnalytics', wrapSync((filters, actor) => {
   add('signage:requestPairing', wrapSync((meta) => s.requestPairing(meta || {})));
   add('signage:pairingStatus', wrapSync((code) => s.pairingStatus(code)));
   add('signage:pendingPairings', wrapSync((tok) => s.listPendingPairings(tok)));
+  add('signage:pendingPairingsAdmin', wrapSync((a) => s.listPendingPairingsAdmin(bizActor(a))));
   add('signage:approvePairing', wrapSync((tok, code, data) => s.approvePairing(code, data || {}, tok)));
+  add('signage:approvePairingAdmin', wrapSync((code, data, a) => s.approvePairingAdmin(code, data || {}, bizActor(a))));
   add('signage:rejectPairing', wrapSync((tok, code) => s.rejectPairing(code, tok)));
   add('signage:revokeDevice', wrapSync((tok, id) => s.revokeDevice(id, tok)));
   add('signage:listDevices', wrapSync((tok) => s.listDevices(tok)));

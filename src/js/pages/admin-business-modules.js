@@ -12,9 +12,19 @@ window.AdminBusinessModulesPage = {
     this.el = el;
     this.admin = admin;
     this.actor = admin?.app?.user || admin?.user;
+    // Honour deep-link from overview cards / Admin dashboard
+    try {
+      const pending = window.App?._pendingBizModuleTab || sessionStorage.getItem('shoppos_bm_tab');
+      if (pending) {
+        this.tab = pending;
+        try { delete window.App._pendingBizModuleTab; } catch (_) { /* */ }
+        try { sessionStorage.removeItem('shoppos_bm_tab'); } catch (_) { /* */ }
+      }
+    } catch (_) { /* */ }
     el.innerHTML = `<div class="admin-section">
       <h2>🏢 Business Modules</h2>
-      <p class="muted">Central control for Investor Management, App Release Centre, and AI Meeting Centre. Each module has its own login portal.</p>
+      <p class="muted" style="max-width:720px;line-height:1.5">Central control for Investor Management, App Release Centre, AI Meeting Centre, Kiosk and Drive-Thru.
+        <strong>Portals accept your Admin username and password</strong> (owner/manager). Default portal accounts also work if you prefer.</p>
       <div class="admin-tabs" id="bm-tabs">
         ${['overview', 'investors', 'release-users', 'meeting-users', 'kiosk', 'drive-thru'].map((t) =>
           `<button class="admin-tab ${this.tab === t ? 'active' : ''}" data-tab="${t}">${this.tabLabel(t)}</button>`).join('')}
@@ -128,24 +138,38 @@ window.AdminBusinessModulesPage = {
     const dt = s.drive_thru || {};
     const cfg = this.settings || s.settings || {};
     body.innerHTML = `
+      <div class="card" style="margin:12px 0"><div class="card-body">
+        <h4 style="margin:0 0 8px">How to log in to each portal</h4>
+        <ul style="margin:0;padding-left:18px;line-height:1.55;font-size:14px">
+          <li><strong>Any portal below:</strong> use your Shop POS <em>Admin username + password</em> (owner/manager).</li>
+          <li><strong>Digital Signage:</strong> Admin password, or <code>signage</code> / <code>signage123</code>. TV Player only shows a pairing code — approve it in Admin → Digital Signage.</li>
+          <li><strong>Meeting Centre:</strong> Admin password, or <code>meeting</code> / <code>meeting123</code>.</li>
+          <li><strong>Release Centre:</strong> Admin password, or <code>release</code> / <code>release123</code>.</li>
+          <li><strong>Drive-Thru station:</strong> Admin password, or <code>drivethru</code> / <code>dt123456</code>, then paste the station token from the Drive-Thru tab.</li>
+          <li><strong>Self-Service Kiosk (customer screen):</strong> no login — shows a pairing code; approve under the Kiosk tab. (Optional admin API: <code>kiosk</code> / <code>kiosk123</code>)</li>
+          <li><strong>Investor Portal:</strong> create an investor + portal login under the Investors tab (for the investor). You manage everything from this Admin page.</li>
+          <li><strong>Business Manager:</strong> opens with your Admin session (no second password).</li>
+        </ul>
+      </div></div>
       <div class="stats-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin:16px 0">
-        <div class="card card-body" style="cursor:pointer" data-open="/investor/">
+        <div class="card card-body" data-tab-jump="investors" style="cursor:pointer">
           <h4>Investor Management</h4>
           <p><strong>${inv.active_investors || 0}</strong> active investors</p>
           <p class="muted">${inv.pending_agreements || 0} pending agreements</p>
-          <a href="/investor/" target="_blank" rel="noopener" class="btn btn-ghost" style="margin-top:8px">Open Investor Portal</a>
+          <a href="/investor/" target="_blank" rel="noopener" class="btn btn-ghost" style="margin-top:8px" onclick="event.stopPropagation()">Open Investor Portal</a>
+          <button type="button" class="btn btn-ghost" data-tab-jump="investors" style="margin-top:4px">Manage investors</button>
         </div>
-        <div class="card card-body" style="cursor:pointer" data-open="/release/">
+        <div class="card card-body" data-tab-jump="release-users" style="cursor:pointer">
           <h4>App Release Centre</h4>
           <p>Version <strong>${this.esc(rel.current_version || '—')}</strong></p>
           <p class="muted">Last test: ${this.esc(rel.last_test_status || 'NOT_TESTED')}</p>
-          <a href="/release/" target="_blank" rel="noopener" class="btn btn-ghost" style="margin-top:8px">Open Release Centre</a>
+          <a href="/release/" target="_blank" rel="noopener" class="btn btn-ghost" style="margin-top:8px" onclick="event.stopPropagation()">Open Release Centre</a>
         </div>
-        <div class="card card-body" style="cursor:pointer" data-open="/meeting/">
+        <div class="card card-body" data-tab-jump="meeting-users" style="cursor:pointer">
           <h4>AI Meeting Centre</h4>
           <p><strong>${mtg.meetings_this_month || 0}</strong> meetings this month</p>
           <p class="muted">${mtg.outstanding_action_items || 0} outstanding action items</p>
-          <a href="/meeting/" target="_blank" rel="noopener" class="btn btn-ghost" style="margin-top:8px">Open Meeting Centre</a>
+          <a href="/meeting/" target="_blank" rel="noopener" class="btn btn-ghost" style="margin-top:8px" onclick="event.stopPropagation()">Open Meeting Centre</a>
         </div>
         <div class="card card-body">
           <h4>Digital Signage</h4>
@@ -153,6 +177,7 @@ window.AdminBusinessModulesPage = {
           <p class="muted">Last pub: ${this.esc(sig.last_publication?.name || '—')}</p>
           <a href="/signage/" target="_blank" rel="noopener" class="btn btn-ghost" style="margin-top:8px">Open Signage Centre</a>
           <a href="/signage-player/" target="_blank" rel="noopener" class="btn btn-ghost" style="margin-top:4px">TV Player</a>
+          <button type="button" class="btn btn-ghost" data-goto-signage style="margin-top:4px">Admin Signage section</button>
         </div>
         <div class="card card-body">
           <h4>Self-Service Kiosk</h4>
@@ -196,12 +221,23 @@ window.AdminBusinessModulesPage = {
         await this.load();
       } catch (e) { Utils.toast(e.message, 'error'); }
     });
+    const jump = (tab) => {
+      this.tab = tab;
+      this.el.querySelectorAll('.admin-tab').forEach((x) => x.classList.toggle('active', x.dataset.tab === this.tab));
+      this.renderTab();
+    };
     body.querySelectorAll('[data-tab-jump]').forEach((b) => {
-      b.addEventListener('click', () => {
-        this.tab = b.dataset.tabJump;
-        this.el.querySelectorAll('.admin-tab').forEach((x) => x.classList.toggle('active', x.dataset.tab === this.tab));
-        this.renderTab();
+      b.addEventListener('click', (e) => {
+        e.preventDefault();
+        jump(b.dataset.tabJump);
       });
+    });
+    body.querySelector('[data-goto-signage]')?.addEventListener('click', () => {
+      if (this.admin) {
+        this.admin.section = 'digital-signage';
+        document.querySelectorAll('.admin-nav-btn').forEach((n) => n.classList.toggle('active', n.dataset.section === 'digital-signage'));
+        this.admin.renderSection(document.getElementById('admin-content'));
+      }
     });
   },
 

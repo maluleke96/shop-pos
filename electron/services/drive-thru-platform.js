@@ -3,7 +3,8 @@
  */
 const {
   dbGet, dbAll, dbRun, nowIso, nowPlusDays, parseJson, uid,
-  createModuleSession, resolveModuleSession, hashPassword, verifyPassword, hashToken, newToken
+  createModuleSession, resolveModuleSession, hashPassword, verifyPassword, hashToken, newToken,
+  portalLoginWithPosFallback
 } = require('./biz-modules-common');
 
 const AUDIT = 'drive_thru_audit_logs';
@@ -120,12 +121,22 @@ function productAvailable(product, branchId) {
 
 function driveThruLogin(username, password) {
   ensureDriveThru();
-  const user = dbGet('SELECT * FROM drive_thru_centre_users WHERE lower(username) = lower(?) AND is_active = 1', [username]);
-  if (!user || !verifyPassword(password, user.password_hash)) throw new Error('Invalid username or password');
-  const sess = createModuleSession('drive_thru_sessions', user.id);
-  dbRun('UPDATE drive_thru_centre_users SET last_login_at = ? WHERE id = ?', [nowIso(), user.id]);
-  audit({ user_id: user.id, user_name: user.username, action: 'login' });
-  return { token: sess.token, user: { id: user.id, username: user.username, full_name: user.full_name, role: user.role, permissions: perms(user.role) } };
+  const { user, sess } = portalLoginWithPosFallback({
+    username,
+    password,
+    usersTable: 'drive_thru_centre_users',
+    sessionsTable: 'drive_thru_sessions',
+    portalRole: 'drive_thru_admin',
+    onSuccess: (u) => {
+      try { dbRun('UPDATE drive_thru_centre_users SET last_login_at = ? WHERE id = ?', [nowIso(), u.id]); } catch (_) { /* */ }
+      audit({ user_id: u.id, user_name: u.username, action: 'login' });
+    }
+  });
+  return {
+    token: sess.token,
+    user: { id: user.id, username: user.username, full_name: user.full_name, role: user.role, permissions: perms(user.role) },
+    hint: 'Use your Admin username/password, or drivethru / dt123456'
+  };
 }
 
 function driveThruLogout(token) {

@@ -7,7 +7,8 @@ const crypto = require('crypto');
 const { assertUserActor } = require('./authz');
 const {
   dbGet, dbAll, dbRun, nowIso, nowPlusDays, parseJson, uid,
-  createModuleSession, resolveModuleSession, hashPassword, verifyPassword, hashToken, newToken
+  createModuleSession, resolveModuleSession, hashPassword, verifyPassword, hashToken, newToken,
+  portalLoginWithPosFallback
 } = require('./biz-modules-common');
 
 const AUDIT = 'signage_audit_logs';
@@ -118,14 +119,44 @@ function mediaPublicPath(mediaId, token) {
 
 function signageLogin(username, password) {
   ensureSignage();
-  const user = dbGet('SELECT * FROM signage_centre_users WHERE lower(username) = lower(?) AND is_active = 1', [username]);
-  if (!user || !verifyPassword(password, user.password_hash)) throw new Error('Invalid username or password');
-  const sess = createModuleSession('signage_sessions', user.id);
-  dbRun('UPDATE signage_centre_users SET last_login_at = ? WHERE id = ?', [nowIso(), user.id]);
-  audit({ user_id: user.id, user_name: user.username, action: 'login' });
+  const { user, sess } = portalLoginWithPosFallback({
+    username,
+    password,
+    usersTable: 'signage_centre_users',
+    sessionsTable: 'signage_sessions',
+    portalRole: 'admin',
+    onSuccess: (u) => {
+      try { dbRun('UPDATE signage_centre_users SET last_login_at = ? WHERE id = ?', [nowIso(), u.id]); } catch (_) { /* */ }
+      audit({ user_id: u.id, user_name: u.username, action: 'login' });
+    }
+  });
   return {
     token: sess.token,
-    user: { id: user.id, username: user.username, full_name: user.full_name, role: user.role, permissions: perms(user.role) }
+    user: { id: user.id, username: user.username, full_name: user.full_name, role: user.role, permissions: perms(user.role) },
+    hint: 'Use your Admin username/password, or the Signage account (default signage / signage123).'
+  };
+}
+
+/** Mint a Signage Centre session from an already-logged-in POS Admin (SSO). */
+function signageLoginAsAdmin(actor) {
+  ensureSignage();
+  const pos = assertUserActor(actor, ['owner', 'manager', 'supervisor', 'assistant_manager']);
+  const { upsertPortalAdminFromPos } = require('./biz-modules-common');
+  let portal = dbGet('SELECT * FROM signage_centre_users WHERE lower(username) = lower(?)', [pos.username]);
+  if (!portal) {
+    const crypto = require('crypto');
+    portal = upsertPortalAdminFromPos('signage_centre_users', pos, {
+      role: 'admin',
+      password: crypto.randomBytes(16).toString('hex')
+    });
+  }
+  if (!portal) throw new Error('Could not open Signage Centre for Admin');
+  const sess = createModuleSession('signage_sessions', portal.id);
+  try { dbRun('UPDATE signage_centre_users SET last_login_at = ? WHERE id = ?', [nowIso(), portal.id]); } catch (_) { /* */ }
+  audit({ user_id: portal.id, user_name: portal.username, action: 'login_sso' });
+  return {
+    token: sess.token,
+    user: { id: portal.id, username: portal.username, full_name: portal.full_name, role: portal.role, permissions: perms(portal.role) }
   };
 }
 
@@ -171,8 +202,30 @@ function listPendingPairings(token) {
   return dbAll(`SELECT * FROM signage_device_pairings WHERE status = 'pending' AND expires_at > ? ORDER BY id DESC`, [nowIso()]);
 }
 
+/** Admin POS session can list/approve TV pairing codes without Signage login. */
+function listPendingPairingsAdmin(actor) {
+  assertUserActor(actor, ['owner', 'manager', 'supervisor', 'assistant_manager']);
+  ensureSignage();
+  return dbAll(`SELECT id, pairing_code, device_meta, status, expires_at, created_at
+    FROM signage_device_pairings WHERE status = 'pending' AND expires_at > ? ORDER BY id DESC`, [nowIso()]);
+}
+
 function approvePairing(code, data, portalToken) {
   const user = requirePerm(portalToken, 'pair');
+  return approvePairingCore(code, data, user);
+}
+
+function approvePairingAdmin(code, data, actor) {
+  const pos = assertUserActor(actor, ['owner', 'manager', 'supervisor', 'assistant_manager']);
+  ensureSignage();
+  return approvePairingCore(code, data || {}, {
+    id: pos.id,
+    username: pos.username || pos.full_name || 'admin',
+    role: 'admin'
+  });
+}
+
+function approvePairingCore(code, data, user) {
   const row = dbGet('SELECT * FROM signage_device_pairings WHERE pairing_code = ? AND status = ?', [code, 'pending']);
   if (!row) throw new Error('Pairing code not found or expired');
   const deviceToken = newToken();
@@ -1014,8 +1067,9 @@ function signageSummary() {
 }
 
 module.exports = {
-  ensureSignage, signageLogin, signageLogout, signageDashboard, signageSummary,
-  requestPairing, pairingStatus, listPendingPairings, approvePairing, rejectPairing, revokeDevice,
+  ensureSignage, signageLogin, signageLoginAsAdmin, signageLogout, signageDashboard, signageSummary,
+  requestPairing, pairingStatus, listPendingPairings, listPendingPairingsAdmin,
+  approvePairing, approvePairingAdmin, approvePairingCore, rejectPairing, revokeDevice,
   listDevices, saveDevice, listMedia, uploadMedia, deleteMedia, getMediaFile,
   listPlaylists, getPlaylist, savePlaylist, listMenus, getMenu, saveMenu, syncMenuFromProducts,
   saveAudioPlaylist, listAudioPlaylists, saveScreenGroup, listScreenGroups, publishToScreens, getPublicationStatus,
