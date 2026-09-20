@@ -12,49 +12,83 @@ const StaffOwnerSalaryPage = {
     this.app = app;
     const currency = app.settings?.currency || 'R';
     const canManage = this.canManage(app.user);
-    if (typeof this.renderShell === 'function') {
-      this.renderShell(el, app, this.data?.rows || [], currency, canManage);
-    }
 
-    if (this.tab === 'profile' && canManage) {
-      const pr = await API.getOwnerSalaryProfile();
-      this.renderShell(el, app, [], currency, canManage);
-      return this.renderProfile(document.getElementById('os-content'), pr.data);
-    }
-
-    const cacheKey = `owner_salary_${this.tab}`;
-    if (this._cacheTab === this.tab && this._cache && Utils.sessionCacheGet(cacheKey)) {
-      this.data = this._cache;
-    } else {
-      const syncRes = await API.syncOwnerSalary();
-      this.data = syncRes.data || {};
-      this._cache = this.data;
-      this._cacheTab = this.tab;
-      Utils.sessionCacheSet(cacheKey, this.data);
-    }
-    const profile = this.data.profile;
-    this.renderShell(el, app, this.data.notifications || [], currency, canManage);
-
+    // Paint shell immediately so the tab never looks blank/hung
+    this.renderShell(el, app, [], currency, canManage);
     const content = document.getElementById('os-content');
-    if (!profile && canManage) {
-      content.innerHTML = `<div class="card"><div class="card-body"><p>No owner salary profile yet.</p>
-        <button class="btn btn-primary" id="os-setup">Set Up Owner Profile</button></div></div>`;
-      document.getElementById('os-setup').addEventListener('click', () => { this.tab = 'profile'; this.render(el, app); });
-      return;
-    }
-    if (!profile) {
-      content.innerHTML = '<p class="muted">Owner salary profile has not been set up yet. Ask the owner or manager.</p>';
-      return;
-    }
+    if (content) content.innerHTML = '<p class="muted">Loading owner salary…</p>';
 
-    const renderers = {
-      overview: () => this.renderOverview(content, profile, currency),
-      history: () => this.renderHistory(content, profile, currency),
-      pay: () => this.renderPay(content, profile, currency),
-      draws: () => this.renderDraws(content, profile, currency),
-      reports: () => this.renderReports(content, profile, currency)
-    };
-    await (renderers[this.tab] || renderers.overview)();
+    try {
+      if (this.tab === 'profile' && canManage) {
+        const pr = await Promise.race([
+          API.getOwnerSalaryProfile(),
+          new Promise((resolve) => setTimeout(() => resolve({ success: false, error: 'Timed out' }), 10000))
+        ]);
+        if (pr?.success === false) {
+          if (content) {
+            content.innerHTML = `<p class="error-msg">${Utils.escHtml(pr.error || 'Could not load profile')}</p>
+              <button type="button" class="btn btn-primary" id="os-retry">Retry</button>`;
+            document.getElementById('os-retry')?.addEventListener('click', () => this.render(el, app));
+          }
+          return;
+        }
+        this.renderShell(el, app, [], currency, canManage);
+        return this.renderProfile(document.getElementById('os-content'), pr.data);
+      }
+
+      const cacheKey = `owner_salary_${this.tab}`;
+      if (this._cacheTab === this.tab && this._cache && Utils.sessionCacheGet?.(cacheKey)) {
+        this.data = this._cache;
+      } else {
+        const syncRes = await Promise.race([
+          API.syncOwnerSalary(),
+          new Promise((resolve) => setTimeout(() => resolve({ success: false, error: 'Timed out loading owner salary' }), 12000))
+        ]);
+        if (syncRes?.success === false && !syncRes?.data) {
+          if (content) {
+            content.innerHTML = `<p class="error-msg">${Utils.escHtml(syncRes.error || 'Could not load owner salary')}</p>
+              <button type="button" class="btn btn-primary" id="os-retry">Retry</button>`;
+            document.getElementById('os-retry')?.addEventListener('click', () => this.render(el, app));
+          }
+          return;
+        }
+        this.data = syncRes.data || syncRes || {};
+        this._cache = this.data;
+        this._cacheTab = this.tab;
+        try { Utils.sessionCacheSet?.(cacheKey, this.data); } catch (_) { /* */ }
+      }
+      const profile = this.data.profile;
+      this.renderShell(el, app, this.data.notifications || [], currency, canManage);
+
+      const body = document.getElementById('os-content');
+      if (!body) return;
+      if (!profile && canManage) {
+        body.innerHTML = `<div class="card"><div class="card-body"><p>No owner salary profile yet.</p>
+          <button class="btn btn-primary" id="os-setup">Set Up Owner Profile</button></div></div>`;
+        document.getElementById('os-setup')?.addEventListener('click', () => { this.tab = 'profile'; this.render(el, app); });
+        return;
+      }
+      if (!profile) {
+        body.innerHTML = '<p class="muted">Owner salary profile has not been set up yet. Ask the owner or manager.</p>';
+        return;
+      }
+
+      const renderers = {
+        overview: () => this.renderOverview(body, profile, currency),
+        history: () => this.renderHistory(body, profile, currency),
+        pay: () => this.renderPay(body, profile, currency),
+        draws: () => this.renderDraws(body, profile, currency),
+        reports: () => this.renderReports(body, profile, currency)
+      };
+      await (renderers[this.tab] || renderers.overview)();
+    } catch (err) {
+      const body = document.getElementById('os-content');
+      if (body) {
+        body.innerHTML = `<p class="error-msg">${Utils.escHtml(err.message || 'Owner salary failed to load')}</p>
+          <button type="button" class="btn btn-primary" id="os-retry">Retry</button>`;
+        document.getElementById('os-retry')?.addEventListener('click', () => this.render(el, app));
+      }
+    }
   },
 
   renderShell(el, app, notifications, currency, canManage) {

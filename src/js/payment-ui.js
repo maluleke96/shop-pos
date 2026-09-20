@@ -31,11 +31,24 @@ const PaymentUI = {
       allowPartial = false,
       title = 'Complete Payment',
       confirmLabel = 'Complete Sale',
+      itemsSubtotal = null,
+      deliveryFee = 0,
+      deliveryPlace = null,
+      orderType = null,
+      discountAmount = 0,
+      taxAmount = 0,
+      taxRatePct = 0,
+      showTaxBreakdown = false,
       onConfirm,
       gcBalancesRef = {},
       onAddCustomer,
       onDismiss
     } = options;
+    const delFee = Math.max(0, Number(deliveryFee) || 0);
+    const showDelivery = String(orderType || '').toLowerCase() === 'delivery' || delFee > 0;
+    const itemsBase = itemsSubtotal != null && Number.isFinite(Number(itemsSubtotal))
+      ? Number(itemsSubtotal)
+      : Math.max(0, Number(total) - delFee);
 
     const types = PaymentUI.enabledTypes(settings);
     const labels = PaymentUI.labels(settings);
@@ -125,11 +138,29 @@ const PaymentUI = {
       const loyaltyLine = loyaltyRedeemPoints > 0
         ? `<div style="color:var(--primary)">Points redeemed: −${Utils.formatMoney(getLoyaltyDiscount(), currency)}</div>`
         : '';
+      const deliveryLine = showDelivery
+        ? `<div>Delivery${deliveryPlace ? ` (${Utils.escHtml(deliveryPlace)})` : ''}: <strong>${Utils.formatMoney(delFee, currency)}</strong>${delFee <= 0 ? ' <span class="muted">(free)</span>' : ''}</div>`
+        : '';
+      const paidLine = showDelivery && delFee > 0
+        ? `<div>Paid: ${Utils.formatMoney(paid, currency)} · Remaining: ${Utils.formatMoney(remaining, currency)} <span class="muted" style="font-weight:500">(includes delivery ${Utils.formatMoney(delFee, currency)})</span></div>`
+        : `<div>Paid: ${Utils.formatMoney(paid, currency)} · Remaining: ${Utils.formatMoney(remaining, currency)}</div>`;
+      const disc = Math.max(0, Number(discountAmount) || 0);
+      const tax = Math.max(0, Number(taxAmount) || 0);
+      const discountLine = disc > 0.009
+        ? `<div>Discount: <strong>−${Utils.formatMoney(disc, currency)}</strong></div>`
+        : '';
+      const taxLine = showTaxBreakdown && tax > 0.009
+        ? `<div>Tax${taxRatePct ? ` (${taxRatePct}%)` : ''}: <strong>${Utils.formatMoney(tax, currency)}</strong></div>`
+        : '';
+      const subtotalLabel = showTaxBreakdown && tax > 0.009 ? 'Subtotal (excl. tax)' : 'Subtotal';
       summaryEl.innerHTML = `
-        <div>Subtotal: <strong>${Utils.formatMoney(total, currency)}</strong></div>
+        <div>${subtotalLabel}: <strong>${Utils.formatMoney(itemsBase, currency)}</strong></div>
+        ${deliveryLine}
+        ${discountLine}
+        ${taxLine}
         ${loyaltyLine}
         <div>Amount due: <strong>${Utils.formatMoney(due, currency)}</strong></div>
-        <div>Paid: ${Utils.formatMoney(paid, currency)} · Remaining: ${Utils.formatMoney(remaining, currency)}</div>
+        ${paidLine}
         ${allowPartial ? '<div class="muted" style="font-size:12px;margin-top:4px">Partial payments allowed — enter any amount up to the balance.</div>' : ''}`;
       if (confirmBtn) confirmBtn.disabled = false;
       if (selectedType === 'giftcard') {
@@ -241,6 +272,7 @@ const PaymentUI = {
 
     Utils.showModal(title, `
       <div style="text-align:center;font-size:28px;font-weight:700;margin-bottom:4px" id="pay-total-display">${Utils.formatMoney(total, currency)}</div>
+      ${showDelivery ? `<div class="muted" style="text-align:center;margin-bottom:4px;font-size:13px">Includes delivery${deliveryPlace ? ` (${Utils.escHtml(deliveryPlace)})` : ''}: ${Utils.formatMoney(delFee, currency)}${delFee <= 0 ? ' (free)' : ''}</div>` : ''}
       <div id="pay-due-display" class="muted" style="text-align:center;margin-bottom:12px;font-size:14px"></div>
       ${allowMixed !== false ? '<p class="muted" style="text-align:center;margin-bottom:8px">Add multiple payments — e.g. R20 Card + R40 Cash</p>' : ''}
       <div class="payment-methods" id="pay-methods">

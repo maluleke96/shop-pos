@@ -1,0 +1,49 @@
+{
+  "appId": "com.shoppos.referral",
+  "productName": "Referral Agent",
+  "executableName": "ReferralAgent",
+  "directories": {
+    "output": "dist\\cloud-apps\\referral",
+    "buildResources": "build"
+  },
+  "files": [
+    "electron/referral-shell.js",
+    "electron/cloud-shell-config-referral.js",
+    "package.json"
+  ],
+  "extraMetadata": {
+    "main": "electron/cloud-shell-config-referral.js",
+    "name": "com.shoppos.referral"
+  },
+  "win": {
+    "target": [
+      {
+        "target": "nsis",
+        "arch": [
+          "x64"
+        ]
+      },
+      {
+        "target": "portable",
+        "arch": [
+          "x64"
+        ]
+      }
+    ]
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "allowElevation": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "runAfterFinish": false,
+    "deleteAppDataOnUninstall": false,
+    "include": "nsis-close-running.nsh",
+    "artifactName": "ShopPOS-ReferralAgent-Setup.${ext}",
+    "shortcutName": "Referral Agent"
+  },
+  "portable": {
+    "artifactName": "ShopPOS-ReferralAgent-Portable.${ext}"
+  }
+}

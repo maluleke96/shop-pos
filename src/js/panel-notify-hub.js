@@ -104,7 +104,10 @@ window.PanelNotifyHub = {
       const pool = orders
         .filter((o) => String(o.status || '').toLowerCase() === 'awaiting_driver')
         .map((o) => ({ id: o.id, _key: `delivery_pool_dept:${o.id}` }));
-      const items = [...pendingDrivers, ...pool];
+      const pendingAssign = orders
+        .filter((o) => String(o.status || '').toLowerCase() === 'pending')
+        .map((o) => ({ id: o.id, _key: `delivery_pending_dept:${o.id}` }));
+      const items = [...pendingDrivers, ...pool, ...pendingAssign];
       PanelNotify?.syncPendingAlert(items, (n) => n._key, this.soundEnabled('delivery'));
     } catch (_) { /* offline */ }
   },

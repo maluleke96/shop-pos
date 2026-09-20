@@ -2,10 +2,9 @@ const fs = require('fs');
 const path = require('path');
 const { getDb, getDbPathForBackup } = require('../database/db');
 const adminOverride = require('./admin-override');
-const { buildFlyerPdf, getFlyer, buildWaUrl } = require('./flyers');
 const whatsappSvc = require('./whatsapp');
 
-const HUB_ROLES = ['owner', 'manager', 'assistant_manager', 'marketing_agent'];
+const HUB_ROLES = ['owner', 'manager', 'assistant_manager'];
 const ADMIN_ROLES = ['owner', 'manager'];
 
 function parseShareMode(raw) {
@@ -168,66 +167,6 @@ function deleteDocument(id, actor) {
   audit(actor?.id, actor?.username, 'delete_document', id, { title: doc.title });
 }
 
-function writeFlyerPdfToHub(flyerId, sizeOverride) {
-  const pdfBuffer = buildFlyerPdf(flyerId, null, sizeOverride);
-  const dir = getAssetsDir();
-  const suffix = sizeOverride ? `-${sizeOverride}` : '';
-  const filePath = path.join(dir, `flyer-${flyerId}${suffix}.pdf`);
-  fs.writeFileSync(filePath, require('./pdf-bytes').toUint8(pdfBuffer));
-  return filePath;
-}
-
-function pickFlyerThumbnail(flyer) {
-  const canvas = flyer?.canvas || {};
-  if (canvas.backgroundImage && String(canvas.backgroundImage).startsWith('data:image')) {
-    try {
-      const match = String(canvas.backgroundImage).match(/^data:image\/(\w+);base64,(.+)$/);
-      if (match) {
-        const ext = match[1] === 'jpeg' ? 'jpg' : match[1];
-        const thumbPath = path.join(getAssetsDir(), `flyer-${flyer.id}-thumb.${ext}`);
-        fs.writeFileSync(thumbPath, Buffer.from(match[2], 'base64'));
-        return thumbPath;
-      }
-    } catch (_) { /* ignore */ }
-  }
-  const productImg = (flyer.products || []).map(p => p.picture_path || p.image_path).find(Boolean);
-  if (productImg && fs.existsSync(productImg)) return productImg;
-  const shop = getDb().prepare('SELECT logo_path FROM shop_settings WHERE id = 1').get();
-  if (shop?.logo_path && fs.existsSync(shop.logo_path)) return shop.logo_path;
-  return null;
-}
-
-function syncFlyerToHub(flyerId, options = {}) {
-  const flyer = getFlyer(flyerId);
-  if (!flyer) return null;
-  const status = flyer.status || 'draft';
-  if (!options.force && !['draft', 'scheduled'].includes(status)) return null;
-
-  const db = getDb();
-  const filePath = options.file_path && fileExists(options.file_path)
-    ? options.file_path
-    : writeFlyerPdfToHub(flyerId);
-  const thumbnail = options.thumbnail_path || pickFlyerThumbnail(flyer);
-  const title = flyer.title || flyer.promotion_name || `Flyer ${flyer.flyer_number || flyerId}`;
-  const existing = db.prepare('SELECT id, file_path FROM document_assets WHERE source_flyer_id = ?').get(flyerId);
-
-  if (existing) {
-    if (existing.file_path !== filePath && existing.file_path?.includes('document-hub') && fs.existsSync(existing.file_path)) {
-      safeUnlink(existing.file_path);
-    }
-    db.prepare(`UPDATE document_assets SET title=?, doc_type='flyer', file_path=?, thumbnail_path=?,
-      branch_id=?, status='published', updated_at=datetime('now') WHERE id=?`)
-      .run(title, filePath, thumbnail, flyer.branch_id || null, existing.id);
-    return getDocument(existing.id);
-  }
-
-  const r = db.prepare(`INSERT INTO document_assets (title, doc_type, file_path, thumbnail_path, branch_id,
-    source_flyer_id, status, created_by) VALUES (?,?,?,?,?,?,?,?)`)
-    .run(title, 'flyer', filePath, thumbnail, flyer.branch_id || null, flyerId, 'published', flyer.created_by || null);
-  audit(flyer.created_by, flyer.created_by_name, 'sync_flyer_to_hub', r.lastInsertRowid, { flyer_id: flyerId });
-  return getDocument(r.lastInsertRowid);
-}
-
 function logWhatsAppShare({ phone, name, message, actor, branchId, documentId, url, scheduledAt }) {
   const db = getDb();
   const metadata = { url, document_id: documentId, scheduled: !!scheduledAt };
@@ -297,23 +236,7 @@ function executeShare(doc, options, actor) {
       scheduledAt: options.schedule_at || null
     });
   } else if (mode === 'status') {
-    if (!doc.source_flyer_id) throw new Error('Status export is only available for marketing flyers');
-    const statusPath = writeFlyerPdfToHub(doc.source_flyer_id, 'whatsapp_status');
-    results.status_export = { path: statusPath, width: 1080, height: 1920, label: 'WhatsApp Status' };
-    results.file_path = statusPath;
-    results.is_image = false;
-    results.open_file = true;
-    results.urls.push({ type: 'status', path: statusPath });
-    logWhatsAppShare({
-      phone: 'status',
-      name: 'WhatsApp Status',
-      message: `${message}\n\nStatus export (1080×1920): ${path.basename(statusPath)}`,
-      actor,
-      branchId,
-      documentId: doc.id,
-      url: statusPath,
-      scheduledAt: options.schedule_at || null
-    });
+    throw new Error('Status export is no longer available');
   } else {
     const phones = Array.isArray(options.phones) ? options.phones.filter(Boolean) : [];
     if (!phones.length) throw new Error('Select at least one customer phone number or enter a WhatsApp number');
@@ -326,7 +249,7 @@ function executeShare(doc, options, actor) {
     const phoneMap = new Map(customers.map(c => [c.phone, c]));
     for (const phone of phones) {
       const cust = phoneMap.get(phone) || { name: phone, phone };
-      const url = buildWaUrl(phone, fullMessage);
+      const url = whatsappSvc.buildWaUrl(phone, fullMessage);
       const ins = logWhatsAppShare({
         phone,
         name: cust.name,
@@ -404,15 +327,7 @@ function processScheduledDocuments(actor = null) {
 
 function exportDocumentStatus(id, actor) {
   requireHubRole(actor);
-  const doc = getDocument(id);
-  if (!doc?.source_flyer_id) throw new Error('Status export requires a linked marketing flyer');
-  const statusPath = writeFlyerPdfToHub(doc.source_flyer_id, 'whatsapp_status');
-  return {
-    path: statusPath,
-    width: 1080,
-    height: 1920,
-    label: 'WhatsApp Status'
-  };
+  throw new Error('Status export is no longer available');
 }
 
 module.exports = {
@@ -421,7 +336,6 @@ module.exports = {
   getDocument,
   saveDocument,
   deleteDocument,
-  syncFlyerToHub,
   shareDocument,
   getScheduledDocuments,
   processScheduledDocuments,

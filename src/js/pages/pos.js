@@ -55,6 +55,112 @@ const POSPage = {
     return [];
   },
 
+  /** Keep last good catalog when RPC fails or returns empty. */
+  _applyRpcList(res, fallback = []) {
+    if (res?.success === false) return fallback;
+    const list = this._unwrapRpcList(res);
+    if (!list.length && fallback.length) return fallback;
+    return list.length ? list : fallback;
+  },
+
+  _normalizeOpenShift(shiftRes) {
+    if (shiftRes?.success === false) {
+      return (this._pendingLocalShift?.id ? this._pendingLocalShift : null)
+        || (this.openShift?.id ? this.openShift : null);
+    }
+    const data = shiftRes?.data ?? (shiftRes?.id ? shiftRes : null);
+    if (!data) return this._pendingLocalShift?.id ? this._pendingLocalShift : null;
+    if (data.queued && !data.id) return this._pendingLocalShift?.id ? this._pendingLocalShift : null;
+    if (data.id) {
+      this._pendingLocalShift = null;
+      return data;
+    }
+    return null;
+  },
+
+  _catalogSig(products, categories, combos) {
+    const p = products || [];
+    const c = categories || [];
+    const k = combos || [];
+    const p0 = p[0]?.id ?? '';
+    const pN = p[p.length - 1]?.id ?? '';
+    return `${p.length}:${c.length}:${k.length}:${p0}:${pN}`;
+  },
+
+  _applyCatalogFromRpc(catRes, prodRes, comboRes, branchId) {
+    const prevCats = this.categories || [];
+    const prevProds = this.products || [];
+    const prevCombos = this.combos || [];
+    const nextCats = this._applyRpcList(catRes, prevCats);
+    const nextProds = Utils.restorePosCatalogProducts(this._applyRpcList(prodRes, prevProds));
+    let nextCombos = prevCombos;
+    if (comboRes?.success !== false) {
+      const raw = comboRes?.data ?? (Array.isArray(comboRes) ? comboRes : []);
+      nextCombos = this.filterActiveCombos(raw);
+    }
+    if (!nextProds.length) return false;
+    const same = this._catalogSig(prevProds, prevCats, prevCombos)
+      === this._catalogSig(nextProds, nextCats, nextCombos)
+      && document.getElementById('pos-grid')?.querySelector('.product-card');
+    this.categories = nextCats;
+    this.products = nextProds;
+    this.combos = nextCombos;
+    if (same) {
+      if (branchId != null) this.savePosCatalogSnapshot(branchId);
+      return true;
+    }
+    this._menuTabCountCache = null;
+    this._invalidateProductGridCache();
+    this.rebuildProductLookups();
+    this.ensureDefaultCategory();
+    const tabs = document.getElementById('pos-categories');
+    if (tabs) this.renderCategoryTabs(this.selectedCategory || '');
+    this.renderProducts(document.getElementById('pos-search')?.value || '');
+    this.renderCart?.();
+    if (branchId != null) this.savePosCatalogSnapshot(branchId);
+    return true;
+  },
+
+  _productHasOptionDetail(product) {
+    return !!(product?.options?.length || product?.extras?.length || product?.removals?.length);
+  },
+
+  async ensureFullProduct(product) {
+    if (!product?.id) return product;
+    if (this._productHasOptionDetail(product)) return product;
+    const need = product._hasOptions || product.requires_options;
+    if (!need) return product;
+    if (this._fullProductInflight?.[product.id]) return this._fullProductInflight[product.id];
+    const work = (async () => {
+      try {
+        const r = await API.getProduct(product.id);
+        if (r?.success && r.data) {
+          const idx = this.products.findIndex((p) => p.id == product.id);
+          if (idx >= 0) this.products[idx] = { ...this.products[idx], ...r.data };
+          else this.products.push(r.data);
+          this.rebuildProductLookups();
+          return this.products.find((p) => p.id == product.id) || r.data;
+        }
+      } catch (_) { /* offline — use slim product */ }
+      return product;
+    })();
+    this._fullProductInflight = this._fullProductInflight || {};
+    this._fullProductInflight[product.id] = work;
+    try {
+      return await work;
+    } finally {
+      delete this._fullProductInflight[product.id];
+    }
+  },
+
+  prefetchVisibleProductOptions() {
+    const list = this._productsForCategory(this.selectedCategory || this.defaultCategoryKey())
+      || this.products || [];
+    const missing = list.filter((p) =>
+      (p._hasOptions || p.requires_options) && !this._productHasOptionDetail(p));
+    missing.slice(0, 16).forEach((p) => this.ensureFullProduct(p).catch(() => {}));
+  },
+
   _highlightTabEnabled(catKey) {
     const cfg = this._menuHighlightSettings();
     const map = {
@@ -68,9 +174,15 @@ const POSPage = {
     return cfg.tabs?.[settingKey]?.pos !== false;
   },
 
+  _resolveCategoryKey(catKey) {
+    const key = String(catKey ?? '');
+    if (key && key !== '__all') return key;
+    return this.defaultCategoryKey();
+  },
+
   _productsForCategory(catKey) {
     const products = this.products || [];
-    if (!catKey || catKey === '__all') return products;
+    catKey = this._resolveCategoryKey(catKey);
     if (catKey === 'combos') return [];
     const today = new Date().toLocaleDateString('en-CA');
     if (catKey === '__available_today') return products.filter((p) => Number(p.available_today) === 1);
@@ -97,7 +209,7 @@ const POSPage = {
     return this._productsForCategory(catKey).length > 0;
   },
 
-  /** First real menu category (not All / highlights) — POS opens here by default. */
+  /** First real menu category — POS opens here by default (never "All"). */
   firstCategoryKey() {
     for (const c of this.categories || []) {
       if (this._categoryHasProducts(String(c.id))) return String(c.id);
@@ -109,6 +221,8 @@ const POSPage = {
   defaultCategoryKey() {
     const first = this.firstCategoryKey();
     if (first) return first;
+    const firstCat = (this.categories || [])[0];
+    if (firstCat?.id != null) return String(firstCat.id);
     if ((this.combos || []).length) return 'combos';
     const cfg = this._menuHighlightSettings();
     const counts = this.getMenuTabCounts();
@@ -126,19 +240,17 @@ const POSPage = {
       const withCat = this.products.find((p) => p.category_id != null && p.category_id !== '');
       if (withCat) return String(withCat.category_id);
     }
-    const firstCat = (this.categories || [])[0];
-    if (firstCat?.id != null) return String(firstCat.id);
-    return '__all';
+    return '';
   },
 
   _isHighlightCategory(catKey) {
     const key = String(catKey || '');
-    return key.startsWith('__') && key !== '__all';
+    return key.startsWith('__');
   },
 
   ensureDefaultCategory() {
     const cur = this.selectedCategory;
-    if (cur == null || cur === '' || cur === '__all') {
+    if (cur == null || cur === '' || String(cur) === '__all') {
       this.selectedCategory = this.defaultCategoryKey();
       return;
     }
@@ -178,17 +290,21 @@ const POSPage = {
   },
 
   _productGridCacheKey(catKey, filter) {
-    const sig = `${(this.products || []).length}:${(this.combos || []).length}`;
+    let stockSig = 0;
+    for (const p of (this.products || [])) {
+      stockSig += (Number(p.stock_quantity) || 0) + (Number(p.available_meals ?? p.production_capacity) || 0);
+    }
+    const sig = `${(this.products || []).length}:${stockSig}:${(this.combos || []).length}`;
     return `${catKey}|${filter}|${sig}`;
   },
 
   renderCategoryTabs(activeCat = '') {
     this.ensureDefaultCategory();
-    const cat = activeCat || this.selectedCategory || this.defaultCategoryKey();
+    const cat = this._resolveCategoryKey(activeCat || this.selectedCategory || this.defaultCategoryKey());
+    this.selectedCategory = cat;
     const tabs = document.getElementById('pos-categories');
     if (!tabs) return;
     tabs.innerHTML = `
-      ${cat === '__all' ? `<button class="cat-tab active" data-cat="__all">All</button>` : ''}
       ${this._buildHighlightTabsHtml(cat)}
       ${this.combos?.length ? `<button class="cat-tab cat-tab-sale ${cat === 'combos' ? 'active' : ''}" data-cat="combos" style="border-color:#ef4444">COMBOS<span class="menu-tab-count sale">${this.combos.length}</span></button>` : ''}
       ${(this.categories || []).map((c) => `<button class="cat-tab ${String(cat) === String(c.id) ? 'active' : ''}" data-cat="${c.id}" style="border-color:${c.color}">
@@ -212,22 +328,144 @@ const POSPage = {
   orderType: null,
   deliveryAddress: null,
   deliveryFee: 0,
+  deliverySettings: null,
+  deliveryPlace: null,
+  deliveryPlaces: [],
 
   activeDailyTargetAmount() {
-    const d = this.salesTargets?.daily;
-    if (d != null && typeof d === 'object') return d.active !== false ? (Number(d.amount) || 0) : 0;
+    const branchId = this.app?.user?.branch_id;
+    const byBranch = this.salesTargets?.by_branch?.[String(branchId)];
+    const d = (byBranch && byBranch.daily) || this.salesTargets?.daily;
+    if (d != null && typeof d === 'object') {
+      if (d.active === false) return 0;
+      const amount = Number(d.amount) || 0;
+      if (!(amount > 0)) return 0;
+      if (d.expires_at) {
+        const today = Utils.today?.() || new Date().toLocaleDateString('en-CA');
+        if (String(d.expires_at).slice(0, 10) < today) return 0;
+      }
+      return amount;
+    }
     return Number(d) || 0;
+  },
+
+  async showTodayTargetModal() {
+    const currency = this.app.settings?.currency || 'R';
+    const branchId = this.app?.user?.branch_id || null;
+    const paint = (progress) => {
+      if (!progress) {
+        Utils.showModal("Today's Target", '<p class="error-msg">Could not load today\'s target.</p>',
+          '<button type="button" class="btn btn-ghost" id="tt-close">Close</button>');
+        document.getElementById('tt-close')?.addEventListener('click', () => Utils.hideModal());
+        return;
+      }
+      const dailyActive = progress.daily_active !== false && (Number(progress.daily_target) || 0) > 0;
+      const target = Number(progress.daily_target) || 0;
+      const achieved = Number(progress.sales_achieved) || 0;
+      const remaining = Number(progress.remaining) || 0;
+      const pct = Number(progress.percentage) || 0;
+      const products = progress.product_targets_active ? (progress.products || []) : [];
+      const prodTargetQty = Number(progress.product_target_qty) || products.reduce((s, p) => s + (Number(p.target_qty) || 0), 0);
+      const prodSoldQty = Number(progress.product_sold_qty) || products.reduce((s, p) => s + (Number(p.sold_qty) || 0), 0);
+      const prodTargetVal = Number(progress.product_target_value) || products.reduce((s, p) => s + (Number(p.target_value) || 0), 0);
+      const prodSoldVal = Number(progress.product_sold_value) || products.reduce((s, p) => s + (Number(p.sold_value) || 0), 0);
+      const expires = progress.product_targets_expires_at
+        ? `<div class="muted" style="font-size:12px">Product targets until ${Utils.escHtml(String(progress.product_targets_expires_at).slice(0, 10))}</div>`
+        : '';
+      const dailyBlock = dailyActive ? `
+      <div style="margin-bottom:16px">
+        <h4 style="margin:0 0 8px">Daily money target</h4>
+        <div style="display:grid;gap:8px;margin-bottom:10px">
+          <div><strong>Daily Target:</strong> ${Utils.formatMoney(target, currency)}</div>
+          <div><strong>Sales Achieved:</strong> ${Utils.formatMoney(achieved, currency)}</div>
+          <div><strong>Remaining:</strong> ${Utils.formatMoney(remaining, currency)}</div>
+          <div><strong>Percentage Achieved:</strong> ${pct}%</div>
+        </div>
+        <div style="height:10px;background:var(--border);border-radius:6px;overflow:hidden">
+          <div style="height:100%;width:${Math.min(100, pct)}%;background:${progress.met ? 'var(--success)' : 'var(--primary)'}"></div>
+        </div>
+      </div>` : '';
+      const productBlock = products.length ? `
+      <div>
+        <h4 style="margin:0 0 8px">Product quantity targets</h4>
+        ${expires}
+        <p style="margin:0 0 10px">Total qty <strong>${prodSoldQty}</strong> / ${prodTargetQty}
+          · Total value <strong>${Utils.formatMoney(prodSoldVal, currency)}</strong> / ${Utils.formatMoney(prodTargetVal, currency)}</p>
+        <div class="table-wrap"><table><thead><tr><th>Product</th><th>Price</th><th>Target</th><th>Sold</th><th>Remaining</th><th>Value target</th></tr></thead>
+          <tbody>${products.map((p) => `<tr>
+            <td>${Utils.escHtml(p.product_name || ('#' + p.product_id))}</td>
+            <td>${Utils.formatMoney(p.selling_price || 0, currency)}</td>
+            <td>${p.target_qty}</td>
+            <td>${p.sold_qty}</td>
+            <td>${p.remaining_qty}</td>
+            <td>${Utils.formatMoney(p.target_value || ((Number(p.target_qty) || 0) * (Number(p.selling_price) || 0)), currency)}</td>
+          </tr>`).join('')}</tbody></table></div>
+      </div>` : '';
+      const empty = !dailyActive && !products.length
+        ? '<p class="muted">No active targets for today. Admin can set Daily and/or Product targets under Sales Targets.</p>'
+        : '';
+      const body = `${dailyBlock}${productBlock}${empty}`;
+      Utils.showModal("Today's Target", body, '<button type="button" class="btn btn-ghost" id="tt-close">Close</button>', { wide: true });
+      document.getElementById('tt-close')?.addEventListener('click', () => Utils.hideModal());
+    };
+
+    const cached = this._targetProgressCache;
+    const freshEnough = cached?.data && (Date.now() - (cached.at || 0)) < 45000;
+    if (freshEnough) paint(cached.data);
+    else Utils.showModal("Today's Target", '<p class="muted">Loading…</p>', '<button type="button" class="btn btn-ghost" id="tt-close">Close</button>');
+
+    try {
+      const r = await API.getTodayTargetProgress(branchId);
+      const progress = r?.success !== false ? (r.data || r) : null;
+      if (progress) this._targetProgressCache = { at: Date.now(), data: progress };
+      paint(progress);
+    } catch (_) {
+      if (!freshEnough) paint(null);
+    }
   },
 
   async loadDeliveryFee() {
     try {
       const branchId = this.app?.user?.branch_id || this.app?.settings?.branch_id || 1;
       const settings = await API.getDeliveryBranchSettings(branchId, this.app?.user);
-      this.deliveryFee = Number(settings?.delivery_fee) || 0;
+      const data = settings?.data ?? settings ?? {};
+      const places = Array.isArray(data.places) ? data.places : (Array.isArray(data.zones) ? data.zones : []);
+      this.deliveryPlaces = places;
+      this.deliverySettings = {
+        delivery_fee: Number(data.delivery_fee) || 0,
+        free_delivery_above: Number(data.free_delivery_above) || 0,
+        min_order: Number(data.min_order) || 0,
+        places
+      };
+      this.recalcDeliveryFee();
       this.renderCart?.();
     } catch (_) {
+      this.deliverySettings = { delivery_fee: 0, free_delivery_above: 0, min_order: 0, places: [] };
+      this.deliveryPlaces = [];
       this.deliveryFee = 0;
     }
+  },
+
+  /** Match online ordering: fee from selected place (or branch flat fee). */
+  recalcDeliveryFee(cartSubtotal) {
+    if (this.orderType !== 'delivery') {
+      this.deliveryFee = 0;
+      return 0;
+    }
+    const place = this.deliveryPlace;
+    const s = place || this.deliverySettings || {};
+    const sub = Number(cartSubtotal);
+    const gross = Number.isFinite(sub)
+      ? sub
+      : (this.cart || []).reduce((sum, i) => sum + (Number(i.total) || 0), 0);
+    const freeAbove = Number(s.free_delivery_above) || 0;
+    const fee = Number(s.delivery_fee) || 0;
+    const minOrder = Number(s.min_order) || 0;
+    if (minOrder > 0 && gross < minOrder) {
+      // Still show place fee; checkout will warn
+    }
+    this.deliveryFee = freeAbove > 0 && gross >= freeAbove ? 0 : fee;
+    return this.deliveryFee;
   },
 
   topSellerPeriod: 'today',
@@ -236,25 +474,33 @@ const POSPage = {
     this.app = app;
     this._host = el;
     document.body.classList.add('pos-till-active');
+    Utils.purgeLegacyPosMenuSnapshots?.();
     const branchId = app.user?.branch_id || undefined;
     const filters = { for_pos: true, actor: app.user };
     const comboFilters = branchId ? { branch_id: branchId, for_pos: true } : { for_pos: true };
-    const catalogP = Promise.all([
-      API.getCategories(filters),
-      API.getProducts(filters),
-      API.getActiveCombos(comboFilters).catch(() => ({ success: false, data: [] }))
-    ]);
+    const cachedProd = window.DataCache?.peek?.('products', [filters]);
+    const cachedCat = window.DataCache?.peek?.('categories', [filters]);
+    const cachedCombo = window.DataCache?.peek?.('combos', [comboFilters]);
     const shiftP = Promise.all([
       API.getShiftSettings().catch(() => ({ success: false })),
       API.getOpenShift(app.user).catch(() => ({ success: false, data: null }))
     ]);
-    const cssP = (async () => {
-      try {
-        if (app?.ensureFeatureCss) await app.ensureFeatureCss('css/pos-till.css');
-        else if (window.App?.ensureFeatureCss) await window.App.ensureFeatureCss('css/pos-till.css');
-      } catch (_) { /* optional */ }
-    })();
-    await cssP;
+    const startCatalogRefresh = () => {
+      if (this._catalogRefreshStarted) return;
+      this._catalogRefreshStarted = true;
+      Promise.all([
+        API.getCategories(filters),
+        API.getProducts(filters),
+        API.getActiveCombos(comboFilters).catch(() => ({ success: false, data: [] }))
+      ]).then(([catRes, prodRes, comboRes]) => {
+        this._applyCatalogFromRpc(catRes, prodRes, comboRes, branchId);
+        if (this._shiftFlowComplete) this.updateMenuVisibility();
+      }).catch(() => {
+        if ((this.products || []).length && this._shiftFlowComplete) this.updateMenuVisibility();
+      });
+    };
+    if (app?.ensureFeatureCss) app.ensureFeatureCss('css/pos-till.css').catch(() => {});
+    else if (window.App?.ensureFeatureCss) window.App.ensureFeatureCss('css/pos-till.css').catch(() => {});
     try {
     const pendingQuote = app.pendingQuote;
     app.pendingQuote = null;
@@ -263,6 +509,7 @@ const POSPage = {
     if (!this._posMounted) {
       this.cart = [];
       this.discount = 0;
+      if (String(this.selectedCategory) === '__all') this.selectedCategory = null;
       this._posMounted = true;
     }
     this.app.settings = {
@@ -281,92 +528,66 @@ const POSPage = {
     this.combos = this.combos || [];
     this.salesTargets = this.salesTargets || { daily: { amount: 0, active: false } };
     this.activeCampaigns = this.activeCampaigns || [];
+    const catalogReady = this.tryHydratePosCatalog({ branchId, cachedProd, cachedCat, cachedCombo });
     this.renderLayout(el);
+    this.loadDeliveryFee().catch(() => {});
     this.bindEvents(el);
     this.bindMoreMenu(el);
     this.startAdvertReminderMonitor();
     this._lastCatalogStamp = this._catalogStamp();
     this._bindCatalogLiveSync();
     this._bindComboLiveRefresh();
+    this._bindSuccessResume();
     if (isKiosk) this.ensureKioskLogout(el);
+    this._restoreSuccessIfNeeded();
 
-    const cachedProd = window.DataCache?.peek?.('products', [filters]);
-    const cachedCat = window.DataCache?.peek?.('categories', [filters]);
-    const cachedCombo = window.DataCache?.peek?.('combos', [comboFilters]);
-    if (!(this.products || []).length && cachedProd?.data?.length) {
-      this.categories = cachedCat?.data || this.categories || [];
-      this.products = cachedProd.data;
-      this.combos = this.filterActiveCombos(cachedCombo?.data || cachedCombo || this.combos || []);
-      this.rebuildProductLookups?.();
+    this._catalogRefreshStarted = false;
+    this._ensureMenuPainted();
+    this._runShiftGate().catch(() => this._onShiftConfirmed());
+
+    if (!catalogReady) {
+      Utils.loadPosMenuSnapshotAsync(branchId).then((idbSnap) => {
+        if (!idbSnap?.products?.length || (this.products || []).length) return;
+        this._applyWarmCatalog(idbSnap);
+        this._ensureMenuPainted();
+        if (this._shiftFlowComplete) this.updateMenuVisibility();
+      }).catch(() => {});
+      startCatalogRefresh();
+    } else {
+      const later = () => startCatalogRefresh();
+      if (typeof requestIdleCallback === 'function') requestIdleCallback(later, { timeout: 2500 });
+      else setTimeout(later, 800);
     }
-    this._shiftFlowComplete = false;
-    this.refreshShiftBarQuick();
-    this.updateShiftGate();
-    shiftP.then(async ([shiftSettingsRes, shiftRes]) => {
-      if (shiftSettingsRes.success) {
+
+    shiftP.then(([shiftSettingsRes, shiftRes]) => {
+      if (shiftSettingsRes?.success) {
         this.shiftSettings = shiftSettingsRes.data || this.shiftSettings;
       }
-      this.openShift = shiftRes?.data || null;
+      const remoteShift = this._normalizeOpenShift(shiftRes);
+      const modalOpen = document.getElementById('modal-overlay')?.dataset.noDismiss === '1';
+      if (remoteShift?.id && !modalOpen) this.openShift = remoteShift;
+      else if (!remoteShift?.id && !this._shiftFlowComplete && !modalOpen) this.openShift = null;
       this.refreshShiftBarQuick();
       this.updateShiftGate();
-      if (!this.requiresShift()) {
-        this._finishShiftFlow();
-        return;
-      }
-      if (this.openShift) await this.promptResumeShift();
-      else await this.ensureShift();
-      this._finishShiftFlow();
-    }).catch(() => {
-      this._finishShiftFlow();
+    }).catch(() => {});
+
+    shiftP.finally(() => {
+      setTimeout(() => {
+        API.enforceCashoutDeadlines().then(async (enforced) => {
+          if (enforced.success && enforced.data?.closed > 0) {
+            const refreshed = await API.getOpenShift(app.user);
+            this.openShift = this._normalizeOpenShift(refreshed);
+            Utils.toast(`Auto-closed ${enforced.data.closed} shift(s) past cash-out deadline`, 'info');
+            this.refreshShiftBarQuick();
+            this.updateShiftGate();
+          }
+        }).catch(() => {});
+      }, 400);
     });
 
-    const paintCatalog = ([catRes, prodRes, comboRes]) => {
-      this.categories = this._unwrapRpcList(catRes);
-      this.products = this._unwrapRpcList(prodRes);
-      this.setPosCombos(comboRes);
-      this._menuTabCountCache = null;
-      this._invalidateProductGridCache();
-      this.rebuildProductLookups();
-      this.ensureDefaultCategory();
-      const tabs = document.getElementById('pos-categories');
-      if (tabs) this.renderCategoryTabs(this.selectedCategory || '');
-      this.renderProducts(document.getElementById('pos-search')?.value || '');
-      this.renderCart?.();
-    };
-
-    if ((this.products || []).length) {
-      paintCatalog([{ data: this.categories }, { data: this.products }, { data: this.combos }]);
-    } else {
-      const grid = document.getElementById('pos-grid');
-      if (grid && !grid.querySelector('.product-card')) {
-        grid.innerHTML = '<p class="muted" style="padding:16px;grid-column:1/-1">Loading menu…</p>';
-      }
-    }
-
-    catalogP.then(paintCatalog).catch(() => {
-      const grid = document.getElementById('pos-grid');
-      if (grid) grid.innerHTML = '<p class="error-msg" style="padding:16px">Could not load menu — tap refresh or sign in again.</p>';
-    });
-
-    setTimeout(() => {
-      API.enforceCashoutDeadlines().then(async (enforced) => {
-        if (enforced.success && enforced.data?.closed > 0) {
-          const refreshed = await API.getOpenShift(app.user);
-          this.openShift = refreshed.data || null;
-          Utils.toast(`Auto-closed ${enforced.data.closed} shift(s) past cash-out deadline`, 'info');
-          this.refreshShiftBarQuick();
-          this.updateShiftGate();
-        }
-      }).catch(() => {});
-    }, 0);
-
-    // Refresh targets/campaigns in background (combos already loaded with catalog)
-    Promise.all([
-      API.getSalesTargets().catch(() => ({ success: false })),
-      API.getActiveCampaigns(app.user?.branch_id).catch(() => ({ success: false }))
-    ]).then(([targetsRes, campRes]) => {
+    // Refresh sales targets in background (combos already loaded with catalog)
+    API.getSalesTargets().catch(() => ({ success: false })).then((targetsRes) => {
       this.salesTargets = targetsRes.success ? (targetsRes.data || { daily: { amount: 0, active: false } }) : { daily: { amount: 0, active: false } };
-      this.activeCampaigns = campRes.success ? (campRes.data || []) : [];
       this.renderCategoryTabs(this.selectedCategory || '');
       this.updateShiftBar().catch(() => {});
     });
@@ -407,12 +628,15 @@ const POSPage = {
       this.updateShiftBar().catch(() => {});
     });
     window.addEventListener('shop-pos-targets-updated', async () => {
+      this._targetProgressCache = null;
       try {
         const targetsRes = await API.getSalesTargets();
         if (targetsRes.success) {
           this.salesTargets = targetsRes.data || { daily: { amount: 0, active: false } };
         }
       } catch (_) { /* optional */ }
+      try { await this._prefetchTodayTarget?.(); } catch (_) { /* */ }
+      try { await this.renderTargetBanner?.(); } catch (_) { /* */ }
       this.updateShiftBar().catch(() => {});
     });
   },
@@ -425,7 +649,7 @@ const POSPage = {
       if (stamp && stamp === this._lastCatalogStamp) return;
       if (stamp) this._lastCatalogStamp = stamp;
       clearTimeout(this._catalogRefreshDebounce);
-      this._catalogRefreshDebounce = setTimeout(() => this.reloadCatalog?.(), 250);
+      this._catalogRefreshDebounce = setTimeout(() => this.reloadCatalog?.(true), 40);
     };
     window.addEventListener('shop-pos-stock-updated', this._catalogRefreshHandler);
     window.addEventListener('shop-pos-catalog-updated', this._catalogRefreshHandler);
@@ -461,6 +685,12 @@ const POSPage = {
         }
       }, 4000);
     }
+    if (!this._catalogServerPollTimer) {
+      this._catalogServerPollTimer = setInterval(() => {
+        if (typeof document !== 'undefined' && document.hidden) return;
+        this.reloadCatalog?.(true).catch(() => {});
+      }, 6000);
+    }
   },
 
   async fetchTodaySalesTotal() {
@@ -485,24 +715,48 @@ const POSPage = {
     if (!targetBanner) return { todaySales: 0, dailyTarget: 0, pct: 0, met: false };
     const currency = this.app.settings?.currency || 'R';
     const dailyTarget = this.activeDailyTargetAmount();
-    if (dailyTarget <= 0) {
+    let progress = this._targetProgressCache?.data;
+    const cacheFresh = this._targetProgressCache?.data && (Date.now() - (this._targetProgressCache.at || 0)) < 45000;
+    if (!cacheFresh) {
+      try {
+        const branchId = this.app?.user?.branch_id || null;
+        const r = await API.getTodayTargetProgress?.(branchId);
+        if (r?.success !== false) {
+          progress = r?.data || r;
+          this._targetProgressCache = { at: Date.now(), data: progress };
+        }
+      } catch (_) { /* keep cache */ }
+    }
+    const productActive = !!(progress?.product_targets_active && (progress.products || []).length);
+    if (dailyTarget <= 0 && !productActive) {
       targetBanner.style.display = 'none';
       targetBanner.classList.add('hidden');
       targetBanner.innerHTML = '';
       return { todaySales: 0, dailyTarget: 0, pct: 0, met: false };
     }
-    const todaySales = await this.fetchTodaySalesTotal();
-    const pct = Math.min(100, Math.round((todaySales / dailyTarget) * 100));
-    const met = todaySales >= dailyTarget;
+    const todaySales = dailyTarget > 0
+      ? (Number(progress?.sales_achieved) >= 0 ? Number(progress.sales_achieved) : await this.fetchTodaySalesTotal())
+      : 0;
+    const pct = dailyTarget > 0 ? Math.min(100, Math.round((todaySales / dailyTarget) * 100)) : 0;
+    const met = dailyTarget > 0 && todaySales >= dailyTarget;
+    const prodSold = Number(progress?.product_sold_qty) || 0;
+    const prodTarget = Number(progress?.product_target_qty) || 0;
+    const prodValSold = Number(progress?.product_sold_value) || 0;
+    const prodValTarget = Number(progress?.product_target_value) || 0;
+    const dailyText = dailyTarget > 0
+      ? `Daily: <strong>${Utils.formatMoney(todaySales, currency)}</strong> / ${Utils.formatMoney(dailyTarget, currency)}
+        <span class="pos-target-pct ${met ? 'met' : ''}">${pct}%${met ? ' ✓ Met' : ''}</span>`
+      : '';
+    const productText = productActive
+      ? `Products: <strong>${prodSold}</strong>/${prodTarget} · ${Utils.formatMoney(prodValSold, currency)} / ${Utils.formatMoney(prodValTarget, currency)}`
+      : '';
     targetBanner.style.display = 'block';
     targetBanner.classList.remove('hidden');
-    targetBanner.innerHTML = `<div class="pos-target-inner">
-      <span class="pos-target-text">Today's sales target: <strong>${Utils.formatMoney(todaySales, currency)}</strong>
-        / ${Utils.formatMoney(dailyTarget, currency)}
-        <span class="pos-target-pct ${met ? 'met' : ''}">${pct}%${met ? ' ✓ Met' : ''}</span>
-      </span>
-      <div class="pos-target-bar"><div class="pos-target-fill ${met ? 'met' : ''}" style="width:${pct}%"></div></div>
+    targetBanner.innerHTML = `<div class="pos-target-inner" id="pos-today-target-btn" role="button" tabindex="0" title="Open Today's Target" style="cursor:pointer">
+      <span class="pos-target-text">${[dailyText, productText].filter(Boolean).join(' · ')}</span>
+      ${dailyTarget > 0 ? `<div class="pos-target-bar"><div class="pos-target-fill ${met ? 'met' : ''}" style="width:${pct}%"></div></div>` : ''}
     </div>`;
+    document.getElementById('pos-today-target-btn')?.addEventListener('click', () => this.showTodayTargetModal());
     return { todaySales, dailyTarget, pct, met };
   },
 
@@ -511,11 +765,7 @@ const POSPage = {
     if (!main) return;
     const currency = this.app?.settings?.currency || 'R';
     if (!this._shiftFlowComplete) {
-      if (this.openShift) {
-        main.innerHTML = `<span>Shift open · ${Utils.formatMoney(this.openShift.opening_float, currency)} · tap Continue below</span>`;
-      } else {
-        main.innerHTML = '<span class="muted">Checking shift…</span>';
-      }
+      main.innerHTML = '<span class="muted">Open or continue your shift to start selling</span>';
       return;
     }
     if (!this.requiresShift()) {
@@ -532,35 +782,47 @@ const POSPage = {
   },
 
   _finishShiftFlow() {
-    this._shiftFlowComplete = true;
-    this.refreshShiftBarQuick();
-    this.updateShiftGate();
-    this._repaintMenuIfReady();
-    this.updateShiftBar().catch(() => {});
-    this._startOnlineOrdersWidget();
+    this._onShiftConfirmed();
   },
 
   _shiftFlowComplete: false,
 
-  canShowOnlineOrders() {
+  canPollOnlineOrders() {
     if (!this._shiftFlowComplete) return false;
     if (this.requiresShift() && !this.hasOpenShift()) return false;
-    const overlay = document.getElementById('modal-overlay');
-    if (overlay && !overlay.classList.contains('hidden') && overlay.dataset.noDismiss === '1') return false;
     return true;
   },
 
+  canShowOnlineOrders() {
+    return this.canPollOnlineOrders();
+  },
+
+  _unlockPosAlertSound() {
+    if (this._posSoundUnlocked) return;
+    this._posSoundUnlocked = true;
+    const unlock = () => {
+      try {
+        window.PanelSound?.setPanel?.('pos');
+        window.PanelSound?.startLoop?.();
+        window.PanelSound?.stop?.();
+      } catch (_) { /* */ }
+    };
+    document.addEventListener('click', unlock, { once: true });
+    document.addEventListener('touchstart', unlock, { once: true });
+  },
+
   _startOnlineOrdersWidget() {
-    if (!this.canShowOnlineOrders()) return;
+    if (!this.canPollOnlineOrders()) return;
+    this._unlockPosAlertSound();
     this.app?.ensureFeatureScript?.('js/online-orders-widget.js').then(() => {
-      if (!this.canShowOnlineOrders()) return;
+      if (!this.canPollOnlineOrders()) return;
       window.OnlineOrdersWidget?.bind?.(this.app);
       window.OnlineOrdersWidget?.startPolling?.();
     }).catch(() => {});
   },
 
   _syncOnlineOrdersWidget() {
-    if (this.canShowOnlineOrders()) {
+    if (this.canPollOnlineOrders()) {
       window.OnlineOrdersWidget?.startPolling?.();
     } else {
       window.OnlineOrdersWidget?.stopPolling?.();
@@ -573,6 +835,7 @@ const POSPage = {
       await this.ensureShift();
       if (!this.canShowOnlineOrders()) return;
     }
+    Utils.showModal('Online Orders', '<p class="muted">Opening…</p>', '<button class="btn btn-ghost" onclick="Utils.hideModal()">Close</button>');
     try {
       await this.app?.ensureFeatureScript?.('js/online-orders-widget.js');
       window.OnlineOrdersWidget?.bind?.(this.app);
@@ -598,9 +861,8 @@ const POSPage = {
     const overlay = document.getElementById('pos-more-overlay');
     if (!overlay) return;
     overlay.classList.remove('hidden');
-    requestAnimationFrame(() => overlay.classList.add('is-open'));
+    overlay.classList.add('is-open');
     document.body.classList.add('pos-more-open');
-    overlay.querySelector('#pos-referral-code')?.focus?.();
   },
 
   closeMoreOverlay() {
@@ -652,6 +914,138 @@ const POSPage = {
     try { return localStorage.getItem('shop-pos-catalog-ts') || ''; } catch (_) { return ''; }
   },
 
+  loadPosCatalogSnapshot(branchId) {
+    return Utils.loadPosMenuSnapshot(branchId);
+  },
+
+  savePosCatalogSnapshot(branchId) {
+    if (!(this.products || []).length) return;
+    Utils.savePosMenuSnapshot(branchId, {
+      categories: this.categories || [],
+      products: this.products,
+      combos: this.combos || []
+    });
+  },
+
+  /** Warm session snapshot from login prefetch (before POS page opens). */
+  persistMenuSnapshot(branchId, catRes, prodRes, comboRes) {
+    const categories = this._unwrapRpcList(catRes);
+    const products = this._unwrapRpcList(prodRes);
+    const rawCombos = comboRes?.data ?? (Array.isArray(comboRes) ? comboRes : []);
+    const combos = this.filterActiveCombos(rawCombos);
+    if (!products.length) return;
+    const bid = this._warmCatalogBranchId(branchId);
+    window.__POS_WARM_CATALOG__ = { branchId: bid, categories, products, combos, at: Date.now() };
+    if (window.POSPage && POSPage !== this) {
+      POSPage.categories = categories;
+      POSPage.products = Utils.restorePosCatalogProducts(products);
+      POSPage.combos = combos;
+      POSPage.rebuildProductLookups?.();
+    }
+    Utils.savePosMenuSnapshot(branchId, { categories, products, combos });
+  },
+
+  _warmCatalogBranchId(branchId) {
+    const bid = branchId != null && branchId !== '' ? Number(branchId) : 0;
+    return bid || 0;
+  },
+
+  _applyWarmCatalog(warm) {
+    if (!warm?.products?.length) return false;
+    this.categories = warm.categories || [];
+    this.products = Utils.restorePosCatalogProducts(warm.products);
+    this.combos = this.filterActiveCombos(warm.combos || []);
+    this.rebuildProductLookups?.();
+    return true;
+  },
+
+  tryHydratePosCatalog({ branchId, cachedProd, cachedCat, cachedCombo } = {}) {
+    if ((this.products || []).length) return true;
+    const warm = window.__POS_WARM_CATALOG__;
+    const bid = this._warmCatalogBranchId(branchId);
+    if (warm?.products?.length && this._warmCatalogBranchId(warm.branchId) === bid) {
+      return this._applyWarmCatalog(warm);
+    }
+    if (cachedProd?.data?.length) {
+      this.categories = cachedCat?.data || this.categories || [];
+      this.products = Utils.restorePosCatalogProducts(cachedProd.data);
+      this.combos = this.filterActiveCombos(cachedCombo?.data || cachedCombo || this.combos || []);
+      this.rebuildProductLookups?.();
+      return true;
+    }
+    const snap = this.loadPosCatalogSnapshot(branchId);
+    if (snap?.products?.length) {
+      this.categories = snap.categories || [];
+      this.products = snap.products;
+      this.combos = this.filterActiveCombos(snap.combos || []);
+      this.rebuildProductLookups?.();
+      return true;
+    }
+    return false;
+  },
+
+  /** Sync paint — menu must exist in DOM before shift modal closes. */
+  _ensureMenuPainted() {
+    if (!(this.products || []).length) return false;
+    this.ensureDefaultCategory();
+    this._menuTabCountCache = null;
+    this._invalidateProductGridCache();
+    this.renderCategoryTabs(this.selectedCategory || '');
+    this.renderProducts(document.getElementById('pos-search')?.value || '');
+    this.renderCart?.();
+    this.prefetchVisibleProductOptions();
+    return true;
+  },
+
+  updateMenuVisibility() {
+    const layout = document.querySelector('.pos-layout');
+    if (!layout) return;
+    const waiting = !this._shiftFlowComplete
+      || (this.requiresShift() && !this.hasOpenShift());
+    layout.classList.toggle('pos-menu-waiting', waiting);
+  },
+
+  _peekCachedOpenShift() {
+    try {
+      const cached = window.DataCache?.peek?.('openShift', [this.app?.user]);
+      if (cached?.data) return this._normalizeOpenShift(cached);
+    } catch (_) { /* ignore */ }
+    return null;
+  },
+
+  /** Shift modal immediately — never wait on network before showing Open/Continue. */
+  async _runShiftGate() {
+    this._shiftFlowComplete = false;
+    this.shiftSettings = this.app.settings?.shift_settings || this.shiftSettings || {
+      required_roles: ['cashier', 'manager', 'assistant_manager', 'owner']
+    };
+    const cachedShift = this._peekCachedOpenShift();
+    if (cachedShift?.id) this.openShift = cachedShift;
+    this.refreshShiftBarQuick();
+    this.updateMenuVisibility();
+    this.updateShiftGate();
+
+    if (!this.requiresShift()) {
+      this._onShiftConfirmed();
+      return;
+    }
+    if (this.openShift?.id) await this.promptResumeShift();
+    else await this.ensureShift();
+    if (!this._shiftFlowComplete) this._onShiftConfirmed();
+  },
+
+  _onShiftConfirmed() {
+    this._shiftFlowComplete = true;
+    this._unlockPosAlertSound();
+    this._ensureMenuPainted();
+    this.updateMenuVisibility();
+    this.updateShiftGate();
+    this.refreshShiftBarQuick();
+    this._startOnlineOrdersWidget();
+    this._prefetchPosTools();
+    this.updateShiftBar().catch(() => {});
+  },
+
   /** Keep-alive revisit: preserve cart, refresh catalog/shift in background. */
   async activate(el, app) {
     if (!el?.querySelector?.('.pos-layout')) {
@@ -659,7 +1053,7 @@ const POSPage = {
     }
     this.app = app;
     this._host = el;
-    this.resetPosSaleUi();
+    if (!this._restoreSuccessIfNeeded()) this.resetPosSaleUi();
     const stamp = this._catalogStamp();
     if (stamp && stamp !== this._lastCatalogStamp) {
       this._lastCatalogStamp = stamp;
@@ -671,44 +1065,35 @@ const POSPage = {
     const cachedProd = window.DataCache?.peek?.('products', [filters]);
     const cachedCat = window.DataCache?.peek?.('categories', [filters]);
     const cachedCombo = window.DataCache?.peek?.('combos', [comboFilters]);
-    if (cachedProd?.data?.length) {
-      this.categories = cachedCat?.data || this.categories || [];
-      this.products = cachedProd.data;
-      this.setPosCombos(cachedCombo);
-      this.rebuildProductLookups();
-      this.renderProducts(document.getElementById('pos-search')?.value || '');
-      this.refreshShiftBarQuick?.();
-      this.updateShiftGate?.();
-      if (typeof this.renderCart === 'function') this.renderCart();
-    }
-    Promise.all([
-      API.getCategories(filters),
-      API.getProducts(filters),
-      API.getOpenShift(app.user),
-      this.fetchPosCombos(true),
-      API.getActiveCampaigns(app.user?.branch_id).catch(() => ({ success: false }))
-    ]).then(([catRes, prodRes, shiftRes, comboRes, campRes]) => {
-      this.categories = catRes?.data || catRes || [];
-      this.products = this._unwrapRpcList(prodRes);
-      this.setPosCombos(comboRes);
-      this.openShift = shiftRes?.data || shiftRes || null;
-      if (campRes?.success) {
-        this.activeCampaigns = campRes.data || [];
-        this._updateCampaignBanners();
+    let hydrated = this.tryHydratePosCatalog({ branchId, cachedProd, cachedCat, cachedCombo });
+    if (!hydrated) {
+      const idbSnap = await Utils.loadPosMenuSnapshotAsync(branchId);
+      if (idbSnap?.products?.length) {
+        this.categories = idbSnap.categories || [];
+        this.products = idbSnap.products;
+        this.combos = this.filterActiveCombos(idbSnap.combos || []);
+        this.rebuildProductLookups?.();
+        hydrated = true;
       }
-      this._menuTabCountCache = null;
-      this._invalidateProductGridCache();
-      this.rebuildProductLookups();
-      this.ensureDefaultCategory();
+    }
+    if (hydrated) {
       this.renderCategoryTabs(this.selectedCategory || '');
       this.renderProducts(document.getElementById('pos-search')?.value || '');
       this.refreshShiftBarQuick?.();
       this.updateShiftGate?.();
       if (typeof this.renderCart === 'function') this.renderCart();
+      this.prefetchPosProductImages();
+      this.refreshTakenCountBadge();
+    }
+    if (hydrated && !stamp) return;
+    Promise.all([
+      API.getOpenShift(app.user)
+    ]).then(([shiftRes]) => {
+      this.openShift = this._normalizeOpenShift(shiftRes);
+      this.refreshShiftBarQuick?.();
+      this.updateShiftGate?.();
       window.DataCache?.clearStaleBanner?.(el);
-    }).catch((err) => {
-      window.DataCache?.showStaleBanner?.(el, err?.message || 'Unable to refresh. Showing last updated data.');
-    });
+    }).catch(() => {});
   },
 
   requiresShift() {
@@ -719,7 +1104,7 @@ const POSPage = {
   },
 
   hasOpenShift() {
-    return !!this.openShift;
+    return !!(this.openShift?.id);
   },
 
   requireShift(actionLabel) {
@@ -733,23 +1118,25 @@ const POSPage = {
     const layout = document.querySelector('.pos-layout');
     const block = this._shiftFlowComplete && this.requiresShift() && !this.hasOpenShift();
     if (layout) layout.classList.toggle('pos-shift-blocked', block);
+    this.updateMenuVisibility();
     this.refreshShiftBarQuick();
     this._syncOnlineOrdersWidget();
   },
 
   async ensureShift() {
-    if (!this.requiresShift() || this.openShift) return;
+    if (!this.requiresShift() || this.openShift?.id) return;
     if (document.getElementById('modal-overlay')?.dataset.noDismiss === '1') {
-      // Wait until the existing blocking modal is dismissed
       await new Promise((resolve) => {
+        const started = Date.now();
         const t = setInterval(() => {
-          if (document.getElementById('modal-overlay')?.dataset.noDismiss !== '1') {
+          const blocked = document.getElementById('modal-overlay')?.dataset.noDismiss === '1';
+          if (!blocked || Date.now() - started > 120000) {
             clearInterval(t);
             resolve();
           }
         }, 200);
       });
-      if (this.openShift) return;
+      if (this.openShift?.id) return;
     }
     const currency = this.app.settings?.currency || 'R';
     const dailyTarget = this.activeDailyTargetAmount();
@@ -767,31 +1154,45 @@ const POSPage = {
         { noDismiss: true });
       document.getElementById('pos-open-shift').addEventListener('click', async () => {
         const btn = document.getElementById('pos-open-shift');
-        btn.disabled = true;
-        btn.textContent = 'Opening…';
-        const r = await API.openShift(parseFloat(document.getElementById('pos-shift-float').value) || 0, this.app.user);
-        if (!r.success) {
-          Utils.toast(r.error, 'error');
-          btn.disabled = false;
-          btn.textContent = 'Open Shift & Start Selling';
-          return;
-        }
-        this.openShift = r.data;
+        const openingFloat = parseFloat(document.getElementById('pos-shift-float').value) || 0;
+        const localId = `local-${Date.now()}`;
+        this._pendingLocalShift = {
+          id: localId,
+          opening_float: openingFloat,
+          opened_at: new Date().toISOString(),
+          pending: true
+        };
+        this.openShift = this._pendingLocalShift;
         document.getElementById('modal-overlay').dataset.noDismiss = '0';
         const closeBtn = document.getElementById('modal-close');
         if (closeBtn) closeBtn.style.display = '';
-        Utils.hideModal();
-        Utils.toast('Shift opened — you can now take sales', 'success');
-        this.refreshShiftBarQuick();
-        this.updateShiftGate();
-        this._repaintMenuIfReady();
+        Utils.forceHideModal();
+        this._onShiftConfirmed();
         resolve();
+
+        btn.disabled = true;
+        btn.textContent = 'Opening…';
+        try {
+          const r = await API.openShift(openingFloat, this.app.user);
+          if (r.success && r.data?.id) {
+            this.openShift = r.data;
+            this._pendingLocalShift = null;
+            this.refreshShiftBarQuick();
+          } else if (!r.success) {
+            Utils.briefNotice(r.error || 'Shift saved locally — will sync when online', 'warning');
+          }
+        } catch (_) {
+          Utils.briefNotice('Shift opened locally — will sync when online', 'info');
+        } finally {
+          btn.disabled = false;
+          btn.textContent = 'Open Shift & Start Selling';
+        }
       });
     });
   },
 
   async promptResumeShift() {
-    if (!this.openShift || !this.requiresShift()) return;
+    if (!this.openShift?.id || !this.requiresShift()) return;
     const currency = this.app.settings?.currency || 'R';
 
     const choice = await new Promise((resolve) => {
@@ -808,10 +1209,8 @@ const POSPage = {
         document.getElementById('modal-overlay').dataset.noDismiss = '0';
         const closeBtn = document.getElementById('modal-close');
         if (closeBtn) closeBtn.style.display = '';
-        Utils.hideModal();
-        this.refreshShiftBarQuick();
-        this.updateShiftGate();
-        this._repaintMenuIfReady();
+        Utils.forceHideModal();
+        this._onShiftConfirmed();
         resolve('continue');
       });
       document.getElementById('pos-close-resume-shift').addEventListener('click', () => {
@@ -844,16 +1243,15 @@ const POSPage = {
       await this.showCashOut();
       try {
         const refreshed = await API.getOpenShift(this.app.user);
-        this.openShift = refreshed.data || null;
+        this.openShift = this._normalizeOpenShift(refreshed);
       } catch (_) {
         this.openShift = null;
+        this._pendingLocalShift = null;
       }
-      if (!this.openShift && this.requiresShift()) {
+      if (!this.openShift?.id && this.requiresShift()) {
         await this.ensureShift();
       } else {
-        this.refreshShiftBarQuick();
-        this.updateShiftGate();
-        this._repaintMenuIfReady();
+        this._onShiftConfirmed();
       }
     }
   },
@@ -951,6 +1349,11 @@ const POSPage = {
                 <button type="button" class="pos-till-btn primary sm" id="pos-other-item" title="Sell other item">+ Other Item</button>
                 <span id="pos-table-label" class="pos-table-label muted hidden"></span>
               </div>
+              <div class="field" style="margin:6px 0 0;position:relative">
+                <input type="text" id="pos-referral-code" placeholder="Referral code (optional)" autocomplete="off" style="width:100%;text-transform:uppercase;font-size:13px">
+                <div id="pos-referral-dropdown" class="search-dropdown hidden" style="position:absolute;left:0;right:0;top:100%;z-index:40"></div>
+                <p id="pos-referral-hint" class="muted" style="margin:4px 0 0;font-size:11px;min-height:14px"></p>
+              </div>
             </div>
             <div class="pos-action-bar">
               <button type="button" class="pos-action-chip" id="pos-held" title="Held orders">
@@ -1025,6 +1428,8 @@ const POSPage = {
                 <button class="btn btn-ghost" id="pos-save-quote">Save Quote</button>
                 <button class="btn btn-warning" id="pos-laybuy" title="Create lay-bye from cart">📋 Lay-Bye</button>
                 <button class="btn btn-ghost" id="pos-laybuy-pay" title="Take lay-bye payment">💰 Pay Lay-Bye</button>
+                <button class="btn btn-warning" id="pos-taken" title="Food taken now — pay later">TAKEN – PAY LATER</button>
+                <button class="btn btn-ghost" id="pos-taken-list" title="Unpaid / taken orders">UNPAID / TAKEN <span id="pos-taken-count" class="pos-action-badge hidden">0</span></button>
                 <button class="btn btn-danger" id="pos-cancel">Cancel</button>
                 <button class="btn btn-success btn-pay" id="pos-pay">Pay</button>
               </div>
@@ -1062,24 +1467,15 @@ const POSPage = {
           </header>
           <div class="pos-more-body">
             <section class="pos-more-section">
-              <h3 class="pos-more-section-title">Promotions</h3>
-              <div class="pos-more-codes">
-                <label class="pos-more-field">
-                  <span>Referral code</span>
-                  <input type="text" id="pos-referral-code" placeholder="Enter referral code" autocomplete="off">
-                </label>
-                <label class="pos-more-field">
-                  <span>Coupon</span>
-                  <input type="text" id="pos-coupon-code" placeholder="Enter coupon code" autocomplete="off">
-                </label>
-              </div>
-            </section>
-            <section class="pos-more-section">
               <h3 class="pos-more-section-title">Floor &amp; hardware</h3>
               <div class="pos-more-grid">
                 <button type="button" class="pos-more-tool" id="pos-free-tables">
                   <span class="pos-more-tool-icon">🪑</span>
                   <span class="pos-more-tool-text"><strong>Free Table</strong><small>Release sit-in tables</small></span>
+                </button>
+                <button type="button" class="pos-more-tool" id="pos-today-target">
+                  <span class="pos-more-tool-icon">🎯</span>
+                  <span class="pos-more-tool-text"><strong>Today's Target</strong><small>Sales &amp; product progress</small></span>
                 </button>
                 <button type="button" class="pos-more-tool" id="pos-scanner">
                   <span class="pos-more-tool-icon">📡</span>
@@ -1147,7 +1543,7 @@ const POSPage = {
           <div style="display:flex;gap:12px;justify-content:center;margin-top:20px;flex-wrap:wrap">
             <button class="btn btn-primary btn-lg" id="pos-success-print">🖨️ Print Receipt</button>
             <button class="btn btn-ghost btn-lg" id="pos-success-wa">💬 Send Receipt on WhatsApp</button>
-            <button class="btn btn-ghost btn-lg hidden" id="pos-success-review">⭐ Request Review</button>
+            <button class="btn btn-ghost btn-lg" id="pos-success-review">⭐ Request Review</button>
             <button class="btn btn-success btn-lg" id="pos-success-new">New Sale</button>
           </div>
         </div>
@@ -1388,6 +1784,8 @@ const POSPage = {
         product.stock_quantity = Math.max(0, (Number(product.stock_quantity) || 0) - qty);
       }
     }
+    this._invalidateProductGridCache();
+    this.updateProductStockDisplay?.();
   },
 
   allowOversell() {
@@ -1485,7 +1883,7 @@ const POSPage = {
     try {
       return await fn(filters);
     } catch (_) {
-      return [];
+      return { success: false, data: [] };
     }
   },
 
@@ -1507,7 +1905,9 @@ const POSPage = {
     if (!this.app?.user) return;
     try {
       const comboRes = await this.fetchPosCombos(true);
+      if (comboRes?.success === false) return;
       this.setPosCombos(comboRes);
+      this._invalidateProductGridCache();
       this.renderCategoryTabs(this.selectedCategory || '');
       this.renderProducts(document.getElementById('pos-search')?.value || '');
     } catch (_) { /* ignore */ }
@@ -1572,12 +1972,11 @@ const POSPage = {
     try {
       const filters = { for_pos: true, actor: this.app.user };
       const uncached = (fn, ...args) => (fn?._uncached ? fn._uncached(...args) : fn(...args));
-      const [catRes, prodRes, comboRes, hlRes, campRes] = await Promise.all([
-        uncached(API.getCategories, { for_pos: true }),
+      const [catRes, prodRes, comboRes, hlRes] = await Promise.all([
+        uncached(API.getCategories, filters),
         uncached(API.getProducts, filters),
         this.fetchPosCombos(true),
-        uncached(API.getMenuHighlightSettings).catch(() => null),
-        uncached(API.getActiveCampaigns, this.app.user?.branch_id).catch(() => null)
+        uncached(API.getMenuHighlightSettings).catch(() => null)
       ]);
       if (hlRes?.success && hlRes.data) {
         this.app.settings = this.app.settings || {};
@@ -1586,19 +1985,11 @@ const POSPage = {
           menu_highlight_settings: hlRes.data
         };
       }
-      if (campRes?.success) this.activeCampaigns = campRes.data || [];
-      this.categories = catRes?.data || catRes || this.categories || [];
-      this.products = this._unwrapRpcList(prodRes);
-      this.setPosCombos(comboRes);
-      this._menuTabCountCache = null;
-      this._invalidateProductGridCache();
-      this.rebuildProductLookups();
-      this.ensureDefaultCategory();
-      this.renderCategoryTabs(this.selectedCategory || '');
-      this.renderProducts(document.getElementById('pos-search')?.value || '');
+      this._applyCatalogFromRpc(catRes, prodRes, comboRes, this.app.user?.branch_id);
       this._updateCampaignBanners();
       this._lastCatalogReloadStamp = stamp || String(Date.now());
       if (stamp) this._lastCatalogStamp = stamp;
+      this.savePosCatalogSnapshot(this.app.user?.branch_id);
     } catch (err) {
       Utils.toast?.(err?.message || 'Menu refresh failed — showing last loaded menu', 'warning');
     }
@@ -1618,11 +2009,55 @@ const POSPage = {
     });
   },
 
+  comboItemImgAttr(item) {
+    if (item?.product_id) {
+      return Utils.productImageAttr({
+        id: item.product_id,
+        picture_path: item.custom_image_path || item.picture_path
+      });
+    }
+    return Utils.cachedImageAttr(item?.custom_image_path || item?.picture_path);
+  },
+
+  comboGalleryPaths(c) {
+    const raw = c?.gallery_paths;
+    if (Array.isArray(raw)) return raw.filter(Boolean);
+    if (typeof raw === 'string' && raw.trim()) {
+      try {
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+      } catch (_) { return []; }
+    }
+    return [];
+  },
+
+  comboThumbsHtml(c, limit = 12) {
+    const items = c?.items || [];
+    const gallery = this.comboGalleryPaths(c);
+    const parts = [];
+    const seen = new Set();
+    const push = (attr, alt = '') => {
+      if (!attr || seen.has(attr)) return;
+      seen.add(attr);
+      parts.push(`<img ${attr} alt="${Utils.escHtml(alt)}">`);
+    };
+    if (c?.id || c?.image_path || c?.picture_path) {
+      push(Utils.comboImageAttr(c), c?.name || 'Combo');
+    }
+    gallery.forEach((p) => push(Utils.cachedImageAttr(p)));
+    items.forEach((i) => {
+      if (!(i.picture_path || i.custom_image_path || i.product_id)) return;
+      push(this.comboItemImgAttr(i), i.product_name || '');
+    });
+    if (!parts.length) return '';
+    return `<div class="combo-mini-thumbs">${parts.slice(0, limit).join('')}</div>`;
+  },
+
   comboCardHtml(c, currency) {
     const items = c.items || [];
     const components = items.map(i => `${i.quantity}× ${i.product_name}`).join(', ');
     const needsOpts = this.comboNeedsOptions(c);
-    const thumbs = items.filter(i => i.picture_path || i.custom_image_path).slice(0, 4);
+    const thumbs = items.filter(i => i.picture_path || i.custom_image_path || i.product_id);
     let stockBadge = '';
     if (c.combo_kind === 'custom' && c.stock_quantity != null && c.stock_quantity !== '') {
       const left = Math.max(0, Number(c.stock_quantity) || 0);
@@ -1634,20 +2069,17 @@ const POSPage = {
     } else if (thumbs.length) {
       const cols = Math.min(thumbs.length, 3);
       media = `<div class="combo-item-thumbs" style="display:grid;grid-template-columns:repeat(${cols},1fr);gap:2px;width:100%;height:100%">
-        ${thumbs.map((i) => {
-          const imgAttr = i.product_id
-            ? Utils.productImageAttr({ id: i.product_id, picture_path: i.custom_image_path || i.picture_path })
-            : Utils.cachedImageAttr(i.custom_image_path || i.picture_path);
-          return `<img ${imgAttr} alt="" style="width:100%;height:100%;object-fit:cover;min-height:36px">`;
-        }).join('')}
+        ${thumbs.map((i) => `<img ${this.comboItemImgAttr(i)} alt="" style="width:100%;height:100%;object-fit:cover;min-height:36px">`).join('')}
       </div>`;
     } else {
       media = `<span class="product-card-placeholder">🎁</span>`;
     }
+    const strip = this.comboThumbsHtml(c);
     const outOfStock = c.combo_kind === 'custom' && c.stock_quantity != null && c.stock_quantity !== ''
       && Number(c.stock_quantity) <= 0;
     return `<button class="product-card ${needsOpts ? 'has-options' : ''}${outOfStock ? ' out-of-stock' : ''}" data-combo-id="${c.id}" ${outOfStock ? 'disabled' : ''}>
       <div class="product-card-media">${media}</div>
+      ${strip || ''}
       <div class="product-card-body">
         <span class="product-card-cat">COMBO</span>
         <span class="product-card-name">${c.name}</span>
@@ -1745,7 +2177,8 @@ const POSPage = {
   },
 
   /** Collect options/extras for a product. Returns config or null if cancelled. */
-  collectProductOptions(product, ui = {}) {
+  async collectProductOptions(product, ui = {}) {
+    product = await this.ensureFullProduct(product);
     const optionGroups = this.groupProductOptions(product);
     const extras = product.extras || [];
     const baseRemovals = product.removals || [];
@@ -1796,8 +2229,9 @@ const POSPage = {
         Utils.forceHideModal();
         resolve(value);
       };
-      Utils.showModal(title, `
+      const opened = Utils.showModal(title, `
         ${ui.subtitle ? `<p class="muted" style="margin-bottom:10px">${ui.subtitle}</p>` : ''}
+        ${ui.galleryHtml || ''}
         ${product.picture_path ? `<div style="text-align:center;margin-bottom:12px"><img data-image-path="${product.picture_path}" style="max-height:80px;border-radius:8px"></div>` : ''}
         ${product.description ? `<p class="muted">${product.description}</p>` : ''}
         <p class="muted">Price: <strong>${product.promo_active && product.original_price
@@ -1812,7 +2246,12 @@ const POSPage = {
             <span>${e.name} ${priceLabel(e.extra_price)}</span></label>`).join('')}` : ''}`,
         `<button class="btn btn-ghost" id="pos-opt-cancel">Cancel</button>
          <button class="btn btn-primary" id="pos-add-configured">${submitLabel}</button>`,
-        { noDismiss: true });
+        { noDismiss: true, force: true });
+      if (opened === false) {
+        Utils.toast('Close the other screen first, then add the combo', 'error');
+        resolve(null);
+        return;
+      }
       Utils.hydrateImages(document.getElementById('modal-body'));
 
       const needsPriceConfirm = (ui.comboContext || product.promo_active) && effectiveRemovals.length;
@@ -1874,6 +2313,10 @@ const POSPage = {
           }
           const minNeed = g.is_required ? Math.max(1, g.min_select || 1) : (g.min_select || 0);
           if (picked.length < minNeed) {
+            document.querySelectorAll('.option-group-block').forEach((el, idx) => {
+              el.classList.toggle('pos-opt-missing', idx === gi);
+            });
+            document.querySelectorAll('.option-group-block')[gi]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
             return Utils.toast(`Choose at least ${minNeed} option(s) for "${g.name}"`, 'error');
           }
           if (picked.length > g.max_select) {
@@ -1961,6 +2404,7 @@ const POSPage = {
             ? `Choose with or without pap (${optionStep} of ${optionSteps})`
             : `Fill options for this combo item first (${optionStep} of ${optionSteps}), then continue.`,
           submitLabel: optionStep < optionSteps ? 'Next item →' : 'Add Combo to Order',
+          galleryHtml: this.comboThumbsHtml(combo),
           comboContext: item.allow_pap_choice ? {
             salePrice: combo.final_price,
             normalPrice: combo.normal_price
@@ -1997,8 +2441,11 @@ const POSPage = {
     if (!grid) return;
     if (!this._categoryById || !this._productsNeedingOptions) this.rebuildProductLookups();
     const currency = this.app.settings?.currency || 'R';
-    if (this.selectedCategory == null || this.selectedCategory === '') this.ensureDefaultCategory();
-    const catKey = this.selectedCategory || this.defaultCategoryKey();
+    if (this.selectedCategory == null || this.selectedCategory === '' || String(this.selectedCategory) === '__all') {
+      this.ensureDefaultCategory();
+    }
+    const catKey = this._resolveCategoryKey(this.selectedCategory || this.defaultCategoryKey());
+    this.selectedCategory = catKey;
     const combosOnly = catKey === 'combos';
     const cacheKey = this._productGridCacheKey(catKey, filter);
     if (!filter && this._productGridCache && this._productGridCache.has(cacheKey)) {
@@ -2006,6 +2453,7 @@ const POSPage = {
       Utils.hydrateImages(grid);
       this.bindComboGridClicks(grid);
       this.setActiveCategoryTab(catKey);
+      this.prefetchVisibleProductOptions();
       return;
     }
     const combos = combosOnly ? this.combosForView('combos', filter) : [];
@@ -2046,9 +2494,10 @@ const POSPage = {
       const mealBadge = st.isMeal && st.left > 0
         ? `<span class="product-card-badge">${st.left} meals</span>`
         : '';
+      const showImg = !!(p.id && (p._hasImage || p.picture_path || Utils.productImageUrl(p) || Utils.isCloudPos()));
       return `<button class="product-card ${stockClass} ${hasOpts ? 'has-options' : ''} ${p.promo_active ? 'promo-active' : ''}" data-id="${p.id}" title="${st.oosReason || (st.limiting ? `Limited by ${st.limiting}` : '')}">
-        <div class="product-card-media">${p.picture_path || Utils.productImageUrl(p)
-          ? `<img ${Utils.productImageAttr(p)} alt="">`
+        <div class="product-card-media">${showImg
+          ? `<img ${Utils.productImageAttr(p)} alt="${Utils.escHtml((p.name || '?').charAt(0).toUpperCase())}" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'product-card-placeholder',textContent:this.alt||'?'}))">`
           : `<span class="product-card-placeholder">${(p.name || '?').charAt(0).toUpperCase()}</span>`}</div>
         <div class="product-card-body">
           ${cat ? `<span class="product-card-cat">${cat.name}</span>` : ''}
@@ -2069,6 +2518,7 @@ const POSPage = {
     Utils.hydrateImages(grid);
     this.bindComboGridClicks(grid);
     this.setActiveCategoryTab(catKey);
+    this.prefetchVisibleProductOptions();
   },
 
   updateProductStockDisplay() {
@@ -2303,11 +2753,16 @@ const POSPage = {
     }
 
     document.getElementById('cart-discount').textContent = Utils.formatMoney(this.discount, currency);
+    this.recalcDeliveryFee(grossSubtotal);
     const deliveryFee = this.orderType === 'delivery' ? (Number(this.deliveryFee) || 0) : 0;
     const deliveryRow = document.getElementById('cart-delivery-fee-row');
     const deliveryEl = document.getElementById('cart-delivery-fee');
     if (deliveryRow && deliveryEl) {
-      deliveryRow.classList.toggle('hidden', deliveryFee <= 0);
+      const showDel = this.orderType === 'delivery';
+      deliveryRow.classList.toggle('hidden', !showDel);
+      const placeName = this.deliveryPlace?.name ? ` (${this.deliveryPlace.name})` : '';
+      const label = deliveryRow.querySelector('span:first-child');
+      if (label) label.textContent = `Delivery fee${placeName}`;
       deliveryEl.textContent = Utils.formatMoney(deliveryFee, currency);
     }
     const grandTotal = totals.total + deliveryFee;
@@ -2719,7 +3174,8 @@ const POSPage = {
   async promptProductOptions(product) {
     const config = await this.collectProductOptions(product);
     if (!config) return;
-    this.addToCart(product, config);
+    const full = this.products.find((p) => p.id == product.id) || product;
+    this.addToCart(full, config);
   },
 
   bindEvents(el) {
@@ -2736,7 +3192,8 @@ const POSPage = {
     document.getElementById('pos-categories').addEventListener('click', (e) => {
       const tab = e.target.closest('.cat-tab');
       if (!tab || tab.classList.contains('active')) return;
-      const nextCat = tab.dataset.cat || this.defaultCategoryKey();
+      let nextCat = tab.dataset.cat || this.defaultCategoryKey();
+      if (String(nextCat) === '__all') nextCat = this.defaultCategoryKey();
       if (String(this.selectedCategory) === String(nextCat)) return;
       this.selectedCategory = nextCat;
       this.setActiveCategoryTab(nextCat);
@@ -2823,9 +3280,20 @@ const POSPage = {
       if (window.ReturnsPage?.showReturnForm) {
         ReturnsPage.app = this.app;
         ReturnsPage.showReturnForm(receipt, this.app);
-      } else {
-        this.app.navigate('returns');
+        return;
       }
+      Utils.showModal('Refund', '<p class="muted" style="margin:0">Opening refund form…</p>', '<button class="btn btn-ghost" id="pos-refund-load-close">Close</button>');
+      document.getElementById('pos-refund-load-close')?.addEventListener('click', () => Utils.hideModal());
+      this.app?.ensurePageScripts?.('returns')?.then(() => {
+        Utils.hideModal();
+        if (window.ReturnsPage?.showReturnForm) {
+          ReturnsPage.app = this.app;
+          ReturnsPage.showReturnForm(receipt, this.app);
+        } else Utils.toast('Refund module unavailable — refresh and try again', 'error');
+      }).catch(() => {
+        Utils.hideModal();
+        Utils.toast('Could not load refund module', 'error');
+      });
     });
     document.getElementById('pos-add-customer').addEventListener('click', () => this.showAddCustomerModal());
     document.getElementById('pos-other-item')?.addEventListener('click', () => this.showOtherItemModal());
@@ -2841,7 +3309,372 @@ const POSPage = {
     document.getElementById('pos-pay').addEventListener('click', () => this.showPaymentModal());
     document.getElementById('pos-laybuy')?.addEventListener('click', () => this.showLaybuyFromCart());
     document.getElementById('pos-laybuy-pay')?.addEventListener('click', () => this.showPayLaybuyOnPos());
+    document.getElementById('pos-taken')?.addEventListener('click', () => this.showTakenPayLater());
+    document.getElementById('pos-taken-list')?.addEventListener('click', () => this.showUnpaidTakenOrders());
     document.getElementById('pos-free-tables')?.addEventListener('click', () => this.showFreeTablePicker());
+    document.getElementById('pos-today-target')?.addEventListener('click', () => {
+      this.closeMoreOverlay?.();
+      this.showTodayTargetModal();
+    });
+    this.bindReferralCodeTypeahead();
+    this.refreshTakenCountBadge();
+  },
+
+  bindReferralCodeTypeahead() {
+    const input = document.getElementById('pos-referral-code');
+    const drop = document.getElementById('pos-referral-dropdown');
+    const hint = document.getElementById('pos-referral-hint');
+    if (!input || input.dataset.refBound) return;
+    input.dataset.refBound = '1';
+    let timer = null;
+    const hide = () => drop?.classList.add('hidden');
+    const pick = (row) => {
+      input.value = String(row.code || '').toUpperCase();
+      if (hint) hint.textContent = row.agent_name ? `Order under: ${row.agent_name}` : '';
+      hide();
+    };
+    const run = async () => {
+      const q = String(input.value || '').trim();
+      if (!q) {
+        hide();
+        if (hint) hint.textContent = '';
+        return;
+      }
+      let rows = [];
+      try {
+        const res = await API.referralSearchCodes(q);
+        rows = res?.data || res || [];
+        if (!Array.isArray(rows)) rows = [];
+      } catch (_) {
+        try {
+          const v = await API.referralValidateCode(q);
+          const data = v?.data || v;
+          if (data?.code && !data.error) rows = [data];
+        } catch (__) { rows = []; }
+      }
+      if (!drop) return;
+      if (!rows.length) {
+        drop.innerHTML = '<div class="search-item muted">No matching referral agent</div>';
+        drop.classList.remove('hidden');
+        if (hint) hint.textContent = '';
+        return;
+      }
+      drop.innerHTML = rows.map((r) =>
+        `<div class="search-item" data-code="${Utils.escHtml(r.code)}" data-name="${Utils.escHtml(r.agent_name || '')}">
+          <strong>${Utils.escHtml(r.code)}</strong> — ${Utils.escHtml(r.agent_name || 'Agent')}
+        </div>`
+      ).join('');
+      drop.classList.remove('hidden');
+      drop.querySelectorAll('.search-item[data-code]').forEach((el) => {
+        el.addEventListener('click', () => pick({ code: el.dataset.code, agent_name: el.dataset.name }));
+      });
+      if (rows.length === 1 && String(rows[0].code || '').toUpperCase() === q.toUpperCase()) {
+        if (hint) hint.textContent = rows[0].agent_name ? `Order under: ${rows[0].agent_name}` : '';
+      }
+    };
+    input.addEventListener('input', () => {
+      clearTimeout(timer);
+      timer = setTimeout(run, 180);
+    });
+    input.addEventListener('blur', () => setTimeout(hide, 200));
+    input.addEventListener('focus', () => { if (input.value.trim()) run(); });
+  },
+
+  prefetchPosProductImages() {
+    const products = this.products || [];
+    if (!products.length) return;
+    try {
+      window.OfflineStore?.prefetchProductImages?.(products, { limit: 64 });
+    } catch (_) { /* ignore */ }
+    // Warm URL cache for first screen of cards
+    const first = products.slice(0, 48);
+    first.forEach((p) => {
+      const url = Utils.productImageUrl?.(p);
+      if (url && p.picture_path) Utils._imageUrlCache.set(String(p.picture_path), url);
+    });
+    const grid = document.getElementById('pos-grid');
+    if (grid) Utils.hydrateImages(grid);
+  },
+
+  async showTakenPayLater() {
+    if (!this.requireShift('Taken – Pay Later')) return;
+    if (!this.cart.length) return Utils.toast('Cart is empty', 'error');
+    if (!this.totals?.total && this.totals?.total !== 0) this.renderCart();
+    const currency = this.app.settings?.currency || 'R';
+    const total = Number(this.totals?.total) || 0;
+    const itemsHtml = this.cart.map((i) =>
+      `<div style="padding:4px 0;border-bottom:1px solid var(--border)">${i.quantity}× ${Utils.escHtml(i.product_name)} — ${Utils.formatMoney(i.total, currency)}</div>`
+    ).join('');
+
+    const role = this.app.user?.role;
+    const selfOk = ['owner', 'manager', 'assistant_manager', 'supervisor'].includes(role);
+    let managerPin = null;
+    if (!selfOk) {
+      managerPin = await this.promptSaleManagerPin('Taken – Pay Later requires manager or supervisor approval.');
+      if (!managerPin) return;
+    }
+
+    let cust = this.selectedCustomer?.id ? this.selectedCustomer : null;
+    const pickCustomerFast = async () => new Promise((resolve) => {
+      Utils.showModal('Select saved customer', `
+        <p class="muted">Taken – Pay Later is only for customers already in the system. Search by name or phone.</p>
+        <div class="field"><label>Search</label>
+          <input type="search" id="pos-taken-cust-q" placeholder="Name or phone…" autocomplete="off" autofocus></div>
+        <div id="pos-taken-cust-results" style="max-height:220px;overflow:auto;margin-top:8px"></div>
+        <p id="pos-taken-cust-err" class="error-msg hidden"></p>`,
+        '<button class="btn btn-ghost" id="pos-taken-cust-cancel">Cancel</button>');
+      document.getElementById('pos-taken-cust-cancel')?.addEventListener('click', () => {
+        Utils.hideModal();
+        resolve(null);
+      });
+      const box = document.getElementById('pos-taken-cust-results');
+      const err = document.getElementById('pos-taken-cust-err');
+      let timer = null;
+      const run = async () => {
+        const q = String(document.getElementById('pos-taken-cust-q')?.value || '').trim();
+        if (q.length < 1) {
+          if (box) box.innerHTML = '<p class="muted">Type to search saved customers…</p>';
+          return;
+        }
+        if (box) box.innerHTML = '<p class="muted">Searching…</p>';
+        try {
+          const res = await API.getCustomers(q);
+          const list = (res?.data || res || []).filter((c) => c?.id && String(c.phone || '').trim());
+          if (!list.length) {
+            if (box) box.innerHTML = '<p class="muted">No saved customers with a phone match.</p>';
+            return;
+          }
+          if (box) {
+            box.innerHTML = list.slice(0, 20).map((c) => `
+              <button type="button" class="btn btn-ghost btn-block" data-taken-cust="${c.id}"
+                style="text-align:left;margin-bottom:4px">
+                <strong>${Utils.escHtml(c.name || c.full_name || 'Customer')}</strong>
+                <span class="muted"> · ${Utils.escHtml(c.phone || '')}</span>
+              </button>`).join('');
+            box.querySelectorAll('[data-taken-cust]').forEach((b) => {
+              b.addEventListener('click', () => {
+                const found = list.find((c) => String(c.id) === String(b.dataset.takenCust));
+                Utils.hideModal();
+                resolve(found || null);
+              });
+            });
+          }
+        } catch (e) {
+          if (err) { err.textContent = e?.message || 'Search failed'; err.classList.remove('hidden'); }
+        }
+      };
+      document.getElementById('pos-taken-cust-q')?.addEventListener('input', () => {
+        clearTimeout(timer);
+        timer = setTimeout(run, 180);
+      });
+      run();
+    });
+
+    if (!cust?.id) {
+      cust = await pickCustomerFast();
+      if (!cust?.id) return;
+      this.selectCustomer(cust);
+    }
+    if (!String(cust.phone || '').trim()) {
+      return Utils.toast('Selected customer has no phone number on file — update the customer first.', 'error');
+    }
+
+    Utils.showModal('TAKEN – PAY LATER', `
+      <p class="muted">Only saved customers. Stock leaves now. Not cash revenue until paid.</p>
+      <div style="padding:10px 12px;background:var(--surface,#f8fafc);border-radius:10px;margin:8px 0;border:1px solid var(--border)">
+        <strong>${Utils.escHtml(cust.name || cust.full_name || 'Customer')}</strong>
+        <div class="muted">${Utils.escHtml(cust.phone || '')}</div>
+        <button type="button" class="btn btn-ghost btn-sm" id="pos-taken-change-cust" style="margin-top:6px">Change customer</button>
+      </div>
+      <div style="max-height:120px;overflow:auto;margin:8px 0">${itemsHtml}</div>
+      <p><strong>Amount owed:</strong> ${Utils.formatMoney(total, currency)}</p>
+      <p class="muted" style="font-size:12px">${selfOk ? 'Approved by you' : 'Manager PIN verified'}</p>
+      <p id="pos-taken-err" class="error-msg hidden"></p>`,
+      '<button class="btn btn-ghost" id="pos-taken-cancel">Cancel</button><button class="btn btn-warning" id="pos-taken-save">Confirm TAKEN</button>');
+    document.getElementById('pos-taken-cancel')?.addEventListener('click', Utils.hideModal);
+    document.getElementById('pos-taken-change-cust')?.addEventListener('click', async () => {
+      Utils.hideModal();
+      this.selectedCustomer = null;
+      await this.showTakenPayLater();
+    });
+    document.getElementById('pos-taken-save')?.addEventListener('click', async () => {
+      const err = document.getElementById('pos-taken-err');
+      const showErr = (m) => { if (err) { err.textContent = m; err.classList.remove('hidden'); } };
+      err?.classList.add('hidden');
+      const btn = document.getElementById('pos-taken-save');
+      if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+      try {
+        const tillBranchId = await API.getTillBranchId?.().catch(() => null);
+        const order_summary = this.cart.map((i) => `${i.quantity}× ${i.product_name}`).join(', ');
+        const saleData = {
+          till_branch_id: tillBranchId || undefined,
+          branch_id: tillBranchId || this.app.user?.branch_id || undefined,
+          device_id: Utils.getDeviceId?.() || undefined,
+          items: this.cart.map((i) => ({
+            product_id: i.product_id,
+            product_name: i.product_name,
+            quantity: i.quantity,
+            unit_price: i.unit_price,
+            buying_price: i.buying_price || 0,
+            discount: i.discount || 0,
+            total: i.total,
+            item_type: i.item_type || null,
+            combo_id: i.combo_id || null,
+            modifiers_text: i.modifiers_text || null,
+            modifiers: i.modifiers || null,
+            substitutions: i.substitutions || null,
+            combo_components: i.combo_components || null
+          })),
+          customer_id: cust.id,
+          customer_name: cust.name || cust.full_name,
+          customer_phone: cust.phone,
+          subtotal: this.totals.subtotal,
+          discount: this.totals.discount,
+          discount_authorized: !!(this.discountApprover || (this.totals.discount > 0 && ['owner', 'manager'].includes(role))),
+          discount_approver_id: this.discountApprover?.id || null,
+          discount_manager_pin: this.totals.discount > 0.02 ? this.discountManagerPin : null,
+          manager_pin: managerPin || undefined,
+          taken_requires_approval: !selfOk,
+          tax_amount: this.totals.tax_amount,
+          total,
+          amount_paid: total,
+          change_amount: 0,
+          payments: [{ type: 'taken', amount: total }],
+          taken_order: {
+            customer_id: cust.id,
+            customer_name: cust.name || cust.full_name,
+            phone: cust.phone,
+            order_summary,
+            notes: 'Taken – Pay Later'
+          },
+          order_type: this.orderType || 'takeaway',
+          table_id: this.selectedTable?.id || null,
+          table_name: this.selectedTable?.name || null,
+          notes: `TAKEN–PAY LATER · ${cust.name || ''} · ${cust.phone || ''}`
+        };
+        let res = await API.completeSale(saleData, this.app.user);
+        if (!res.success && /Manager PIN required/i.test(res.error || '')) {
+          const pin = await this.promptSaleManagerPin(res.error);
+          if (!pin) throw new Error(res.error || 'Manager PIN required');
+          saleData.manager_pin = pin;
+          res = await API.completeSale(saleData, this.app.user);
+        }
+        if (!res.success) throw new Error(res.error || 'Could not record taken order');
+        Utils.hideModal();
+        this.applyLocalSaleStockDeduction(this.cart);
+        this.cart = [];
+        this.discount = 0;
+        this.discountApprover = null;
+        this.discountManagerPin = null;
+        this.renderCart();
+        Utils.toast(`Taken · ${cust.name} owes ${Utils.formatMoney(total, currency)}`, 'success');
+      } catch (e) {
+        if (btn) { btn.disabled = false; btn.textContent = 'Confirm TAKEN'; }
+        showErr(e?.message || 'Failed');
+      }
+    });
+  },
+
+  async showUnpaidTakenOrders() {
+    if (!this.requireShift('viewing unpaid taken orders')) return;
+    const currency = this.app.settings?.currency || 'R';
+    Utils.showModal('UNPAID / TAKEN ORDERS', '<p class="muted">Loading…</p>',
+      '<button class="btn btn-ghost" onclick="Utils.hideModal()">Close</button>');
+    let rows = [];
+    try {
+      const res = await API.listTakenOrders({ status: 'UNPAID', limit: 100 }, this.app.user);
+      const list = res?.data || res || [];
+      rows = Array.isArray(list) ? list : [];
+    } catch (err) {
+      Utils.showModal('UNPAID / TAKEN ORDERS',
+        `<p class="error-msg">${Utils.escHtml(err?.message || 'Could not load unpaid orders')}</p>`,
+        '<button class="btn btn-ghost" onclick="Utils.hideModal()">Close</button>');
+      return;
+    }
+    this._updateTakenCountBadge(rows.length);
+    if (!rows.length) {
+      Utils.showModal('UNPAID / TAKEN ORDERS',
+        '<div style="padding:24px;text-align:center"><p class="muted" style="margin:0">No unpaid / taken orders</p></div>',
+        '<button class="btn btn-ghost" onclick="Utils.hideModal()">Close</button>');
+      return;
+    }
+    const html = rows.map((o) => {
+      const when = String(o.taken_at || '').replace('T', ' ').slice(0, 16);
+      return `<div class="pos-taken-card" data-taken-id="${o.id}" style="border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:10px">
+        <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap">
+          <strong>${Utils.escHtml(o.customer_name || '—')}</strong>
+          <strong>${Utils.formatMoney(o.amount_owed, currency)}</strong>
+        </div>
+        <div class="muted" style="margin:4px 0">${Utils.escHtml(o.order_summary || 'Order')}</div>
+        <div class="muted" style="font-size:12px">Taken: ${Utils.escHtml(when)} · ${Utils.escHtml(o.staff_name || '')}</div>
+        <div style="margin-top:6px">📞 ${Utils.escHtml(o.phone || '—')}</div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px">
+          <button type="button" class="btn btn-success btn-sm" data-taken-pay="${o.id}">PAY</button>
+          <a class="btn btn-ghost btn-sm" href="tel:${Utils.escHtml(String(o.phone || '').replace(/\s/g, ''))}">CALL</a>
+          <button type="button" class="btn btn-ghost btn-sm" data-taken-wa="${o.id}" data-phone="${Utils.escHtml(o.phone || '')}" data-name="${Utils.escHtml(o.customer_name || '')}">WHATSAPP</button>
+        </div>
+      </div>`;
+    }).join('');
+    Utils.showModal('UNPAID / TAKEN ORDERS', `<div style="max-height:60vh;overflow:auto">${html}</div>`,
+      '<button class="btn btn-ghost" onclick="Utils.hideModal()">Close</button>');
+    document.querySelectorAll('[data-taken-pay]').forEach((btn) => {
+      const row = rows.find((o) => Number(o.id) === Number(btn.dataset.takenPay));
+      btn.addEventListener('click', () => this.payTakenOrderPrompt(Number(btn.dataset.takenPay), currency, Number(row?.amount_owed) || 0));
+    });
+    document.querySelectorAll('[data-taken-wa]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const phone = btn.dataset.phone || '';
+        const name = btn.dataset.name || 'Customer';
+        const msg = `Hi ${name}, this is ${(this.app.settings?.shop_name || 'the shop')}. Friendly reminder about your unpaid order. Thank you!`;
+        const wa = await API.sendWhatsAppMessage?.({
+          phone,
+          recipient_name: name,
+          message_type: 'general',
+          body: msg
+        }, this.app.user).catch(() => null);
+        await Utils.deliverWhatsApp(wa, phone, msg);
+      });
+    });
+  },
+
+  _updateTakenCountBadge(count) {
+    const badge = document.getElementById('pos-taken-count');
+    if (!badge) return;
+    const n = Number(count) || 0;
+    badge.textContent = String(n);
+    badge.classList.toggle('hidden', n <= 0);
+  },
+
+  async refreshTakenCountBadge() {
+    try {
+      const res = await API.listTakenOrders({ status: 'UNPAID', limit: 100 }, this.app.user);
+      const list = res?.data || res || [];
+      this._updateTakenCountBadge(Array.isArray(list) ? list.length : 0);
+    } catch (_) { /* ignore */ }
+  },
+
+  payTakenOrderPrompt(id, currency, amountOwed = 0) {
+    const total = Number(amountOwed) || 0;
+    if (!(total > 0)) {
+      return Utils.toast('Order amount missing', 'error');
+    }
+    PaymentUI.open({
+      total,
+      currency,
+      settings: this.app.settings,
+      title: `Collect Taken Order · ${Utils.formatMoney(total, currency)}`,
+      confirmLabel: 'Confirm PAY',
+      allowMixed: false,
+      allowPartial: false,
+      onConfirm: async ({ payments }) => {
+        const method = payments?.[0]?.type || 'cash';
+        const r = await API.payTakenOrder(id, { payment_method: method }, this.app.user);
+        if (!r || r.success === false) throw new Error(r?.error || 'Payment failed');
+        Utils.toast('Taken order marked PAID — recorded in POS sales', 'success');
+        this.refreshTakenCountBadge();
+        this.showUnpaidTakenOrders();
+      }
+    });
   },
 
   async showLaybuyFromCart() {
@@ -2984,6 +3817,8 @@ const POSPage = {
 
   async showCashOutHistory() {
     const currency = this.app.settings?.currency || 'R';
+    Utils.showModal('Cashout History', '<p class="muted">Loading cash-outs…</p>', '<button class="btn btn-ghost" id="co-hist-close">Close</button>');
+    document.getElementById('co-hist-close')?.addEventListener('click', () => Utils.hideModal());
     const res = await API.getCashUps({ limit: 50 });
     const rows = res.data || [];
     Utils.showModal('Cashout History', `
@@ -3019,32 +3854,40 @@ const POSPage = {
   },
 
   async showVoidSale() {
-    if (!Utils.hasPermission(this.app.user, 'void_sales') && !['cashier', 'manager', 'owner'].includes(this.app.user?.role)) {
+    if (!Utils.hasPermission(this.app.user, 'void_sales') && !['cashier', 'manager', 'owner', 'assistant_manager', 'supervisor'].includes(this.app.user?.role)) {
       return Utils.toast('You do not have permission to void sales', 'error');
     }
     const needCode = this.app.user.role === 'cashier';
     Utils.showModal('Void Sale', `
-      <p class="muted">${needCode ? 'Enter receipt number and today\'s supervisor code from your manager.' : 'Enter receipt number and reason to void a sale. Stock will be restored.'}</p>
-      <div class="field"><label>Receipt Number</label><input id="void-receipt" placeholder="RCP-..." value="${this.lastSale?.receipt_number || ''}"></div>
+      <p class="muted">${needCode ? 'Enter receipt number and today\'s supervisor void code from your manager (Admin → Security).' : 'Enter receipt number and reason to void a sale. Stock will be restored.'}</p>
+      <div class="field"><label>Receipt Number</label><input id="void-receipt" placeholder="RCP-..." value="${Utils.escHtml(this.lastSale?.receipt_number || '')}"></div>
       <div class="field"><label>Reason</label><input id="void-reason" placeholder="Wrong item, duplicate, etc."></div>
-      ${needCode ? `<div class="field"><label>Supervisor Code *</label><input type="password" id="void-super-code" maxlength="6" placeholder="Daily code from admin"></div>` : ''}`,
-      '<button class="btn btn-danger" id="void-confirm">Void Sale</button>');
+      ${needCode ? `<div class="field"><label>Supervisor void code *</label><input type="password" id="void-super-code" maxlength="6" placeholder="Daily code from admin" autocomplete="one-time-code"></div>` : ''}`,
+      '<button class="btn btn-ghost" id="void-cancel">Cancel</button><button class="btn btn-danger" id="void-confirm">Void Sale</button>');
+    document.getElementById('void-cancel')?.addEventListener('click', () => Utils.hideModal());
     document.getElementById('void-confirm').addEventListener('click', async () => {
+      const btn = document.getElementById('void-confirm');
       const receipt = document.getElementById('void-receipt').value.trim();
       const reason = document.getElementById('void-reason').value.trim();
       const code = document.getElementById('void-super-code')?.value.trim();
       if (!receipt || !reason) return Utils.toast('Receipt and reason required', 'error');
-      if (needCode && !code) return Utils.toast('Supervisor code required', 'error');
-      const saleRes = await API.getSaleByReceipt(receipt);
-      if (!saleRes.success || !saleRes.data) return Utils.toast('Receipt not found', 'error');
-      const r = await API.voidSale(saleRes.data.id, reason, this.app.user, code || null);
-      if (!r.success) return Utils.toast(r.error, 'error');
-      Utils.hideModal();
-      Utils.toast('Sale voided — stock restored', 'success');
-      const prodRes = await API.getProducts();
-      this.products = prodRes.data || [];
-      this.rebuildProductLookups();
-      this.renderProducts();
+      if (needCode && !code) return Utils.toast('Supervisor void code required', 'error');
+      if (btn) { btn.disabled = true; btn.textContent = 'Voiding…'; }
+      try {
+        const saleRes = await API.getSaleByReceipt(receipt);
+        if (!saleRes.success || !saleRes.data) throw new Error('Receipt not found');
+        const r = await API.voidSale(saleRes.data.id, reason, this.app.user, code || null);
+        if (!r.success) throw new Error(r.error || 'Void failed');
+        Utils.hideModal();
+        Utils.toast('Sale voided — stock restored', 'success');
+        const prodRes = await API.getProducts({ for_pos: true, actor: this.app.user });
+        this.products = prodRes.data || [];
+        this.rebuildProductLookups();
+        this.renderProducts();
+      } catch (err) {
+        if (btn) { btn.disabled = false; btn.textContent = 'Void Sale'; }
+        Utils.toast(err.message || 'Void failed', 'error');
+      }
     });
   },
 
@@ -3108,6 +3951,8 @@ const POSPage = {
     };
     document.querySelectorAll('.co-actual').forEach(inp => inp.addEventListener('input', updateSummary));
     document.getElementById('co-confirm').addEventListener('click', async () => {
+      const confirmBtn = document.getElementById('co-confirm');
+      if (confirmBtn?.disabled) return;
       const actualPayments = {};
       document.querySelectorAll('.co-actual').forEach(inp => {
         actualPayments[inp.dataset.method] = parseFloat(inp.value) || 0;
@@ -3117,18 +3962,39 @@ const POSPage = {
         const expected = m === 'cash' ? preview.expectedCash : (preview.expectedPayments[m] || 0);
         shortages[m] = (actualPayments[m] || 0) - expected;
       }
-      const r = await API.closeShift(this.openShift.id, {
-        cash_counted: actualPayments.cash || 0,
-        closing_balance: actualPayments.cash || 0,
-        actual_payments: actualPayments,
-        payment_shortages: shortages,
-        notes: document.getElementById('co-notes').value.trim()
-      }, this.app.user);
-      if (!r.success) return Utils.toast(r.error, 'error');
-      Utils.hideModal();
-      Utils.toast('Shift closed — cash-out pending approval. Goodbye!', 'success');
-      this.openShift = null;
-      this.app.logout();
+      if (confirmBtn) {
+        confirmBtn.disabled = true;
+        confirmBtn.textContent = 'Cashing out…';
+      }
+      Utils.toast('Cash-out in progress…', 'info');
+      try {
+        const r = await API.closeShift(this.openShift.id, {
+          cash_counted: actualPayments.cash || 0,
+          closing_balance: actualPayments.cash || 0,
+          actual_payments: actualPayments,
+          payment_shortages: shortages,
+          notes: document.getElementById('co-notes')?.value.trim() || ''
+        }, this.app.user);
+        if (!r.success) {
+          if (confirmBtn) {
+            confirmBtn.disabled = false;
+            confirmBtn.textContent = 'Cash Out & Logout';
+          }
+          return Utils.toast(r.error || 'Cash-out failed', 'error');
+        }
+        Utils.hideModal();
+        this.openShift = null;
+        Utils.toast('Cash-out successful — shift closed. Goodbye!', 'success');
+        setTimeout(() => {
+          try { this.app.logout(); } catch (_) { /* ignore */ }
+        }, 450);
+      } catch (err) {
+        if (confirmBtn) {
+          confirmBtn.disabled = false;
+          confirmBtn.textContent = 'Cash Out & Logout';
+        }
+        Utils.toast(err?.message || 'Cash-out failed', 'error');
+      }
     });
   },
 
@@ -3185,23 +4051,37 @@ const POSPage = {
 
   async showPosSalesHistory() {
     const today = Utils.today();
+    const currency = this.app.settings?.currency || 'R';
+    Utils.showModal('POS Sales Today', '<p class="muted">Loading today\'s sales…</p>', '<button class="btn btn-ghost" id="pos-sales-history-close">Close</button>');
+    document.getElementById('pos-sales-history-close')?.addEventListener('click', () => Utils.hideModal());
     const res = await API.getSalesList({ from: today, to: today, limit: 40, pos_only: true });
     const rows = Array.isArray(res?.data) ? res.data : (Array.isArray(res) ? res : []);
-    const currency = this.app.settings?.currency || 'R';
     Utils.showModal('POS Sales Today', `
-      <p class="muted" style="margin:0 0 12px">Counter sales only (excludes web online orders). Tap Reprint to send to your receipt printer.</p>
+      <p class="muted" style="margin:0 0 12px">Counter sales only (excludes web online orders). Reprint, resend the WhatsApp slip, or send a review request with your online order link.</p>
       <div style="max-height:420px;overflow:auto">
-        ${rows.length ? rows.map((s) => `<div class="list-row" style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--border)">
+        ${rows.length ? rows.map((s) => {
+          const otype = ({ delivery: 'Delivery', takeaway: 'Takeaway', sit_in: 'Sit-in', online: 'Online' })[s.order_type] || s.order_type || 'Walk-in';
+          const fee = Number(s.delivery_fee) || 0;
+          const place = s.delivery_place ? ` · ${s.delivery_place}` : '';
+          const feeNote = s.order_type === 'delivery'
+            ? (fee > 0 ? ` · Delivery ${Utils.formatMoney(fee, currency)}${place}` : ` · Delivery free${place}`)
+            : '';
+          return `<div class="list-row" style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--border)">
           <div style="min-width:0">
             <strong>${Utils.escHtml(s.receipt_number || s.order_number || `#${s.id}`)}</strong>
-            <div class="muted" style="font-size:12px">${Utils.escHtml(String(s.created_at || '').slice(11, 16))} · ${Utils.escHtml(s.cashier_name || '—')}</div>
+            <div class="muted" style="font-size:12px">${Utils.escHtml(String(s.created_at || '').slice(11, 16))} · ${Utils.escHtml(otype)}${feeNote} · ${Utils.escHtml(s.cashier_name || s.customer_name || '—')}</div>
             <div class="muted" style="font-size:12px">${Utils.escHtml(s.item_summary || '')}</div>
           </div>
           <div style="text-align:right;white-space:nowrap">
             <div style="font-weight:700">${Utils.formatMoney(s.total, currency)}</div>
-            <button type="button" class="btn btn-primary btn-sm pos-reprint-sale" data-id="${s.id}" style="margin-top:6px">Reprint</button>
+            <div style="display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap;margin-top:6px">
+              <button type="button" class="btn btn-primary btn-sm pos-reprint-sale" data-id="${s.id}">Reprint</button>
+              <button type="button" class="btn btn-ghost btn-sm pos-wa-sale" data-id="${s.id}">WhatsApp</button>
+              <button type="button" class="btn btn-ghost btn-sm pos-review-sale" data-id="${s.id}">⭐ Review</button>
+            </div>
           </div>
-        </div>`).join('') : '<p class="muted">No POS sales recorded today yet.</p>'}
+        </div>`;
+        }).join('') : '<p class="muted">No POS sales recorded today yet.</p>'}
       </div>`,
       '<button class="btn btn-ghost" id="pos-sales-history-close">Close</button>');
     document.getElementById('pos-sales-history-close')?.addEventListener('click', () => Utils.hideModal());
@@ -3221,6 +4101,106 @@ const POSPage = {
         }
       });
     });
+    document.querySelectorAll('.pos-wa-sale').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        const prev = btn.textContent;
+        btn.textContent = 'Sending…';
+        try {
+          await this.resendSaleWhatsApp(parseInt(btn.dataset.id, 10));
+        } catch (err) {
+          Utils.toast(err.message || 'WhatsApp failed', 'error');
+        } finally {
+          btn.disabled = false;
+          btn.textContent = prev;
+        }
+      });
+    });
+    document.querySelectorAll('.pos-review-sale').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        const prev = btn.textContent;
+        btn.textContent = 'Opening…';
+        try {
+          await this.resendSaleReview(parseInt(btn.dataset.id, 10));
+        } catch (err) {
+          Utils.toast(err.message || 'Review WhatsApp failed', 'error');
+        } finally {
+          btn.disabled = false;
+          btn.textContent = prev;
+        }
+      });
+    });
+  },
+
+  async resendSaleWhatsApp(saleId) {
+    const saleRes = await API.getSale(saleId);
+    const sale = saleRes?.data || saleRes?.sale || saleRes;
+    if (!sale?.id) throw new Error('Sale not found');
+    const recipient = await this.ensureWhatsAppRecipient(sale);
+    if (!recipient?.phone) return;
+    const receiptLines = Receipt.buildWhatsAppLines(sale, this.app.settings);
+    const body = this._buildReceiptWhatsAppText(sale, recipient, {
+      deliveryAddress: sale.delivery_address || ''
+    });
+    await this._openOrSendWhatsApp({
+      phone: recipient.phone,
+      body,
+      busyLabel: 'Sending WhatsApp…',
+      doneLabel: 'WhatsApp',
+      payload: {
+        customer_id: recipient.id,
+        recipient_type: 'customer',
+        recipient_name: recipient.name,
+        customer_name: recipient.name,
+        receipt_lines: receiptLines,
+        delivery_address: sale.delivery_address || '',
+        delivery_address_line: sale.delivery_address ? `📍 Deliver to: ${sale.delivery_address}` : '',
+        delivery_place: sale.delivery_place || '',
+        branch: this.activeBranch?.name || this.app.settings?.shop_name,
+        phone_shop: this.app.settings?.phone,
+        order_number: sale.order_number || sale.receipt_number,
+        receipt_number: sale.receipt_number,
+        total_purchase: sale.total,
+        sale_id: sale.id,
+        message_type: 'sale_receipt',
+        template_slug: 'sale_receipt'
+      }
+    });
+    Utils.toast('WhatsApp slip ready', 'success');
+  },
+
+  async resendSaleReview(saleId) {
+    const saleRes = await API.getSale(saleId);
+    const sale = saleRes?.data || saleRes?.sale || saleRes;
+    if (!sale?.id) throw new Error('Sale not found');
+    const recipient = await this.ensureWhatsAppRecipient(sale);
+    if (!recipient?.phone) return;
+    const { orderUrl } = this._shopIdentity();
+    const body = this._buildReviewWhatsAppText(sale, recipient);
+    await this._openOrSendWhatsApp({
+      phone: recipient.phone,
+      body,
+      busyLabel: 'Opening WhatsApp…',
+      doneLabel: '⭐ Review',
+      payload: {
+        customer_id: recipient.id,
+        recipient_type: 'customer',
+        recipient_name: recipient.name,
+        customer_name: recipient.name,
+        branch: this.activeBranch?.name || this.app.settings?.shop_name,
+        phone_shop: this.app.settings?.phone,
+        order_number: sale.order_number || sale.receipt_number,
+        receipt_number: sale.receipt_number,
+        total_purchase: sale.total,
+        sale_id: sale.id,
+        order_url: orderUrl,
+        online_order_url: orderUrl,
+        message_type: 'review_request',
+        template_slug: 'review_request'
+      }
+    });
+    Utils.toast('Review request ready', 'success');
   },
 
   async showReprint() {
@@ -3441,14 +4421,42 @@ const POSPage = {
       return s + unitCost * (Number(i.quantity) || 0);
     }, 0);
     const maxDiscByProfit = Math.max(0, Math.round((subtotal - costFloor) * 100) / 100);
+    const couponOn = this.app.settings?.discount_settings?.coupon_codes !== false;
     Utils.showModal('Apply Discount', `
       ${approver ? `<p class="muted">Approved by ${approver.full_name}</p>` : ''}
+      ${couponOn ? `<div class="field"><label>Voucher / coupon code</label>
+        <div style="display:flex;gap:8px">
+          <input id="discount-voucher" placeholder="Enter voucher code" style="text-transform:uppercase;flex:1">
+          <button type="button" class="btn btn-ghost" id="discount-voucher-apply">Apply code</button>
+        </div>
+        <p class="muted" id="discount-voucher-msg" style="font-size:12px;margin:6px 0 0"></p>
+      </div>
+      <p class="muted" style="text-align:center;margin:8px 0">— or enter amount —</p>` : ''}
       <div class="field"><label>Discount Amount (${currency})</label>
       <input type="number" id="discount-amount" min="0" step="0.01" value="${this.discount}"></div>
       <p class="muted" style="font-size:12px">Discount cannot go below profit (max ${Utils.formatMoney(maxDiscByProfit, currency)} so sale stays above cost).</p>
       ${maxPct ? `<p class="muted" style="font-size:12px">Admin max: ${maxPct}% of subtotal</p>` : ''}`,
       '<button class="btn btn-primary" id="apply-discount">Apply</button>');
-    document.getElementById('apply-discount').addEventListener('click', () => {
+    document.getElementById('discount-voucher-apply')?.addEventListener('click', async () => {
+      const code = document.getElementById('discount-voucher')?.value.trim();
+      if (!code) return Utils.toast('Enter a voucher code', 'error');
+      const r = await API.validateDiscountVoucher(code, {
+        subtotal,
+        items: this.cart.map((i) => ({ product_id: i.product_id, total: i.total, quantity: i.quantity, price: i.price })),
+        customerId: this.selectedCustomer?.id || null
+      });
+      const msg = document.getElementById('discount-voucher-msg');
+      if (!r.success || r.data?.error || !r.data?.ok) {
+        if (msg) msg.textContent = r.data?.error || r.error || 'Invalid voucher';
+        return Utils.toast(r.data?.error || r.error || 'Invalid voucher', 'error');
+      }
+      const amount = Number(r.data.discount) || 0;
+      document.getElementById('discount-amount').value = amount;
+      this._pendingVoucher = { code: r.data.code, ...r.data };
+      if (msg) msg.textContent = r.data.message || `Applied ${Utils.formatMoney(amount, currency)}`;
+      Utils.toast(r.data.message || 'Voucher applied', 'success');
+    });
+    document.getElementById('apply-discount').addEventListener('click', async () => {
       const amount = parseFloat(document.getElementById('discount-amount').value) || 0;
       if (maxPct && subtotal > 0 && amount > subtotal * maxPct / 100) {
         return Utils.toast(`Discount cannot exceed ${maxPct}%`, 'error');
@@ -3458,6 +4466,19 @@ const POSPage = {
       }
       this.discount = amount;
       this.discountApprover = approver || null;
+      if (this._pendingVoucher?.code && amount > 0) {
+        const redeemed = await API.redeemDiscountVoucher(this._pendingVoucher.code, {
+          subtotal,
+          items: this.cart.map((i) => ({ product_id: i.product_id, total: i.total })),
+          customerId: this.selectedCustomer?.id || null,
+          channel: 'pos'
+        }, this.app.user).catch(() => ({ success: false }));
+        if (redeemed.success === false && redeemed.error) {
+          Utils.toast(redeemed.error, 'error');
+        }
+        this.discountVoucherCode = this._pendingVoucher.code;
+        this._pendingVoucher = null;
+      }
       this.renderCart();
       Utils.hideModal();
     });
@@ -3658,34 +4679,209 @@ const POSPage = {
     });
   },
 
+  _prefetchPosTools() {
+    if (this._posToolsPrefetch) return;
+    this._posToolsPrefetch = true;
+    Promise.all([
+      API.getHeldOrders?.().then((r) => { this._heldOrdersCache = r?.data || r || []; }).catch(() => {}),
+      API.getTables?.().then((r) => { this._tablesCache = r?.data || r || []; this._tablesCacheAt = Date.now(); }).catch(() => {}),
+      this._prefetchTodayTarget?.()
+    ]);
+    this.app?.ensureFeatureScript?.('js/online-orders-widget.js').then(() => {
+      window.OnlineOrdersWidget?.bind?.(this.app);
+    }).catch(() => {});
+    this.app?.ensurePageScripts?.('returns').catch(() => {});
+  },
+
+  _prefetchTodayTarget() {
+    const branchId = this.app?.user?.branch_id || null;
+    return API.getTodayTargetProgress?.(branchId).then((r) => {
+      if (r?.success === false) return;
+      this._targetProgressCache = { at: Date.now(), data: r?.data || r };
+    }).catch(() => {});
+  },
+
+  async showTablePicker(opts = {}) {
+    const required = !!opts.required;
+    const onSelected = typeof opts.onSelected === 'function' ? opts.onSelected : null;
+    const paint = (tables) => {
+      if (!tables.length) {
+        Utils.toast('No tables configured — add in Restaurant', 'error');
+        return;
+      }
+      Utils.showModal(required ? 'Select Sit-in Table *' : 'Select Table', `
+      <p class="muted" style="margin-bottom:10px">${required
+        ? 'Choose a table for this sit-in order. The table stays occupied until you mark it available.'
+        : 'Pick a table for this order.'}</p>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(100px,1fr));gap:8px">
+        ${tables.map(t => {
+          const occ = !!t.is_occupied || String(t.status) === 'occupied';
+          return `<button type="button" class="btn ${occ ? 'btn-ghost' : 'btn-primary'} pos-table-opt" data-id="${t.id}" data-name="${t.table_number}"
+            data-occupied="${occ ? '1' : '0'}"
+            style="padding:12px;${occ ? 'opacity:0.45;border-color:var(--warning);cursor:not-allowed' : ''}"
+            ${occ ? 'disabled title="Occupied — free the table first"' : ''}>
+            ${t.table_number}<br><small>${occ ? 'occupied' : t.seats + ' seats'}</small></button>`;
+        }).join('')}
+      </div>
+      ${!tables.some(t => !(t.is_occupied || String(t.status) === 'occupied')) ? '<p class="muted" style="margin-top:12px;color:var(--warning)">No available tables. Use Free Table when guests leave.</p>' : ''}`,
+      required
+        ? '<button class="btn btn-ghost" id="table-cancel">Cancel</button>'
+        : '<button class="btn btn-ghost" id="table-close">Close</button>');
+      document.getElementById('table-close')?.addEventListener('click', Utils.hideModal);
+      document.getElementById('table-cancel')?.addEventListener('click', () => {
+        Utils.hideModal();
+        if (required) {
+          this.orderType = null;
+          this.selectedTable = null;
+          this.updateTableLabel();
+        }
+      });
+      document.querySelectorAll('.pos-table-opt').forEach(btn => btn.addEventListener('click', () => {
+        if (btn.disabled || btn.dataset.occupied === '1') {
+          return Utils.toast('That table is occupied — choose an available table', 'error');
+        }
+        this.selectedTable = { id: parseInt(btn.dataset.id, 10), name: btn.dataset.name };
+        this.orderType = 'sit_in';
+        this.updateTableLabel();
+        Utils.hideModal();
+        if (onSelected) onSelected();
+      }));
+    };
+
+    const cached = Array.isArray(this._tablesCache) ? this._tablesCache : [];
+    if (cached.length) paint(cached);
+    else Utils.showModal(required ? 'Select Sit-in Table *' : 'Select Table', '<p class="muted">Loading tables…</p>', '<button class="btn btn-ghost" id="table-close">Close</button>');
+
+    const res = await API.getTables();
+    const tables = res?.data || res || [];
+    this._tablesCache = tables;
+    this._tablesCacheAt = Date.now();
+    paint(tables);
+  },
+
+  async showFreeTablePicker() {
+    this.closeMoreOverlay?.();
+    const paintOccupied = (allTables) => {
+      const tables = (allTables || []).filter((t) => t.is_occupied || String(t.status) === 'occupied');
+      if (!tables.length) {
+        Utils.hideModal();
+        return Utils.toast('No occupied tables', 'success');
+      }
+      Utils.showModal('Mark Table Available', `
+      <p class="muted" style="margin-bottom:10px">When guests leave, mark the table available for the next sit-in.</p>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px">
+        ${tables.map((t) => `<button type="button" class="btn btn-warning pos-free-opt" data-id="${t.id}" data-name="${Utils.escHtml(t.table_number)}"
+          style="padding:14px">
+          ${Utils.escHtml(t.table_number)}<br><small>occupied — free now</small></button>`).join('')}
+      </div>`,
+      '<button class="btn btn-ghost" id="free-table-close">Close</button>');
+      document.getElementById('free-table-close')?.addEventListener('click', Utils.hideModal);
+      document.querySelectorAll('.pos-free-opt').forEach((btn) => btn.addEventListener('click', async () => {
+        const id = parseInt(btn.dataset.id, 10);
+        const name = btn.dataset.name;
+        btn.disabled = true;
+        btn.innerHTML = `${Utils.escHtml(name)}<br><small>Freeing…</small>`;
+        // Optimistic: mark free in cache immediately
+        if (Array.isArray(this._tablesCache)) {
+          this._tablesCache = this._tablesCache.map((t) =>
+            Number(t.id) === id ? { ...t, status: 'available', is_occupied: false, has_open_order: false } : t
+          );
+        }
+        try {
+          const r = API.releaseTable
+            ? await API.releaseTable(id, this.app.user)
+            : await API.saveTable({ id, table_number: name, seats: 4, status: 'available', waiter_id: null }, this.app.user);
+          if (!r?.success && r?.error) {
+            btn.disabled = false;
+            btn.innerHTML = `${Utils.escHtml(name)}<br><small>occupied — free now</small>`;
+            return Utils.toast(r.error || 'Could not free table', 'error');
+          }
+        } catch (err) {
+          btn.disabled = false;
+          btn.innerHTML = `${Utils.escHtml(name)}<br><small>occupied — free now</small>`;
+          return Utils.toast(err?.message || 'Could not free table', 'error');
+        }
+        if (this.selectedTable?.id === id) {
+          this.selectedTable = null;
+          this.updateTableLabel();
+        }
+        Utils.hideModal();
+        Utils.toast(`Table ${name} is now available`, 'success');
+        // Refresh cache quietly for next open
+        API.getTables?.().then((nr) => {
+          this._tablesCache = nr?.data || [];
+          this._tablesCacheAt = Date.now();
+        }).catch(() => {});
+      }));
+    };
+
+    const cached = Array.isArray(this._tablesCache) ? this._tablesCache : [];
+    const cachedOcc = cached.filter((t) => t.is_occupied || String(t.status) === 'occupied');
+    if (cachedOcc.length) {
+      paintOccupied(cached);
+    } else {
+      Utils.showModal('Mark Table Available', '<p class="muted">Loading tables…</p>', '<button class="btn btn-ghost" id="free-table-close">Close</button>');
+      document.getElementById('free-table-close')?.addEventListener('click', Utils.hideModal);
+    }
+
+    // Refresh quietly — don't block when cache already painted occupied tables
+    const refresh = () => API.getTables().then((fresh) => {
+      if (!fresh?.data) return;
+      this._tablesCache = fresh.data;
+      this._tablesCacheAt = Date.now();
+      if (!cachedOcc.length) paintOccupied(fresh.data);
+      else {
+        const nextOcc = fresh.data.filter((t) => t.is_occupied || String(t.status) === 'occupied');
+        if (nextOcc.length !== cachedOcc.length) paintOccupied(fresh.data);
+      }
+    }).catch(() => {
+      if (!cachedOcc.length) paintOccupied(this._tablesCache || []);
+    });
+    if (cachedOcc.length) refresh();
+    else await refresh();
+  },
+
   async showHeldOrders() {
-    const res = await API.getHeldOrders();
-    const orders = res.data || [];
-    const html = orders.length ? orders.map(o =>
-      `<div style="padding:10px;border-bottom:1px solid var(--border);cursor:pointer" data-hold-id="${o.id}">
-        ${o.name} — ${(Array.isArray(o.cart_data) ? o.cart_data : o.cart_data?.items || []).length} items — ${Utils.formatDateTime(o.created_at)}
+    Utils.showModal('Held Orders', '<p class="muted">Loading held orders…</p>', '<button class="btn btn-ghost" id="pos-held-close">Close</button>');
+    document.getElementById('pos-held-close')?.addEventListener('click', () => Utils.hideModal());
+    const res = this._heldOrdersCache?.length
+      ? { success: true, data: this._heldOrdersCache }
+      : await API.getHeldOrders();
+    if (res?.data) this._heldOrdersCache = res.data;
+    const orders = res?.data || res || [];
+    const list = Array.isArray(orders) ? orders : [];
+    const html = list.length ? list.map(o =>
+      `<div class="pos-held-row" style="padding:10px;border-bottom:1px solid var(--border);cursor:pointer" data-hold-id="${o.id}">
+        <strong>${Utils.escHtml(o.name || `Hold #${o.id}`)}</strong>
+        <div class="muted" style="font-size:12px">${(Array.isArray(o.cart_data) ? o.cart_data : o.cart_data?.items || []).length} items · ${Utils.formatDateTime(o.created_at)}</div>
       </div>`).join('') : '<p class="muted">No held orders</p>';
-    Utils.showModal('Held Orders', html);
-    document.getElementById('modal-body').addEventListener('click', async (e) => {
+    Utils.showModal('Held Orders', html, '<button class="btn btn-ghost" id="pos-held-close">Close</button>');
+    document.getElementById('pos-held-close')?.addEventListener('click', () => Utils.hideModal());
+    const body = document.getElementById('modal-body');
+    if (!body) return;
+    const onPick = async (e) => {
       const el = e.target.closest('[data-hold-id]');
       if (!el) return;
-      const order = orders.find(o => o.id == el.dataset.holdId);
-      if (order) {
-        const data = order.cart_data;
-        if (Array.isArray(data)) this.cart = data;
-        else {
-          this.cart = data.items || [];
-          this.discount = Number(data.discount) || 0;
-          if (data.customer) this.selectCustomer(data.customer);
-          this.selectedTable = data.table || null;
-          if (data.orderType) this.orderType = data.orderType;
-          if (data.deliveryAddress) this.deliveryAddress = data.deliveryAddress;
-        }
-        this.renderCart();
-        await API.deleteHeldOrder(order.id, this.app.user);
-        Utils.hideModal();
+      const order = list.find(o => String(o.id) === String(el.dataset.holdId));
+      if (!order) return;
+      const data = order.cart_data;
+      if (Array.isArray(data)) this.cart = data;
+      else {
+        this.cart = data?.items || [];
+        this.discount = Number(data?.discount) || 0;
+        if (data?.customer) this.selectCustomer(data.customer);
+        this.selectedTable = data?.table || null;
+        if (data?.orderType) this.orderType = data.orderType;
+        if (data?.deliveryAddress) this.deliveryAddress = data.deliveryAddress;
       }
-    });
+      this.renderCart();
+      try { await API.deleteHeldOrder(order.id, this.app.user); } catch (_) { /* ignore */ }
+      body.removeEventListener('click', onPick);
+      Utils.hideModal();
+      Utils.toast('Held order restored to cart', 'success');
+      this.updatePosBadges?.();
+    };
+    body.addEventListener('click', onPick);
   },
 
   showPaymentModal() {
@@ -3701,11 +4897,15 @@ const POSPage = {
       }
     }
     if (!this.totals?.total && this.totals?.total !== 0) this.renderCart();
-    const saleTotal = Number(this.totals?.total);
-    if (Number.isNaN(saleTotal) || saleTotal < 0) {
-      return Utils.toast('Cart total is invalid — please review items', 'error');
-    }
-    this.promptOrderType(() => this.openPaymentFlow(saleTotal));
+    // Re-read totals AFTER order type / delivery place so fee is included
+    this.promptOrderType(() => {
+      this.renderCart?.();
+      const saleTotal = Number(this.totals?.total);
+      if (Number.isNaN(saleTotal) || saleTotal < 0) {
+        return Utils.toast('Cart total is invalid — please review items', 'error');
+      }
+      this.openPaymentFlow(saleTotal);
+    });
   },
 
   promptOrderType(onContinue) {
@@ -3714,6 +4914,7 @@ const POSPage = {
       || this.selectedCustomer?.address
       || this.selectedCustomer?.delivery_address
       || '';
+    const currency = this.app.settings?.currency || 'R';
     Utils.showModal('Order Type *', `
       <p class="muted" style="margin-bottom:12px">Select how this order will be fulfilled before payment.</p>
       <div class="form-grid">
@@ -3723,7 +4924,7 @@ const POSPage = {
         <div class="field full" id="ot-addr-wrap" style="display:${selected === 'delivery' ? '' : 'none'}">
           <label>Delivery address *</label>
           <textarea id="ot-delivery-address" rows="2" placeholder="Street, suburb, city, landmarks…">${String(prefAddr || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;')}</textarea>
-          <small class="muted">Shown on receipt, WhatsApp receipt, and Admin sales.</small>
+          <small class="muted">After Continue you will pick the delivery place / fee for this branch.</small>
         </div>
       </div>`,
       '<button class="btn btn-ghost" id="ot-cancel">Cancel</button><button class="btn btn-primary" id="ot-continue">Continue</button>');
@@ -3739,7 +4940,7 @@ const POSPage = {
       const payBtn = document.getElementById('pos-pay');
       if (payBtn) payBtn.disabled = false;
     });
-    document.getElementById('ot-continue')?.addEventListener('click', () => {
+    document.getElementById('ot-continue')?.addEventListener('click', async () => {
       const picked = document.querySelector('input[name="pos-order-type"]:checked')?.value;
       if (!picked) return Utils.toast('Order type is required', 'error');
       if (picked === 'delivery') {
@@ -3749,12 +4950,17 @@ const POSPage = {
           return Utils.toast('Enter the delivery address', 'error');
         }
         this.deliveryAddress = addr;
-        this.loadDeliveryFee?.();
-      } else {
-        this.deliveryAddress = null;
-        this.deliveryFee = 0;
+        try { await this.loadDeliveryFee(); } catch (_) { /* optional */ }
+        this.orderType = 'delivery';
+        Utils.hideModal();
+        this.promptDeliveryPlace(onContinue, currency);
+        return;
       }
+      this.deliveryAddress = null;
+      this.deliveryPlace = null;
+      this.deliveryFee = 0;
       this.orderType = picked;
+      this.renderCart?.();
       Utils.hideModal();
       if (picked === 'sit_in') {
         this.showTablePicker({ required: true, onSelected: onContinue });
@@ -3766,88 +4972,66 @@ const POSPage = {
     });
   },
 
-  async showTablePicker(opts = {}) {
-    const required = !!opts.required;
-    const onSelected = typeof opts.onSelected === 'function' ? opts.onSelected : null;
-    const res = await API.getTables();
-    const tables = res.data || [];
-    if (!tables.length) {
-      Utils.toast('No tables configured — add in Restaurant', 'error');
+  promptDeliveryPlace(onContinue, currency) {
+    const cur = currency || this.app.settings?.currency || 'R';
+    const places = this.deliveryPlaces || [];
+    const gross = (this.cart || []).reduce((sum, i) => sum + (Number(i.total) || 0), 0);
+    if (!places.length) {
+      // Fallback: use flat branch fee
+      this.deliveryPlace = this.deliverySettings || { delivery_fee: 0 };
+      this.recalcDeliveryFee(gross);
+      this.renderCart?.();
+      Utils.toast(`Delivery fee ${Utils.formatMoney(this.deliveryFee, cur)} added`, 'info');
+      onContinue();
       return;
     }
-    Utils.showModal(required ? 'Select Sit-in Table *' : 'Select Table', `
-      <p class="muted" style="margin-bottom:10px">${required
-        ? 'Choose a table for this sit-in order. The table stays occupied until you mark it available.'
-        : 'Pick a table for this order.'}</p>
-      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(100px,1fr));gap:8px">
-        ${tables.map(t => {
-          const occ = !!t.is_occupied;
-          return `<button type="button" class="btn ${occ ? 'btn-ghost' : 'btn-primary'} pos-table-opt" data-id="${t.id}" data-name="${t.table_number}"
-            data-occupied="${occ ? '1' : '0'}"
-            style="padding:12px;${occ ? 'opacity:0.45;border-color:var(--warning);cursor:not-allowed' : ''}"
-            ${occ ? 'disabled title="Occupied — free the table first"' : ''}>
-            ${t.table_number}<br><small>${occ ? 'occupied' : t.seats + ' seats'}</small></button>`;
+    const feePreview = (p) => {
+      const freeAbove = Number(p.free_delivery_above) || 0;
+      const fee = Number(p.delivery_fee) || 0;
+      return freeAbove > 0 && gross >= freeAbove ? 0 : fee;
+    };
+    Utils.showModal('Choose delivery place *', `
+      <p class="muted" style="margin-bottom:10px">Select the delivery area for this branch. The fee is added to the order total.</p>
+      <div id="ot-places" style="max-height:50vh;overflow:auto;display:flex;flex-direction:column;gap:8px">
+        ${places.map((p) => {
+          const due = feePreview(p);
+          const freeNote = Number(p.free_delivery_above) > 0
+            ? ` · free above ${Utils.formatMoney(p.free_delivery_above, cur)}`
+            : '';
+          const minNote = Number(p.min_order) > 0
+            ? ` · min ${Utils.formatMoney(p.min_order, cur)}`
+            : '';
+          return `<label class="field full" style="border:1px solid var(--border);border-radius:10px;padding:10px;margin:0;cursor:pointer">
+            <input type="radio" name="pos-delivery-place" value="${Utils.escHtml(p.id)}" style="margin-right:8px">
+            <strong>${Utils.escHtml(p.name)}</strong>
+            <div class="muted" style="font-size:12px;margin-top:4px">Delivery fee: <strong>${Utils.formatMoney(due, cur)}</strong>${freeNote}${minNote}</div>
+          </label>`;
         }).join('')}
-      </div>
-      ${!tables.some(t => !t.is_occupied) ? '<p class="muted" style="margin-top:12px;color:var(--warning)">No available tables. Use Free Table when guests leave.</p>' : ''}`,
-      required
-        ? '<button class="btn btn-ghost" id="table-cancel">Cancel</button>'
-        : '<button class="btn btn-ghost" id="table-close">Close</button>');
-    document.getElementById('table-close')?.addEventListener('click', Utils.hideModal);
-    document.getElementById('table-cancel')?.addEventListener('click', () => {
-      Utils.hideModal();
-      if (required) {
-        this.orderType = null;
-        this.selectedTable = null;
-        this.updateTableLabel();
-      }
-    });
-    document.querySelectorAll('.pos-table-opt').forEach(btn => btn.addEventListener('click', () => {
-      if (btn.disabled || btn.dataset.occupied === '1') {
-        return Utils.toast('That table is occupied — choose an available table', 'error');
-      }
-      this.selectedTable = { id: parseInt(btn.dataset.id, 10), name: btn.dataset.name };
-      this.orderType = 'sit_in';
-      this.updateTableLabel();
-      Utils.hideModal();
-      if (onSelected) onSelected();
-    }));
-  },
-
-  async showFreeTablePicker() {
-    const res = await API.getTables();
-    const tables = (res.data || []).filter(t => t.is_occupied || t.status === 'occupied');
-    if (!tables.length) return Utils.toast('No occupied tables', 'success');
-    Utils.showModal('Mark Table Available', `
-      <p class="muted" style="margin-bottom:10px">When guests leave, mark the table available for the next sit-in.</p>
-      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px">
-        ${tables.map(t => `<button type="button" class="btn btn-warning pos-free-opt" data-id="${t.id}" data-name="${t.table_number}"
-          style="padding:14px">
-          ${t.table_number}<br><small>occupied — free now</small></button>`).join('')}
       </div>`,
-      '<button class="btn btn-ghost" id="free-table-close">Close</button>');
-    document.getElementById('free-table-close')?.addEventListener('click', Utils.hideModal);
-    document.querySelectorAll('.pos-free-opt').forEach(btn => btn.addEventListener('click', async () => {
-      const id = parseInt(btn.dataset.id, 10);
-      const name = btn.dataset.name;
-      const t = tables.find(x => x.id === id);
-      if (!t) return;
-      const r = await API.saveTable({
-        id: t.id,
-        table_number: t.table_number,
-        seats: t.seats,
-        status: 'available',
-        waiter_id: t.waiter_id || null,
-        notes: t.notes || null
-      }, this.app.user);
-      if (!r.success) return Utils.toast(r.error || 'Could not free table', 'error');
-      if (this.selectedTable?.id === id) {
-        this.selectedTable = null;
-        this.updateTableLabel();
-      }
+      '<button class="btn btn-ghost" id="ot-place-back">Back</button><button class="btn btn-primary" id="ot-place-go">Continue</button>');
+    document.getElementById('ot-place-back')?.addEventListener('click', () => {
       Utils.hideModal();
-      Utils.toast(`Table ${name} is now available`, 'success');
-    }));
+      this.promptOrderType(onContinue);
+    });
+    document.getElementById('ot-place-go')?.addEventListener('click', () => {
+      const id = document.querySelector('input[name="pos-delivery-place"]:checked')?.value;
+      if (!id) return Utils.toast('Choose a delivery place', 'error');
+      const place = places.find((p) => String(p.id) === String(id));
+      if (!place) return Utils.toast('Invalid delivery place', 'error');
+      const minOrd = Number(place.min_order) || 0;
+      if (minOrd > 0 && gross < minOrd) {
+        return Utils.toast(`Minimum order for ${place.name} is ${Utils.formatMoney(minOrd, cur)}`, 'error');
+      }
+      this.deliveryPlace = place;
+      this.orderType = 'delivery';
+      this.recalcDeliveryFee(gross);
+      this.renderCart?.();
+      Utils.hideModal();
+      Utils.toast(`Delivery place ${place.name} · fee ${Utils.formatMoney(this.deliveryFee, cur)}`, 'success');
+      this.selectedTable = null;
+      this.updateTableLabel();
+      onContinue();
+    });
   },
 
   updateTableLabel() {
@@ -3873,8 +5057,13 @@ const POSPage = {
     };
     const currency = this.app.settings?.currency || 'R';
     const total = saleTotal;
+    const deliveryFee = this.orderType === 'delivery' ? (Number(this.deliveryFee) || 0) : 0;
+    const itemsSubtotal = Math.max(0, Number(this.totals?.grossSubtotal ?? this.totals?.subtotal ?? (total - deliveryFee)) || 0);
     this._gcBalances = {};
 
+    const taxEnabled = !!this.app.settings?.tax_enabled &&
+      this.app.settings?.tax_show_on_pos !== 0 &&
+      this.app.settings?.tax_show_on_pos !== false;
     PaymentUI.open({
       total,
       currency,
@@ -3882,6 +5071,14 @@ const POSPage = {
       customer: this.selectedCustomer,
       title: 'Complete Payment',
       confirmLabel: 'Complete Sale',
+      itemsSubtotal,
+      deliveryFee,
+      deliveryPlace: this.orderType === 'delivery' ? (this.deliveryPlace?.name || null) : null,
+      orderType: this.orderType || null,
+      discountAmount: Number(this.totals?.discount) || 0,
+      taxAmount: Number(this.totals?.tax_amount) || 0,
+      taxRatePct: taxEnabled ? (Number(this.app.settings?.tax_rate) || 0) : 0,
+      showTaxBreakdown: taxEnabled && (Number(this.totals?.tax_amount) || 0) > 0.009,
       gcBalancesRef: this._gcBalances,
       onAddCustomer: () => this.showAddCustomerModal(),
       onDismiss: releaseCheckout,
@@ -3908,6 +5105,7 @@ const POSPage = {
             combo_components: i.combo_components || null
           })),
           customer_id: this.selectedCustomer?.id || null,
+          referral_code: (document.getElementById('pos-referral-code')?.value || '').trim().toUpperCase() || null,
           loyalty_redeem: loyaltyRedeem || 0,
           subtotal: this.totals.subtotal,
           discount: this.totals.discount,
@@ -3924,13 +5122,14 @@ const POSPage = {
           table_name: this.selectedTable?.name || null,
           delivery_address: this.orderType === 'delivery' ? (this.deliveryAddress || null) : null,
           delivery_fee: this.orderType === 'delivery' ? (Number(this.deliveryFee) || 0) : 0,
+          delivery_place: this.orderType === 'delivery' ? (this.deliveryPlace?.name || null) : null,
           customer_name: this.selectedCustomer?.name || this.selectedCustomer?.full_name || null,
           customer_phone: this.selectedCustomer?.phone || null,
-          referral_code: (document.getElementById('pos-referral-code')?.value || '').trim() || null,
-          mkt_coupon_code: (document.getElementById('pos-coupon-code')?.value || '').trim() || null,
           notes: [
             this.orderType ? `Order: ${({ delivery: 'Delivery', takeaway: 'Takeaway', sit_in: 'Sit-in' })[this.orderType] || this.orderType}` : null,
+            this.orderType === 'delivery' && this.deliveryPlace?.name ? `Delivery place: ${this.deliveryPlace.name}` : null,
             this.orderType === 'delivery' && this.deliveryAddress ? `Deliver to: ${this.deliveryAddress}` : null,
+            this.orderType === 'delivery' ? `Delivery fee: ${Utils.formatMoney(Number(this.deliveryFee) || 0, currency)}` : null,
             this.selectedTable ? `Table ${this.selectedTable.name}` : null,
             payments.length > 1 ? 'Mixed payment' : null,
             loyaltyRedeem > 0 ? `Loyalty: ${loyaltyRedeem} pts (−${Utils.formatMoney(loyaltyDiscount || 0, currency)})` : null
@@ -3963,10 +5162,6 @@ const POSPage = {
         this.updateTableLabel?.();
         this.selectedCustomer = null;
         this.clearCustomer?.();
-        const refEl = document.getElementById('pos-referral-code');
-        const couponEl = document.getElementById('pos-coupon-code');
-        if (refEl) refEl.value = '';
-        if (couponEl) couponEl.value = '';
         this.loadedQuoteId = null;
           this.renderCart?.();
           this.renderProducts?.();
@@ -4025,10 +5220,6 @@ const POSPage = {
         this.clearCustomer();
         // Keep deliveryAddress until success screen WhatsApp uses sale.delivery_address from DB
         this.deliveryAddress = null;
-        const refOk = document.getElementById('pos-referral-code');
-        const couponOk = document.getElementById('pos-coupon-code');
-        if (refOk) refOk.value = '';
-        if (couponOk) couponOk.value = '';
         this.renderCart();
         this.renderProducts();
         this.showOrderSuccess(sale, change, payments, loyaltyPointsEarned, loyaltyPointsRedeemed, loyaltyDiscount, this.lastSaleCustomer);
@@ -4046,6 +5237,15 @@ const POSPage = {
 
         // Non-critical: refresh products, print, kitchen, notifications — never block success UI
         const postSaleWork = async () => {
+          try { this.renderTargetBanner?.(); this._prefetchTodayTarget?.(); } catch (_) { /* ignore */ }
+        try {
+          const tid = Number(saleData.table_id);
+          if (tid && Array.isArray(this._tablesCache)) {
+            this._tablesCache = this._tablesCache.map((t) =>
+              Number(t.id) === tid ? { ...t, status: 'occupied', is_occupied: true } : t
+            );
+          }
+        } catch (_) { /* ignore */ }
           try {
             if (this.lastSaleCustomer?.id) {
               const cr = await API.getCustomer(this.lastSaleCustomer.id);
@@ -4092,17 +5292,30 @@ const POSPage = {
   resolveWhatsAppCustomer(sale, customer = null) {
     const cust = customer || this.lastSaleCustomer || {};
     const phone = String(cust.phone || sale?.customer_phone || '').trim();
-    const name = cust.name || sale?.customer_name || 'Customer';
+    const name = cust.name || cust.full_name || sale?.customer_name || 'Customer';
     const id = cust.id || sale?.customer_id || null;
     return { phone, name, id, loyalty_points: cust.loyalty_points };
   },
 
-  async promptWhatsAppPhone(defaultName = 'Customer') {
+  /** True when this sale is linked to a saved POS customer (picked from the system). */
+  saleHasSystemCustomer(sale, recipient = null) {
+    const id = recipient?.id || sale?.customer_id;
+    return !!(id && Number(id) > 0);
+  },
+
+  async promptWhatsAppPhone(defaultName = 'Customer', opts = {}) {
+    const needName = opts.needName !== false && !String(defaultName || '').trim();
+    const title = needName ? 'Customer details for WhatsApp' : 'Customer WhatsApp number';
+    const hint = needName
+      ? 'This sale has no customer on file. Enter name and mobile number to send the receipt.'
+      : 'Enter the customer\'s mobile number to send the receipt via WhatsApp.';
     return new Promise((resolve) => {
-      Utils.showModal('Customer WhatsApp Number', `
-        <p class="muted">Enter the customer's mobile number to send the receipt via WhatsApp.</p>
-        <div class="field"><label>Phone *</label><input id="wa-prompt-phone" placeholder="071 234 5678" autofocus></div>
-        <div class="field"><label>Name</label><input id="wa-prompt-name" value="${Utils.escHtml?.(defaultName) || defaultName}"></div>`,
+      Utils.showModal(title, `
+        <p class="muted">${hint}</p>
+        <div class="field"><label>Phone *</label><input id="wa-prompt-phone" type="tel" inputmode="tel" placeholder="071 234 5678" autofocus value="${Utils.escHtml?.(opts.defaultPhone || '') || ''}"></div>
+        ${needName
+          ? `<div class="field"><label>Name *</label><input id="wa-prompt-name" value="" placeholder="Customer name"></div>`
+          : `<div class="field"><label>Name</label><input id="wa-prompt-name" value="${Utils.escHtml?.(defaultName) || defaultName}"></div>`}`,
         '<button class="btn btn-ghost" id="wa-prompt-cancel">Cancel</button><button class="btn btn-success" id="wa-prompt-send">Send WhatsApp</button>');
       document.getElementById('wa-prompt-cancel')?.addEventListener('click', () => {
         Utils.hideModal();
@@ -4110,15 +5323,251 @@ const POSPage = {
       });
       document.getElementById('wa-prompt-send')?.addEventListener('click', () => {
         const phone = document.getElementById('wa-prompt-phone')?.value.trim();
-        const name = document.getElementById('wa-prompt-name')?.value.trim() || defaultName;
+        const name = document.getElementById('wa-prompt-name')?.value.trim() || defaultName || 'Customer';
         if (!phone) return Utils.toast('Phone number required', 'error');
+        if (needName && !name) return Utils.toast('Customer name required', 'error');
         Utils.hideModal();
         resolve({ phone, name });
       });
     });
   },
 
-  resetPosSaleUi() {
+  async ensureWhatsAppRecipient(sale, baseRecipient = null) {
+    let recipient = baseRecipient || this.resolveWhatsAppCustomer(sale);
+    // Always prefer saved customer record when linked
+    if ((!recipient.phone || !recipient.name || recipient.name === 'Customer') && sale?.customer_id) {
+      try {
+        const c = await API.getCustomer(sale.customer_id);
+        const cust = c?.data || c;
+        if (cust?.id) {
+          recipient = {
+            ...recipient,
+            id: cust.id,
+            phone: String(cust.phone || recipient.phone || '').trim(),
+            name: cust.name || cust.full_name || recipient.name,
+            loyalty_points: cust.loyalty_points ?? recipient.loyalty_points
+          };
+        }
+      } catch (_) { /* ignore */ }
+    }
+    if (recipient.phone) return recipient;
+    const prompted = await this.promptWhatsAppPhone(recipient.name || 'Customer', {
+      needName: !this.saleHasSystemCustomer(sale, recipient)
+        && (!recipient.name || recipient.name === 'Customer')
+    });
+    if (!prompted) return null;
+    return { ...recipient, phone: prompted.phone, name: prompted.name || recipient.name };
+  },
+
+  _successStorageKey() {
+    const uid = this.app?.user?.id || 'anon';
+    return `shoppos_pos_success_${uid}`;
+  },
+
+  _persistSuccessState(payload) {
+    this._successOpen = true;
+    this._successPayload = payload;
+    try {
+      sessionStorage.setItem(this._successStorageKey(), JSON.stringify({ ...payload, at: Date.now() }));
+    } catch (_) { /* ignore */ }
+  },
+
+  _clearSuccessState() {
+    this._successOpen = false;
+    this._successPayload = null;
+    try { sessionStorage.removeItem(this._successStorageKey()); } catch (_) { /* ignore */ }
+  },
+
+  _loadSuccessState() {
+    if (this._successPayload?.sale?.receipt_number) return this._successPayload;
+    try {
+      const raw = sessionStorage.getItem(this._successStorageKey());
+      if (!raw) return null;
+      const data = JSON.parse(raw);
+      if (!data?.sale?.receipt_number) return null;
+      if (Date.now() - (data.at || 0) > 8 * 60 * 60 * 1000) {
+        this._clearSuccessState();
+        return null;
+      }
+      this._successPayload = data;
+      this._successOpen = true;
+      return data;
+    } catch (_) {
+      return null;
+    }
+  },
+
+  _restoreSuccessIfNeeded() {
+    const data = this._loadSuccessState();
+    if (!data) return false;
+    this.lastSale = data.sale;
+    this.lastSaleCustomer = data.customer || null;
+    this.lastSaleGiftCardCode = data.giftCardCode || null;
+    this.lastSaleGiftCardAmount = data.giftCardAmount || 0;
+    this.showOrderSuccess(
+      data.sale,
+      data.change,
+      data.payments,
+      data.loyaltyEarned || 0,
+      data.loyaltyRedeemed || 0,
+      data.loyaltyDiscount || 0,
+      data.customer || null
+    );
+    return true;
+  },
+
+  _bindSuccessResume() {
+    if (this._successResumeBound) return;
+    this._successResumeBound = true;
+    const resume = () => {
+      if (this.app?.currentPage && this.app.currentPage !== 'pos') return;
+      if (this._loadSuccessState()) this._restoreSuccessIfNeeded();
+    };
+    window.addEventListener('pageshow', resume);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') resume();
+    });
+    try {
+      window.Capacitor?.Plugins?.App?.addListener?.('appStateChange', (state) => {
+        if (state?.isActive) resume();
+      });
+    } catch (_) { /* optional */ }
+  },
+
+  _shopIdentity() {
+    const settings = this.app?.settings || {};
+    const shop = String(settings.shop_name || 'our shop').trim();
+    const branch = String(this.activeBranch?.name || '').trim();
+    const orderUrl = (typeof Utils.getOnlineOrderUrl === 'function')
+      ? Utils.getOnlineOrderUrl()
+      : 'https://chisafood.up.railway.app/order/';
+    return { shop, branch, orderUrl };
+  },
+
+  _buildReceiptWhatsAppText(sale, recipient, extras = {}) {
+    const settings = this.app?.settings || {};
+    const currency = settings.currency || 'R';
+    const { shop, branch, orderUrl } = this._shopIdentity();
+    const receiptLines = Receipt.buildWhatsAppLines(sale, settings);
+    const earned = Number(extras.loyaltyEarned || 0);
+    const redeemed = Number(extras.loyaltyRedeemed || 0);
+    const startPts = Math.floor(recipient.loyalty_points || 0);
+    const balance = extras.loyaltyBalance != null
+      ? Math.floor(extras.loyaltyBalance)
+      : Math.max(0, startPts + earned - redeemed);
+    const earnedWorth = Utils.loyaltyPointsValue(earned, settings, currency);
+    const redeemedWorth = Utils.loyaltyPointsValue(redeemed, settings, currency);
+    const balanceWorth = Utils.loyaltyPointsValue(balance, settings, currency);
+    const giftLine = extras.giftLine || '';
+    const delivery = sale.delivery_address || extras.deliveryAddress || '';
+    return [
+      `*${shop}*`,
+      branch ? `Branch: ${branch}` : '',
+      '',
+      `Good day ${recipient.name || 'Customer'},`,
+      '',
+      `Thank you for shopping with ${shop}. Here is your receipt:`,
+      '',
+      `🧾 Receipt #${sale.order_number || sale.receipt_number}`,
+      delivery ? `📍 Deliver to: ${delivery}` : '',
+      receiptLines,
+      '',
+      `*Total: ${Utils.formatMoney(sale.total, currency)}*`,
+      '',
+      '*Loyalty points*',
+      `⭐ Points earned: ${earned} pts (= ${earnedWorth.formatted})`,
+      `⭐ Points used: ${redeemed} pts (= ${redeemedWorth.formatted})`,
+      `⭐ Points balance: ${balance} pts (= ${balanceWorth.formatted})`,
+      giftLine,
+      '',
+      'Order online anytime:',
+      orderUrl,
+      '',
+      `Thank you for shopping with ${shop}.`
+    ].filter((line, i, arr) => line !== '' || arr[i - 1] !== '').join('\n').trim();
+  },
+
+  _buildReviewWhatsAppText(sale, recipient) {
+    const { shop, branch, orderUrl } = this._shopIdentity();
+    const currency = this.app?.settings?.currency || 'R';
+    const name = recipient.name || 'Valued Customer';
+    const orderNo = sale.order_number || sale.receipt_number || '';
+    const total = Utils.formatMoney(sale.total, currency);
+    const shopLine = branch ? `${shop} — ${branch}` : shop;
+    const visitLine = orderNo
+      ? `We hope you enjoyed your recent visit (Order ${orderNo}, ${total}).`
+      : `We hope you enjoyed your recent visit (${total}).`;
+    return [
+      `Good day ${name},`,
+      '',
+      `Thank you for choosing ${shopLine}.`,
+      '',
+      visitLine,
+      '',
+      'Your feedback is important to us. If you have a moment, we would greatly appreciate a short review of your experience with us.',
+      '',
+      'You are welcome to place your next order online at any time:',
+      orderUrl,
+      '',
+      'Thank you again for your support.',
+      '',
+      'Kind regards,',
+      shop
+    ].join('\n');
+  },
+
+  _openOrSendWhatsApp({ phone, body, payload, btn, busyLabel, doneLabel }) {
+    try { window.PanelExitGuard?.suspend?.(20000); } catch (_) { /* ignore */ }
+    if (this._successPayload?.sale) this._persistSuccessState(this._successPayload);
+    if (btn) {
+      btn.disabled = true;
+      const prev = btn.textContent;
+      btn.textContent = busyLabel;
+      setTimeout(() => {
+        btn.disabled = false;
+        btn.textContent = doneLabel || prev;
+      }, 900);
+    }
+    const silent = Utils.canSilentWhatsApp(this.app?.settings);
+    const url = Utils.whatsappUrl(phone, body);
+    if (!silent && url) {
+      Utils.openWhatsAppUrl(url);
+      Utils.toast('WhatsApp opened — tap Send, then come back here. This receipt stays on screen.', 'success');
+    } else {
+      Utils.toast(silent ? 'Sending on WhatsApp…' : 'Opening WhatsApp…', 'info');
+    }
+    const sendP = API.sendWhatsAppMessage({ ...payload, phone, body }, this.app.user)
+      .then((r) => {
+        if (silent) {
+          if (r?.data?.via === 'cloud_api' || (r?.success !== false && r?.data?.status === 'sent' && !r?.data?.url)) {
+            Utils.toast('Sent on WhatsApp', 'success');
+            return r;
+          }
+          const openUrl = r?.data?.url || url;
+          if (openUrl) {
+            Utils.openWhatsAppUrl(openUrl);
+            Utils.toast('WhatsApp opened — tap Send, then come back here', 'success');
+          } else {
+            Utils.toast(r?.error || 'WhatsApp failed', 'error');
+          }
+        }
+        return r;
+      })
+      .catch(() => {
+        if (silent && url) {
+          Utils.openWhatsAppUrl(url);
+          Utils.toast('WhatsApp opened — tap Send, then come back here', 'success');
+        }
+      });
+    return sendP;
+  },
+
+  resetPosSaleUi(opts = {}) {
+    if (opts.dismissSuccess) this._clearSuccessState();
+    if (!opts.dismissSuccess && this._loadSuccessState()) {
+      this._restoreSuccessIfNeeded();
+      return;
+    }
     document.getElementById('pos-success-screen')?.classList.add('hidden');
     const till = this._host?.querySelector?.('.pos-till') || document.querySelector('.pos-till');
     till?.classList.remove('hidden');
@@ -4169,75 +5618,103 @@ const POSPage = {
     const waRecipient = this.resolveWhatsAppCustomer(sale, customer);
     const waBtn = document.getElementById('pos-success-wa');
     const reviewBtn = document.getElementById('pos-success-review');
-    if (waRecipient.phone) reviewBtn?.classList.remove('hidden');
-    else reviewBtn?.classList.add('hidden');
+    reviewBtn?.classList.remove('hidden');
+
+    const giftLine = this.lastSaleGiftCardCode
+      ? `🎁 Gift card ${this.lastSaleGiftCardCode}: −${Utils.formatMoney(this.lastSaleGiftCardAmount || 0, currency)}`
+      : '';
+    this._persistSuccessState({
+      sale,
+      change,
+      payments: payments || sale.payments || [],
+      loyaltyEarned: loyaltyPointsEarned,
+      loyaltyRedeemed: loyaltyPointsRedeemed,
+      loyaltyDiscount,
+      customer: customer || this.lastSaleCustomer || null,
+      giftCardCode: this.lastSaleGiftCardCode || null,
+      giftCardAmount: this.lastSaleGiftCardAmount || 0
+    });
 
     const sendReceiptWhatsApp = async () => {
-      let recipient = { ...waRecipient };
-      if (!recipient.phone) {
-        const prompted = await this.promptWhatsAppPhone(recipient.name);
-        if (!prompted) return;
-        recipient = { ...recipient, phone: prompted.phone, name: prompted.name };
-      }
-      const currency = this.app.settings?.currency || 'R';
+      const recipient = await this.ensureWhatsAppRecipient(sale, { ...waRecipient });
+      if (!recipient?.phone) return;
+      if (recipient.phone) reviewBtn?.classList.remove('hidden');
+      const receiptLines = Receipt.buildWhatsAppLines(sale, this.app.settings);
+      const body = this._buildReceiptWhatsAppText(sale, recipient, {
+        loyaltyEarned: loyaltyPointsEarned,
+        loyaltyRedeemed: loyaltyPointsRedeemed,
+        giftLine,
+        deliveryAddress: sale.delivery_address || this.deliveryAddress || ''
+      });
+      const earnedWorth = Utils.loyaltyPointsValue(loyaltyPointsEarned, this.app.settings, currency);
       const balance = Math.floor(recipient.loyalty_points || loyaltyPointsEarned || 0);
       const balanceWorth = Utils.loyaltyPointsValue(balance, this.app.settings, currency);
-      const receiptLines = Receipt.buildWhatsAppLines(sale, this.app.settings);
-      const giftLine = this.lastSaleGiftCardCode
-        ? `🎁 Gift card ${this.lastSaleGiftCardCode}: −${Utils.formatMoney(this.lastSaleGiftCardAmount || 0, currency)}`
-        : '';
-      const earnedWorth = Utils.loyaltyPointsValue(loyaltyPointsEarned, this.app.settings, currency);
       const deliveryAddr = sale.delivery_address || this.deliveryAddress || '';
-      const r = await API.sendWhatsAppMessage({
+      this._openOrSendWhatsApp({
         phone: recipient.phone,
-        customer_id: recipient.id,
-        recipient_type: 'customer',
-        recipient_name: recipient.name,
-        customer_name: recipient.name,
-        loyalty_points: balance,
-        points_earned: loyaltyPointsEarned,
-        points_earned_value: earnedWorth.formatted,
-        loyalty_points_value: balanceWorth.formatted,
-        receipt_lines: receiptLines,
-        gift_card_code: this.lastSaleGiftCardCode || '',
-        gift_card_line: giftLine,
-        delivery_address: deliveryAddr,
-        delivery_address_line: deliveryAddr ? `📍 Deliver to: ${deliveryAddr}` : '',
-        branch: this.activeBranch?.name || this.app.settings?.shop_name,
-        phone_shop: this.app.settings?.phone,
-        order_number: sale.order_number || sale.receipt_number,
-        receipt_number: sale.receipt_number,
-        total_purchase: sale.total,
-        sale_id: sale.id,
-        message_type: 'sale_receipt',
-        template_slug: 'sale_receipt'
-      }, this.app.user);
-      try { await Receipt.downloadPdf(sale, this.app.settings); } catch (_) { /* PDF optional */ }
-      await Utils.deliverWhatsApp(r, recipient.phone, receiptLines);
-    };
-
-    waBtn.onclick = () => sendReceiptWhatsApp();
-    if (waRecipient.phone) {
-      reviewBtn.onclick = async () => {
-        const r = await API.sendWhatsAppMessage({
-          phone: waRecipient.phone,
-          customer_id: waRecipient.id,
+        body,
+        btn: waBtn,
+        busyLabel: 'Sending WhatsApp…',
+        doneLabel: '💬 Send Receipt on WhatsApp',
+        payload: {
+          customer_id: recipient.id,
           recipient_type: 'customer',
-          recipient_name: waRecipient.name,
-          customer_name: waRecipient.name,
+          recipient_name: recipient.name,
+          customer_name: recipient.name,
+          loyalty_points: balance,
+          points_earned: loyaltyPointsEarned,
+          points_earned_value: earnedWorth.formatted,
+          loyalty_points_value: balanceWorth.formatted,
+          receipt_lines: receiptLines,
+          gift_card_code: this.lastSaleGiftCardCode || '',
+          gift_card_line: giftLine,
+          delivery_address: deliveryAddr,
+          delivery_address_line: deliveryAddr ? `📍 Deliver to: ${deliveryAddr}` : '',
           branch: this.activeBranch?.name || this.app.settings?.shop_name,
+          phone_shop: this.app.settings?.phone,
           order_number: sale.order_number || sale.receipt_number,
           receipt_number: sale.receipt_number,
           total_purchase: sale.total,
           sale_id: sale.id,
+          message_type: 'sale_receipt',
+          template_slug: 'sale_receipt'
+        }
+      });
+      Receipt.downloadPdf(sale, this.app.settings).catch(() => {});
+    };
+
+    waBtn.onclick = () => sendReceiptWhatsApp();
+    reviewBtn?.classList.remove('hidden');
+    reviewBtn.onclick = async () => {
+      const recipient = await this.ensureWhatsAppRecipient(sale, { ...waRecipient });
+      if (!recipient?.phone) return;
+      reviewBtn?.classList.remove('hidden');
+      const { orderUrl } = this._shopIdentity();
+      const body = this._buildReviewWhatsAppText(sale, recipient);
+      this._openOrSendWhatsApp({
+        phone: recipient.phone,
+        body,
+        btn: reviewBtn,
+        busyLabel: 'Opening WhatsApp…',
+        doneLabel: '⭐ Request Review',
+        payload: {
+          customer_id: recipient.id,
+          recipient_type: 'customer',
+          recipient_name: recipient.name,
+          customer_name: recipient.name,
+          branch: this.activeBranch?.name || this.app.settings?.shop_name,
+          phone_shop: this.app.settings?.phone,
+          order_number: sale.order_number || sale.receipt_number,
+          receipt_number: sale.receipt_number,
+          total_purchase: sale.total,
+          sale_id: sale.id,
+          order_url: orderUrl,
+          online_order_url: orderUrl,
           message_type: 'review_request',
           template_slug: 'review_request'
-        }, this.app.user);
-        await Utils.deliverWhatsApp(r, waRecipient.phone);
-      };
-    } else {
-      reviewBtn.onclick = null;
-    }
+        }
+      });
+    };
 
     document.getElementById('pos-success-print').onclick = async () => {
       try {
@@ -4248,7 +5725,7 @@ const POSPage = {
       }
     };
     document.getElementById('pos-success-new').onclick = () => {
-      this.resetPosSaleUi();
+      this.resetPosSaleUi({ dismissSuccess: true });
       this.setMobilePanel('menu');
       document.getElementById('pos-search')?.focus();
     };

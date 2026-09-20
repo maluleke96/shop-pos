@@ -1,0 +1,49 @@
+{
+  "appId": "com.shoppos.referralcommission",
+  "productName": "Referral Commission",
+  "executableName": "ReferralCommission",
+  "directories": {
+    "output": "dist\\cloud-apps\\referral-commission",
+    "buildResources": "build"
+  },
+  "files": [
+    "electron/referral-commission-shell.js",
+    "electron/cloud-shell-config-referral-commission.js",
+    "package.json"
+  ],
+  "extraMetadata": {
+    "main": "electron/cloud-shell-config-referral-commission.js",
+    "name": "com.shoppos.referralcommission"
+  },
+  "win": {
+    "target": [
+      {
+        "target": "nsis",
+        "arch": [
+          "x64"
+        ]
+      },
+      {
+        "target": "portable",
+        "arch": [
+          "x64"
+        ]
+      }
+    ]
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "allowElevation": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "runAfterFinish": false,
+    "deleteAppDataOnUninstall": false,
+    "include": "nsis-close-running.nsh",
+    "artifactName": "ShopPOS-ReferralCommission-Setup.${ext}",
+    "shortcutName": "Referral Commission"
+  },
+  "portable": {
+    "artifactName": "ShopPOS-ReferralCommission-Portable.${ext}"
+  }
+}

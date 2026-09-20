@@ -20,14 +20,36 @@ const WhatsAppPage = {
     return Utils.deliverWhatsApp(r);
   },
 
+  async activate(el, app) {
+    this.app = app;
+    this._host = el;
+    if (el?.querySelector?.('#wa-panel') && this.templates?.length) return;
+    return this.render(el, app);
+  },
+
   async render(el, app) {
     this.app = app;
+    this._host = el;
     this.currency = app.settings?.currency || 'R';
     if (!['owner', 'manager', 'assistant_manager'].includes(app.user?.role)) {
       el.innerHTML = '<p class="muted">WhatsApp Communication Center is available to owner, manager, and assistant manager.</p>';
       return;
     }
-    el.innerHTML = `<div class="page-toolbar"><h3>WhatsApp</h3></div><p class="muted">Loading templates…</p>`;
+    el.innerHTML = `<div class="page-toolbar"><h3>💬 WhatsApp Communication Center</h3></div>
+      <div class="form-tabs" id="wa-tabs">
+        ${[
+          ['templates', 'Templates'],
+          ['campaigns', 'Marketing Campaigns'],
+          ['customers', 'Customer Messages'],
+          ['numbers', 'Customer Numbers'],
+          ['employees', 'Employee Center'],
+          ['history', 'History'],
+          ['settings', 'Settings']
+        ].map(([id, label]) =>
+          `<button type="button" class="form-tab ${this.tab === id ? 'active' : ''}" data-tab="${id}">${label}</button>`
+        ).join('')}
+      </div>
+      <div id="wa-panel"><p class="muted">Opening…</p></div>`;
     const [tplRes, campRes, brRes, setRes] = await Promise.all([
       API.getWhatsAppTemplates({}),
       API.getWhatsAppCampaigns({}),
@@ -60,7 +82,8 @@ const WhatsAppPage = {
       this.render(el, app);
     }));
 
-    const panel = document.getElementById('wa-panel');
+    const panel = el.querySelector('#wa-panel') || document.getElementById('wa-panel');
+    if (!panel) return;
     if (this.tab === 'templates') await this.renderTemplates(panel);
     else if (this.tab === 'campaigns') await this.renderCampaigns(panel);
     else if (this.tab === 'customers') await this.renderCustomers(panel);
@@ -71,18 +94,19 @@ const WhatsAppPage = {
   },
 
   async renderTemplates(panel) {
+    const templates = Array.isArray(this.templates) ? this.templates : [];
     panel.innerHTML = `<div class="page-toolbar" style="margin-top:12px">
       <p class="muted" style="margin:0">Create and manage message templates. Placeholders: ${this.PLACEHOLDERS}</p>
       <button class="btn btn-primary" id="wa-new-tpl">+ New Template</button>
     </div>
     <div class="card"><div class="table-wrap"><table>
       <thead><tr><th>Name</th><th>Category</th><th>Built-in</th><th>Active</th><th>Preview</th><th></th></tr></thead>
-      <tbody>${this.templates.map(t => `<tr>
-        <td>${t.name}${t.slug ? `<br><code class="muted">${t.slug}</code>` : ''}</td>
-        <td><span class="tag">${t.category}</span></td>
+      <tbody>${templates.map(t => `<tr>
+        <td>${this.esc(t.name)}${t.slug ? `<br><code class="muted">${this.esc(t.slug)}</code>` : ''}</td>
+        <td><span class="tag">${this.esc(t.category)}</span></td>
         <td>${t.is_builtin ? '✓' : '—'}</td>
         <td>${t.is_active ? '✓' : '—'}</td>
-        <td class="muted" style="max-width:280px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${this.esc(t.body.slice(0, 80))}…</td>
+        <td class="muted" style="max-width:280px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${this.esc(String(t.body || '').slice(0, 80))}${String(t.body || '').length > 80 ? '…' : ''}</td>
         <td class="actions">
           <button class="btn btn-sm btn-ghost wa-edit-tpl" data-id="${t.id}">Edit</button>
           ${t.is_builtin ? '' : `<button class="btn btn-sm btn-danger wa-del-tpl" data-id="${t.id}">Delete</button>`}
@@ -91,7 +115,7 @@ const WhatsAppPage = {
 
     document.getElementById('wa-new-tpl')?.addEventListener('click', () => this.showTemplateForm());
     panel.querySelectorAll('.wa-edit-tpl').forEach(b => b.addEventListener('click', () => {
-      const t = this.templates.find(x => x.id == b.dataset.id);
+      const t = templates.find(x => x.id == b.dataset.id);
       if (t) this.showTemplateForm(t);
     }));
     panel.querySelectorAll('.wa-del-tpl').forEach(b => b.addEventListener('click', async () => {
@@ -99,7 +123,7 @@ const WhatsAppPage = {
       const r = await API.deleteWhatsAppTemplate(parseInt(b.dataset.id), this.app.user);
       if (!r.success) return Utils.toast(r.error, 'error');
       Utils.toast('Template deleted', 'success');
-      this.render(document.getElementById('page-content'), this.app);
+      this.render(this._host || document.querySelector('.page-host[data-page="whatsapp"]') || document.querySelector('.page-host-active'), this.app);
     }));
   },
 
@@ -126,7 +150,7 @@ const WhatsAppPage = {
       if (!r.success) return Utils.toast(r.error, 'error');
       Utils.hideModal();
       Utils.toast('Template saved', 'success');
-      this.render(document.getElementById('page-content'), this.app);
+      this.render(this._host || document.querySelector('.page-host[data-page="whatsapp"]') || document.querySelector('.page-host-active'), this.app);
     });
   },
 
@@ -164,7 +188,7 @@ const WhatsAppPage = {
       const r = await API.deleteWhatsAppCampaign(parseInt(b.dataset.id), this.app.user);
       if (!r.success) return Utils.toast(r.error, 'error');
       Utils.toast('Campaign deleted', 'success');
-      this.render(document.getElementById('page-content'), this.app);
+      this.render(this._host || document.querySelector('.page-host[data-page="whatsapp"]') || document.querySelector('.page-host-active'), this.app);
     }));
     panel.querySelectorAll('.wa-send-camp').forEach(b => b.addEventListener('click', () =>
       this.runCampaignSend(parseInt(b.dataset.id))));
@@ -223,7 +247,7 @@ const WhatsAppPage = {
       if (!r.success) return Utils.toast(r.error, 'error');
       Utils.hideModal();
       Utils.toast('Campaign saved', 'success');
-      this.render(document.getElementById('page-content'), this.app);
+      this.render(this._host || document.querySelector('.page-host[data-page="whatsapp"]') || document.querySelector('.page-host-active'), this.app);
     });
   },
 
@@ -238,7 +262,7 @@ const WhatsAppPage = {
     } else if (data.recipients?.length > 1) {
       this.showCampaignResults(data.recipients);
     }
-    this.render(document.getElementById('page-content'), this.app);
+    this.render(this._host || document.querySelector('.page-host[data-page="whatsapp"]') || document.querySelector('.page-host-active'), this.app);
   },
 
   showCampaignResults(recipients) {

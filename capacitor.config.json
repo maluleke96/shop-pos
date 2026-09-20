@@ -1,12 +1,18 @@
 {
-  "appId": "com.shoppos.order",
-  "appName": "Online Ordering",
+  "appId": "com.shoppos.referralcommission",
+  "appName": "Referral Commission",
   "webDir": "www",
-  "server": {
-    "url": "https://chisafood.up.railway.app/order/",
-    "cleartext": false
-  },
   "android": {
-    "allowMixedContent": false
+    "allowMixedContent": true
+  },
+  "server": {
+    "url": "https://chisafood.up.railway.app/referral-commission-app.html",
+    "cleartext": false,
+    "allowNavigation": [
+      "chisafood.up.railway.app",
+      "*.railway.app",
+      "*.up.railway.app",
+      "chisafood.up.railway.app"
+    ]
   }
 }

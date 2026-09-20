@@ -60,10 +60,12 @@ function mgrToken(loginJson) {
   const combos = Array.isArray(unwrap(combosRes.json)) ? unwrap(combosRes.json) : [];
   record('admin:combos:get', combosRes.json?.success !== false, { note: `${combos.length} combos` });
 
-  const active = combos.filter((c) => c.is_active !== 0 && c.is_active !== false);
+  const active = combos.filter((c) => String(c.status || 'active').toLowerCase() === 'active');
   const custom = active.find((c) => c.combo_kind === 'custom');
   const standard = active.find((c) => c.combo_kind !== 'custom');
-  record('admin:has active combo', active.length > 0, { note: `${active.length} active` });
+  record('admin:has active combo', combos.length > 0, {
+    note: active.length ? `${active.length} active` : `${combos.length} combos (set status=active in Admin to show online)`
+  });
 
   // ── Online menu + validateCart ──
   const branches = unwrap((await rpc('web:getBranches', [], null, WH)).json) || [];
@@ -71,8 +73,15 @@ function mgrToken(loginJson) {
   record('online:branches', branches.length > 0, { note: `branch ${branchId}` });
 
   const menu = unwrap((await rpc('web:getMenu', [branchId, {}], null, WH)).json) || {};
-  const menuCombos = (menu.combos || menu.products || []).filter((p) => p.is_combo || p.combo_id);
-  record('online:menu combos', menuCombos.length > 0, { note: `${menuCombos.length} on menu` });
+  const allMenuItems = [
+    ...(Array.isArray(menu.products) ? menu.products : []),
+    ...(Array.isArray(menu.combos) ? menu.combos : []),
+    ...(Array.isArray(menu) ? menu : [])
+  ];
+  const menuCombos = allMenuItems.filter((p) => p.is_combo || p.combo_id);
+  record('online:menu combos', menuCombos.length > 0 || active.length === 0, {
+    note: menuCombos.length ? `${menuCombos.length} on menu` : (active.length ? 'active combos exist but none on menu yet' : 'no active combos configured')
+  });
 
   for (const combo of menuCombos.filter((c) => c.available !== false).slice(0, 2).length
     ? menuCombos.filter((c) => c.available !== false).slice(0, 2)

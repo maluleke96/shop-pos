@@ -107,6 +107,16 @@ function ensureBranchSchema() {
       updated_at TEXT DEFAULT (datetime('now'))
     )`);
   }
+  if (!tableExists('pos_heartbeats')) {
+    softAlter(`CREATE TABLE IF NOT EXISTS pos_heartbeats (
+      branch_id INTEGER NOT NULL,
+      device_id TEXT NOT NULL,
+      device_label TEXT,
+      last_seen_at TEXT NOT NULL,
+      status TEXT DEFAULT 'online',
+      PRIMARY KEY (branch_id, device_id)
+    )`);
+  }
   try {
     getDb().prepare(`
       INSERT OR IGNORE INTO branch_stock (product_id, branch_id, quantity, min_stock)
@@ -385,6 +395,121 @@ function resolveTillBranchId(actor = null, opts = {}) {
   return scope.stampId;
 }
 
+function listBranchTills(branchId = null) {
+  const db = getDb();
+  let sql = `SELECT h.*, b.name AS branch_name
+    FROM pos_heartbeats h
+    LEFT JOIN branches b ON b.id = h.branch_id
+    WHERE 1=1`;
+  const params = [];
+  if (branchId != null && branchId !== '' && branchId !== 'all') {
+    sql += ' AND h.branch_id = ?';
+    params.push(Number(branchId));
+  }
+  sql += ' ORDER BY h.last_seen_at DESC';
+  try {
+    return db.prepare(sql).all(...params).map((row) => ({
+      ...row,
+      device_name: row.device_label || row.device_id,
+      branch_name: row.branch_name || `Branch ${row.branch_id}`
+    }));
+  } catch (_) {
+    return [];
+  }
+}
+
+function saveBranchTill(branchId, data = {}) {
+  ensureBranchSchema();
+  const db = getDb();
+  const bid = Number(branchId);
+  if (!getBranch(bid)) throw new Error('Branch not found');
+  const deviceId = String(data.device_id || data.deviceId || '').trim()
+    || `TILL-${Date.now().toString(36).toUpperCase()}${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+  const label = String(data.device_label || data.device_name || data.name || deviceId).trim();
+  const now = new Date().toISOString();
+  try {
+    db.prepare(`INSERT INTO pos_heartbeats (branch_id, device_id, device_label, last_seen_at, status)
+      VALUES (?, ?, ?, ?, 'registered')
+      ON CONFLICT(branch_id, device_id) DO UPDATE SET
+        device_label = excluded.device_label,
+        last_seen_at = excluded.last_seen_at,
+        status = 'registered'`).run(bid, deviceId, label, now);
+  } catch (_) {
+    const existing = db.prepare('SELECT 1 FROM pos_heartbeats WHERE branch_id = ? AND device_id = ?').get(bid, deviceId);
+    if (existing) {
+      db.prepare('UPDATE pos_heartbeats SET device_label = ?, last_seen_at = ?, status = ? WHERE branch_id = ? AND device_id = ?')
+        .run(label, now, 'registered', bid, deviceId);
+    } else {
+      db.prepare('INSERT INTO pos_heartbeats (branch_id, device_id, device_label, last_seen_at, status) VALUES (?,?,?,?,?)')
+        .run(bid, deviceId, label, now, 'registered');
+    }
+  }
+  return { success: true, branch_id: bid, device_id: deviceId, device_label: label, device_name: label };
+}
+
+function updateBranchTill(branchId, deviceId, patch = {}) {
+  ensureBranchSchema();
+  const db = getDb();
+  const oldBid = Number(branchId);
+  const did = String(deviceId || '').trim();
+  if (!did) throw new Error('Device id required');
+  const row = db.prepare('SELECT * FROM pos_heartbeats WHERE branch_id = ? AND device_id = ?').get(oldBid, did);
+  if (!row) throw new Error('Till not found');
+  const newBid = patch.branch_id != null && patch.branch_id !== '' ? Number(patch.branch_id) : oldBid;
+  const label = String(patch.device_label ?? patch.device_name ?? patch.name ?? row.device_label ?? did).trim();
+  if (newBid !== oldBid) {
+    if (!getBranch(newBid)) throw new Error('Target branch not found');
+    db.transaction(() => {
+      db.prepare('DELETE FROM pos_heartbeats WHERE branch_id = ? AND device_id = ?').run(oldBid, did);
+      db.prepare('INSERT INTO pos_heartbeats (branch_id, device_id, device_label, last_seen_at, status) VALUES (?,?,?,?,?)')
+        .run(newBid, did, label, row.last_seen_at || new Date().toISOString(), row.status || 'registered');
+    })();
+  } else {
+    db.prepare('UPDATE pos_heartbeats SET device_label = ? WHERE branch_id = ? AND device_id = ?').run(label, oldBid, did);
+  }
+  return { success: true, branch_id: newBid, device_id: did, device_label: label, device_name: label };
+}
+
+function deleteBranchTill(branchId, deviceId) {
+  const db = getDb();
+  const bid = Number(branchId);
+  const did = String(deviceId || '').trim();
+  if (!did) throw new Error('Device id required');
+  db.prepare('DELETE FROM pos_heartbeats WHERE branch_id = ? AND device_id = ?').run(bid, did);
+  return { success: true };
+}
+
+function deleteBranch(branchId, actor) {
+  const db = getDb();
+  const id = Number(branchId);
+  const branch = getBranch(id);
+  if (!branch) throw new Error('Branch not found');
+  const all = getBranches();
+  if (all.length <= 1) throw new Error('Cannot delete the only branch');
+  const salesCount = Number(db.prepare('SELECT COUNT(*) AS c FROM sales WHERE branch_id = ?').get(id)?.c) || 0;
+  if (salesCount > 0) {
+    db.prepare('UPDATE branches SET is_active = 0 WHERE id = ?').run(id);
+    try {
+      require('./store').audit(actor?.id, actor?.username || actor?.full_name, 'deactivate_branch', 'branch', id,
+        JSON.stringify({ name: branch.name, reason: 'Has sales history' }));
+    } catch (_) { /* */ }
+    return { success: true, deactivated: true, message: 'Branch has sales — marked inactive instead of deleted' };
+  }
+  db.transaction(() => {
+    try { db.prepare('DELETE FROM pos_heartbeats WHERE branch_id = ?').run(id); } catch (_) { /* */ }
+    try { db.prepare('DELETE FROM branch_stock WHERE branch_id = ?').run(id); } catch (_) { /* */ }
+    try { db.prepare('DELETE FROM branch_settings WHERE branch_id = ?').run(id); } catch (_) { /* */ }
+    db.prepare('UPDATE users SET branch_id = NULL WHERE branch_id = ?').run(id);
+    db.prepare('UPDATE products SET branch_id = NULL WHERE branch_id = ?').run(id);
+    db.prepare('DELETE FROM branches WHERE id = ?').run(id);
+  })();
+  try {
+    require('./store').audit(actor?.id, actor?.username || actor?.full_name, 'delete_branch', 'branch', id,
+      JSON.stringify({ name: branch.name, code: branch.code }));
+  } catch (_) { /* */ }
+  return { success: true, deleted: true };
+}
+
 function saveBranch(data) {
   const db = getDb();
   if (data.id) {
@@ -480,10 +605,6 @@ function resolveBranchScope(actor = null, opts = {}) {
     }
   }
   const role = user?.role || actor?.role || null;
-
-  if (role === 'marketing_agent') {
-    return { branchId: null, allBranches: true, tillId, role, stampId: tillId };
-  }
 
   if (role === 'owner' || !role) {
     if (opts.forceTill) {
@@ -713,6 +834,11 @@ module.exports = {
   getBranch,
   getBranchByCode,
   saveBranch,
+  deleteBranch,
+  listBranchTills,
+  saveBranchTill,
+  updateBranchTill,
+  deleteBranchTill,
   setActiveBranch,
   getActiveBranch,
   setViewBranch,

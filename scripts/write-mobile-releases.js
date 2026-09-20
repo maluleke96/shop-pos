@@ -16,6 +16,7 @@ const apps = [
   { id: 'com.shoppos.staff', apk: 'ShopPOS-StaffPortal.apk', label: 'Staff Portal' },
   { id: 'com.shoppos.recipe', apk: 'ShopPOS-Recipe.apk', label: 'Recipe & Production' },
   { id: 'com.shoppos.expense', apk: 'ShopPOS-Expenses.apk', label: 'Expenses' },
+  { id: 'com.shoppos.studio', apk: 'ShopPOS-Studio.apk', label: 'Menu & Promo Studio' },
   { id: 'com.shoppos.driver', apk: 'ShopPOS-Driver.apk', label: 'Driver App' },
   { id: 'com.shoppos.manager', apk: 'ShopPOS-Manager.apk', label: 'Business Manager' },
   { id: 'com.shoppos.order', apk: 'ShopPOS-OnlineOrdering.apk', label: 'Online Ordering' }

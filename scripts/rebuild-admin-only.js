@@ -1,29 +1,19 @@
-/** One-off: rebuild Admin only into Downloads/ShopPOS-Installers/Admin */
+/** Rebuild the live Admin Windows app into Downloads/ShopPOS-Installers/Admin */
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
 const root = path.join(__dirname, '..');
-const mode = 'admin';
 const name = 'Shop POS Admin';
 const appId = 'com.shoppos.admin';
 const artifact = 'ShopPOS-Admin';
-const cloudUrl = 'https://chisafood.up.railway.app';
-
-fs.writeFileSync(
-  path.join(root, 'electron', 'cloud-shell-config-admin.js'),
-  `process.env.SHOP_POS_APP_MODE = ${JSON.stringify(mode)};\n` +
-    `process.env.SHOP_POS_LOCAL_INSTALLER = '1';\n` +
-    `process.env.SHOP_POS_SYNC_URL = ${JSON.stringify(cloudUrl)};\n` +
-    `require('./cloud-shell.js');\n`
-);
 
 const cfg = {
   appId,
   productName: name,
   directories: { output: path.join('dist', 'cloud-apps', 'admin'), buildResources: 'build' },
-  files: ['electron/**/*', 'src/**/*', 'mobile/**/*', 'lib/**/*', 'package.json'],
-  extraMetadata: { main: 'electron/cloud-shell-config-admin.js', name: appId },
+  files: ['electron/admin-shell.js', 'package.json'],
+  extraMetadata: { main: 'electron/admin-shell.js', name: appId },
   win: {
     target: [
       { target: 'nsis', arch: ['x64'] },

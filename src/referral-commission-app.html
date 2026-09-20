@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <title>Referral Commission</title>
+  <script>
+    window.__SHOP_POS_APP_MODE__ = 'referral-commission';
+    try {
+      sessionStorage.setItem('SHOP_POS_APP_MODE', 'referral-commission');
+      localStorage.setItem('SHOP_POS_APP_MODE', 'referral-commission');
+    } catch (e) {}
+  </script>
+  <style>
+    html, body { margin: 0; min-height: 100%; }
+    body {
+      font-family: system-ui, -apple-system, Segoe UI, sans-serif;
+      background: #0f2744;
+      color: #e2e8f0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 28px 20px;
+      box-sizing: border-box;
+    }
+    .card { max-width: 420px; }
+    h1 { margin: 0 0 10px; font-size: 22px; }
+    p { margin: 0 0 10px; color: #94a3b8; line-height: 1.45; }
+    a {
+      display: inline-block;
+      margin-top: 14px;
+      background: #0d9488;
+      color: #fff;
+      border-radius: 10px;
+      padding: 12px 18px;
+      font-weight: 700;
+      text-decoration: none;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Referral Commission</h1>
+    <p id="status">Opening…</p>
+    <p><a id="open-btn" href="/index.html">Open login</a></p>
+  </div>
+  <script>
+    (function () {
+      // Navigate to index WITHOUT query string — mode is in sessionStorage + hash (Android-safe)
+      var target = '/index.html#app=referral-commission';
+      try {
+        if (location.protocol.indexOf('http') === 0 && location.origin) {
+          target = location.origin + '/index.html#app=referral-commission';
+        }
+      } catch (e) {}
+      document.getElementById('open-btn').href = target;
+      document.getElementById('status').textContent = 'Loading login…';
+      try { location.replace(target); } catch (e) { location.href = target; }
+      setTimeout(function () {
+        document.getElementById('status').textContent = 'Tap below if nothing opened.';
+      }, 4000);
+    })();
+  </script>
+</body>
+</html>

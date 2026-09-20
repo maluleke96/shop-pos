@@ -69,13 +69,13 @@ const CDS = {
     }
   },
 
-  ticketHtml(o) {
+  ticketHtml(o, clickable) {
     const label = o.order_number || o.receipt_number || `#${o.id}`;
     const table = o.table_number ? ` · Table ${o.table_number}` : '';
-    return `<article class="ticket" data-id="${o.id}" title="Mark collected / done">
+    return `<article class="ticket${clickable ? ' clickable' : ''}" data-id="${o.id}" ${clickable ? 'title="Tap when collected"' : ''}>
       <div class="num">${label}</div>
       <div class="meta">${(o.items || []).slice(0, 3).map(i => `${i.quantity}× ${i.product_name}`).join(', ') || 'Order'}${table}</div>
-      <div class="hint">Tap when collected — removes from board</div>
+      ${clickable ? '<div class="hint">Tap when collected</div>' : '<div class="hint">In progress</div>'}
     </article>`;
   },
 
@@ -84,12 +84,15 @@ const CDS = {
       const host = document.getElementById(`col-${st}`);
       if (!host) continue;
       const list = this.orders.filter(o => o.status === st);
+      const clickable = st === 'collection';
       host.innerHTML = list.length
-        ? list.map(o => this.ticketHtml(o)).join('')
+        ? list.map(o => this.ticketHtml(o, clickable)).join('')
         : '<div class="empty">—</div>';
-      host.querySelectorAll('.ticket').forEach(el => {
-        el.addEventListener('click', () => this.markDone(parseInt(el.dataset.id, 10)));
-      });
+      if (clickable) {
+        host.querySelectorAll('.ticket').forEach(el => {
+          el.addEventListener('click', () => this.markDone(parseInt(el.dataset.id, 10)));
+        });
+      }
     }
   },
 

@@ -84,14 +84,13 @@ async function checkPage(path, mustContain = []) {
   const health = await fetch(`${BASE}/health`).then((r) => r.json()).catch((e) => ({ error: e.message }));
   record('health', { ok: !!health.ok, handlers: health.handlers, error: health.error });
 
-  await checkPage('?app=admin', ['admin-nav', 'AdminPage']);
-  await checkPage('?app=pos', ['pos-layout', 'POSPage']);
-  await checkPage('order/', ['OrderAPI', 'order-app']);
-  await checkPage('manager/', ['ManagerAPI', 'ManagerApp']);
+  await checkPage('index.html', ['js/app.js', 'app-mode']);
+  await checkPage('order/', ['js/api.js', 'js/app.js']);
+  await checkPage('manager/', ['js/api.js', 'js/app.js']);
 
   const adminAssets = [
     'js/pages/admin.js', 'js/pages/admin-audit.js', 'js/pages/admin-pro.js',
-    'js/pages/admin-staff.js', 'js/pages/admin-marketing.js', 'js/pages/admin-delivery.js',
+    'js/pages/admin-staff.js', 'js/pages/admin-delivery.js',
     'js/pages/admin-hr.js', 'js/pages/admin-payroll.js', 'js/pages/admin-combos.js',
     'js/pages/admin-operations.js', 'js/pages/pos.js', 'js/online-orders-widget.js',
     'customer-web/js/app.js', 'manager-web/js/app.js'
@@ -124,25 +123,24 @@ async function checkPage(path, mustContain = []) {
     ['audit:dashboard', [today, today, actor]],
     ['audit:salesList', [{ from: today, to: today }, actor]],
     ['audit:saleDetail', [{ limit: 1 }, actor]],
-    ['audit:soldProducts', [{ from: today, to: today }, actor]],
-    ['audit:returns', [{ from: today, to: today }, actor]],
-    ['audit:activity', [{ limit: 10 }, actor]],
-    ['audit:exceptions', [{ limit: 10 }, actor]],
+    ['audit:soldProducts', [today, today]],
+    ['audit:returnsList', [{ from: today, to: today }, actor]],
+    ['audit:timeline', [today, today]],
+    ['audit:exceptions', [today, today]],
     ['audit:alerts', [actor]],
-    ['audit:dailyClose', [today, actor]],
-    ['audit:discountReport', [{ from: today, to: today }, actor]],
+    ['audit:dailyClosing', [today, actor]],
+    ['reports:discounts', [today, today]],
     ['products:get', [{}]],
     ['categories:get', [{}]],
     ['customers:get', ['']],
     ['suppliers:get', []],
     ['auth:getUsers', [actor]],
-    ['branches:get', [actor]],
-    ['branches:getDetailed', [actor]],
-    ['shifts:list', [actor]],
-    ['shifts:getOpen', [actor]],
-    ['discounts:get', []],
-    ['loyalty:getSettings', []],
-    ['quotes:list', [actor]],
+    ['branches:get', []],
+    ['shifts:get', [20]],
+    ['shifts:current', [actor]],
+    ['settings:getParsed', []],
+    ['settings:getShiftSettings', []],
+    ['quotes:get', [{}]],
     ['returns:get', [{}]],
     ['settings:getPendingRequests', []],
     ['expenses:get', [{}]],
@@ -150,45 +148,38 @@ async function checkPage(path, mustContain = []) {
     ['inventory:stats', []],
     ['web:adminOrders', [{ status: 'pending' }, actor]],
     ['web:adminOrders', [{}]],
-    ['delivery:listDrivers', [actor]],
-    ['delivery:listOrders', [{}, actor]],
+    ['delivery:drivers', [actor]],
+    ['delivery:list', [{}, actor]],
     ['delivery:dashboard', [{}, actor]],
-    ['delivery:getSettings', [actor]],
-    ['mktp:agents', [{ status: 'active' }, actor]],
-    ['mktp:campaigns', [actor]],
-    ['hr:employees', [actor]],
-    ['payroll:runs', [actor]],
+    ['delivery:settings', [actor]],
+    ['hr:people', [actor]],
+    ['payroll:listRuns', [actor]],
     ['acc:journals', [{ limit: 5 }, actor]],
     ['acc:accounts', [{}, actor]],
     ['recipe:foodCostAlerts', [actor]],
-    ['ops:complianceDashboard', [actor]],
+    ['ops:dashboard', [actor]],
     ['combos:get', [actor]],
-    ['mobile:users', [actor]],
-    ['audit:log', [{ limit: 10 }, actor]],
-    ['layby:list', [actor]],
-    ['giftcards:list', [actor]],
+    ['mobile:listUsers', [actor]],
+    ['audit:get', [{ limit: 10 }]],
+    ['layby:get', [{}]],
+    ['giftcards:get', [{}]],
     ['tables:get', [actor]],
-    ['campaigns:active', [actor]],
   ];
   for (const [method, args] of adminRpc) {
     await testRpc('admin', method, args, token);
   }
 
-  // Tax hub
-  await testRpc('admin', 'tax:hubSummary', [{ from: today, to: today }, actor]);
-
   // ── POS wiring ──
   const posRpc = [
     ['products:get', [{ for_pos: true, actor }]],
     ['categories:get', [{ for_pos: true, actor }]],
-    ['shifts:getOpen', [actor]],
-    ['shifts:getSettings', []],
+    ['shifts:current', [actor]],
+    ['settings:getShiftSettings', []],
     ['sync:getOnlineOrders', ['']],
-    ['held:get', [actor]],
-    ['quotes:list', [actor]],
+    ['sales:getHeld', []],
+    ['quotes:get', [{}]],
     ['tables:get', [actor]],
-    ['campaigns:active', [actor]],
-    ['customers:search', ['', actor]],
+    ['customers:get', ['']],
   ];
   for (const [method, args] of posRpc) {
     await testRpc('pos', method, args, token);
@@ -221,9 +212,15 @@ async function checkPage(path, mustContain = []) {
 
   // Guest register smoke (don't persist if fails)
   const guestEmail = `e2e-${Date.now()}@test.local`;
-  await testRpc('online', 'web:register', [{
-    name: 'E2E Test', email: guestEmail, phone: '0700000000', password: 'Test1234!'
-  }], null, { headers: webHeaders });
+  const guestPhone = `07${String(Date.now()).slice(-8)}`;
+  const reg = await rpc('web:register', [{
+    name: 'E2E Test', email: guestEmail, phone: guestPhone, password: 'Test1234!'
+  }], null, webHeaders);
+  record('online:web:register', {
+    ok: ok(reg) || /already registered/i.test(String(reg.json?.error || '')),
+    error: ok(reg) ? undefined : reg.json?.error,
+    severity: ok(reg) ? 'pass' : (/already registered/i.test(String(reg.json?.error || '')) ? 'warning' : 'bug')
+  });
 
   // ── Manager panel ──
   const mgrLogin = await rpc('mobile:login', [user, pass, { platform: 'e2e-test', device_name: 'audit' }]);
@@ -273,10 +270,10 @@ async function checkPage(path, mustContain = []) {
   });
 
   // Branch stock wiring
-  const branchesDetailed = await testRpc('admin', 'branches:getDetailed', [actor], token);
-  const branchRows = Array.isArray(branchesDetailed.data) ? branchesDetailed.data : [];
+  const branchesDetailed = await testRpc('admin', 'branches:get', [], token);
+  const branchRows = Array.isArray(branchesDetailed.data) ? branchesDetailed.data : (branchesDetailed.data?.data || []);
   record('wiring:branches', {
-    ok: branchRows.length > 0,
+    ok: branchesDetailed.success && branchRows.length > 0,
     count: branchRows.length,
     online_enabled: branchRows.filter((b) => b.online_ordering).length
   });

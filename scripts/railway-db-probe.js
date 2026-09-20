@@ -24,11 +24,6 @@ async function main() {
   });
   await client.connect();
   const out = {};
-  const agents = await client.query(`
-    SELECT id, full_name, status, referral_code, agent_code, referral_link
-    FROM mkt_referral_agents ORDER BY id DESC LIMIT 15
-  `);
-  out.agents = agents.rows;
   const products = await client.query(`
     SELECT p.id, p.name, p.stock_quantity, bs.branch_id, bs.quantity AS branch_qty
     FROM products p

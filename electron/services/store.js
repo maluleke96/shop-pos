@@ -19,10 +19,6 @@ const donationsSvc = require('./donations');
 const opsComplianceSvc = require('./operations-compliance');
 const promoRequestsSvc = require('./promo-requests');
 const combosSvc = require('./combos');
-const flyersSvc = require('./flyers');
-const marketingAgentSvc = require('./marketing-agent');
-const marketingPlatformRaw = require('./marketing-platform');
-const { adjustLoyaltyPoints: adjustMarketingLoyaltyPoints, ...marketingPlatformSvc } = marketingPlatformRaw;
 const whatsappSvc = require('./whatsapp');
 const documentHubSvc = require('./document-hub');
 const customerRewardsSvc = require('./customer-rewards');
@@ -52,10 +48,6 @@ const {
   getDocument: getDonationDocument,
   ...donationsExports
 } = donationsSvc;
-const {
-  getTemplates: getFlyerTemplates,
-  ...flyersExports
-} = flyersSvc;
 const {
   getTemplates: getWhatsAppTemplates,
   ...whatsappExports
@@ -155,7 +147,7 @@ function nextReceiptNumber() {
 
   const numPart = String(next).padStart(pad, '0');
   if (includeDate) {
-    const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    const date = new Date().toLocaleDateString('en-CA').replace(/-/g, '');
     return `${prefix}-${date}-${numPart}`;
   }
   return `${prefix}-${numPart}`;
@@ -196,7 +188,7 @@ function nextOrderNumber() {
 
   const numPart = String(next).padStart(pad, '0');
   if (includeDate) {
-    const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    const date = new Date().toLocaleDateString('en-CA').replace(/-/g, '');
     return `${prefix}-${date}-${numPart}`;
   }
   return `${prefix}-${numPart}`;
@@ -269,16 +261,65 @@ function userAccountIsActive(user) {
 }
 
 function login(username, password, pin) {
-  const userAny = getDb().prepare('SELECT * FROM users WHERE username = ?').get(username);
-  if (!userAny) return { success: false, error: 'Invalid username or password' };
+  let userAny;
+  try {
+    const u = String(username || '').trim();
+    userAny = getDb().prepare('SELECT * FROM users WHERE username = ?').get(u)
+      || getDb().prepare('SELECT * FROM users WHERE LOWER(username) = LOWER(?)').get(u);
+  } catch (err) {
+    const msg = String(err?.message || err || '');
+    if (/no space left|disk full|ENOSPC|could not write to file/i.test(msg)) {
+      return {
+        success: false,
+        error: 'Shop database storage is full (not a password problem). Expand the Postgres volume on Railway (Live Resize), then try again.'
+      };
+    }
+    return { success: false, error: msg || 'Sign-in temporarily unavailable' };
+  }
+  if (!userAny) {
+    // Approved referral agents may only exist on referral_agents until first successful sync
+    try {
+      const via = require('./referral-commission').loginApprovedAgent(username, password);
+      if (via && via.success) return via;
+      if (via && via.success === false && via.error && /suspended|deleted|not approved|rejected/i.test(via.error)) {
+        return via;
+      }
+    } catch (_) { /* ignore */ }
+    return { success: false, error: 'Invalid username or password' };
+  }
+  try {
+    const gate = require('./referral-commission').assertLinkedAgentMayLogin(userAny);
+    if (gate && gate.ok === false) {
+      session.clearAll();
+      return { success: false, error: gate.error || 'You have been suspended. Contact the administrator.' };
+    }
+  } catch (_) { /* referral module optional */ }
   if (!userAccountIsActive(userAny)) {
     session.clearAll();
     return { success: false, error: 'Account deactivated — system access is frozen. Contact the administrator.' };
   }
   const user = userAny;
 
-  const passOk = bcrypt.compareSync(password, user.password_hash);
-  if (!passOk) return { success: false, error: 'Invalid username or password' };
+  let passOk = false;
+  try {
+    passOk = !!(user.password_hash && bcrypt.compareSync(password, user.password_hash));
+  } catch (err) {
+    const msg = String(err?.message || err || '');
+    if (/no space left|disk full|ENOSPC|could not write to file/i.test(msg)) {
+      return {
+        success: false,
+        error: 'Shop database storage is full (not a password problem). Expand the Postgres volume on Railway (Live Resize), then try again.'
+      };
+    }
+    return { success: false, error: 'Invalid username or password' };
+  }
+  if (!passOk) {
+    try {
+      const via = require('./referral-commission').loginApprovedAgent(username, password);
+      if (via && via.success) return via;
+    } catch (_) { /* ignore */ }
+    return { success: false, error: 'Invalid username or password' };
+  }
   if (user.pin) {
     if (!pin) return { success: false, error: 'Invalid PIN' };
     const pinCheck = verifyPinWithUpgrade(user.pin, pin);
@@ -695,7 +736,7 @@ async function factoryResetBusiness(recoverySecret, confirmText) {
   return { success: true };
 }
 
-const VALID_USER_ROLES = ['owner', 'manager', 'assistant_manager', 'supervisor', 'marketing_agent', 'cashier', 'delivery_manager'];
+const VALID_USER_ROLES = ['owner', 'manager', 'assistant_manager', 'supervisor', 'cashier', 'delivery_manager', 'referral_agent'];
 
 function createUser(data, actorId, actorName) {
   const actor = requireActor({ id: actorId }, ['owner', 'manager']);
@@ -704,7 +745,7 @@ function createUser(data, actorId, actorName) {
     throw new Error('Only the owner can create owner accounts');
   }
   if (!data.password || data.password.length < 6) throw new Error('Password must be at least 6 characters');
-  // Managers/supervisors/cashiers must belong to a branch; marketing agents may be shared (null)
+  // Managers/supervisors/cashiers must belong to a branch
   let branchId = data.branch_id != null && data.branch_id !== '' ? Number(data.branch_id) : null;
   if (['manager', 'supervisor', 'cashier', 'assistant_manager'].includes(data.role)) {
     if (!branchId) {
@@ -716,11 +757,10 @@ function createUser(data, actorId, actorName) {
     }
     branchesSvc.assertBranchRoleSlot(data.role, branchId, null);
   }
-  if (data.role === 'marketing_agent') {
-    // Shared across branches — branch_id optional
+  if (data.role === 'delivery_manager') {
     branchId = branchId || null;
   }
-  if (data.role === 'delivery_manager') {
+  if (data.role === 'referral_agent') {
     branchId = branchId || null;
   }
   const hash = bcrypt.hashSync(data.password, 10);
@@ -798,30 +838,58 @@ function updateUser(id, data, actorId, actorName) {
   values.push(userId);
   getDb().prepare(`UPDATE users SET ${fields.join(', ')} WHERE id = ?`).run(...values);
   audit(actorId, actorName, 'update_user', 'user', userId, data);
+  try {
+    const studio = require('./studio-app-platform');
+    if (data.permissions != null || data.is_active === false || data.is_active === 0) {
+      studio.onUserPermissionsChanged(userId, data.permissions);
+    }
+    if (data.is_active === false || data.is_active === 0) studio.revokeUserSessions(userId);
+  } catch (_) { /* studio optional */ }
+  try {
+    const radio = require('./radio-platform');
+    if (data.permissions != null || data.is_active === false || data.is_active === 0) {
+      radio.onUserPermissionsChanged(userId, data.permissions);
+    }
+    if (data.is_active === false || data.is_active === 0) radio.revokeUserSessions(userId);
+  } catch (_) { /* radio optional */ }
+}
+
+function actorRecord(actorId) {
+  return getDb().prepare('SELECT id, role, username FROM users WHERE id = ?').get(Number(actorId)) || { id: actorId };
 }
 
 function deleteUser(id, actorId, actorName) {
-  requireActor({ id: actorId }, ['owner']);
+  const actor = actorRecord(actorId);
+  requireActor(actor, ['owner', 'manager']);
   const userId = Number(id);
   if (userId === actorId) throw new Error('You cannot deactivate your own account');
   const user = getDb().prepare('SELECT id, role, is_active FROM users WHERE id = ?').get(userId);
   if (!user) throw new Error('User not found');
+  if (user.role === 'owner' && actor.role !== 'owner') {
+    throw new Error('Only the owner can deactivate an owner account');
+  }
   if (user.role === 'owner') {
     const owners = getDb().prepare(`SELECT COUNT(*) AS c FROM users WHERE role = 'owner' AND is_active = 1 AND id != ?`).get(userId).c;
     if (owners < 1) throw new Error('Cannot deactivate the last active owner');
   }
   getDb().prepare(`UPDATE users SET is_active = 0, updated_at = datetime('now') WHERE id = ?`).run(userId);
   audit(actorId, actorName, 'delete_user', 'user', userId, null);
+  try { require('./studio-app-platform').revokeUserSessions(userId); } catch (_) { /* */ }
+  try { require('./radio-platform').revokeUserSessions(userId); } catch (_) { /* */ }
 }
 
 function permanentlyDeleteUser(id, confirmUsername, actorId, actorName) {
-  requireActor({ id: actorId }, ['owner']);
+  const actor = actorRecord(actorId);
+  requireActor(actor, ['owner', 'manager']);
   const userId = Number(id);
   if (userId === actorId) throw new Error('You cannot permanently delete your own account');
   const user = getDb().prepare('SELECT id, username, role, full_name FROM users WHERE id = ?').get(userId);
   if (!user) throw new Error('User not found');
   if ((confirmUsername || '').trim() !== user.username) {
     throw new Error('Type the exact username to confirm permanent deletion');
+  }
+  if (user.role === 'owner' && actor.role !== 'owner') {
+    throw new Error('Only the owner can permanently delete an owner account');
   }
   if (user.role === 'owner') {
     const owners = getDb().prepare(`SELECT COUNT(*) AS c FROM users WHERE role = 'owner' AND id != ?`).get(userId).c;
@@ -851,6 +919,9 @@ function permanentlyDeleteUser(id, confirmUsername, actorId, actorName) {
     unlink('UPDATE shifts SET user_id = NULL WHERE user_id = ?');
     unlink('UPDATE company_rules SET created_by = NULL WHERE created_by = ?');
     unlink('UPDATE employee_disciplinary SET created_by = NULL WHERE created_by = ?');
+    try { db.prepare('DELETE FROM studio_app_sessions WHERE user_id = ?').run(userId); } catch (_) {}
+    try { db.prepare('DELETE FROM radio_app_sessions WHERE user_id = ?').run(userId); } catch (_) {}
+    try { db.prepare('DELETE FROM expense_app_sessions WHERE user_id = ?').run(userId); } catch (_) {}
     db.prepare('DELETE FROM users WHERE id = ?').run(userId);
   });
   tx();
@@ -960,7 +1031,7 @@ function getSettingsParsed() {
     })(),
     eom_settings: parseJsonField(s.eom_settings, { auto_select: true }),
     operating_hours_settings: parseJsonField(s.operating_hours_settings, {
-      enabled: false, close_time: '18:00', open_time: '08:00', warn_minutes: 15, alert_at_close: true,
+      enabled: false, apply_to_online: true, close_time: '18:00', open_time: '08:00', warn_minutes: 15, alert_at_close: true,
       weekly: [
         { day: 0, name: 'Sunday', open: '08:00', close: '18:00', closed: false },
         { day: 1, name: 'Monday', open: '08:00', close: '18:00', closed: false },
@@ -973,6 +1044,7 @@ function getSettingsParsed() {
     }),
     notification_settings: parseJsonField(s.notification_settings, {
       sound_enabled: true, loop_until_read: true, sound_path: null,
+      type_toggles: {},
       panel_sounds: {
         pos: { enabled: true, sound_path: null },
         admin: { enabled: true, sound_path: null },
@@ -981,18 +1053,24 @@ function getSettingsParsed() {
         online: { enabled: true, sound_path: null },
         delivery: { enabled: true, sound_path: null },
         staff: { enabled: true, sound_path: null },
-        recipe: { enabled: true, sound_path: null }
+        recipe: { enabled: true, sound_path: null },
+        referral: { enabled: true, sound_path: null },
+        'referral-commission': { enabled: true, sound_path: null }
       }
     }),
-    staff_portal_settings: parseJsonField(s.staff_portal_settings, {
-      leave_types: ['Annual Leave', 'Sick Leave', 'Family Responsibility', 'Unpaid Leave'],
-      leave_requires_approval: true, min_leave_notice_days: 1,
-      leave_requests_open: true,
-      max_leave_requests_per_month: null,
-      max_leave_requests_per_year: null,
-      leave_blackouts: [],
-      show_disciplinary: true, require_disciplinary_response: true
-    }),
+    staff_portal_settings: (() => {
+      const ps = parseJsonField(s.staff_portal_settings, {
+        leave_types: ['Annual Leave', 'Sick Leave', 'Family Responsibility', 'Unpaid Leave'],
+        leave_requires_approval: true, min_leave_notice_days: 1,
+        leave_requests_open: true,
+        max_leave_requests_per_month: null,
+        max_leave_requests_per_year: null,
+        leave_blackouts: [],
+        show_disciplinary: true, require_disciplinary_response: true
+      });
+      if (ps._hide_shifts === true) ps.show_shifts = false;
+      return ps;
+    })(),
     sync_settings: parseJsonField(s.sync_settings, {}),
     whatsapp_settings: parseJsonField(s.whatsapp_settings, {
       api_key: '', phone_number_id: '', business_account_id: '',
@@ -1021,6 +1099,11 @@ function getSettingsParsed() {
   };
 }
 getSettingsParsed._onlineCache = null;
+
+function getOperatingHoursSettings() {
+  const row = getSettings();
+  return parseJsonField(row?.operating_hours_settings, {});
+}
 
 function saveJsonSetting(key, value, actorId, actorName) {
   saveSettings({ [key]: JSON.stringify(value) }, actorId, actorName);
@@ -1359,7 +1442,18 @@ function maybeSyncMenuHighlights(force = false) {
 
 function getProducts(filters = {}) {
   ensureCategoryPosSchema();
-  let sql = `
+  const adminList = !!filters.admin_list;
+  let sql = adminList
+    ? `
+    SELECT p.id, p.name, p.sku, p.barcode, p.category_id, p.selling_price, p.buying_price,
+      p.stock_quantity, p.min_stock, p.stock_unit, p.is_active, p.show_on_pos,
+      p.online_enabled, p.updated_at, p.item_type, p.branch_id, p.supplier_id,
+      CASE WHEN p.picture_path IS NOT NULL THEN 1 ELSE 0 END AS has_picture,
+      c.name as category_name FROM products p
+    LEFT JOIN categories c ON p.category_id = c.id
+    WHERE p.is_active = 1 AND (p.is_archived = 0 OR p.is_archived IS NULL)
+  `
+    : `
     SELECT p.*, c.name as category_name FROM products p
     LEFT JOIN categories c ON p.category_id = c.id
     WHERE p.is_active = 1 AND (p.is_archived = 0 OR p.is_archived IS NULL)
@@ -1381,10 +1475,11 @@ function getProducts(filters = {}) {
     forceTill: !!filters.for_pos
   });
   const branchForStock = scope.branchId || scope.tillId || 1;
-  if (!scope.allBranches && branchForStock) {
+  const wantAllBranches = filters.all_branches === true || filters.branch_id === 'all';
+  if (!wantAllBranches && !scope.allBranches && branchForStock) {
     sql += ' AND (p.branch_id IS NULL OR p.branch_id = ?)';
     params.push(branchForStock);
-  } else if (filters.branch_id != null && filters.branch_id !== '' && filters.branch_id !== 'all') {
+  } else if (!wantAllBranches && filters.branch_id != null && filters.branch_id !== '' && filters.branch_id !== 'all') {
     sql += ' AND (p.branch_id IS NULL OR p.branch_id = ?)';
     params.push(Number(filters.branch_id));
   }
@@ -1396,8 +1491,17 @@ function getProducts(filters = {}) {
   }
   if (filters.low_stock) sql += ' AND p.stock_quantity <= p.min_stock';
   sql += ' ORDER BY p.name';
-  const products = getDb().prepare(sql).all(...params);
-  const adminList = !!filters.admin_list;
+  let products;
+  try {
+    products = getDb().prepare(sql).all(...params);
+  } catch (err) {
+    if (!adminList) throw err;
+    const fallbackSql = sql.replace(
+      /SELECT[\s\S]*FROM products p/i,
+      'SELECT p.*, c.name as category_name FROM products p'
+    );
+    products = getDb().prepare(fallbackSql).all(...params);
+  }
   const liteProductFetch = !!(filters.combo_picker || filters.menu_flags_only || filters.ids_only);
   if (!liteProductFetch && !adminList) {
     maybeSyncMenuHighlights();
@@ -1430,6 +1534,45 @@ function getProducts(filters = {}) {
       selling_price: p.selling_price,
       has_pap_option: !!hasRemoval[p.id]
     }));
+  }
+
+  // Admin Products list: skip modifier blobs and base64 pictures so the page opens instantly.
+  if (adminList) {
+    let stockMap = {};
+    try {
+      if (products.length && branchForStock) {
+        const placeholders = products.map(() => '?').join(',');
+        const rows = getDb().prepare(`
+          SELECT product_id, quantity, min_stock FROM branch_stock
+          WHERE branch_id = ? AND product_id IN (${placeholders})
+        `).all(branchForStock, ...products.map((p) => p.id));
+        stockMap = Object.fromEntries(rows.map((r) => [r.product_id, r]));
+      }
+    } catch (_) { /* migration not applied yet */ }
+    const countMap = {};
+    if (products.length) {
+      const placeholders = products.map(() => '?').join(',');
+      const rows = getDb().prepare(
+        `SELECT product_id, COUNT(*) AS cnt FROM product_modifiers WHERE product_id IN (${placeholders}) GROUP BY product_id`
+      ).all(...products.map((p) => p.id));
+      for (const r of rows) countMap[r.product_id] = Number(r.cnt) || 0;
+    }
+    return products.map((p) => {
+      const bs = stockMap[p.id];
+      const pic = p.picture_path;
+      const hasPic = !!(p.has_picture || (pic && String(pic).length > 4));
+      const { picture_path, ...rest } = p;
+      return {
+        ...rest,
+        stock_quantity: bs ? Number(bs.quantity) : p.stock_quantity,
+        min_stock: bs && bs.min_stock != null ? Number(bs.min_stock) : p.min_stock,
+        branch_stock_id: branchForStock,
+        option_count: countMap[p.id] || 0,
+        _hasOptions: !!(countMap[p.id]),
+        _hasImage: hasPic,
+        has_picture: hasPic
+      };
+    });
   }
 
   const byProduct = {};
@@ -1467,15 +1610,22 @@ function getProducts(filters = {}) {
       removals: (byProduct[p.id] || []).filter(m => m.modifier_type === 'removal')
     };
   });
+  if (filters.omit_images) {
+    enriched = enriched.map(({ picture_path, ...rest }) => ({
+      ...rest,
+      has_picture: !!(picture_path && String(picture_path).length > 10)
+    }));
+  }
   if (adminList) return enriched;
-  enriched = promoRequestsSvc.applyPromoPricesToProducts(enriched);
+  const promoChannel = filters.for_online ? 'online' : (filters.for_pos ? 'pos' : null);
+  enriched = promoRequestsSvc.applyPromoPricesToProducts(enriched, null, { channel: promoChannel });
   try {
     enriched = require('./recipe-production').applyRecipePromoPricesToProducts(enriched);
   } catch (_) { /* ignore */ }
   try {
     enriched = require('./production-availability').applyCapacityToProducts(enriched);
   } catch (_) { /* ignore */ }
-  return flyersSvc.applyFlyerPromoOverlay(enriched);
+  return enriched;
 }
 
 function getProductModifiers(productId) {
@@ -1627,9 +1777,7 @@ function getProduct(id) {
     recipe,
     recipe_metrics: metrics
   };
-  const [decorated] = flyersSvc.applyFlyerPromoOverlay(
-    promoRequestsSvc.applyPromoPricesToProducts([base])
-  );
+  const [decorated] = promoRequestsSvc.applyPromoPricesToProducts([base], null, { channel: 'pos' });
   const bid = resolveTillBranchId();
   const [withStock] = overlayBranchStockOnProducts([decorated || base], bid);
   return withStock || decorated || base;
@@ -1685,7 +1833,11 @@ function saveProduct(data, actorId, actorName) {
       alert_out_of_stock: data.alert_out_of_stock !== undefined
         ? (data.alert_out_of_stock !== false ? 1 : 0)
         : (existing.alert_out_of_stock !== 0 ? 1 : 0),
-      picture_path: pick('picture_path', existing.picture_path),
+      picture_path: (data.clear_picture === true || data.clear_picture === 1)
+        ? null
+        : (data.picture_path !== undefined && data.picture_path !== null && String(data.picture_path).trim() !== ''
+          ? data.picture_path
+          : existing.picture_path),
       description: pick('description', existing.description),
       brand: pick('brand', existing.brand),
       subcategory: pick('subcategory', existing.subcategory),
@@ -1883,6 +2035,28 @@ function notifyPosOnlineOrder(order) {
     `${order.order_number || 'Online order'} — ${order.customer_name || 'Customer'} — ${fmtMoney(total)}`,
     { entity_type: 'online_order', entity_id: order.id, action_page: 'pos' }
   );
+  const fulfillment = String(order.fulfillment_type || order.fulfillment || order.order_type || '').toLowerCase();
+  if (fulfillment === 'delivery') {
+    addNotification(
+      'delivery_order',
+      'New delivery order',
+      `${order.order_number || 'Online order'} — ${order.customer_name || 'Customer'} — ${order.delivery_address || 'delivery'}`,
+      {
+        entity_type: 'online_order',
+        entity_id: order.id,
+        action_page: 'admin:delivery-dept',
+        audience_roles: 'owner,manager,supervisor,delivery_manager'
+      }
+    );
+  }
+}
+
+function purgeNotificationsForEntity(entityType, entityId) {
+  if (!entityType || entityId == null) return;
+  try {
+    getDb().prepare('DELETE FROM notifications WHERE entity_type = ? AND entity_id = ?')
+      .run(String(entityType), Number(entityId));
+  } catch (_) { /* optional */ }
 }
 
 /** Default audience roles for a notification type / action page (who should see it). */
@@ -1907,12 +2081,65 @@ function defaultNotificationAudience(type, actionPage) {
   if (t.startsWith('owner_salary')) return admins;
   if (['payroll_due', 'uif', 'paye', 'sdl', 'coida'].includes(t)) return admins;
   if (page.startsWith('admin:approvals') || t === 'pending' || t.includes('approval')) return admins;
+  if (page.startsWith('admin:delivery') || t === 'delivery_order' || t.startsWith('delivery_')) {
+    return ['owner', 'manager', 'supervisor', 'delivery_manager'];
+  }
   if (page.startsWith('admin:')) return ops;
   if (page === 'pos') return ['owner', 'manager', 'cashier', 'supervisor', 'assistant_manager'];
   return ops;
 }
 
+/** Catalog of toggleable notification types (Admin → Security). Default: all on. */
+const NOTIFICATION_TYPE_CATALOG = [
+  ['low_stock', 'Low stock'],
+  ['out_of_stock', 'Out of stock'],
+  ['reorder', 'Reorder level'],
+  ['loyalty_reminder', 'Loyalty / points reminders'],
+  ['loyalty_reminder_summary', 'Loyalty reminder summary'],
+  ['taken_unpaid', 'Unpaid / Taken – Pay Later'],
+  ['cashout', 'Shift cash-out'],
+  ['cashup', 'Cash-up'],
+  ['cashout_penalty', 'Late cash-out penalty'],
+  ['target_met', 'Daily target met'],
+  ['target_missed', 'Daily target missed'],
+  ['payroll_due', 'Staff pay day'],
+  ['owner_salary_due', 'Owner salary due'],
+  ['owner_salary_overdue', 'Owner salary overdue'],
+  ['document_share', 'Document hub shares'],
+  ['referral', 'Referral & Commission'],
+  ['delivery_order', 'Delivery orders'],
+  ['compliance', 'Ops compliance'],
+  ['checklist_reminder', 'Checklist reminders'],
+  ['checklist_overdue', 'Checklist overdue'],
+  ['contract_expired', 'Contract expired'],
+  ['probation_eval_due', 'Probation evaluation due'],
+  ['probation_ending', 'Probation ending'],
+  ['attendance_auto_close', 'Missed clock-out'],
+  ['attendance_penalty', 'Attendance penalty'],
+  ['donation', 'Donations'],
+  ['stock_count', 'Stock counts'],
+  ['test', 'Test notifications']
+];
+
+function isNotificationTypeEnabled(type) {
+  const t = String(type || '').trim();
+  if (!t) return true;
+  try {
+    const ns = getSettingsParsed()?.notification_settings || {};
+    const toggles = ns.type_toggles || {};
+    if (Object.prototype.hasOwnProperty.call(toggles, t) && toggles[t] === false) return false;
+    // Group aliases
+    if (t.startsWith('loyalty') && toggles.loyalty_reminder === false) return false;
+    if (t.startsWith('owner_salary') && toggles.owner_salary_due === false && toggles.owner_salary_overdue === false) {
+      if (toggles[t] === false) return false;
+    }
+    if ((t.startsWith('delivery_') || t === 'delivery_order') && toggles.delivery_order === false) return false;
+  } catch (_) { /* ignore */ }
+  return true;
+}
+
 function addNotification(type, title, message, opts = {}) {
+  if (!isNotificationTypeEnabled(type)) return;
   const entityType = opts.entity_type || null;
   const entityId = opts.entity_id != null ? opts.entity_id : null;
   const actionPage = opts.action_page || null;
@@ -1936,6 +2163,12 @@ function addNotification(type, title, message, opts = {}) {
         throw err;
       }
     }
+  }
+  // Bridge selected alerts into Communication Center (external channels) — never replace in-app
+  if (!opts._from_cc && !String(type || '').startsWith('cc_') && !String(entityType || '').includes('communication')) {
+    try {
+      require('./communication-center').bridgeInAppNotification(type, title, message, opts);
+    } catch (_) { /* optional until CC migrated */ }
   }
 }
 
@@ -2117,14 +2350,19 @@ function getStockHistory(productId) {
   `).all(productId);
 }
 
-function getAllStockHistory(limit = 100) {
-  return getDb().prepare(`
+function getAllStockHistory(limit = 500, from = null, to = null) {
+  const params = [];
+  let sql = `
     SELECT sm.*, u.full_name as user_name, p.name as product_name
     FROM stock_movements sm
     LEFT JOIN users u ON sm.user_id = u.id
     LEFT JOIN products p ON sm.product_id = p.id
-    ORDER BY sm.created_at DESC LIMIT ?
-  `).all(limit);
+    WHERE 1=1`;
+  if (from) { sql += " AND date(sm.created_at, 'localtime') >= date(?)"; params.push(from); }
+  if (to) { sql += " AND date(sm.created_at, 'localtime') <= date(?)"; params.push(to); }
+  sql += ' ORDER BY sm.created_at DESC LIMIT ?';
+  params.push(Math.min(Number(limit) || 500, 5000));
+  return getDb().prepare(sql).all(...params);
 }
 
 function resolveProductRef(ref) {
@@ -2221,7 +2459,7 @@ function resolveModifierExtras(productId, modifiers) {
 
 function serverPromoUnitPrice(product, modifiers) {
   const promoPricing = require('../../lib/promo-pricing');
-  const enriched = promoRequestsSvc.applyPromoPricesToProducts([product])[0] || product;
+  const enriched = promoRequestsSvc.applyPromoPricesToProducts([product], null, { channel: 'pos' })[0] || product;
   const modExtra = resolveModifierExtras(product.id, modifiers);
   return {
     unitPrice: promoPricing.calcPromoAwareUnitPrice({
@@ -2254,7 +2492,19 @@ function completeSale(saleData, actorId, actorName, actorRole) {
   });
   const deviceId = (() => {
     const client = saleData?.device_id ? String(saleData.device_id).trim() : '';
-    if (client && /^[A-Za-z0-9_-]{4,64}$/.test(client)) return client.slice(0, 64);
+    if (client && /^[A-Za-z0-9_-]{4,64}$/.test(client)) {
+      try {
+        const heartbeatCount = db.prepare('SELECT COUNT(*) AS c FROM pos_heartbeats').get()?.c || 0;
+        if (heartbeatCount > 0) {
+          const known = db.prepare('SELECT 1 FROM pos_heartbeats WHERE device_id = ? LIMIT 1').get(client)
+            || db.prepare('SELECT 1 FROM mobile_app_devices WHERE device_id = ? LIMIT 1').get(client);
+          if (!known) throw new Error('Unknown POS device — open POS on this till first so it registers');
+        }
+      } catch (err) {
+        if (err.message?.includes('Unknown POS device')) throw err;
+      }
+      return client.slice(0, 64);
+    }
     return syncSvc.resolveDeviceUid();
   })();
 
@@ -2379,6 +2629,34 @@ function completeSale(saleData, actorId, actorName, actorRole) {
     const check = staff.validateOnAccount(saleData.customer_id, accountTotal, settingsParsed.account_settings);
     if (!check.ok) throw new Error(check.error);
   }
+  const takenPayments = (saleData.payments || []).filter(p => p.type === 'taken' || p.payment_type === 'taken');
+  if (takenPayments.length) {
+    if (!saleData.customer_id) {
+      throw new Error('Taken – Pay Later is only for existing customers — select a saved customer on POS');
+    }
+    const cust = getDb().prepare('SELECT id, name, phone FROM customers WHERE id=?').get(saleData.customer_id);
+    if (!cust) throw new Error('Customer not found — Taken – Pay Later requires a saved customer');
+    if (!String(cust.phone || saleData.customer_phone || '').trim()) {
+      throw new Error('Customer has no phone on file');
+    }
+    saleData.taken_order = {
+      ...(saleData.taken_order || {}),
+      customer_id: cust.id,
+      customer_name: cust.name || saleData.customer_name,
+      phone: cust.phone || saleData.customer_phone
+    };
+    const role = String(actor?.role || dbRole || '').toLowerCase();
+    const selfOk = ['owner', 'manager', 'assistant_manager', 'supervisor'].includes(role);
+    if (!selfOk) {
+      const pin = saleData.manager_pin || saleData.taken_manager_pin;
+      if (!pin) throw new Error('Manager PIN required for Taken – Pay Later');
+      try {
+        auditSvc.verifyManagerPin(pin);
+      } catch {
+        throw new Error('Invalid manager PIN for Taken – Pay Later');
+      }
+    }
+  }
 
   const settingsForTax = getSettingsParsed();
   const grossSubtotal = pricedItems.reduce((s, i) => s + (Number(i.total) || 0), 0);
@@ -2457,10 +2735,10 @@ function completeSale(saleData, actorId, actorName, actorRole) {
   }
   payments = cappedPayments;
   const softSum = payments
-    .filter(p => p.type === 'account' || p.type === 'giftcard')
+    .filter(p => p.type === 'account' || p.type === 'giftcard' || p.type === 'taken')
     .reduce((s, p) => s + (Number(p.amount) || 0), 0);
   if (softSum > saleTotal + 0.02) {
-    throw new Error('Account/gift card payments exceed sale total');
+    throw new Error('Account/gift card/taken payments exceed sale total');
   }
   const paymentsSum = payments.reduce((s, p) => s + (Number(p.amount) || 0), 0);
   if (paymentsSum < saleTotal - 0.02) {
@@ -2524,6 +2802,9 @@ function completeSale(saleData, actorId, actorName, actorRole) {
   }
   try { db.exec('ALTER TABLE sales ADD COLUMN order_source TEXT'); } catch (_) { /* exists */ }
   try { db.exec('ALTER TABLE sales ADD COLUMN delivery_fee REAL DEFAULT 0'); } catch (_) { /* exists */ }
+  try { db.exec('ALTER TABLE sales ADD COLUMN IF NOT EXISTS delivery_place TEXT'); } catch (_) {
+    try { db.exec('ALTER TABLE sales ADD COLUMN delivery_place TEXT'); } catch (_) { /* exists */ }
+  }
   const adjustStockForBranch = (productId, quantity, type, notes, userId, refType, refId) =>
     adjustStock(productId, quantity, type, notes, userId, refType, refId, branchId);
 
@@ -2531,6 +2812,17 @@ function completeSale(saleData, actorId, actorName, actorRole) {
     let saleResult;
     try {
       saleResult = db.prepare(`
+      INSERT INTO sales (receipt_number, order_number, user_id, customer_id, subtotal, discount, tax_amount, total, amount_paid, change_amount, notes, branch_id, device_id, status, order_type, table_id, table_name, delivery_address, delivery_fee, delivery_place, client_request_id, order_source)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(receiptNumber, orderNumber, actorId, saleData.customer_id || null,
+        saleData.subtotal, saleDiscount, saleData.tax_amount || 0,
+        saleTotal, amountPaid, changeAmount, saleData.notes || null, branchId, deviceId,
+        saleData.order_type || null, saleData.table_id || null, saleData.table_name || null,
+        saleData.delivery_address || null, deliveryFee, saleData.delivery_place || null,
+        clientRequestId || null, saleData.order_source || null);
+    } catch (_) {
+      try {
+        saleResult = db.prepare(`
       INSERT INTO sales (receipt_number, order_number, user_id, customer_id, subtotal, discount, tax_amount, total, amount_paid, change_amount, notes, branch_id, device_id, status, order_type, table_id, table_name, delivery_address, delivery_fee, client_request_id, order_source)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?, ?, ?, ?, ?)
     `).run(receiptNumber, orderNumber, actorId, saleData.customer_id || null,
@@ -2539,7 +2831,7 @@ function completeSale(saleData, actorId, actorName, actorRole) {
         saleData.order_type || null, saleData.table_id || null, saleData.table_name || null,
         saleData.delivery_address || null, deliveryFee,
         clientRequestId || null, saleData.order_source || null);
-    } catch (_) {
+      } catch (__) {
       saleResult = db.prepare(`
       INSERT INTO sales (receipt_number, order_number, user_id, customer_id, subtotal, discount, tax_amount, total, amount_paid, change_amount, notes, branch_id, device_id, status, order_type, table_id, table_name, delivery_address, client_request_id)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?, ?, ?)
@@ -2549,9 +2841,16 @@ function completeSale(saleData, actorId, actorName, actorRole) {
         saleData.order_type || null, saleData.table_id || null, saleData.table_name || null,
         saleData.delivery_address || null,
         clientRequestId || null);
+      }
     }
 
     const saleId = saleResult.lastInsertRowid;
+
+    if (saleData.referral_code) {
+      try {
+        db.prepare(`UPDATE sales SET referral_code = ? WHERE id = ?`).run(String(saleData.referral_code).trim().toUpperCase(), saleId);
+      } catch (_) { /* column may not exist yet — ensureSchema on first referral processSale */ }
+    }
 
     if (saleData.table_id && saleData.order_type === 'sit_in') {
       try {
@@ -2648,34 +2947,14 @@ function completeSale(saleData, actorId, actorName, actorRole) {
 
   audit(actorId, actorName, 'complete_sale', 'sale', result.saleId, { receipt_number: result.receiptNumber, order_number: result.orderNumber, total: saleTotal });
   features.log('info', 'sale', `Sale ${result.receiptNumber} completed`, { total: saleTotal, actorId });
-  try { syncSvc.enqueueSale(result.saleId); } catch (_) {}
   try {
-    if (saleData.referral_code || saleData.marketing_agent_id || saleData.mkt_campaign_id || saleData.mkt_coupon_code) {
-      for (const sql of [
-        'ALTER TABLE sales ADD COLUMN referral_code TEXT',
-        'ALTER TABLE sales ADD COLUMN marketing_agent_id INTEGER',
-        'ALTER TABLE sales ADD COLUMN mkt_campaign_id INTEGER',
-        'ALTER TABLE sales ADD COLUMN mkt_coupon_code TEXT'
-      ]) {
-        try { getDb().exec(sql); } catch (_) { /* exists */ }
-      }
-      getDb().prepare(`
-        UPDATE sales SET referral_code = COALESCE(?, referral_code),
-          marketing_agent_id = COALESCE(?, marketing_agent_id),
-          mkt_campaign_id = COALESCE(?, mkt_campaign_id),
-          mkt_coupon_code = COALESCE(?, mkt_coupon_code)
-        WHERE id = ?`).run(
-        saleData.referral_code || null,
-        saleData.marketing_agent_id || null,
-        saleData.mkt_campaign_id || null,
-        saleData.mkt_coupon_code || null,
-        result.saleId
-      );
+    if (payments.some((p) => (p.type || p.payment_type) === 'taken')) {
+      require('./taken-orders').recordTakenSale(result.saleId, saleData, { id: actorId, username: actorName, full_name: actorName });
     }
-  } catch (_) { /* ignore */ }
-  try { marketingPlatformSvc.processSaleForMarketing(result.saleId); } catch (err) {
-    console.warn('[mkt] sale attribution:', err.message);
+  } catch (err) {
+    console.warn('[taken] record:', err.message);
   }
+  try { syncSvc.enqueueSale(result.saleId); } catch (_) {}
   try {
     accHook('postFromSale', result.saleId);
   } catch (err) {
@@ -2694,6 +2973,11 @@ function completeSale(saleData, actorId, actorName, actorRole) {
     const saleRow = getSale(result.saleId);
     if (saleRow) delivery.upsertFromSale(saleRow);
   } catch (_) { /* optional */ }
+  try {
+    require('./referral-commission').processSale(result.saleId);
+  } catch (err) {
+    console.warn('[referral] processSale:', err.message);
+  }
   return {
     ...result,
     sale: getSale(result.saleId),
@@ -2979,9 +3263,7 @@ function processReturn(data, actorId, actorName) {
   const refundRatio = sale.total > 0 ? Math.min(1, totalRefund / Number(sale.total)) : 0;
   if (refundRatio > 0) {
     try { features.reverseSaleBenefits(data.sale_id, actorId, refundRatio); } catch (_) { /* best effort */ }
-    try {
-      marketingPlatformSvc.reverseCommissionsForSale(data.sale_id, { id: actorId, full_name: actorName, role: 'owner' }, 'Sale refunded');
-    } catch (_) { /* best effort */ }
+    try { require('./referral-commission').reverseCommissionForSale(data.sale_id, refundRatio, 'return', { id: actorId, full_name: actorName }); } catch (_) { /* best effort */ }
   }
   audit(actorId, actorName, 'process_return', 'return', result.id, { ...data, total_refund: totalRefund, return_number: result.returnNumber });
   features.log('info', 'return', `Return ${result.returnNumber} processed`, { refund: totalRefund });
@@ -3029,16 +3311,45 @@ function saveExpenseCategories(categories, actorId, actorName) {
   return cats;
 }
 
+function expenseInvoiceIdSet(ids) {
+  const set = new Set();
+  if (!ids?.length) return set;
+  try {
+    const rows = getDb().prepare('SELECT expense_id FROM expense_invoices').all();
+    for (const r of rows) {
+      const eid = Number(r.expense_id);
+      if (ids.includes(eid)) set.add(eid);
+    }
+  } catch (_) { /* table may not exist yet */ }
+  return set;
+}
+
+function attachInvoiceFlags(row, invoiceIds) {
+  if (!row) return row;
+  const id = Number(row.id);
+  const hasDb = invoiceIds?.has(id);
+  const { invoice_data, ...rest } = row;
+  return {
+    ...rest,
+    amount: Number(row.amount) || 0,
+    has_invoice: !!(row.invoice_path || invoice_data || hasDb),
+    invoice_path: row.invoice_path || (hasDb ? `expense-docs/${id}/invoice.jpg` : row.invoice_path)
+  };
+}
+
 function getExpenseById(id) {
-  return getDb().prepare(`
+  const row = getDb().prepare(`
     SELECT e.*, u.full_name as user_name FROM expenses e
     LEFT JOIN users u ON e.user_id = u.id WHERE e.id = ?
   `).get(id);
+  return attachInvoiceFlags(row, expenseInvoiceIdSet([Number(id)]));
 }
 
 function getExpenseDashboardStats(actor, filters = {}) {
   requireActor(actor, ['owner', 'manager', 'supervisor', 'assistant_manager', 'accountant', 'bookkeeper']);
   const analytics = require('../../lib/expense-analytics');
+  const extras = require('./expense-extras');
+  extras.ensureExpenseExtrasSchema();
   const db = getDb();
   const today = new Date().toLocaleDateString('en-CA');
   const from = filters.from || (() => {
@@ -3065,7 +3376,53 @@ function getExpenseDashboardStats(actor, filters = {}) {
   try {
     for (const b of branchesSvc.getBranches()) branchNames[b.id] = b.name;
   } catch (_) { /* optional */ }
-  return analytics.computeExpenseDashboard(rows, branchNames);
+
+  let revenueWeek = 0;
+  let revenueMonth = 0;
+  try {
+    const asOf = new Date();
+    const weekStart = (() => {
+      const x = new Date(asOf);
+      const day = x.getDay();
+      const diff = day === 0 ? -6 : 1 - day;
+      x.setDate(x.getDate() + diff);
+      return x.toLocaleDateString('en-CA');
+    })();
+    const monthFrom = `${asOf.getFullYear()}-${String(asOf.getMonth() + 1).padStart(2, '0')}-01`;
+    const salesSum = (f, t) => {
+      try {
+        return Number(db.prepare(`
+          SELECT COALESCE(SUM(total),0) as total FROM sales
+          WHERE date(created_at,'localtime') >= ? AND date(created_at,'localtime') <= ?
+            AND (status IS NULL OR status != 'voided')
+        `).get(f, t)?.total) || 0;
+      } catch (_) {
+        return Number(db.prepare(`
+          SELECT COALESCE(SUM(total),0) as total FROM sales
+          WHERE date(created_at,'localtime') >= ? AND date(created_at,'localtime') <= ?
+        `).get(f, t)?.total) || 0;
+      }
+    };
+    revenueWeek = salesSum(weekStart, today);
+    revenueMonth = salesSum(monthFrom, today);
+  } catch (_) { /* sales table optional */ }
+
+  const dash = analytics.computeExpenseDashboard(rows, branchNames, new Date(), { revenueWeek, revenueMonth });
+  try {
+    dash.budgets = extras.budgetStatus(extras.monthKey());
+  } catch (_) { dash.budgets = []; }
+  try {
+    dash.recurring = extras.listRecurring().filter((r) => r.is_active !== 0);
+  } catch (_) { dash.recurring = []; }
+  try {
+    const mk = extras.monthKey();
+    dash.ownerFundings = extras.listOwnerFundings({ from: `${mk}-01`, to: today, limit: 50 });
+    dash.ownerFundingTotal = (dash.ownerFundings || []).reduce((s, r) => s + (Number(r.amount) || 0), 0);
+  } catch (_) {
+    dash.ownerFundings = [];
+    dash.ownerFundingTotal = 0;
+  }
+  return dash;
 }
 
 function getExpenses(filters = {}) {
@@ -3083,7 +3440,8 @@ function getExpenses(filters = {}) {
   }
   sql += ' ORDER BY e.expense_date DESC';
   const rows = getDb().prepare(sql).all(...params);
-  return rows.map((r) => ({ ...r, amount: Number(r.amount) || 0 }));
+  const invoiceIds = expenseInvoiceIdSet(rows.map((r) => Number(r.id)));
+  return rows.map((r) => attachInvoiceFlags(r, invoiceIds));
 }
 
 function resolveInsertId(runResult, tableName) {
@@ -3098,6 +3456,8 @@ function resolveInsertId(runResult, tableName) {
 
 function saveExpense(data, actorId, actorName) {
   const li = require('../../lib/expense-line-items');
+  const extras = require('./expense-extras');
+  extras.ensureExpenseExtrasSchema();
   let lineItems = li.normalizeLineItems(data.line_items);
   let amount = lineItems.length ? li.lineItemsTotal(lineItems) : li.roundMoney(money(data.amount));
   if (!(amount > 0)) throw new Error('Expense amount must be greater than zero');
@@ -3106,21 +3466,40 @@ function saveExpense(data, actorId, actorName) {
   const description = String(data.description || data.notes || '').trim()
     || (lineItems.length ? li.lineItemsSummary(lineItems, 5) : '');
   const lineItemsJson = lineItems.length ? JSON.stringify(lineItems) : null;
+  const paymentMethod = String(data.payment_method || 'cash').trim() || 'cash';
+  const vendorName = String(data.vendor_name || '').trim() || null;
+  const fundingSource = String(data.funding_source || 'business').toLowerCase() === 'owner' ? 'owner' : 'business';
+  const purchaseOrderId = data.purchase_order_id != null && data.purchase_order_id !== ''
+    ? Number(data.purchase_order_id) : null;
+  const receiptOcr = data.receipt_ocr_text ? String(data.receipt_ocr_text).slice(0, 8000) : null;
+  try { getDb().exec('ALTER TABLE expenses ADD COLUMN payment_method TEXT'); } catch (_) { /* exists */ }
+  try { getDb().exec("ALTER TABLE expenses ADD COLUMN approval_status TEXT DEFAULT 'approved'"); } catch (_) { /* exists */ }
+  try { getDb().exec('ALTER TABLE expenses ADD COLUMN invoice_path TEXT'); } catch (_) { /* exists */ }
   const scope = branchesSvc.resolveBranchScope({ id: actorId }, { forceTill: true, branchId: data.branch_id });
   const branchId = data.branch_id != null ? Number(data.branch_id) : scope.stampId;
+  const actorRow = actorId ? getDb().prepare('SELECT role FROM users WHERE id = ?').get(actorId) : null;
+  const approvalStatus = data.approval_status
+    || (['owner', 'manager', 'supervisor'].includes(actorRow?.role) ? 'approved' : 'pending');
   let expenseId;
   if (data.id) {
     expenseId = data.id;
     try {
-      getDb().prepare('UPDATE expenses SET category=?, description=?, amount=?, expense_date=?, branch_id=?, line_items_json=? WHERE id=?')
-        .run(data.category, description, amount, expenseDate, branchId, lineItemsJson, data.id);
+      getDb().prepare(`UPDATE expenses SET category=?, description=?, amount=?, expense_date=?, branch_id=?,
+        line_items_json=?, payment_method=?, vendor_name=?, purchase_order_id=?, funding_source=?, receipt_ocr_text=? WHERE id=?`)
+        .run(data.category, description, amount, expenseDate, branchId, lineItemsJson, paymentMethod,
+          vendorName, purchaseOrderId, fundingSource, receiptOcr, data.id);
     } catch (_) {
       try {
-        getDb().prepare('UPDATE expenses SET category=?, description=?, amount=?, expense_date=?, branch_id=? WHERE id=?')
-          .run(data.category, description, amount, expenseDate, branchId, data.id);
+        getDb().prepare('UPDATE expenses SET category=?, description=?, amount=?, expense_date=?, branch_id=?, line_items_json=?, payment_method=? WHERE id=?')
+          .run(data.category, description, amount, expenseDate, branchId, lineItemsJson, paymentMethod, data.id);
       } catch (_2) {
-        getDb().prepare('UPDATE expenses SET category=?, description=?, amount=?, expense_date=? WHERE id=?')
-          .run(data.category, description, amount, expenseDate, data.id);
+        try {
+          getDb().prepare('UPDATE expenses SET category=?, description=?, amount=?, expense_date=?, branch_id=? WHERE id=?')
+            .run(data.category, description, amount, expenseDate, branchId, data.id);
+        } catch (_3) {
+          getDb().prepare('UPDATE expenses SET category=?, description=?, amount=?, expense_date=? WHERE id=?')
+            .run(data.category, description, amount, expenseDate, data.id);
+        }
       }
     }
     audit(actorId, actorName, 'update_expense', 'expense', data.id, data);
@@ -3129,36 +3508,64 @@ function saveExpense(data, actorId, actorName) {
     let r;
     try {
       r = getDb().prepare(`
-        INSERT INTO expenses (category, description, amount, user_id, expense_date, branch_id, line_items_json)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `).run(data.category, description, amount, actorId, expenseDate, branchId, lineItemsJson);
+        INSERT INTO expenses (category, description, amount, user_id, expense_date, branch_id, line_items_json,
+          payment_method, approval_status, vendor_name, purchase_order_id, funding_source, receipt_ocr_text)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(data.category, description, amount, actorId, expenseDate, branchId, lineItemsJson,
+        paymentMethod, approvalStatus, vendorName, purchaseOrderId, fundingSource, receiptOcr);
     } catch (_) {
       try {
         r = getDb().prepare(`
-          INSERT INTO expenses (category, description, amount, user_id, expense_date, branch_id)
-          VALUES (?, ?, ?, ?, ?, ?)
-        `).run(data.category, description, amount, actorId, expenseDate, branchId);
+          INSERT INTO expenses (category, description, amount, user_id, expense_date, branch_id, line_items_json, payment_method, approval_status)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(data.category, description, amount, actorId, expenseDate, branchId, lineItemsJson, paymentMethod, approvalStatus);
       } catch (_2) {
-        r = getDb().prepare(`
-          INSERT INTO expenses (category, description, amount, user_id, expense_date)
-          VALUES (?, ?, ?, ?, ?)
-        `).run(data.category, description, amount, actorId, expenseDate);
+        try {
+          r = getDb().prepare(`
+            INSERT INTO expenses (category, description, amount, user_id, expense_date, branch_id, line_items_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+          `).run(data.category, description, amount, actorId, expenseDate, branchId, lineItemsJson);
+        } catch (_3) {
+          r = getDb().prepare(`
+            INSERT INTO expenses (category, description, amount, user_id, expense_date)
+            VALUES (?, ?, ?, ?, ?)
+          `).run(data.category, description, amount, actorId, expenseDate);
+        }
       }
     }
     expenseId = resolveInsertId(r, 'expenses');
     audit(actorId, actorName, 'create_expense', 'expense', expenseId, data);
-    if (expenseId) accHook('postFromExpense', expenseId);
+    if (expenseId && approvalStatus === 'approved') accHook('postFromExpense', expenseId);
   }
   if (expenseId && data.invoice_image) {
     try {
       const ed = require('../../lib/expense-documents');
+      ed.ensureInvoiceStore();
       const invoicePath = ed.saveDataUrl(expenseId, data.invoice_image);
       if (invoicePath) {
-        try {
-          getDb().prepare('UPDATE expenses SET invoice_path = ? WHERE id = ?').run(invoicePath, expenseId);
-        } catch (_) { /* column may not exist yet */ }
+        getDb().prepare('UPDATE expenses SET invoice_path = ? WHERE id = ?').run(invoicePath, expenseId);
       }
-    } catch (_) { /* invoice optional */ }
+    } catch (err) {
+      console.warn('[expenses] invoice save failed', err.message || err);
+    }
+  }
+  // Owner pocket: record as owner-funded purchase (personal money → business benefit)
+  if (expenseId && fundingSource === 'owner' && !data.id) {
+    try {
+      extras.recordOwnerFunding({
+        funding_date: expenseDate,
+        amount,
+        funding_type: 'purchase',
+        description: description || `${data.category} (owner-funded)`,
+        expense_id: expenseId,
+        payment_method: paymentMethod,
+        vendor_name: vendorName,
+        category: data.category,
+        notes: data.funding_notes || null
+      }, { id: actorId, full_name: actorName, username: actorName });
+    } catch (err) {
+      console.warn('[expenses] owner funding record failed', err.message || err);
+    }
   }
   return expenseId;
 }
@@ -3212,12 +3619,39 @@ function getCustomers(search) {
     }
   }
   sql += ' ORDER BY name LIMIT 500';
-  return getDb().prepare(sql).all(...params);
+  const rows = getDb().prepare(sql).all(...params);
+  return enrichCustomersWithLoyalty(rows);
+}
+
+/** Points balance from loyalty ledger (matches Sales Management earned totals). */
+function enrichCustomersWithLoyalty(rows) {
+  if (!rows?.length) return rows || [];
+  const db = getDb();
+  const ids = rows.map((r) => r.id).filter(Boolean);
+  const balances = {};
+  if (ids.length) {
+    const placeholders = ids.map(() => '?').join(',');
+    db.prepare(`
+      SELECT customer_id, COALESCE(SUM(points), 0) AS balance
+      FROM loyalty_transactions
+      WHERE customer_id IN (${placeholders})
+      GROUP BY customer_id
+    `).all(...ids).forEach((r) => {
+      balances[r.customer_id] = Math.max(0, Math.floor(Number(r.balance) || 0));
+    });
+  }
+  return rows.map((c) => {
+    const fromLedger = balances[c.id];
+    const pts = fromLedger != null ? fromLedger : Math.max(0, Math.floor(Number(c.loyalty_points) || 0));
+    return { ...c, loyalty_points: pts };
+  });
 }
 
 function getCustomer(id) {
   if (id == null || id === '') return null;
-  return getDb().prepare('SELECT * FROM customers WHERE id = ?').get(id) || null;
+  const row = getDb().prepare('SELECT * FROM customers WHERE id = ?').get(id) || null;
+  if (!row) return null;
+  return enrichCustomersWithLoyalty([row])[0];
 }
 
 function saveCustomer(data, actorId, actorName) {
@@ -3309,6 +3743,9 @@ function deleteCustomer(id, actorId, actorName) {
       db.prepare(`UPDATE web_customers SET is_active = 0, customer_id = NULL, updated_at = datetime('now') WHERE customer_id = ?`).run(id);
     } catch (_) { /* optional */ }
     db.prepare('DELETE FROM customer_credit_ledger WHERE customer_id = ?').run(id);
+    try {
+      require('./loyalty-points').purgeLotsForCustomer(id);
+    } catch (_) { /* optional */ }
     db.prepare('DELETE FROM loyalty_transactions WHERE customer_id = ?').run(id);
     db.prepare('DELETE FROM customers WHERE id = ?').run(id);
   };
@@ -3328,14 +3765,14 @@ function deleteCustomer(id, actorId, actorName) {
 }
 
 function getCustomerHistory(customerId) {
-  return getDb().prepare(`
-    SELECT s.* FROM sales s WHERE s.customer_id = ? ORDER BY s.created_at DESC LIMIT 50
-  `).all(customerId);
+  const auditSvc = require('./audit');
+  return auditSvc.getCustomerPurchaseSummary(customerId).sales || [];
 }
 
 // ─── Suppliers ──────────────────────────────────────────────────────────────
 
 function getSuppliers(search) {
+  ensureSupplierSchema();
   let sql = 'SELECT * FROM suppliers WHERE 1=1';
   const params = [];
   if (search) { sql += ' AND (name LIKE ? OR phone LIKE ?)'; const q = `%${search}%`; params.push(q, q); }
@@ -3349,7 +3786,9 @@ function ensureSupplierSchema() {
     'ALTER TABLE suppliers ADD COLUMN bank_name TEXT',
     'ALTER TABLE suppliers ADD COLUMN bank_account_name TEXT',
     'ALTER TABLE suppliers ADD COLUMN bank_account_number TEXT',
-    'ALTER TABLE suppliers ADD COLUMN bank_branch_code TEXT'
+    'ALTER TABLE suppliers ADD COLUMN bank_branch_code TEXT',
+    'ALTER TABLE suppliers ADD COLUMN stock_date TEXT',
+    'ALTER TABLE suppliers ADD COLUMN pay_by_date TEXT'
   ]) {
     try { db.exec(sql); } catch (_) { /* exists */ }
   }
@@ -3359,24 +3798,44 @@ function saveSupplier(data, actorId, actorName) {
   ensureSupplierSchema();
   if (data.id) {
     getDb().prepare(`UPDATE suppliers SET name=?, phone=?, email=?, address=?, balance_owed=?, notes=?,
-      bank_name=?, bank_account_name=?, bank_account_number=?, bank_branch_code=?, updated_at=datetime('now') WHERE id=?`)
+      bank_name=?, bank_account_name=?, bank_account_number=?, bank_branch_code=?,
+      stock_date=?, pay_by_date=?, updated_at=datetime('now') WHERE id=?`)
       .run(
         data.name, data.phone, data.email, data.address, data.balance_owed || 0, data.notes || null,
         data.bank_name || null, data.bank_account_name || null, data.bank_account_number || null, data.bank_branch_code || null,
+        data.stock_date || null, data.pay_by_date || null,
         data.id
       );
     audit(actorId, actorName, 'update_supplier', 'supplier', data.id, { name: data.name });
     return data.id;
   }
   const r = getDb().prepare(`
-    INSERT INTO suppliers (name, phone, email, address, balance_owed, notes, bank_name, bank_account_name, bank_account_number, bank_branch_code)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO suppliers (name, phone, email, address, balance_owed, notes, bank_name, bank_account_name, bank_account_number, bank_branch_code, stock_date, pay_by_date)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     data.name, data.phone, data.email, data.address, data.balance_owed || 0, data.notes || null,
-    data.bank_name || null, data.bank_account_name || null, data.bank_account_number || null, data.bank_branch_code || null
+    data.bank_name || null, data.bank_account_name || null, data.bank_account_number || null, data.bank_branch_code || null,
+    data.stock_date || null, data.pay_by_date || null
   );
   audit(actorId, actorName, 'create_supplier', 'supplier', r.lastInsertRowid, { name: data.name });
   return r.lastInsertRowid;
+}
+
+function deleteSupplier(id, actorId, actorName) {
+  ensureSupplierSchema();
+  const supplier = getDb().prepare('SELECT * FROM suppliers WHERE id = ?').get(id);
+  if (!supplier) throw new Error('Supplier not found');
+  try {
+    getDb().prepare('DELETE FROM suppliers WHERE id = ?').run(id);
+  } catch (err) {
+    const msg = String(err?.message || err || '');
+    if (/foreign key|constraint/i.test(msg)) {
+      throw new Error('Cannot delete this supplier — it is linked to purchase orders or stock. Clear those first, or edit instead.');
+    }
+    throw err;
+  }
+  audit(actorId, actorName, 'delete_supplier', 'supplier', id, { name: supplier.name });
+  return { success: true };
 }
 
 function recordSupplierPayment(supplierId, data, actorId, actorName) {
@@ -3549,7 +4008,7 @@ function receivePurchaseOrder(id, actorId, actorName) {
 function getDashboardStats(from, to, branchId) {
   const db = getDb();
   const flags = branchesSvc.ensureBranchSchema();
-  const rangeFrom = from || new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
+  const rangeFrom = from || new Date(new Date().getFullYear(), new Date().getMonth(), 1).toLocaleDateString('en-CA');
   const rangeTo = to || new Date().toLocaleDateString('en-CA');
   const canScopeSales = !!(branchId && flags.sales);
   const canScopeExpenses = !!(branchId && flags.expenses);
@@ -3716,7 +4175,7 @@ function getInventoryStats(branchId) {
 
 function getSalesAnalytics(from, to) {
   const db = getDb();
-  const rangeFrom = from || new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
+  const rangeFrom = from || new Date(new Date().getFullYear(), new Date().getMonth(), 1).toLocaleDateString('en-CA');
   const rangeTo = to || new Date().toLocaleDateString('en-CA');
   return {
     byHour: db.prepare(`
@@ -3758,13 +4217,89 @@ function normalizeTargetPeriod(raw, defaultActive) {
   };
 }
 
+function normalizeProductTargetsMeta(raw) {
+  const src = raw && typeof raw === 'object' ? raw : {};
+  const hasExplicit = Object.prototype.hasOwnProperty.call(src, 'active')
+    || Object.prototype.hasOwnProperty.call(src, 'enabled');
+  let active = false;
+  if (hasExplicit) {
+    active = src.active === true || src.active === 1 || src.enabled === true;
+  }
+  return {
+    active,
+    expires_at: src.expires_at || null
+  };
+}
+
+function normalizeProductTargets(list) {
+  if (!Array.isArray(list)) return [];
+  const seen = new Set();
+  const out = [];
+  for (const row of list) {
+    const productId = Number(row?.product_id || row?.id);
+    const qty = Number(row?.target_qty ?? row?.qty ?? row?.quantity);
+    if (!(productId > 0) || !(qty > 0) || seen.has(productId)) continue;
+    seen.add(productId);
+    out.push({
+      product_id: productId,
+      target_qty: qty,
+      product_name: row.product_name || row.name || null,
+      selling_price: row.selling_price != null ? Number(row.selling_price) : null
+    });
+  }
+  return out;
+}
+
+function normalizeBranchTarget(raw) {
+  const src = raw && typeof raw === 'object' ? raw : {};
+  const productTargets = normalizeProductTargets(src.product_targets || src.products || []);
+  const metaRaw = src.product_targets_meta;
+  let productMeta;
+  if (metaRaw && typeof metaRaw === 'object' && (Object.prototype.hasOwnProperty.call(metaRaw, 'active') || Object.prototype.hasOwnProperty.call(metaRaw, 'enabled'))) {
+    productMeta = normalizeProductTargetsMeta(metaRaw);
+  } else if (productTargets.length) {
+    productMeta = {
+      active: true,
+      expires_at: metaRaw?.expires_at || src.product_targets_expires_at || null
+    };
+  } else {
+    productMeta = normalizeProductTargetsMeta(metaRaw || { expires_at: src.product_targets_expires_at || null });
+  }
+  return {
+    daily: normalizeTargetPeriod(src.daily != null ? src.daily : src.daily_amount, true),
+    product_targets: productTargets,
+    product_targets_meta: productMeta
+  };
+}
+
 function normalizeSalesTargets(raw) {
   const src = raw || {};
+  const byBranch = {};
+  const branchSrc = src.by_branch && typeof src.by_branch === 'object' ? src.by_branch : {};
+  for (const [key, val] of Object.entries(branchSrc)) {
+    byBranch[String(key)] = normalizeBranchTarget(val);
+  }
+  const productTargets = normalizeProductTargets(src.product_targets || []);
+  const metaRaw = src.product_targets_meta;
+  let productMeta;
+  if (metaRaw && typeof metaRaw === 'object' && (Object.prototype.hasOwnProperty.call(metaRaw, 'active') || Object.prototype.hasOwnProperty.call(metaRaw, 'enabled'))) {
+    productMeta = normalizeProductTargetsMeta(metaRaw);
+  } else if (productTargets.length) {
+    productMeta = {
+      active: true,
+      expires_at: metaRaw?.expires_at || src.product_targets_expires_at || null
+    };
+  } else {
+    productMeta = normalizeProductTargetsMeta(metaRaw || { expires_at: src.product_targets_expires_at || null });
+  }
   return {
     daily: normalizeTargetPeriod(src.daily, src.daily?.active !== false),
     weekly: normalizeTargetPeriod(src.weekly, false),
     monthly: normalizeTargetPeriod(src.monthly, false),
-    yearly: normalizeTargetPeriod(src.yearly, false)
+    yearly: normalizeTargetPeriod(src.yearly, false),
+    product_targets: productTargets,
+    product_targets_meta: productMeta,
+    by_branch: byBranch
   };
 }
 
@@ -3778,9 +4313,43 @@ function isTargetPeriodActive(period) {
   return true;
 }
 
-function getActiveDailyTargetAmount(targets) {
+function isProductTargetsActive(meta, list) {
+  if (!Array.isArray(list) || !list.length) return false;
+  if (!meta || meta.active !== true) return false;
+  if (meta.expires_at) {
+    const today = new Date().toLocaleDateString('en-CA');
+    if (String(meta.expires_at).slice(0, 10) < today) return false;
+  }
+  return true;
+}
+
+function getActiveDailyTargetAmount(targets, branchId) {
   const norm = normalizeSalesTargets(targets);
+  if (branchId != null && branchId !== '' && branchId !== 'all') {
+    const b = norm.by_branch?.[String(branchId)];
+    if (b && isTargetPeriodActive(b.daily)) return b.daily.amount;
+  }
   return isTargetPeriodActive(norm.daily) ? norm.daily.amount : 0;
+}
+
+function resolveTargetsForBranch(targets, branchId) {
+  const norm = normalizeSalesTargets(targets);
+  const key = branchId != null && branchId !== '' && branchId !== 'all' ? String(branchId) : null;
+  const branch = key && norm.by_branch?.[key] ? norm.by_branch[key] : null;
+  const daily = branch && isTargetPeriodActive(branch.daily)
+    ? branch.daily
+    : (isTargetPeriodActive(norm.daily) ? norm.daily : { amount: 0, active: false, expires_at: null });
+  const productTargets = (branch?.product_targets?.length
+    ? branch.product_targets
+    : norm.product_targets) || [];
+  const productMeta = branch?.product_targets_meta || norm.product_targets_meta;
+  return {
+    daily,
+    product_targets: isProductTargetsActive(productMeta, productTargets) ? productTargets : [],
+    product_targets_meta: productMeta,
+    product_targets_active: isProductTargetsActive(productMeta, productTargets),
+    branch_id: key
+  };
 }
 
 function getActiveSalesTargets(targets) {
@@ -3800,16 +4369,175 @@ function getSalesTargets() {
   return normalizeSalesTargets(parseJsonField(row?.sales_targets, {}));
 }
 
+function enrichProductTargets(list) {
+  const db = getDb();
+  return (list || []).map((row) => {
+    const p = db.prepare('SELECT id, name, selling_price FROM products WHERE id = ?').get(row.product_id);
+    return {
+      product_id: row.product_id,
+      target_qty: row.target_qty,
+      product_name: p?.name || row.product_name || `Product #${row.product_id}`,
+      selling_price: p != null ? Number(p.selling_price) || 0 : (Number(row.selling_price) || 0)
+    };
+  });
+}
+
 function saveSalesTargets(targets, actorId, actorName) {
   requireActor({ id: actorId }, ['owner', 'manager']);
-  const data = normalizeSalesTargets(targets);
+  const prev = getSalesTargets();
+  const data = normalizeSalesTargets({ ...prev, ...targets });
   for (const period of ['daily', 'weekly', 'monthly', 'yearly']) {
     if (targets[period] != null) {
       data[period] = normalizeTargetPeriod(targets[period], period === 'daily');
     }
   }
+  if (targets.product_targets != null) {
+    data.product_targets = enrichProductTargets(normalizeProductTargets(targets.product_targets));
+  }
+  if (targets.product_targets_meta != null) {
+    data.product_targets_meta = normalizeProductTargetsMeta(targets.product_targets_meta);
+  } else if (data.product_targets.length && !data.product_targets_meta.active) {
+    // Saving products without explicit meta → turn product targets on
+    data.product_targets_meta = { active: true, expires_at: data.product_targets_meta.expires_at || null };
+  }
+  if (targets.by_branch != null && typeof targets.by_branch === 'object') {
+    data.by_branch = { ...(prev.by_branch || {}) };
+    for (const [key, val] of Object.entries(targets.by_branch)) {
+      const bt = normalizeBranchTarget(val);
+      bt.product_targets = enrichProductTargets(bt.product_targets);
+      if (val.product_targets_meta != null) {
+        bt.product_targets_meta = normalizeProductTargetsMeta(val.product_targets_meta);
+      } else if (bt.product_targets.length) {
+        bt.product_targets_meta = { active: true, expires_at: bt.product_targets_meta?.expires_at || null };
+      }
+      data.by_branch[String(key)] = bt;
+    }
+  }
+  if (targets.branch_id != null && targets.branch_id !== '' && targets.branch_id !== 'all') {
+    const bid = String(targets.branch_id);
+    if (!data.by_branch) data.by_branch = {};
+    const slice = normalizeBranchTarget({
+      daily: targets.branch_daily != null ? targets.branch_daily : targets.daily,
+      product_targets: targets.branch_product_targets != null ? targets.branch_product_targets : targets.product_targets,
+      product_targets_meta: targets.branch_product_targets_meta != null
+        ? targets.branch_product_targets_meta
+        : targets.product_targets_meta
+    });
+    slice.product_targets = enrichProductTargets(slice.product_targets);
+    if (slice.product_targets.length && !slice.product_targets_meta.active) {
+      slice.product_targets_meta = { active: true, expires_at: slice.product_targets_meta.expires_at || null };
+    }
+    data.by_branch[bid] = slice;
+  }
   saveSettings({ sales_targets: JSON.stringify(data) }, actorId, actorName);
-  return data;
+  // Re-read to confirm persistence
+  return getSalesTargets();
+}
+
+/** Today's money + product qty progress from completed POS sales (voids/refunds excluded). */
+function getTodayTargetProgress(branchId) {
+  const db = getDb();
+  const today = new Date().toLocaleDateString('en-CA');
+  const resolved = resolveTargetsForBranch(getSalesTargets(), branchId);
+  const dailyTarget = isTargetPeriodActive(resolved.daily) ? Number(resolved.daily.amount) || 0 : 0;
+
+  let salesSql = `
+    SELECT COALESCE(SUM(s.total), 0) AS total
+    FROM sales s
+    WHERE date(s.created_at) = date(?)
+      AND ${SALE_REVENUE_STATUSES_SQL}
+  `;
+  const salesParams = [today];
+  if (branchId != null && branchId !== '' && branchId !== 'all') {
+    salesSql += ' AND s.branch_id = ?';
+    salesParams.push(Number(branchId));
+  }
+  const todaySales = Number(db.prepare(salesSql).get(...salesParams)?.total) || 0;
+
+  const productIds = (resolved.product_targets || []).map((p) => Number(p.product_id)).filter(Boolean);
+  const soldByProduct = new Map();
+  if (productIds.length) {
+    const placeholders = productIds.map(() => '?').join(',');
+    let qtySql = `
+      SELECT si.product_id,
+        COALESCE(SUM(si.quantity), 0) AS sold_qty
+      FROM sale_items si
+      JOIN sales s ON s.id = si.sale_id
+      WHERE date(s.created_at) = date(?)
+        AND ${SALE_REVENUE_STATUSES_SQL}
+        AND si.product_id IN (${placeholders})
+    `;
+    const qtyParams = [today, ...productIds];
+    if (branchId != null && branchId !== '' && branchId !== 'all') {
+      qtySql += ' AND s.branch_id = ?';
+      qtyParams.push(Number(branchId));
+    }
+    qtySql += ' GROUP BY si.product_id';
+    for (const row of db.prepare(qtySql).all(...qtyParams)) {
+      soldByProduct.set(Number(row.product_id), Number(row.sold_qty) || 0);
+    }
+    // Subtract refunded/returned qty
+    try {
+      let retSql = `
+        SELECT ri.product_id, COALESCE(SUM(ri.quantity), 0) AS returned_qty
+        FROM return_items ri
+        JOIN returns r ON r.id = ri.return_id
+        JOIN sales s ON s.id = r.sale_id
+        WHERE date(COALESCE(r.created_at, r.return_date, s.created_at)) = date(?)
+          AND ri.product_id IN (${placeholders})
+      `;
+      const retParams = [today, ...productIds];
+      if (branchId != null && branchId !== '' && branchId !== 'all') {
+        retSql += ' AND s.branch_id = ?';
+        retParams.push(Number(branchId));
+      }
+      retSql += ' GROUP BY ri.product_id';
+      for (const row of db.prepare(retSql).all(...retParams)) {
+        const id = Number(row.product_id);
+        soldByProduct.set(id, Math.max(0, (soldByProduct.get(id) || 0) - (Number(row.returned_qty) || 0)));
+      }
+    } catch (_) { /* returns table shape may vary */ }
+  }
+
+  const products = enrichProductTargets(resolved.product_targets).map((p) => {
+    const sold = soldByProduct.get(Number(p.product_id)) || 0;
+    const target = Number(p.target_qty) || 0;
+    const price = Number(p.selling_price) || 0;
+    return {
+      ...p,
+      selling_price: price,
+      sold_qty: sold,
+      remaining_qty: Math.max(0, target - sold),
+      target_value: Math.round(target * price * 100) / 100,
+      sold_value: Math.round(sold * price * 100) / 100,
+      remaining_value: Math.round(Math.max(0, target - sold) * price * 100) / 100
+    };
+  });
+
+  const productTargetValue = products.reduce((s, p) => s + (Number(p.target_value) || 0), 0);
+  const productSoldValue = products.reduce((s, p) => s + (Number(p.sold_value) || 0), 0);
+  const productTargetQty = products.reduce((s, p) => s + (Number(p.target_qty) || 0), 0);
+  const productSoldQty = products.reduce((s, p) => s + (Number(p.sold_qty) || 0), 0);
+
+  const remaining = Math.max(0, dailyTarget - todaySales);
+  const pct = dailyTarget > 0 ? Math.round((todaySales / dailyTarget) * 1000) / 10 : 0;
+  return {
+    branch_id: resolved.branch_id,
+    daily_active: dailyTarget > 0,
+    daily_target: dailyTarget,
+    sales_achieved: todaySales,
+    remaining,
+    percentage: pct,
+    met: dailyTarget > 0 && todaySales >= dailyTarget,
+    product_targets_active: !!resolved.product_targets_active,
+    product_targets_expires_at: resolved.product_targets_meta?.expires_at || null,
+    product_target_qty: productTargetQty,
+    product_sold_qty: productSoldQty,
+    product_target_value: Math.round(productTargetValue * 100) / 100,
+    product_sold_value: Math.round(productSoldValue * 100) / 100,
+    product_remaining_value: Math.round(Math.max(0, productTargetValue - productSoldValue) * 100) / 100,
+    products
+  };
 }
 
 const DEFAULT_SHIFT_REQUIRED_ROLES = ['cashier', 'manager', 'assistant_manager', 'owner'];
@@ -3945,6 +4673,26 @@ function getShiftClosePreview(shiftId, userId) {
   const paymentMap = {};
   for (const p of payments) paymentMap[p.payment_type] = p.total || 0;
 
+  // Taken orders paid in this shift whose original sale was earlier (or another shift)
+  // must still land in today's cash/card/eft expected totals.
+  try {
+    require('./taken-orders').ensureSchema();
+    const collected = db.prepare(`
+      SELECT t.payment_method AS payment_type, SUM(t.amount_owed) AS total
+      FROM taken_orders t
+      JOIN sales s ON s.id = t.sale_id
+      WHERE UPPER(t.status)='PAID'
+        AND t.paid_at >= ?
+        AND s.created_at < ?
+        AND (t.staff_user_id = ? OR s.user_id = ?)
+      GROUP BY t.payment_method
+    `).all(shift.opened_at, shift.opened_at, userId, userId);
+    for (const row of collected) {
+      const k = String(row.payment_type || 'cash').toLowerCase();
+      paymentMap[k] = (Number(paymentMap[k]) || 0) + (Number(row.total) || 0);
+    }
+  } catch (_) { /* schema may be missing on old DBs */ }
+
   const refundTotal = Number(refunds?.total) || 0;
   const cash = paymentMap.cash || 0;
   let cashDropsTotal = 0;
@@ -3968,7 +4716,7 @@ function getShiftClosePreview(shiftId, userId) {
   const targetRemaining = Math.max(0, dailyTarget - todaySales);
   const targetMet = dailyTarget > 0 && todaySales >= dailyTarget ? 1 : 0;
 
-  const methods = ['cash', 'card', 'eft', 'mobile', 'account', 'giftcard', 'other'];
+  const methods = ['cash', 'card', 'eft', 'mobile', 'account', 'giftcard', 'other', 'taken'];
   const expectedPayments = {};
   for (const m of methods) expectedPayments[m] = paymentMap[m] || 0;
 
@@ -4101,7 +4849,7 @@ function closeShift(shiftId, data, userId) {
   const eft = paymentMap.eft || 0;
   const mobile = paymentMap.mobile || 0;
   const giftcard = paymentMap.giftcard || 0;
-  const account = paymentMap.account || 0;
+  const account = (paymentMap.account || 0) + (paymentMap.taken || 0);
   const other = paymentMap.other || 0;
 
   const actualPayments = data.actual_payments || {};
@@ -4411,8 +5159,9 @@ function getStockReport() {
 function getAuditLog(filters = {}) {
   let sql = 'SELECT * FROM audit_log WHERE 1=1';
   const params = [];
-  if (filters.from) { sql += ' AND date(created_at) >= date(?)'; params.push(filters.from); }
-  if (filters.to) { sql += ' AND date(created_at) <= date(?)'; params.push(filters.to); }
+  // Use localtime so date filters match the shop's calendar day
+  if (filters.from) { sql += " AND date(created_at, 'localtime') >= date(?)"; params.push(filters.from); }
+  if (filters.to) { sql += " AND date(created_at, 'localtime') <= date(?)"; params.push(filters.to); }
   sql += ' ORDER BY created_at DESC LIMIT ?';
   params.push(filters.limit || 500);
   return getDb().prepare(sql).all(...params);
@@ -4439,8 +5188,9 @@ function getNotifications(actorOrRole) {
   else {
     try { role = session.getUserSession()?.role || null; } catch (_) { role = null; }
   }
-  if (!role) return rows;
-  return rows.filter(r => notificationVisibleToRole(r, role));
+  const filtered = rows.filter((r) => isNotificationTypeEnabled(r.type));
+  if (!role) return filtered;
+  return filtered.filter(r => notificationVisibleToRole(r, role));
 }
 
 function markNotificationRead(id) {
@@ -4487,11 +5237,14 @@ function refreshPaymentDueNotifications() {
   try { hrContracts.ensureDefaultTemplates(); } catch (_) { /* ignore */ }
   try { hrTrainingSvc.ensureDefaultHrTemplates(); } catch (_) { /* ignore */ }
   try { opsComplianceSvc.ensureChecklistReminderNotifications(); } catch (_) { /* ignore */ }
-  try { flyersSvc.syncFlyerStatuses(); } catch (_) { /* ignore */ }
   try { documentHubSvc.processScheduledDocuments(); } catch (_) { /* ignore */ }
   try { promoRequestsSvc.syncPromoStatuses(); } catch (_) { /* ignore */ }
   try { features.expireLoyaltyPoints(); } catch (_) { /* ignore */ }
   try { features.ensureLoyaltyReminderNotifications?.(addNotification); } catch (_) { /* ignore */ }
+  try {
+    const taken = require('./taken-orders');
+    if (typeof taken.ensureUnpaidNotifications === 'function') taken.ensureUnpaidNotifications();
+  } catch (_) { /* ignore */ }
 }
 
 function processScheduledDocuments() {
@@ -4532,6 +5285,7 @@ function runStartupTasks() {
   try { if (typeof staffExports.autoCloseOpenAttendance === 'function') staffExports.autoCloseOpenAttendance(); } catch (_) { /* ignore */ }
   try { enforceShiftCashoutDeadlines(); } catch (_) { /* ignore */ }
   try { features.expireLoyaltyPoints(); } catch (_) { /* ignore */ }
+  try { features.syncMissingLoyaltyPoints({ limit: 2000 }); } catch (_) { /* ignore */ }
   try { features.ensureLoyaltyReminderNotifications?.(addNotification); } catch (_) { /* ignore */ }
   try {
     if (process.env.SHOP_POS_LOCAL_INSTALLER === '1') {
@@ -4643,6 +5397,31 @@ async function acceptOnlineOrderAsSale(localId, actor, opts = {}) {
   if (order.status !== 'pending') throw new Error(`Order is already ${order.status}`);
   if (order.sale_id) throw new Error('Order already linked to a sale');
 
+  if (!order.customer_id) {
+    let customerId = null;
+    if (order.web_customer_id) {
+      const wc = db.prepare('SELECT customer_id, phone, email FROM web_customers WHERE id = ?').get(order.web_customer_id);
+      customerId = wc?.customer_id || null;
+      if (!customerId && (order.customer_phone || wc?.phone)) {
+        const phone = order.customer_phone || wc.phone;
+        customerId = db.prepare(`
+          SELECT id FROM customers
+          WHERE phone = ? OR REPLACE(REPLACE(COALESCE(phone, ''), ' ', ''), '-', '') =
+            REPLACE(REPLACE(?, ' ', ''), '-', '')
+          LIMIT 1
+        `).get(phone, phone)?.id || null;
+      }
+      if (!customerId && (order.customer_email || wc?.email)) {
+        const email = order.customer_email || wc.email;
+        customerId = db.prepare(`SELECT id FROM customers WHERE lower(trim(email)) = lower(trim(?)) LIMIT 1`).get(email)?.id || null;
+      }
+    }
+    if (customerId) {
+      db.prepare('UPDATE online_orders_local SET customer_id = ? WHERE id = ?').run(customerId, localId);
+      order.customer_id = customerId;
+    }
+  }
+
   let lines = [];
   try { lines = JSON.parse(order.items_json || '[]'); } catch (_) {
     throw new Error('Order items are invalid');
@@ -4719,6 +5498,9 @@ async function acceptOnlineOrderAsSale(localId, actor, opts = {}) {
     order.customer_name ? `Customer: ${order.customer_name}` : null,
     order.customer_phone ? `Phone: ${order.customer_phone}` : null,
     fulfillment ? `Fulfillment: ${fulfillment}` : null,
+    order.delivery_place || (String(order.notes || '').match(/Delivery place:\s*([^·]+)/i) || [])[1]
+      ? `Delivery place: ${order.delivery_place || String(order.notes || '').match(/Delivery place:\s*([^·]+)/i)[1].trim()}`
+      : null,
     discountParts.length ? `Discounts: ${discountParts.join(' · ')}` : null,
     order.notes || null
   ].filter(Boolean).join(' · ');
@@ -4740,6 +5522,7 @@ async function acceptOnlineOrderAsSale(localId, actor, opts = {}) {
   }
   const tender = payments.reduce((s, p) => s + (Number(p.amount) || 0), 0);
 
+  const placeFromNotes = (String(order.notes || '').match(/Delivery place:\s*([^·]+)/i) || [])[1]?.trim() || null;
   const saleData = {
     items: saleItems,
     discount: saleDiscount,
@@ -4750,7 +5533,9 @@ async function acceptOnlineOrderAsSale(localId, actor, opts = {}) {
     order_type: fulfillment === 'delivery' ? 'delivery' : 'online',
     order_source: order.order_source || 'ONLINE',
     customer_id: order.customer_id || null,
+    referral_code: order.coupon_code || null,
     delivery_address: fulfillment === 'delivery' ? (opts.delivery_address || order.delivery_address || null) : null,
+    delivery_place: order.delivery_place || placeFromNotes || null,
     notes,
     discount_authorized: true,
     gift_card_code: giftCardCode,
@@ -4843,7 +5628,7 @@ module.exports = {
   setEmployeeSession: session.setEmployeeSession,
   verifyBookkeepingPassword, setBookkeepingPassword, isBookkeepingUnlocked, requireBookkeepingAccess,
   hasRecoverySecret, getRecoveryStatus, setRecoverySecret, getUsernamesForRecovery, resetPasswordViaRecovery, seedInstallerAccountFromCloud, factoryResetBusiness, clearOperationalData,
-  getSettings, getSettingsParsed, saveSettings, saveJsonSetting, getMenuHighlightSettings, saveMenuHighlightSettings, completeSetup,
+  getSettings, getSettingsParsed, getOperatingHoursSettings, saveSettings, saveJsonSetting, getMenuHighlightSettings, saveMenuHighlightSettings, completeSetup,
   detectExistingBusiness, adoptExistingBusiness, parseJsonField,
   getCategories, saveCategory, deleteCategory, ensureOtherItemsCategory, saveOtherSellItem, suggestSellPrice, cartProfitFloor,
   getProducts, getProduct, getProductByBarcode, getProductModifiers, saveProductModifiers, saveProduct, deleteProduct,
@@ -4853,16 +5638,28 @@ module.exports = {
   completeSale, getSale, getSaleByReceipt, holdOrder, getHeldOrders, deleteHeldOrder,
   processReturn, getReturns,
   getExpenses, getExpenseById, getExpenseCategories, getExpenseDashboardStats, saveExpenseCategories, saveExpense, deleteExpense,
+  parseExpenseReceipt: (text) => require('./expense-extras').parseReceiptText(text),
+  listExpenseBudgets: (f) => require('./expense-extras').listBudgets(f || {}),
+  saveExpenseBudget: (data, actor) => require('./expense-extras').saveBudget(data, actor),
+  deleteExpenseBudget: (id) => require('./expense-extras').deleteBudget(id),
+  expenseBudgetStatus: (mk) => require('./expense-extras').budgetStatus(mk),
+  listExpenseRecurring: () => require('./expense-extras').listRecurring(),
+  saveExpenseRecurring: (data, actor) => require('./expense-extras').saveRecurring(data, actor),
+  deleteExpenseRecurring: (id) => require('./expense-extras').deleteRecurring(id),
+  postExpenseRecurringDue: (actor) => require('./expense-extras').postDueRecurring(actor, saveExpense),
+  recordOwnerFunding: (data, actor) => require('./expense-extras').recordOwnerFunding(data, actor),
+  listOwnerFundings: (f) => require('./expense-extras').listOwnerFundings(f || {}),
   getCustomers, getCustomer, saveCustomer, deleteCustomer, getCustomerHistory,
-  getSuppliers, saveSupplier, recordSupplierPayment, getSupplierPayments,
+  getSuppliers, saveSupplier, deleteSupplier, recordSupplierPayment, getSupplierPayments,
   getPurchaseOrders, getPurchaseOrder, savePurchaseOrder, receivePurchaseOrder, updatePurchaseOrder, deletePurchaseOrder,
   getDashboardStats, getInventoryStats, getSalesAnalytics,
   getSalesReport, getProfitReport, getCashierReport, getCashierSalesDetail, getProductReport, getStockReport,
-  openShift, closeShift, getShiftClosePreview, getShifts, getOpenShift, getAnyOpenShifts, adminForceCloseShift, updateShiftRecord, deleteShiftRecord, getSalesTargets, saveSalesTargets,
+  openShift, closeShift, getShiftClosePreview, getShifts, getOpenShift, getAnyOpenShifts, adminForceCloseShift, updateShiftRecord, deleteShiftRecord, getSalesTargets, saveSalesTargets, getTodayTargetProgress,
   recordCashDrop, getCashDrops, confirmCashDrop,
   getShiftSettings, saveShiftSettings, roleRequiresShift, enforceShiftCashoutDeadlines, createCashUp,
   normalizePhone, phonesMatch, importProducts,
-  getAuditLog, getNotifications, markNotificationRead, markAllNotificationsRead, createTestNotification, notifyPosOnlineOrder, refreshPaymentDueNotifications,
+  getAuditLog, getNotifications, markNotificationRead, markAllNotificationsRead, createTestNotification, notifyPosOnlineOrder, addNotification, purgeNotificationsForEntity, refreshPaymentDueNotifications,
+  NOTIFICATION_TYPE_CATALOG, isNotificationTypeEnabled,
   globalSearch,
   convertQuoteToSale: (quoteId, actorId, actorName, paymentOpts) =>
     features.convertQuoteToSale(quoteId, completeSale, actorId, actorName, paymentOpts),
@@ -4870,18 +5667,32 @@ module.exports = {
   recordWaste: (data, actorId) => features.recordWaste(data, adjustStock, actorId),
   approveWaste: (id, actorId, notes) => {
     const row = features.approveWaste(id, actorId, notes);
-    adjustStock(row.product_id, row.quantity, 'remove', `Waste approved: ${row.reason}`, actorId, 'waste', id);
+    const isProperty = String(row.damage_kind || '') === 'property'
+      || !!row.property_name;
+    if (!isProperty && row.product_id) {
+      adjustStock(row.product_id, row.quantity, 'remove', `Waste approved: ${row.reason}`, actorId, 'waste', id);
+    }
     return getDb().prepare(`
-      SELECT w.*, p.name as product_name FROM waste_records w
-      JOIN products p ON w.product_id = p.id WHERE w.id = ?`).get(id);
+      SELECT w.*,
+        CASE WHEN COALESCE(w.damage_kind,'ingredient') = 'property'
+          THEN COALESCE(w.property_name, 'Property damage')
+          ELSE COALESCE(p.name, 'Item') END as product_name
+      FROM waste_records w
+      LEFT JOIN products p ON w.product_id = p.id WHERE w.id = ?`).get(id);
   },
   rejectWaste: (id, actorId, notes) => features.rejectWaste(id, actorId, notes),
   returnWasteToStock: (id, actorId) => {
     const row = features.returnWasteToStock(id, actorId);
-    adjustStock(row.product_id, row.quantity, 'add', `Waste returned to stock #${id}`, actorId, 'waste_return', id);
+    if (row.product_id && String(row.damage_kind || '') !== 'property') {
+      adjustStock(row.product_id, row.quantity, 'add', `Waste returned to stock #${id}`, actorId, 'waste_return', id);
+    }
     return getDb().prepare(`
-      SELECT w.*, p.name as product_name FROM waste_records w
-      JOIN products p ON w.product_id = p.id WHERE w.id = ?`).get(id);
+      SELECT w.*,
+        CASE WHEN COALESCE(w.damage_kind,'ingredient') = 'property'
+          THEN COALESCE(w.property_name, 'Property damage')
+          ELSE COALESCE(p.name, 'Item') END as product_name
+      FROM waste_records w
+      LEFT JOIN products p ON w.product_id = p.id WHERE w.id = ?`).get(id);
   },
   approveCashUp: (id, actorId, notes) => features.approveCashUp(id, actorId, notes),
   receivePurchaseOrderPartial: (poId, items, actorId, actorName) => features.receivePurchaseOrderPartial(poId, items, actorId, actorName, adjustStock),
@@ -4918,11 +5729,6 @@ module.exports = {
   ...promoRequestsSvc,
   getNonSellingProducts: (filters) => promoRequestsSvc.enrichNonSellingProducts(opsComplianceSvc.getNonSellingProducts(filters)),
   ...combosSvc,
-  ...flyersExports,
-  getFlyerTemplates,
-  ...marketingAgentSvc,
-  ...marketingPlatformSvc,
-  adjustMarketingLoyaltyPoints,
   adjustLoyaltyPoints: features.adjustLoyaltyPoints,
   ...(() => {
     const acc = require('./accounting-platform');

@@ -1,6 +1,6 @@
 {
   "url": "https://chisafood.up.railway.app",
-  "at": "2026-09-06T04:11:37.317Z",
+  "at": "2026-09-10T08:43:30.872Z",
   "summary": {
     "PASS": 31,
     "WARN": 0,
@@ -45,7 +45,7 @@
       "name": "HR approvals queue",
       "status": "PASS",
       "method": "hr:approvals",
-      "note": "2 rows"
+      "note": "3 rows"
     },
     {
       "name": "Training records",
@@ -105,7 +105,7 @@
       "name": "Login selfies",
       "status": "PASS",
       "method": "staff:getSelfies",
-      "note": "2 rows"
+      "note": "8 rows"
     },
     {
       "name": "Login events",
@@ -161,7 +161,7 @@
     {
       "name": "hr:submitForApproval",
       "status": "PASS",
-      "note": "REQ-000004"
+      "note": "REQ-000006"
     },
     {
       "name": "hr:decideRequest reject",

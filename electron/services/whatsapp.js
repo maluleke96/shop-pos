@@ -15,7 +15,7 @@ const DEFAULT_TEMPLATES = [
   },
   {
     slug: 'review_request', name: 'Review Request', category: 'customer', is_builtin: 1,
-    body: 'Hi {{CustomerName}}, we hope you enjoyed your purchase at {{Branch}}! Please leave us a review. Order: {{OrderNumber}} — Total: {{TotalPurchase}}'
+    body: 'Good day {{CustomerName}},\n\nThank you for choosing {{Branch}}.\n\nWe hope you enjoyed your recent visit (Order {{OrderNumber}}, {{TotalPurchase}}).\n\nYour feedback is important to us. If you have a moment, we would greatly appreciate a short review of your experience with us.\n\nYou are welcome to place your next order online at any time:\n{{OrderOnlineUrl}}\n\nThank you again for your support.\n\nKind regards,\n{{Branch}}'
   },
   {
     slug: 'promotion', name: 'Promotion', category: 'customer', is_builtin: 1,
@@ -77,7 +77,7 @@ const STAFF_SEND_TYPES = new Set([
   'sale_receipt', 'review_request', 'gift_card', 'giftcard', 'flyer_share', 'campaign', 'quotation', 'supplier_payment',
   'recruitment_hire', 'recruitment_reject', 'recruitment_interview', 'custom',
   'layby', 'cashout', 'checklist', 'account_receipt', 'thank_you',
-  'delivery_update', 'password_recovery'
+  'delivery_update', 'password_recovery', 'verification'
 ]);
 const CASHIER_ALLOWED_TYPES = new Set([
   'sale_receipt', 'review_request', 'gift_card', 'giftcard', 'flyer_share', 'campaign', 'quotation',
@@ -121,31 +121,54 @@ function e164Digits(phone) {
   return digits.startsWith('0') ? `27${digits.slice(1)}` : digits;
 }
 
-async function tryWhatsAppCloudSend(phone, body, settings) {
+async function postWhatsAppCloud(phoneId, token, payload) {
+  const res = await fetch(`https://graph.facebook.com/v21.0/${encodeURIComponent(phoneId)}/messages`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(payload)
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    return { ok: false, error: json?.error?.message || `WhatsApp API ${res.status}` };
+  }
+  return { ok: true, id: json?.messages?.[0]?.id || null };
+}
+
+async function tryWhatsAppCloudSend(phone, body, settings, opts = {}) {
   const token = String(settings?.api_key || '').trim();
   const phoneId = String(settings?.phone_number_id || '').trim();
   if (!token || !phoneId) return null;
   const to = e164Digits(phone);
   if (!to) return null;
   try {
-    const res = await fetch(`https://graph.facebook.com/v21.0/${encodeURIComponent(phoneId)}/messages`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
+    const templateName = String(opts.templateName || settings.verification_template || settings.otp_template || '').trim();
+    const templateLang = String(opts.templateLang || settings.verification_template_lang || 'en').trim() || 'en';
+    const code = opts.code != null ? String(opts.code) : '';
+    if (templateName && code) {
+      const templated = await postWhatsAppCloud(phoneId, token, {
         messaging_product: 'whatsapp',
         to,
-        type: 'text',
-        text: { preview_url: false, body: String(body || '').slice(0, 4096) }
-      })
-    });
-    const json = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      return { ok: false, error: json?.error?.message || `WhatsApp API ${res.status}` };
+        type: 'template',
+        template: {
+          name: templateName,
+          language: { code: templateLang },
+          components: [
+            { type: 'body', parameters: [{ type: 'text', text: code }] }
+          ]
+        }
+      });
+      if (templated.ok) return templated;
+      console.warn('[whatsapp] verification template failed, trying session text', templated.error);
     }
-    return { ok: true, id: json?.messages?.[0]?.id || null };
+    return await postWhatsAppCloud(phoneId, token, {
+      messaging_product: 'whatsapp',
+      to,
+      type: 'text',
+      text: { preview_url: false, body: String(body || '').slice(0, 4096) }
+    });
   } catch (err) {
     return { ok: false, error: err.message || String(err) };
   }
@@ -179,21 +202,58 @@ function getWhatsAppSettings() {
   };
 }
 
+function envWhatsAppCreds() {
+  return {
+    api_key: String(
+      process.env.WHATSAPP_ACCESS_TOKEN
+      || process.env.WHATSAPP_API_KEY
+      || process.env.META_WA_TOKEN
+      || ''
+    ).trim(),
+    phone_number_id: String(
+      process.env.WHATSAPP_PHONE_NUMBER_ID
+      || process.env.META_WA_PHONE_NUMBER_ID
+      || ''
+    ).trim(),
+    business_account_id: String(
+      process.env.WHATSAPP_BUSINESS_ACCOUNT_ID
+      || process.env.META_WA_BUSINESS_ACCOUNT_ID
+      || process.env.WHATSAPP_WABA_ID
+      || ''
+    ).trim()
+  };
+}
+
 function getWhatsAppSettingsRaw() {
   const row = getDb().prepare('SELECT whatsapp_settings, phone, branch_id FROM shop_settings WHERE id = 1').get() || {};
   const parsed = parseJson(row.whatsapp_settings, {});
+  let extra = {};
+  try {
+    extra = parseJson(row.whatsapp_settings_json, {});
+  } catch (_) {
+    try {
+      const row2 = getDb().prepare('SELECT whatsapp_settings_json FROM shop_settings WHERE id = 1').get() || {};
+      extra = parseJson(row2.whatsapp_settings_json, {});
+    } catch (__) { extra = {}; }
+  }
+  const env = envWhatsAppCreds();
+  // Env secrets win over DB so production tokens stay in Railway variables
   return {
-    api_key: parsed.api_key || '',
-    phone_number_id: parsed.phone_number_id || '',
-    business_account_id: parsed.business_account_id || '',
-    default_branch_phone: parsed.default_branch_phone || row.phone || '',
+    api_key: env.api_key || parsed.api_key || extra.api_key || extra.access_token || '',
+    phone_number_id: env.phone_number_id || parsed.phone_number_id || extra.phone_number_id || '',
+    business_account_id: env.business_account_id || parsed.business_account_id || extra.business_account_id || '',
+    default_branch_phone: parsed.default_branch_phone || extra.business_number || extra.phone || row.phone || '',
     default_branch_id: parsed.default_branch_id ?? row.branch_id ?? null,
-    ...parsed
+    ...extra,
+    ...parsed,
+    api_key: env.api_key || parsed.api_key || extra.api_key || extra.access_token || '',
+    phone_number_id: env.phone_number_id || parsed.phone_number_id || extra.phone_number_id || '',
+    business_account_id: env.business_account_id || parsed.business_account_id || extra.business_account_id || ''
   };
 }
 
 function saveWhatsAppSettings(data, actor) {
-  requireRole(actor);
+  requireRole(actor, ['owner', 'manager', 'assistant_manager']);
   const current = getWhatsAppSettingsRaw();
   const merged = { ...current, ...data };
   if (data.api_key === '' || data.api_key === null) {
@@ -477,7 +537,8 @@ function buildVars(data = {}) {
     BalanceAfter: data.balance_after != null
       ? `${currency}${Number(data.balance_after).toFixed(2)}`
       : (vars.BalanceAfter || ''),
-    BankDetailsLine: data.bank_details_line || vars.BankDetailsLine || ''
+    BankDetailsLine: data.bank_details_line || vars.BankDetailsLine || '',
+    OrderOnlineUrl: data.order_url || data.online_order_url || vars.OrderOnlineUrl || ''
   };
   return { ...map, ...vars };
 }
@@ -493,11 +554,11 @@ async function sendMessage(data, actor) {
   } else if (HR_TYPES.has(msgType) || HR_TYPES.has(slug)) {
     user = requireRole(actor, ['owner', 'manager', 'supervisor', 'assistant_manager']);
   } else if (STAFF_SEND_TYPES.has(msgType) || STAFF_SEND_TYPES.has(slug)) {
-    user = requireRole(actor, ['owner', 'manager', 'marketing_agent', 'cashier', 'supervisor', 'assistant_manager']);
+    user = requireRole(actor, ['owner', 'manager', 'cashier', 'supervisor', 'assistant_manager']);
   } else if (MANAGER_TYPES.has(msgType) || MANAGER_TYPES.has(slug)) {
-    user = requireRole(actor, ['owner', 'manager', 'marketing_agent', 'assistant_manager']);
+    user = requireRole(actor, ['owner', 'manager', 'assistant_manager']);
   } else {
-    user = requireRole(actor, ['owner', 'manager', 'marketing_agent', 'assistant_manager', 'supervisor']);
+    user = requireRole(actor, ['owner', 'manager', 'assistant_manager', 'supervisor']);
   }
   actor = user;
 
@@ -527,7 +588,11 @@ async function sendMessage(data, actor) {
 
   const branchId = data.branch_id ?? actor?.branch_id ?? settings.default_branch_id ?? null;
   const url = buildWaUrl(phone, body);
-  const cloud = await tryWhatsAppCloudSend(phone, body, settings);
+  const cloud = await tryWhatsAppCloudSend(phone, body, settings, {
+    templateName: data.template_name || (msgType === 'verification' ? (settings.verification_template || settings.otp_template) : ''),
+    templateLang: data.template_lang || settings.verification_template_lang,
+    code: data.otp_code || data.verification_code
+  });
   const sentViaApi = !!(cloud && cloud.ok);
   const status = sentViaApi ? 'sent' : 'pending';
   const meta = {

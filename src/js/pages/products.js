@@ -81,7 +81,13 @@ const ProductsPage = {
       ? { products: mem.data, categories: window.DataCache?.peek?.('categories', [{}])?.data || [], suppliers: window.DataCache?.peek?.('suppliers', [''])?.data || [] }
       : null;
     const fromSession = Utils.sessionCacheGet('products_page');
-    const cached = fromMem || (Array.isArray(fromSession?.products) && fromSession.products.length ? fromSession : null);
+    const warm = window.__POS_WARM_CATALOG__;
+    const fromPos = Array.isArray(warm?.products) && warm.products.length
+      ? { products: warm.products, categories: warm.categories || [], suppliers: [] }
+      : null;
+    const cached = fromMem
+      || (Array.isArray(fromSession?.products) && fromSession.products.length ? fromSession : null)
+      || fromPos;
     const paintedFromCache = !!cached?.products?.length;
     if (paintedFromCache) {
       this.products = cached.products;
@@ -132,6 +138,11 @@ const ProductsPage = {
   },
 
   async activate(el, app) {
+    this.app = app;
+    this._host = el;
+    if (el?.querySelector?.('#prod-table') && (this.products || []).length) {
+      return;
+    }
     return this.render(el, app);
   },
 
@@ -139,13 +150,13 @@ const ProductsPage = {
     const list = items || this.products;
     return list.map(p => {
       const unit = p.stock_unit || p.unit || 'each';
-      const optCount = (p.options?.length || 0) + (p.extras?.length || 0) + (p.removals?.length || 0);
+      const optCount = Number(p.option_count) || (p.options?.length || 0) + (p.extras?.length || 0) + (p.removals?.length || 0);
       const optTag = optCount ? `<span class="tag tag-ok">${optCount} option${optCount !== 1 ? 's' : ''}</span>` : '—';
       const posOff = Number(p.show_on_pos) === 0;
       const onlineOff = Number(p.online_enabled) === 0;
       const visTags = `${posOff ? '<span class="tag tag-warn">POS off</span> ' : ''}${onlineOff ? '<span class="tag tag-warn">Online off</span>' : ''}`;
       return `<tr>
-      <td>${p.picture_path ? `<img data-image-path="${p.picture_path}" class="prod-thumb">` : ''}</td>
+      <td>${p.id && (p.picture_path || p._hasImage || p.has_picture) ? `<img ${Utils.productImageAttr(p)} class="prod-thumb" alt="">` : ''}</td>
       <td><strong>${p.name}</strong>${p.sku ? `<br><small class="muted">${p.sku}</small>` : ''}${visTags ? `<br>${visTags}` : ''}</td>
       <td>${p.category_name || '—'}</td>
       <td>${Utils.formatMoney(p.selling_price, currency)}</td>
@@ -170,9 +181,24 @@ const ProductsPage = {
       Utils.toast(r.success ? 'Label sent to printer' : (r.error || 'Print failed'), r.success ? 'success' : 'error');
     }));
     document.querySelectorAll('.edit-prod').forEach(b => b.addEventListener('click', async () => {
-      const r = await API.getProduct(parseInt(b.dataset.id));
-      if (!r.success) return Utils.toast(r.error || 'Could not load product', 'error');
-      this.showForm(r.data);
+      const listed = this.products.find((x) => x.id == b.dataset.id);
+      this.showForm(listed || { id: parseInt(b.dataset.id, 10) });
+      API.getProduct(parseInt(b.dataset.id, 10)).then(async (r) => {
+        if (r?.success && r.data && this.editingProduct?.id == r.data.id) {
+          this.editingProduct = r.data;
+          // Admin list omits picture_path — restore it so Save does not wipe the photo
+          if (r.data.picture_path) {
+            this.picturePath = r.data.picture_path;
+            await Utils.setImagePreview('pf-image-preview', r.data.picture_path);
+          } else if (r.data.has_picture || listed?.has_picture) {
+            const url = Utils.productImageUrl?.(r.data) || `/api/product-image/${r.data.id}`;
+            const prev = document.getElementById('pf-image-preview');
+            if (prev) prev.innerHTML = `<img src="${url}" alt="" style="max-width:120px;max-height:120px;border-radius:8px;object-fit:cover">`;
+            this.picturePath = this.picturePath || undefined;
+          }
+          if (r.data.options || r.data.modifiers) this.loadOptionGroups(r.data);
+        }
+      }).catch(() => {});
     }));
     document.querySelectorAll('.dup-prod').forEach(b => b.addEventListener('click', async () => {
       const r = await API.getProduct(parseInt(b.dataset.id));
@@ -298,20 +324,19 @@ const ProductsPage = {
 
   async showForm(product = null) {
     this.editingProduct = product;
-    this.picturePath = product?.picture_path || null;
+    // Keep undefined when list row has no path (has_picture only) so save won't clear DB image
+    this.picturePath = product?.picture_path || undefined;
+    this._keepExistingPicture = !!(product?.id && (product.picture_path || product.has_picture));
     const cats = this.categories.map(c => `<option value="${c.id}" ${product?.category_id == c.id ? 'selected' : ''}>${c.name}</option>`).join('');
     const types = Utils.itemTypes.map(t => `<option value="${t}" ${product?.item_type === t ? 'selected' : ''}>${t}</option>`).join('');
     const stockUnit = product?.stock_unit || product?.unit || 'each';
     this.editingOptionGroups = this.loadOptionGroups(product);
     if (!this.editingExtras?.length) this.editingExtras = [{ name: '', extra_price: 0 }];
     const optionsStyle = product?.options_style || 'radio';
-    let branches = [];
-    try {
-      const br = await API.getBranches();
-      branches = br.data || [];
-    } catch (_) { /* ignore */ }
+    const cachedBranches = window.DataCache?.peek?.('branches') || [];
+    const seedBranches = Array.isArray(cachedBranches?.data) ? cachedBranches.data : (Array.isArray(cachedBranches) ? cachedBranches : []);
     const branchOpts = `<option value="">Shared (all branches)</option>` +
-      branches.map((b) => `<option value="${b.id}" ${product?.branch_id == b.id ? 'selected' : ''}>${Utils.escHtml(b.name)} only</option>`).join('');
+      seedBranches.map((b) => `<option value="${b.id}" ${product?.branch_id == b.id ? 'selected' : ''}>${Utils.escHtml(b.name)} only</option>`).join('');
 
     Utils.showModal(product?.id ? 'Edit Product' : 'Add Product', `
       <div class="form-tabs">
@@ -341,7 +366,7 @@ const ProductsPage = {
           <div class="field full"><label>Product Photo</label>
             <div style="display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap">
               <button type="button" class="btn btn-primary" id="pf-image-btn">Upload Photo</button>
-              <div id="pf-image-preview">${product?.picture_path ? '<span class="muted">Loading photo…</span>' : '<span class="muted">No photo yet</span>'}</div>
+              <div id="pf-image-preview">${(product?.picture_path || product?.has_picture) ? '<span class="muted">Loading photo…</span>' : '<span class="muted">No photo yet</span>'}</div>
             </div></div>
         </div>
       </div>
@@ -399,7 +424,20 @@ const ProductsPage = {
         <p class="muted" style="margin-bottom:12px">Extra fields from Admin → Custom Fields. Leave blank if unused.</p>
         <div id="pf-custom-fields"><p class="muted">Loading…</p></div>
       </div>`,
-      '<button type="button" class="btn btn-primary" id="save-prod">Save Product</button>');
+      '<button type="button" class="btn btn-primary" id="save-prod">Save Product</button>',
+      { wide: true });
+
+    API.getBranches().then((br) => {
+      const sel = document.getElementById('pf-branch');
+      if (!sel || !br) return;
+      const branches = br.data || br || [];
+      if (!Array.isArray(branches) || !branches.length) return;
+      const current = sel.value;
+      sel.innerHTML = `<option value="">Shared (all branches)</option>` +
+        branches.map((b) => `<option value="${b.id}">${Utils.escHtml(b.name)} only</option>`).join('');
+      if (current) sel.value = current;
+      else if (product?.branch_id) sel.value = String(product.branch_id);
+    }).catch(() => {});
 
     const renderOptionGroups = () => {
       const el = document.getElementById('opt-groups');
@@ -464,9 +502,14 @@ const ProductsPage = {
       el.querySelectorAll('.rm-rm').forEach(b => b.addEventListener('click', () => { this.editingRemovals.splice(parseInt(b.dataset.i), 1); renderRemovals(); }));
     };
 
-    renderOptionGroups();
-    renderRemovals();
-    renderExtras();
+    let optionsPainted = false;
+    const paintOptionsTab = () => {
+      if (optionsPainted) return;
+      optionsPainted = true;
+      renderOptionGroups();
+      renderRemovals();
+      renderExtras();
+    };
 
     this.editingConversions = (product?.conversions || []).map(c => ({
       from_qty: Number(c.from_qty) > 0 ? Number(c.from_qty) : 1,
@@ -536,6 +579,7 @@ const ProductsPage = {
       formRoot.querySelectorAll('.tab-panel').forEach(p => p.classList.add('hidden'));
       tab.classList.add('active');
       formRoot.querySelector('#tab-' + tab.dataset.tab)?.classList.remove('hidden');
+      if (tab.dataset.tab === 'options') paintOptionsTab();
     }));
 
     document.getElementById('pf-gen-barcode').addEventListener('click', () => {
@@ -577,7 +621,15 @@ const ProductsPage = {
       }
     }
 
-    if (this.picturePath) await Utils.setImagePreview('pf-image-preview', this.picturePath);
+    if (this.picturePath) {
+      await Utils.setImagePreview('pf-image-preview', this.picturePath);
+    } else if (product?.id && (product.has_picture || product.picture_path)) {
+      const url = Utils.productImageUrl(product);
+      const prev = document.getElementById('pf-image-preview');
+      if (prev && url) {
+        prev.innerHTML = `<img src="${url}" alt="" style="max-height:100px;border-radius:8px;border:1px solid var(--border);object-fit:cover">`;
+      }
+    }
   },
 
   async saveProduct() {
@@ -633,7 +685,6 @@ const ProductsPage = {
       purchase_unit: purchaseUnit || null,
       purchase_unit_qty: packQty > 0 ? packQty : 1,
       purchase_unit_label: packLabel || null,
-      picture_path: this.picturePath,
       description: document.getElementById('pf-desc').value.trim(),
       is_active: parseInt(document.getElementById('pf-status').value),
       show_on_pos: document.getElementById('pf-show-pos')?.checked ? 1 : 0,
@@ -648,6 +699,10 @@ const ProductsPage = {
         : null
     };
     if (prev.recipe?.length) data.recipe = prev.recipe;
+    // Only send picture_path when a new/known path exists — never send null (wipes shared DB photo)
+    if (this.picturePath != null && this.picturePath !== '') {
+      data.picture_path = this.picturePath;
+    }
 
     if (!data.name) { Utils.toast('Product name is required', 'error'); btn.disabled = false; btn.textContent = 'Save Product'; return; }
     if (Number.isNaN(data.selling_price) || !data.selling_price || data.selling_price <= 0) {
@@ -656,6 +711,15 @@ const ProductsPage = {
     }
 
     try {
+      Utils.toast('Saving…', 'info');
+      const customValues = {};
+      if (this._customFields?.length) {
+        this._customFields.forEach(f => {
+          const id = f.field_id || f.id;
+          const inp = document.getElementById(`cfv-${id}`);
+          if (inp) customValues[id] = inp.value;
+        });
+      }
       const result = await API.saveProduct(data, this.app.user);
       if (!result || result.success === false) {
         Utils.toast(result?.error || 'Failed to save product', 'error');
@@ -664,21 +728,15 @@ const ProductsPage = {
         return;
       }
       const productId = result.data?.id || result.data || prev.id;
-      if (productId && this._customFields?.length) {
-        const values = {};
-        this._customFields.forEach(f => {
-          const id = f.field_id || f.id;
-          const inp = document.getElementById(`cfv-${id}`);
-          if (inp) values[id] = inp.value;
-        });
-        await API.saveCustomFieldValues('product', productId, values, this.app.user);
-      }
-      Utils.hideModal();
       const saved = typeof result.data === 'object' ? result.data : { id: productId };
+      Utils.hideModal();
       if (!this.applySavedProduct(saved, data)) {
-        await ProductsPage.render(this._host || document.getElementById('page-content'), this.app);
+        ProductsPage.render(this._host || document.querySelector('.page-host[data-page="products"]') || document.querySelector('.page-host-active'), this.app).catch(() => {});
       }
       Utils.toast('Product saved successfully', 'success');
+      if (productId && Object.keys(customValues).length) {
+        API.saveCustomFieldValues('product', productId, customValues, this.app.user).catch(() => {});
+      }
     } catch (err) {
       Utils.toast(err.message || 'Failed to save product', 'error');
       btn.disabled = false;

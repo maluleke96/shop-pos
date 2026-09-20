@@ -1,5 +1,5 @@
 /**
- * Build Android APKs for each cloud app (Admin, Staff, Marketing, Recipe).
+ * Build Android APKs for each cloud app (Admin, Staff, Recipe, …).
  * Output: Downloads/ShopPOS-Installers/Android/
  */
 const fs = require('fs');
@@ -15,7 +15,6 @@ const apps = [
   { mode: 'admin', config: 'capacitor.admin.json', apkName: 'ShopPOS-Admin.apk', label: 'Shop POS Admin' },
   { mode: 'pos', config: 'capacitor.pos.json', apkName: 'ShopPOS-POS.apk', label: 'Shop POS' },
   { mode: 'staff', config: 'capacitor.staff.json', apkName: 'ShopPOS-StaffPortal.apk', label: 'Staff Portal' },
-  { mode: 'marketing', config: 'capacitor.marketing.json', apkName: 'ShopPOS-Marketing.apk', label: 'Marketing Agent' },
   { mode: 'recipe', config: 'capacitor.recipe.json', apkName: 'ShopPOS-Recipe.apk', label: 'Recipe & Production' },
   { mode: 'hr', config: 'capacitor.hr.json', apkName: 'ShopPOS-HR.apk', label: 'HR, Payroll & Documents' },
   { mode: 'accounting', config: 'capacitor.accounting.json', apkName: 'ShopPOS-Accounting.apk', label: 'Business Accounting' }
@@ -167,7 +166,6 @@ Same apps as before — open and install from this folder.
   ShopPOS-Admin.apk
   ShopPOS-POS.apk
   ShopPOS-StaffPortal.apk
-  ShopPOS-Marketing.apk
   ShopPOS-Recipe.apk
   ShopPOS-HR.apk
   ShopPOS-Accounting.apk
@@ -177,7 +175,6 @@ Same apps as before — open and install from this folder.
 Admin          — Sign in + Set up shop
 POS            — Till only (cashier/manager usernames from Admin)
 StaffPortal    — Employee ID + PIN only
-Marketing      — Marketing / referral agent login only
 Recipe         — Recipe & production login only
 HR             — HR, payroll & documents login only
 Accounting     — Business accounting login only

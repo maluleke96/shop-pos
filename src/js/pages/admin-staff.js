@@ -17,20 +17,56 @@
     return false;
   }
 
+  function attendanceRowMeta(a) {
+    const st = String(a?.status || '').toLowerCase();
+    if (!a?.clock_in || st === 'absent' || st === 'missing') {
+      return { cls: 'att-row-missing', label: a?.clock_in ? (a.status || 'Missing') : 'Missing' };
+    }
+    if (a.clock_in && !a.clock_out) return { cls: 'att-row-open', label: a.status || 'Still open' };
+    if (a.auto_closed) return { cls: 'att-row-autoclose', label: 'Auto-closed' };
+    if ((a.late_minutes || 0) > 0 || st === 'late') return { cls: 'att-row-late', label: a.status || 'Late' };
+    return { cls: 'att-row-ok', label: a.status || 'Present' };
+  }
+
+  function empHourlyRate(emp) {
+    try {
+      const ws = typeof emp?.work_schedule === 'string' ? JSON.parse(emp.work_schedule) : (emp?.work_schedule || {});
+      if (Number(ws.hourly_rate) > 0) return Number(ws.hourly_rate);
+      const monthly = Number(ws.monthly_salary || emp?.basic_salary) || 0;
+      const hpd = Number(ws.expected_hours_per_day) || 8;
+      const dpw = Number(ws.expected_days_per_week) || 5;
+      const hpm = hpd * dpw * 4.33;
+      return hpm > 0 ? monthly / hpm : 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  function scheduledShiftHours(s) {
+    if (!s || s.is_rest_day || !s.start_time || !s.end_time) return 0;
+    const [sh, sm] = String(s.start_time).split(':').map(Number);
+    const [eh, em] = String(s.end_time).split(':').map(Number);
+    let mins = (eh * 60 + em) - (sh * 60 + sm);
+    if (mins <= 0) mins += 24 * 60;
+    return Math.round((mins / 60) * 100) / 100;
+  }
+
+  function selfieEventLabel(type) {
+    return ({
+      login: 'Login',
+      clock_in: 'Clock in',
+      break_start: 'Start break',
+      break_end: 'End break',
+      clock_out: 'Clock out'
+    })[type] || type || 'Login';
+  }
+
   if (!AdminPage.sections.some(s => s.id === 'onaccount')) {
     AdminPage.sections.splice(3, 0,
       { id: 'onaccount', label: '📒 On Account', icon: 'onaccount' },
       { id: 'staffhr', label: '👷 Staff & HR', icon: 'staffhr' }
     );
   }
-
-  const origRenderSection = AdminPage.renderSection.bind(AdminPage);
-  AdminPage.renderSection = async function (el) {
-    if (this.section === 'onaccount') return this.renderOnAccount(el);
-    if (this.section === 'staffhr') return this.renderStaffHR(el);
-    if (this.section === 'staffportal') return this.renderStaffPortalHub(el);
-    return origRenderSection(el);
-  };
 
   AdminPage.renderStaffPortalHub = async function (el) {
     if (window.App?.ensurePageScripts) {
@@ -39,7 +75,9 @@
     }
     if (!window.StaffPage?.renderAdminHub) {
       el.innerHTML = `<div class="admin-section"><h3>Staff Portal</h3>
-        <p class="muted">Staff Portal module not loaded. Open <strong>Staff Portal</strong> from the main sidebar once, then try again.</p></div>`;
+        <p class="muted">Staff Portal module is still loading. Retry to connect it to Staff &amp; HR.</p>
+        <button type="button" class="btn btn-primary" id="sp-hub-load-retry">Retry</button></div>`;
+      document.getElementById('sp-hub-load-retry')?.addEventListener('click', () => this.renderStaffPortalHub(el));
       return;
     }
     StaffPage._embeddedInAdmin = true;
@@ -148,12 +186,78 @@
     }));
   };
 
+  AdminPage.renderTakenOrders = async function (el) {
+    const currency = this.settings?.currency || 'R';
+    const res = await API.takenOrdersSummary(this.app.user);
+    const data = res?.data || res || {};
+    const orders = Array.isArray(data.orders) ? data.orders : [];
+    const outstanding = Number(data.outstanding_total) || 0;
+    const paidTotal = Number(data.paid_total) || 0;
+    el.innerHTML = `<div class="admin-section">
+      <h3>Taken / Unpaid Orders</h3>
+      <p class="muted">Food taken now and paid later. Outstanding amounts are not cash until collected.</p>
+      <div class="kpi-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin:12px 0 18px">
+        <div class="card"><div class="card-body"><div class="muted">Outstanding</div><strong style="font-size:22px">${Utils.formatMoney(outstanding, currency)}</strong>
+          <div class="muted">${data.outstanding_count || 0} open</div></div></div>
+        <div class="card"><div class="card-body"><div class="muted">Paid (all time)</div><strong style="font-size:22px">${Utils.formatMoney(paidTotal, currency)}</strong>
+          <div class="muted">${data.paid_count || 0} settled</div></div></div>
+      </div>
+      <div class="card"><div class="card-body table-wrap">
+        <table>
+          <thead><tr>
+            <th>Customer</th><th>Contact</th><th>Order</th><th>Amount</th>
+            <th>Taken</th><th>Paid</th><th>Method</th><th>Staff</th><th>Status</th><th></th>
+          </tr></thead>
+          <tbody>
+            ${orders.map((o) => `<tr>
+              <td><strong>${Utils.escHtml(o.customer_name || '—')}</strong></td>
+              <td>${Utils.escHtml(o.phone || '—')}${o.contact_extra ? `<br><small class="muted">${Utils.escHtml(o.contact_extra)}</small>` : ''}</td>
+              <td>${Utils.escHtml(o.order_summary || '—')}</td>
+              <td>${Utils.formatMoney(o.amount_owed, currency)}</td>
+              <td>${Utils.escHtml(String(o.taken_at || '').replace('T', ' ').slice(0, 16))}</td>
+              <td>${o.paid_at ? Utils.escHtml(String(o.paid_at).replace('T', ' ').slice(0, 16)) : '—'}</td>
+              <td>${Utils.escHtml(o.payment_method || '—')}</td>
+              <td>${Utils.escHtml(o.staff_name || '—')}</td>
+              <td><span class="badge">${Utils.escHtml(o.status || '')}</span></td>
+              <td>${String(o.status).toUpperCase() === 'UNPAID' ? `
+                <button type="button" class="btn btn-sm btn-success adm-taken-pay" data-id="${o.id}">PAY</button>
+                <a class="btn btn-sm btn-ghost" href="tel:${Utils.escHtml(String(o.phone || '').replace(/\s/g, ''))}">CALL</a>
+                <button type="button" class="btn btn-sm btn-ghost adm-taken-wa" data-phone="${Utils.escHtml(o.phone || '')}" data-name="${Utils.escHtml(o.customer_name || '')}">WA</button>
+              ` : ''}</td>
+            </tr>`).join('') || '<tr><td colspan="10" class="muted">No taken orders yet</td></tr>'}
+          </tbody>
+        </table>
+      </div></div>
+    </div>`;
+    el.querySelectorAll('.adm-taken-pay').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const method = prompt('Payment method: cash, card, eft, or mobile', 'cash');
+        if (!method) return;
+        const r = await API.payTakenOrder(Number(btn.dataset.id), { payment_method: method.trim().toLowerCase() }, this.app.user);
+        if (!r || r.success === false) return Utils.toast(r?.error || 'Payment failed', 'error');
+        Utils.toast('Marked paid', 'success');
+        this.renderTakenOrders(el);
+      });
+    });
+    el.querySelectorAll('.adm-taken-wa').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const phone = btn.dataset.phone || '';
+        const name = btn.dataset.name || 'Customer';
+        const body = `${this.settings.shop_name || 'Shop'} — reminder about your unpaid / taken order. Thank you, ${name}.`;
+        await Utils.deliverWhatsApp(await API.sendWhatsAppMessage({
+          phone, recipient_name: name, message_type: 'general', body
+        }, this.app.user), phone, body);
+      });
+    });
+  };
+
   AdminPage.renderStaffHR = async function (el) {
     this.staffTab = this.staffTab || 'employees';
     const tabs = [
       ['employees', '👥 Employees'], ['attendance', '📋 Attendance'], ['leave', '🏖 Leave'],
       ['payroll', '💰 Payroll'], ['shifts', '📅 Shifts'], ['hrdocs', '📄 HR Documents'],
       ['selfies', '📸 Login Selfies'], ['logins', '🔐 Login Events'], ['disciplinary', '⚠ Disciplinary'],
+      ['mgr-portal', '🛡 Mgr/Supervisor Portal'], ['mgr-cases', '📁 Manager Cases'], ['mgr-recordings', '🎙 Recordings'],
       ['recruitment', '🎯 Recruitment'], ['reports', '📊 Reports'], ['notifications', '🔔 Alerts']
     ];
     const existingShell = el.querySelector('.staffhr-shell');
@@ -168,7 +272,7 @@
         <div>
           <p class="staffhr-kicker">Human Resources</p>
           <h3>Staff &amp; HR Management</h3>
-          <p class="muted staffhr-sub">Employees, attendance, leave, payroll, shifts, documents, and the staff portal — fully connected to admin.</p>
+          <p class="muted staffhr-sub">Employees, attendance, leave, payroll, shifts, documents, and the staff portal — the same records staff see after Employee ID + PIN login.</p>
         </div>
         <div class="staffhr-hero-actions">
           <button type="button" class="btn btn-primary" id="staffhr-open-portal">Open Staff Portal</button>
@@ -221,6 +325,9 @@
       selfies: () => this.renderStaffSelfies(content),
       logins: () => this.renderStaffLoginEvents(content),
       disciplinary: () => this.renderStaffDisciplinaryAdmin(content),
+      'mgr-portal': () => this.renderMgrHrAssignments(content),
+      'mgr-cases': () => this.renderMgrHrCasesAdmin(content),
+      'mgr-recordings': () => this.renderMgrHrRecordingsAdmin(content),
       recruitment: () => {
         if (window.AdminRecruitmentPage) return AdminRecruitmentPage.render(content, this);
         content.innerHTML = '<p class="muted">Recruitment module not loaded.</p>';
@@ -289,14 +396,27 @@
     const res = await API.getStaffDocuments(employeeId);
     const docs = res.data || [];
     Utils.showModal(`Files — ${emp?.full_name || 'Employee'}`, `
-      <p class="muted">Uploaded staff files (IDs, contracts, certificates). HR-generated letters are under HR Documents.</p>
-      <div class="table-wrap"><table><thead><tr><th>Type</th><th>File</th><th>Notes</th><th>Date</th></tr></thead>
-        <tbody>${docs.map(d => `<tr><td>${d.doc_type || '—'}</td><td>${d.file_name || '—'}</td><td>${d.notes || '—'}</td><td>${Utils.formatDateTime?.(d.created_at) || d.created_at || ''}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">No files yet</td></tr>'}</tbody></table></div>
+      <p class="muted">Uploaded staff files (IDs, contracts, certificates). The same list appears on the employee Staff Portal under <strong>My Files</strong>. HR-generated letters are under HR Documents.</p>
+      <div class="table-wrap"><table><thead><tr><th>Type</th><th>File</th><th>Notes</th><th>Date</th><th></th></tr></thead>
+        <tbody>${docs.map(d => `<tr><td>${d.doc_type || '—'}</td><td>${d.file_name || '—'}</td><td>${d.notes || '—'}</td><td>${Utils.formatDateTime?.(d.created_at) || d.created_at || ''}</td>
+          <td>${d.file_path ? `<button type="button" class="btn btn-sm btn-ghost ef-view" data-id="${d.id}">View</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">No files yet</td></tr>'}</tbody></table></div>
       <div class="form-grid" style="margin-top:12px">
         <div class="field"><label>Type</label><input id="ef-type" placeholder="ID / Contract / Certificate"></div>
         <div class="field"><label>Notes</label><input id="ef-notes"></div>
       </div>`,
       '<button class="btn btn-primary" id="ef-upload">Choose file &amp; save</button>');
+    document.querySelectorAll('.ef-view').forEach((b) => b.addEventListener('click', async () => {
+      const file = docs.find((x) => String(x.id) === b.dataset.id);
+      if (!file?.file_path) return Utils.toast('File not found', 'error');
+      const img = await API.getImageDataUrl(file.file_path);
+      if (img?.success && (img.dataUrl || img.data)) {
+        Utils.showModal(file.file_name || file.doc_type || 'File',
+          `<img src="${img.dataUrl || img.data}" alt="" style="width:100%;max-width:480px;border-radius:8px;display:block;margin:0 auto">`,
+          '');
+        return;
+      }
+      Utils.toast(img?.error || 'Preview not available for this file type', 'error');
+    }));
     document.getElementById('ef-upload')?.addEventListener('click', async () => {
       const pick = await API.selectDocument('staff-doc');
       if (pick?.cancelled) return;
@@ -370,12 +490,26 @@
       <div id="et-pay" class="tab-panel hidden"><div class="form-grid">
         <div class="field"><label>Salary Type</label><select id="em-stype">${['Monthly', 'Weekly', 'Daily', 'Hourly'].map(t =>
           `<option ${e.salary_type === t ? 'selected' : ''}>${t}</option>`).join('')}</select></div>
-        <div class="field"><label>Basic Salary</label><input type="number" id="em-basic" step="0.01" value="${e.basic_salary || 0}"></div>
-        <div class="field"><label>Overtime Rate</label><input type="number" id="em-ot" step="0.01" value="${e.overtime_rate || 0}"></div>
-        <div class="field"><label>Bonus</label><input type="number" id="em-bonus" step="0.01" value="${e.bonus || 0}"></div>
-        <div class="field"><label>Commission</label><input type="number" id="em-comm" step="0.01" value="${e.commission || 0}"></div>
-        <div class="field"><label>Allowances</label><input type="number" id="em-allow" step="0.01" value="${e.allowances || 0}"></div>
-        <div class="field"><label>Deductions (other)</label><input type="number" id="em-deduct" step="0.01" value="${e.deductions || 0}"></div>
+        <div class="field"><label>Basic Salary</label><input type="number" id="em-basic" step="0.01" value="${e.basic_salary || 0}">
+          <small class="muted">Reference cap. Hours × rate above this shows as “above basic” on the payroll dashboard and staff portal.</small></div>
+        <div class="field em-hourly-pay"><label>Hourly Rate (R/h)</label>
+          <input type="number" id="em-hourly" step="0.01" value="${ws.hourly_rate || 0}" placeholder="Used for clock hours &amp; payslip">
+          <small class="muted">Always available. Work Schedule keeps the same rate on save.</small></div>
+        <div class="field"><label>Overtime Rate</label><input type="number" id="em-ot" step="0.01" value="${e.overtime_rate || 0}">
+          <small class="muted">Fixed OT amount on the payslip (in addition to the OT multiplier on the schedule).</small></div>
+        <div class="field"><label>Bonus (manual)</label><input type="number" id="em-bonus" step="0.01" value="${e.bonus || 0}">
+          <small class="muted">Always added on payroll. Leave 0 to use auto bonus only.</small></div>
+        <div class="field"><label>Auto bonus after (orders)</label>
+          <input type="number" id="em-bonus-orders" min="0" step="1" value="${ws.bonus_orders_threshold ?? 0}">
+          <small class="muted">0 = off. When the linked POS user completes this many sales in the period, auto bonus is added.</small></div>
+        <div class="field"><label>Auto bonus amount</label>
+          <input type="number" id="em-bonus-orders-amt" step="0.01" value="${ws.bonus_orders_amount ?? 0}"></div>
+        <div class="field"><label>Commission</label><input type="number" id="em-comm" step="0.01" value="${e.commission || 0}">
+          <small class="muted">Fixed commission on every payslip. Edit per employee as needed.</small></div>
+        <div class="field"><label>Allowances</label><input type="number" id="em-allow" step="0.01" value="${e.allowances || 0}">
+          <small class="muted">Shows on salary and payslip (travel, housing, etc.).</small></div>
+        <div class="field"><label>Deductions (other)</label><input type="number" id="em-deduct" step="0.01" value="${e.deductions || 0}">
+          <small class="muted">Recurring deduction (advance, damage, etc.). Tax / UIF are on Tax &amp; Bank.</small></div>
         <div class="field"><label>Payment Date</label><input id="em-paydate" placeholder="e.g. 25th or pick a date" value="${e.payment_date || ''}"></div>
         <div class="field"><label>Or pick date</label><input type="date" id="em-paydate-pick"></div>
       </div></div>
@@ -406,6 +540,10 @@
         <div class="field"><label>Bonus Rate (hourly, beyond limit)</label><input type="number" id="ws-bonus-rate" step="0.01" value="${ws.bonus_rate ?? 0}" placeholder="0 = use OT multiplier"></div>
         <div class="field"><label>Shift Start</label><input type="time" id="ws-start" value="${ws.shift_start || '08:00'}"></div>
         <div class="field"><label>Shift End</label><input type="time" id="ws-end" value="${ws.shift_end || '17:00'}"></div>
+        <div class="field"><label>Auto-close at</label><input type="time" id="ws-autoclose" value="${ws.auto_close_at || ws.shift_end || '17:00'}">
+          <small class="muted">Missed clock-out closes at this time</small></div>
+        <div class="field"><label>Counted out time</label><input type="time" id="ws-counted-end" value="${ws.counted_end_time || ws.shift_end || '17:00'}">
+          <small class="muted">Payroll uses this as counted clock-out (actual stays separate)</small></div>
         <div class="field"><label>Grace Minutes</label><input type="number" id="ws-grace" min="0" value="${ws.grace_minutes ?? 5}"></div>
         <div class="field"><label>OT Multiplier</label><input type="number" id="ws-ot-mult" step="0.1" value="${ws.overtime_rate_multiplier ?? 1.5}"></div>
         <div class="field"><label>Weekend Multiplier</label><input type="number" id="ws-wknd" step="0.1" value="${ws.weekend_rate_multiplier ?? 2}"></div>
@@ -446,6 +584,20 @@
     };
     document.getElementById('ws-pay-type')?.addEventListener('change', syncPayTypeFields);
     syncPayTypeFields();
+    document.getElementById('em-stype')?.addEventListener('change', () => {
+      if (document.getElementById('em-stype').value === 'Hourly') {
+        document.getElementById('ws-pay-type').value = 'hourly';
+        syncPayTypeFields();
+      }
+    });
+    document.getElementById('em-hourly')?.addEventListener('input', (ev) => {
+      const wsH = document.getElementById('ws-hourly');
+      if (wsH) wsH.value = ev.target.value;
+    });
+    document.getElementById('ws-hourly')?.addEventListener('input', (ev) => {
+      const emH = document.getElementById('em-hourly');
+      if (emH) emH.value = ev.target.value;
+    });
     document.getElementById('em-paydate-pick')?.addEventListener('change', (ev) => {
       if (ev.target.value) document.getElementById('em-paydate').value = ev.target.value;
     });
@@ -539,7 +691,7 @@
         const schedule = {
           pay_type: document.getElementById('ws-pay-type').value,
           monthly_salary: parseFloat(document.getElementById('ws-monthly').value) || 0,
-          hourly_rate: parseFloat(document.getElementById('ws-hourly').value) || 0,
+          hourly_rate: parseFloat(document.getElementById('em-hourly')?.value || document.getElementById('ws-hourly').value) || 0,
           daily_wage: parseFloat(document.getElementById('ws-daily').value) || 0,
           expected_hours_per_day: parseFloat(document.getElementById('ws-hours-day').value) || 8,
           expected_days_per_week: parseInt(document.getElementById('ws-days-week').value, 10) || 5,
@@ -549,8 +701,12 @@
           hours_per_month: parseFloat(document.getElementById('ws-hpm').value) || 173,
           period_type: document.getElementById('ws-period-type').value || 'day',
           bonus_rate: parseFloat(document.getElementById('ws-bonus-rate').value) || 0,
+          bonus_orders_threshold: parseInt(document.getElementById('em-bonus-orders')?.value, 10) || 0,
+          bonus_orders_amount: parseFloat(document.getElementById('em-bonus-orders-amt')?.value) || 0,
           shift_start: document.getElementById('ws-start').value || '08:00',
           shift_end: document.getElementById('ws-end').value || '17:00',
+          auto_close_at: document.getElementById('ws-autoclose')?.value || document.getElementById('ws-end').value || '17:00',
+          counted_end_time: document.getElementById('ws-counted-end')?.value || document.getElementById('ws-end').value || '17:00',
           grace_minutes: parseInt(document.getElementById('ws-grace').value, 10) || 0,
           overtime_rate_multiplier: parseFloat(document.getElementById('ws-ot-mult').value) || 1.5,
           weekend_rate_multiplier: parseFloat(document.getElementById('ws-wknd').value) || 2,
@@ -659,23 +815,37 @@
           <td>${Utils.escHtml(p.created_by_name || '')}</td>
           <td><button class="btn btn-sm btn-ghost att-pen-cancel" data-id="${p.id}">Cancel</button></td>
         </tr>`).join('')}</tbody></table></div></div></div>` : ''}
+      <div class="att-legend">
+        <span class="att-swatch att-row-missing">Missing / absent</span>
+        <span class="att-swatch att-row-open">Still on shift</span>
+        <span class="att-swatch att-row-late">Late</span>
+        <span class="att-swatch att-row-autoclose">Auto-closed</span>
+        <span class="att-swatch att-row-ok">Completed</span>
+      </div>
       <div class="table-wrap"><table><thead><tr>
-        <th>Date</th><th>Employee</th><th>Branch</th><th>In</th><th>Out</th>
+        <th>Date</th><th>Employee</th><th>Branch</th><th>In</th><th>Break start</th><th>Break end</th><th>Out</th>
         <th>Worked</th><th>Scheduled</th><th>Missed</th><th>Late</th><th>OT</th><th>Status</th>${canEdit ? '<th></th>' : ''}
       </tr></thead>
-      <tbody>${rows.map(a => `<tr><td>${a.work_date}</td><td>${a.full_name}${a.admin_entered ? '<br><small class="muted">Admin: ' + Utils.escHtml(a.created_by_name || a.created_by_user_name || a.edited_by_name || '') + '</small>' : ''}${a.auto_closed ? '<br><small style="color:var(--warning)">Auto-closed</small>' : ''}</td><td>${a.branch || '—'}</td>
+      <tbody>${rows.map(a => {
+        const meta = attendanceRowMeta(a);
+        return `<tr class="${meta.cls}"><td>${a.work_date}</td><td>${a.full_name}${a.admin_entered ? '<br><small class="muted">Admin: ' + Utils.escHtml(a.created_by_name || a.created_by_user_name || a.edited_by_name || '') + '</small>' : ''}${a.auto_closed ? '<br><small>Auto-closed</small>' : ''}</td><td>${a.branch || '—'}</td>
         <td>${a.clock_in ? Utils.formatDateTime(a.clock_in) : '—'}</td>
+        <td>${a.break_start ? Utils.formatDateTime(a.break_start) : '—'}</td>
+        <td>${a.break_end ? Utils.formatDateTime(a.break_end) : '—'}</td>
         <td>${a.clock_out ? Utils.formatDateTime(a.clock_out) : '—'}</td>
         <td>${a.hours_worked ?? 0}h</td>
         <td>${a.scheduled_hours ?? '—'}</td>
         <td>${a.hours_missed ?? '—'}</td>
         <td>${a.late_minutes > 0 ? `${a.late_minutes}m` : '—'}</td>
         <td>${a.overtime_minutes > 0 ? `${(a.overtime_minutes / 60).toFixed(1)}h` : '—'}</td>
-        <td>${a.status || '—'}</td>
-        ${canEdit ? `<td style="white-space:nowrap">${a.id ? `<button class="btn btn-sm btn-ghost att-edit" data-id="${a.id}">Edit</button>
-          <button class="btn btn-sm btn-danger att-del" data-id="${a.id}">Delete</button>
-          ${a.clock_in ? `<button class="btn btn-sm btn-warning att-penalty" data-id="${a.id}" data-emp="${a.employee_id}" data-date="${a.work_date}">Penalty</button>` : ''}` : '<span class="muted">—</span>'}</td>` : ''}
-      </tr>`).join('') || `<tr><td colspan="${canEdit ? 12 : 11}" class="muted">No records</td></tr>`}
+        <td><span class="att-status-pill">${Utils.escHtml(meta.label)}</span></td>
+        ${canEdit ? `<td style="white-space:nowrap">${a.id ? `<button type="button" class="btn btn-sm btn-ghost att-edit" data-id="${a.id}">Edit</button>
+          <button type="button" class="btn btn-sm btn-danger att-del" data-id="${a.id}">Delete</button>
+          ${a.clock_in ? `<button type="button" class="btn btn-sm btn-warning att-penalty" data-id="${a.id}" data-emp="${a.employee_id}" data-date="${a.work_date}">Penalty</button>` : ''}`
+          : `<button type="button" class="btn btn-sm btn-ghost att-edit-missing" data-emp="${a.employee_id}" data-date="${a.work_date}">Edit</button>
+          <button type="button" class="btn btn-sm btn-danger att-del-missing" data-emp="${a.employee_id}" data-date="${a.work_date}">Delete</button>`}</td>` : ''}
+      </tr>`;
+      }).join('') || `<tr><td colspan="${canEdit ? 14 : 13}" class="muted">No records</td></tr>`}
       </tbody></table></div>`;
     document.getElementById('att-inbox-refresh')?.addEventListener('click', () => this.renderStaffAttendance(el));
     const resolveInbox = async (id, action) => {
@@ -733,9 +903,9 @@
     document.getElementById('att-excel').addEventListener('click', async () => {
       await Export.toExcel(`attendance-${from}-${to}.xlsx`, [{
         name: 'Attendance',
-        headers: ['Date', 'Employee', 'Branch', 'In', 'Out', 'Worked', 'Scheduled', 'Missed', 'Late', 'OT', 'Status'],
+        headers: ['Date', 'Employee', 'Branch', 'In', 'Break start', 'Break end', 'Out', 'Worked', 'Scheduled', 'Missed', 'Late', 'OT', 'Status'],
         rows: rows.map(a => [
-          a.work_date, a.full_name, a.branch || '', a.clock_in || '', a.clock_out || '',
+          a.work_date, a.full_name, a.branch || '', a.clock_in || '', a.break_start || '', a.break_end || '', a.clock_out || '',
           a.hours_worked ?? 0, a.scheduled_hours ?? '', a.hours_missed ?? '',
           a.late_minutes || 0, a.overtime_minutes || 0, a.status || ''
         ])
@@ -837,6 +1007,44 @@
         const r = await API.deleteStaffAttendance(parseInt(b.dataset.id, 10), this.app.user);
         if (!r.success) return Utils.toast(r.error || 'Could not delete', 'error');
         Utils.toast('Attendance deleted', 'success');
+        this.renderStaffAttendance(el);
+      }));
+      el.querySelectorAll('.att-edit-missing').forEach(b => b.addEventListener('click', () => {
+        const empId = parseInt(b.dataset.emp, 10);
+        const workDate = b.dataset.date;
+        const emp = emps.find(e => Number(e.id) === empId);
+        Utils.showModal('Edit missing attendance', `<div class="form-grid">
+          <div class="field"><label>Employee</label><input value="${Utils.escHtml(emp?.full_name || '')}" disabled></div>
+          <div class="field"><label>Work date</label><input type="date" id="na-date" value="${workDate}" disabled></div>
+          <div class="field"><label>Clock In</label><input type="datetime-local" id="na-in"></div>
+          <div class="field"><label>Clock Out</label><input type="datetime-local" id="na-out"></div>
+          <div class="field"><label>Hours worked (optional override)</label><input type="number" id="na-hours" step="0.01" min="0" placeholder="Auto from in/out"></div>
+          <div class="field full"><label>Notes</label><textarea id="na-notes" rows="2" placeholder="Reason for admin entry"></textarea></div>
+        </div>`, '<button class="btn btn-primary" id="na-save">Save Record</button>');
+        document.getElementById('na-save')?.addEventListener('click', async () => {
+          const hoursVal = document.getElementById('na-hours').value;
+          const r = await API.createStaffAttendance({
+            employee_id: empId,
+            work_date: workDate,
+            clock_in: document.getElementById('na-in').value ? new Date(document.getElementById('na-in').value).toISOString() : null,
+            clock_out: document.getElementById('na-out').value ? new Date(document.getElementById('na-out').value).toISOString() : null,
+            hours_worked: hoursVal !== '' ? parseFloat(hoursVal) : null,
+            notes: document.getElementById('na-notes').value.trim()
+          }, this.app.user);
+          if (!r.success) return Utils.toast(r.error, 'error');
+          Utils.hideModal();
+          Utils.toast('Attendance saved', 'success');
+          this.renderStaffAttendance(el);
+        });
+      }));
+      el.querySelectorAll('.att-del-missing').forEach(b => b.addEventListener('click', async () => {
+        const empId = parseInt(b.dataset.emp, 10);
+        const workDate = b.dataset.date;
+        const row = rows.find(x => Number(x.employee_id) === empId && String(x.work_date) === String(workDate));
+        if (!confirm(`Remove missing attendance for ${row?.full_name || 'this employee'} on ${workDate}?`)) return;
+        const r = await API.deleteStaffAttendance({ employee_id: empId, work_date: workDate }, this.app.user);
+        if (!r.success) return Utils.toast(r.error || 'Could not delete', 'error');
+        Utils.toast('Missing attendance removed', 'success');
         this.renderStaffAttendance(el);
       }));
     }
@@ -1067,7 +1275,12 @@
       from, to, branch: branch || undefined, employee_id: employeeId || undefined
     }, this.app.user);
     const dashRows = dashRes.success ? (dashRes.data || []) : [];
+    const overBasic = dashRows.filter(r => r.exceeds_basic);
     el.innerHTML = `<div class="card" style="margin-bottom:16px"><div class="card-header"><h4>Payroll Dashboard</h4></div><div class="card-body">
+      ${overBasic.length ? `<div style="margin-bottom:12px;padding:10px 12px;border-radius:8px;border:1px solid var(--warning);background:rgba(245,158,11,.08);font-size:13px">
+        <strong>${overBasic.length} employee(s)</strong> have hours-based earnings above their basic salary reference in this period:
+        ${overBasic.map(r => `${r.full_name} (${Utils.formatMoney(r.attendance_gross, currency)} vs ${Utils.formatMoney(r.basic_salary, currency)}${r.hourly_rate ? ` · ${Utils.formatMoney(r.hourly_rate, currency)}/h` : ''})`).join(' · ')}
+      </div>` : ''}
       <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center">
         ${Utils.extendedDateFilterHTML('pr-dash-filter', from, to)}
         <select id="pr-branch" style="padding:8px;border-radius:8px;border:1px solid var(--border)">
@@ -1083,18 +1296,20 @@
       </div>
       ${!dashRes.success ? `<p class="muted" style="color:var(--danger)">${dashRes.error || 'Could not load dashboard'}</p>` : ''}
       <div class="table-wrap"><table><thead><tr>
-        <th>Employee</th><th>Scheduled</th><th>Worked</th><th>Missed</th><th>Late</th><th>OT</th><th>Gross</th><th>Deductions</th><th>Net</th>
+        <th>Employee</th><th>Rate</th><th>Scheduled</th><th>Worked</th><th>Missed</th><th>Late</th><th>OT</th><th>Hours pay</th><th>Gross</th><th>Deductions</th><th>Net</th>
       </tr></thead><tbody>
-        ${dashRows.map(r => `<tr><td><strong>${r.full_name}</strong></td>
+        ${dashRows.map(r => `<tr${r.exceeds_basic ? ' style="background:rgba(245,158,11,.08)"' : ''}><td><strong>${r.full_name}</strong>${r.exceeds_basic ? '<br><span class="tag tag-warn" style="font-size:11px">Above basic</span>' : ''}</td>
+          <td>${r.hourly_rate ? `${Utils.formatMoney(r.hourly_rate, currency)}/h` : '—'}</td>
           <td>${Number(r.scheduled_hours || 0).toFixed(1)}h</td>
           <td>${Number(r.hours_worked || 0).toFixed(1)}h</td>
           <td>${Number(r.hours_missed || 0).toFixed(1)}h</td>
           <td>${r.late_minutes > 0 ? `${r.late_minutes}m` : '—'}</td>
           <td>${Number(r.overtime_hours || 0).toFixed(1)}h</td>
+          <td>${Utils.formatMoney(r.attendance_gross ?? r.gross_pay, currency)}${r.basic_salary ? `<br><small class="muted">Basic ref ${Utils.formatMoney(r.basic_salary, currency)}</small>` : ''}</td>
           <td>${Utils.formatMoney(r.gross_pay, currency)}</td>
           <td>${Utils.formatMoney(r.total_deductions, currency)}</td>
           <td><strong>${Utils.formatMoney(r.net_salary, currency)}</strong></td></tr>`).join('') ||
-          '<tr><td colspan="9" class="muted">No payroll data for selected period</td></tr>'}
+          '<tr><td colspan="11" class="muted">No payroll data for selected period</td></tr>'}
       </tbody></table></div></div></div>
       <div class="card"><div class="card-header"><h4>Generate Payroll</h4></div><div class="card-body">
       <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">
@@ -1286,13 +1501,18 @@
       <button class="btn btn-ghost" id="sh-snap-mon">Snap start to Monday</button>
       <button class="btn btn-primary" id="sh-add">+ Add Shift</button>
       <button class="btn btn-primary" id="sh-auto">Generate shifts</button>
+      <button class="btn btn-ghost" id="sh-weekend">Generate weekend</button>
       <button class="btn btn-ghost" id="sh-regen">Regenerate range</button>
       <button class="btn btn-ghost" id="sh-print-a4">Print A4</button>
       <button class="btn btn-ghost" id="sh-pdf">Download Schedule PDF</button></div>
-      <div class="card" style="margin-bottom:12px;padding:12px"><strong>Select workers for shift generation</strong>
-        <p class="muted" style="font-size:13px">Set opening/closing times per worker below, then generate. Workers on approved leave are excluded automatically.</p>
+      <div class="card" style="margin-bottom:12px;padding:12px"><strong>Select workers for this shift</strong>
+        <p class="muted" style="font-size:13px">Click the people you want on the week or weekend, then press <strong>Generate shifts</strong> or <strong>Generate weekend</strong>. Only ticked workers are assigned. You can do the whole range at once.</p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin:8px 0">
+          <button type="button" class="btn btn-sm btn-ghost" id="sh-emp-all">Select all</button>
+          <button type="button" class="btn btn-sm btn-ghost" id="sh-emp-none">Clear</button>
+        </div>
         <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px" id="sh-emp-picks">
-          ${emps.map(e => `<label><input type="checkbox" class="sh-emp" value="${e.id}" checked> ${e.full_name}</label>`).join('') || '<span class="muted">No active employees</span>'}
+          ${emps.map(e => `<label style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;cursor:pointer"><input type="checkbox" class="sh-emp" value="${e.id}"> ${e.full_name}</label>`).join('') || '<span class="muted">No active employees</span>'}
         </div></div>
       <div class="card" style="margin-bottom:12px;padding:12px" id="sh-times-card">
         <strong>Worker shift times (before generate)</strong>
@@ -1300,9 +1520,27 @@
         <div id="sh-times-table"></div>
         <button class="btn btn-ghost" id="sh-save-times" style="margin-top:8px">Save times to profiles</button>
       </div>
+      <div class="card sh-hours-pay" id="sh-hours-pay"><div class="card-body">
+        <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center">
+          <div>
+            <h4 style="margin:0">Hours worked &amp; pay</h4>
+            <p class="muted" style="margin:4px 0 0;font-size:13px">Shows each selected worker’s hours and estimated pay for the generated range.</p>
+          </div>
+          <button type="button" class="btn btn-primary btn-sm" id="sh-hours-refresh">Refresh hours &amp; pay</button>
+        </div>
+        <div id="sh-hours-body" style="margin-top:12px"><p class="muted">Generate or load shifts, then refresh.</p></div>
+      </div>
       <div id="sh-list"><p class="muted">Generate shifts for selected workers</p></div>`;
 
-    const selectedIds = () => [...el.querySelectorAll('.sh-emp:checked')].map(cb => parseInt(cb.value));
+    const selectedIds = () => [...el.querySelectorAll('.sh-emp:checked')].map(cb => parseInt(cb.value, 10)).filter(Number.isFinite);
+    document.getElementById('sh-emp-all')?.addEventListener('click', () => {
+      el.querySelectorAll('.sh-emp').forEach((cb) => { cb.checked = true; });
+      renderTimesTable();
+    });
+    document.getElementById('sh-emp-none')?.addEventListener('click', () => {
+      el.querySelectorAll('.sh-emp').forEach((cb) => { cb.checked = false; });
+      renderTimesTable();
+    });
 
     const getOverrides = () => {
       const map = {};
@@ -1317,7 +1555,7 @@
     };
 
     const renderTimesTable = () => {
-      const selected = emps.filter(e => selectedIds().includes(e.id));
+      const selected = emps.filter(e => selectedIds().includes(Number(e.id)));
       const container = document.getElementById('sh-times-table');
       if (!container) return;
       if (!selected.length) {
@@ -1383,19 +1621,140 @@
       if (cw) cw.style.display = preset === 'cw' ? '' : 'none';
       if (ce) ce.style.display = preset === 'ce' ? '' : 'none';
     };
-    const shiftRowHtml = (s) => `<tr><td>${s.shift_date}</td><td>${s.full_name}</td><td>${s.shift_name}</td>
-      <td>${s.is_rest_day ? '—' : (s.start_time || '—')}</td>
+    const shiftRowHtml = (s) => `<tr class="${s.is_rest_day ? 'shift-rest-row' : ''}" data-shift-id="${s.id}">
+      <td>${s.shift_date}</td><td><strong>${Utils.escHtml(s.full_name)}</strong></td>
+      <td>${Utils.escHtml(s.shift_name || 'Shift')}</td>
+      <td>${s.is_rest_day ? 'Rest day' : (s.start_time || '—')}</td>
       <td>${s.is_rest_day ? '—' : (s.end_time || '—')}</td>
+      <td>${s.is_rest_day ? '—' : `${scheduledShiftHours(s)}h`}</td>
       <td style="white-space:nowrap">
-        ${s.id ? `<button class="btn btn-sm btn-ghost sh-edit" data-id="${s.id}">Edit</button>
-          <button class="btn btn-sm btn-ghost sh-redo" data-id="${s.id}">Redo</button>
-          <button class="btn btn-sm btn-danger sh-del" data-id="${s.id}">Delete</button>` : '<span class="muted">Default hours</span>'}
+        ${s.id ? `<button type="button" class="btn btn-sm btn-primary sh-review" data-id="${s.id}">Review</button>
+          <button type="button" class="btn btn-sm btn-ghost sh-edit" data-id="${s.id}">Edit</button>
+          <button type="button" class="btn btn-sm btn-ghost sh-redo" data-id="${s.id}">Redo</button>
+          <button type="button" class="btn btn-sm btn-danger sh-del" data-id="${s.id}">Delete</button>` : '<span class="muted">Default hours</span>'}
       </td></tr>`;
+
+    let loadedShiftRows = [];
+
+    const refreshHoursPay = async (rows) => {
+      const body = document.getElementById('sh-hours-body');
+      if (!body) return;
+      const { start, end } = currentRange();
+      const currency = this.settings?.currency || this.app?.settings?.currency || 'R';
+      const attRes = await API.getStaffAttendance({ from: start, to: end });
+      const att = attRes.data || [];
+      const byEmp = {};
+      const sourceRows = rows || loadedShiftRows;
+      for (const s of sourceRows) {
+        if (!byEmp[s.employee_id]) {
+          const emp = emps.find(e => e.id === s.employee_id);
+          byEmp[s.employee_id] = {
+            name: s.full_name, hours: 0, scheduled: 0, rate: empHourlyRate(emp), days: 0
+          };
+        }
+        byEmp[s.employee_id].scheduled += scheduledShiftHours(s);
+      }
+      for (const a of att) {
+        if (!byEmp[a.employee_id]) {
+          const emp = emps.find(e => e.id === a.employee_id);
+          byEmp[a.employee_id] = {
+            name: a.full_name, hours: 0, scheduled: 0, rate: empHourlyRate(emp), days: 0
+          };
+        }
+        const h = Number(a.hours_worked) || 0;
+        byEmp[a.employee_id].hours += h;
+        if (h > 0) byEmp[a.employee_id].days += 1;
+      }
+      const cards = Object.values(byEmp);
+      body.innerHTML = cards.length ? `<div class="sh-pay-grid">${cards.map(c => {
+        const pay = Math.round(c.hours * c.rate * 100) / 100;
+        return `<article class="sh-pay-card"><strong>${Utils.escHtml(c.name)}</strong>
+          <div>Worked: <strong>${c.hours.toFixed(2)}h</strong> · ${c.days} day(s)</div>
+          <div>Scheduled: ${c.scheduled.toFixed(2)}h</div>
+          <div>Rate: ${Utils.formatMoney(c.rate, currency)}/h</div>
+          <div style="margin-top:6px">Earned: <strong>${Utils.formatMoney(pay, currency)}</strong></div>
+        </article>`;
+      }).join('')}</div>` : '<p class="muted">No hours in this range yet.</p>';
+    };
+
+    const openEditShift = (sched) => {
+      if (!sched) return;
+      const savedNames = [...new Set((loadedShiftRows || []).map(s => String(s.shift_name || '').trim()).filter(Boolean))];
+      const presets = ['Rest Day', 'Shift', ...savedNames.filter(n => !/^rest day$/i.test(n) && n.toLowerCase() !== 'shift')];
+      const current = sched.shift_name || 'Shift';
+      const inList = presets.some(n => n.toLowerCase() === current.toLowerCase());
+      Utils.showModal('Edit Shift', `<div class="form-grid">
+        <div class="field"><label>Shift name</label>
+          <select id="es-name-pick">
+            ${presets.map(n => `<option value="${Utils.escHtml(n)}" ${n.toLowerCase() === current.toLowerCase() ? 'selected' : ''}>${Utils.escHtml(n)}</option>`).join('')}
+            <option value="__custom__" ${inList ? '' : 'selected'}>Write a custom name…</option>
+          </select></div>
+        <div class="field" id="es-custom-wrap" style="${inList ? 'display:none' : ''}"><label>Custom shift name</label>
+          <input id="es-name" value="${Utils.escHtml(inList ? '' : current)}" placeholder="e.g. Braai shift, Night shift"></div>
+        <div class="field"><label>Opening</label><input type="time" id="es-start" value="${sched.start_time || ''}"></div>
+        <div class="field"><label>Closing</label><input type="time" id="es-end" value="${sched.end_time || ''}"></div>
+        <div class="field full"><label><input type="checkbox" id="es-rest" ${sched.is_rest_day ? 'checked' : ''}> Rest day</label></div>
+      </div>`, '<button type="button" class="btn btn-primary" id="es-save">Save</button>');
+      const pick = document.getElementById('es-name-pick');
+      const wrap = document.getElementById('es-custom-wrap');
+      const rest = document.getElementById('es-rest');
+      pick?.addEventListener('change', () => {
+        if (wrap) wrap.style.display = pick.value === '__custom__' ? '' : 'none';
+        if (rest && /^rest day$/i.test(pick.value)) rest.checked = true;
+      });
+      document.getElementById('es-save').addEventListener('click', async () => {
+        const picked = pick?.value || '';
+        const custom = document.getElementById('es-name')?.value.trim() || '';
+        const shiftName = picked === '__custom__' ? custom : picked;
+        if (!shiftName) return Utils.toast('Enter or choose a shift name', 'error');
+        const isRest = !!document.getElementById('es-rest')?.checked || /^rest day$/i.test(shiftName);
+        const actor = this.app?.user || window.App?.user || this.app?.sessionUser;
+        if (!actor?.id) return Utils.toast('Sign in again — your session is missing', 'error');
+        const r = await API.saveStaffSchedule({
+          id: sched.id, employee_id: sched.employee_id, shift_date: sched.shift_date,
+          shift_name: shiftName,
+          start_time: isRest ? '' : document.getElementById('es-start').value,
+          end_time: isRest ? '' : document.getElementById('es-end').value,
+          is_rest_day: isRest
+        }, actor);
+        if (!r.success) return Utils.toast(r.error || 'Could not save shift', 'error');
+        Utils.hideModal();
+        Utils.toast('Shift updated', 'success');
+        loadShifts();
+      });
+    };
+
+    const openReviewShift = async (sched) => {
+      if (!sched) return;
+      const emp = emps.find(e => e.id === sched.employee_id);
+      const rate = empHourlyRate(emp);
+      const scheduled = scheduledShiftHours(sched);
+      const attRes = await API.getStaffAttendance({
+        employee_id: sched.employee_id, from: sched.shift_date, to: sched.shift_date
+      });
+      const att = (attRes.data || [])[0] || {};
+      const worked = Number(att.hours_worked) || 0;
+      const currency = this.settings?.currency || this.app?.settings?.currency || 'R';
+      const pay = Math.round(worked * rate * 100) / 100;
+      Utils.showModal(`Review — ${sched.full_name}`, `
+        <div class="form-grid">
+          <div class="field"><label>Date</label><div>${sched.shift_date}</div></div>
+          <div class="field"><label>Shift</label><div>${Utils.escHtml(sched.shift_name || 'Shift')}</div></div>
+          <div class="field"><label>Opening / closing</label><div>${sched.is_rest_day ? 'Rest day' : `${sched.start_time || '—'} – ${sched.end_time || '—'}`}</div></div>
+          <div class="field"><label>Scheduled hours</label><div>${scheduled}h</div></div>
+          <div class="field"><label>Hours worked</label><div><strong>${worked}h</strong>${att.clock_in ? ` · in ${Utils.formatDateTime(att.clock_in)}` : ''}${att.clock_out ? ` · out ${Utils.formatDateTime(att.clock_out)}` : (!att.clock_in ? ' · not clocked in' : ' · still open')}</div></div>
+          <div class="field"><label>Hourly rate</label><div>${Utils.formatMoney(rate, currency)}</div></div>
+          <div class="field"><label>Amount made</label><div><strong>${Utils.formatMoney(pay, currency)}</strong></div></div>
+        </div>`,
+        '<button type="button" class="btn btn-ghost" id="rv-close">Close</button>');
+      document.getElementById('rv-close')?.addEventListener('click', () => Utils.hideModal());
+    };
 
     const loadShifts = async () => {
       const { week, weeks, end, days } = currentRange();
       const sres = await API.getStaffSchedules(week, end);
       const rows = (sres.data || []).filter((s) => s.id && !s._from_work_schedule);
+      loadedShiftRows = rows;
       const groups = [];
       for (let w = 0; w < weeks; w++) {
         const ws = addDaysIso(week, w * 7);
@@ -1406,45 +1765,32 @@
         });
       }
       document.getElementById('sh-list').innerHTML = `
-        <p class="muted">Showing <strong>${days} day${days > 1 ? 's' : ''}</strong> (${week} → ${end}) · <strong>${rows.length} generated shift(s)</strong>. PDF / Print use this exact range.</p>
-        ${groups.map(g => `<h4 style="margin:16px 0 8px">${g.label} · ${g.rows.length} generated row(s)</h4>
+        <p class="muted">Showing <strong>${days} day${days > 1 ? 's' : ''}</strong> (${week} → ${end}) · <strong>${rows.length} generated shift(s)</strong>. Use Review for hours and pay. Edit / Delete / Redo work on each row.</p>
+        ${groups.map(g => `<div class="shift-week-card"><h4>${g.label} · ${g.rows.length} generated row(s)</h4>
           ${g.rows.length
-            ? `<div class="table-wrap"><table><thead><tr><th>Date</th><th>Employee</th><th>Shift</th><th>Opening</th><th>Closing</th><th></th></tr></thead>
+            ? `<div class="table-wrap"><table class="shift-gen-table"><thead><tr><th>Date</th><th>Employee</th><th>Shift</th><th>Opening</th><th>Closing</th><th>Hours</th><th></th></tr></thead>
               <tbody>${g.rows.map(shiftRowHtml).join('')}</tbody></table></div>`
-            : '<p class="muted">No generated shifts this week — generate above</p>'}`).join('')}`;
+            : '<p class="muted">No generated shifts this week — generate above</p>'}</div>`).join('')}`;
+      refreshHoursPay(rows);
+    };
 
-      el.querySelectorAll('.sh-edit').forEach(b => b.addEventListener('click', async () => {
-        const sched = rows.find(x => x.id == b.dataset.id);
-        if (!sched) return;
-        Utils.showModal('Edit Shift', `<div class="form-grid">
-          <div class="field"><label>Shift Name</label><input id="es-name" value="${sched.shift_name || ''}"></div>
-          <div class="field"><label>Opening</label><input type="time" id="es-start" value="${sched.start_time || ''}"></div>
-          <div class="field"><label>Closing</label><input type="time" id="es-end" value="${sched.end_time || ''}"></div>
-          <div class="field full"><label><input type="checkbox" id="es-rest" ${sched.is_rest_day ? 'checked' : ''}> Rest day</label></div>
-        </div>`, '<button class="btn btn-primary" id="es-save">Save</button>');
-        document.getElementById('es-save').addEventListener('click', async () => {
-          await API.saveStaffSchedule({
-            id: sched.id, employee_id: sched.employee_id, shift_date: sched.shift_date,
-            shift_name: document.getElementById('es-name').value.trim(),
-            start_time: document.getElementById('es-start').value,
-            end_time: document.getElementById('es-end').value,
-            is_rest_day: document.getElementById('es-rest').checked
-          }, this.app.user);
-          Utils.hideModal();
-          loadShifts();
-        });
-      }));
-
-      el.querySelectorAll('.sh-del').forEach(b => b.addEventListener('click', async () => {
+    const listEl = document.getElementById('sh-list');
+    listEl?.addEventListener('click', async (e) => {
+      const btn = e.target.closest('button');
+      if (!btn) return;
+      e.preventDefault();
+      const id = parseInt(btn.dataset.id, 10);
+      const sched = loadedShiftRows.find(x => Number(x.id) === id);
+      if (btn.classList.contains('sh-edit')) return openEditShift(sched);
+      if (btn.classList.contains('sh-review')) return openReviewShift(sched);
+      if (btn.classList.contains('sh-del')) {
         if (!confirm('Delete this shift?')) return;
-        const r = await API.deleteStaffSchedule(parseInt(b.dataset.id, 10), this.app.user);
+        const r = await API.deleteStaffSchedule(id, this.app.user);
         if (!r.success) return Utils.toast(r.error || 'Could not delete shift', 'error');
         Utils.toast('Shift deleted', 'success');
-        loadShifts();
-      }));
-
-      el.querySelectorAll('.sh-redo').forEach(b => b.addEventListener('click', async () => {
-        const sched = rows.find(x => x.id == b.dataset.id);
+        return loadShifts();
+      }
+      if (btn.classList.contains('sh-redo')) {
         if (!sched) return;
         const emp = emps.find(e => e.id === sched.employee_id);
         if (!emp) return Utils.toast('Employee not found', 'error');
@@ -1456,20 +1802,23 @@
         const r = await API.saveStaffSchedule(shiftData, this.app.user);
         if (!r.success) return Utils.toast(r.error || 'Could not recreate shift', 'error');
         Utils.toast('Shift recreated from worker schedule', 'success');
-        loadShifts();
-      }));
-    };
+        return loadShifts();
+      }
+    });
+    document.getElementById('sh-hours-refresh')?.addEventListener('click', () => refreshHoursPay());
 
-    const runGenerate = async (confirmRegen = false) => {
+    const runGenerate = async (confirmRegen = false, weekendOnly = false) => {
       const { start, end, days } = currentRange();
       document.getElementById('sh-week').value = start;
       const ids = selectedIds();
       if (!ids.length) return Utils.toast('Select at least one worker', 'error');
       if (confirmRegen && !confirm(`Regenerate shifts for ${start} → ${end} (${days} days)? Existing shifts for selected workers in that range will be replaced.`)) return;
       const overrides = getOverrides();
-      const r = await API.autoGenerateStaffShifts(start, null, ids, overrides, this.app.user, { days, endDate: end });
+      const r = await API.autoGenerateStaffShifts(start, null, ids, overrides, this.app.user, { days, endDate: end, weekendOnly });
       if (!r.success) return Utils.toast(r.error, 'error');
-      Utils.toast(`Created ${(r.data || []).length} generated shift(s) for ${start} → ${end}`, 'success');
+      Utils.toast(weekendOnly
+        ? `Created ${(r.data || []).length} weekend shift(s) for assigned workers`
+        : `Created ${(r.data || []).length} generated shift(s) for ${start} → ${end}`, 'success');
       loadShifts();
     };
 
@@ -1540,6 +1889,9 @@
     document.getElementById('sh-auto').addEventListener('click', () => {
       runGenerate(false);
     });
+    document.getElementById('sh-weekend')?.addEventListener('click', () => {
+      runGenerate(false, true);
+    });
     document.getElementById('sh-regen').addEventListener('click', () => {
       runGenerate(true);
     });
@@ -1554,6 +1906,410 @@
 
     renderTimesTable();
     loadShifts();
+  };
+
+  AdminPage.renderMgrHrAssignments = async function (el) {
+    const unwrap = (r) => {
+      if (!r) return [];
+      if (r.success === false) return [];
+      if (Array.isArray(r)) return r;
+      if (Array.isArray(r.data)) return r.data;
+      return r.data || r || [];
+    };
+    const [assignmentsRes, usersRes, empsRes, branchesRes] = await Promise.all([
+      API.mgrHrListAssignments(this.app.user),
+      API.mgrHrListEligibleUsers(this.app.user),
+      API.getEmployees({}, this.app.user),
+      API.getBranches?.() || Promise.resolve({ data: [] })
+    ]);
+    if (assignmentsRes?.success === false) {
+      el.innerHTML = `<p class="error-msg">${Utils.escHtml(assignmentsRes.error || 'Could not load assignments')}</p>
+        <button type="button" class="btn btn-primary" id="mgrhr-assign-retry">Retry</button>`;
+      document.getElementById('mgrhr-assign-retry')?.addEventListener('click', () => this.renderMgrHrAssignments(el));
+      return;
+    }
+    const rows = unwrap(assignmentsRes);
+    const userList = unwrap(usersRes);
+    const emps = unwrap(empsRes);
+    const branches = unwrap(branchesRes);
+    el.innerHTML = `<div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">
+      <button type="button" class="btn btn-primary" id="mgrhr-assign-add" style="background:#c41e3a;border-color:#c41e3a">+ Assign Manager/Supervisor</button>
+      <button type="button" class="btn btn-ghost" id="mgrhr-open-portal">Open Manager &amp; Supervisor Portal</button>
+    </div>
+    <p class="muted">Pick any staff user account, set Manager or Supervisor, choose their branch and which employees they supervise. Revoke anytime.</p>
+    <div class="table-wrap"><table><thead><tr>
+      <th>User</th><th>Portal role</th><th>Branch</th><th>Staff count</th><th>Warnings?</th><th>Status</th><th></th>
+    </tr></thead><tbody>
+      ${(Array.isArray(rows) ? rows : []).map((a) => `<tr>
+        <td><strong>${Utils.escHtml(a.user_name || '')}</strong><div class="muted" style="font-size:11px">${Utils.escHtml(a.username || '')} · ${Utils.escHtml(a.user_role || '')}</div></td>
+        <td>${Utils.escHtml(a.portal_role)}</td>
+        <td>${Utils.escHtml(a.branch_name || '—')}</td>
+        <td>${(a.employee_ids || []).length}</td>
+        <td>${a.can_create_warnings ? 'Yes' : 'No'}</td>
+        <td>${a.is_active ? '<span class="tag tag-ok">Active</span>' : '<span class="tag tag-danger">Revoked</span>'}</td>
+        <td style="white-space:nowrap">
+          <button type="button" class="btn btn-sm btn-ghost mgrhr-edit" data-id="${a.id}">Edit</button>
+          <button type="button" class="btn btn-sm ${a.is_active ? 'btn-warning' : 'btn-success'} mgrhr-toggle" data-id="${a.id}" data-on="${a.is_active ? 0 : 1}">${a.is_active ? 'Revoke' : 'Activate'}</button>
+        </td>
+      </tr>`).join('') || '<tr><td colspan="7" class="muted">No assignments yet</td></tr>'}
+    </tbody></table></div>`;
+
+    const openForm = async (existing) => {
+      const a = existing || {};
+      const selected = new Set((a.employee_ids || []).map(String));
+      if (!userList.length) {
+        return Utils.toast('No active user accounts found. Create a user under Staff & HR / Users first.', 'error');
+      }
+      Utils.showModal(a.id ? 'Edit Manager/Supervisor access' : 'Assign Manager/Supervisor', `
+        <div class="form-grid">
+          <div class="field"><label>Staff user account *</label>
+            <input type="search" id="mha-user-q" placeholder="Search name or username…" style="margin-bottom:6px">
+            <select id="mha-user" size="8" style="width:100%;min-height:160px" ${a.id ? 'disabled' : ''}>
+              ${userList.map((u) =>
+                `<option value="${u.id}" ${Number(u.id) === Number(a.user_id) ? 'selected' : ''} data-label="${Utils.escHtml(`${u.full_name} ${u.username} ${u.role}`)}">${Utils.escHtml(u.full_name)} · ${Utils.escHtml(u.username || '')} (${Utils.escHtml(u.role)})</option>`
+              ).join('')}
+            </select>
+            <small class="muted">Any worker with a login can be assigned. Their account role becomes Manager/Supervisor when you save.</small>
+          </div>
+          <div class="field"><label>Portal role</label>
+            <select id="mha-role">
+              <option value="manager" ${a.portal_role === 'manager' ? 'selected' : ''}>Manager</option>
+              <option value="supervisor" ${a.portal_role !== 'manager' ? 'selected' : ''}>Supervisor</option>
+            </select></div>
+          <div class="field"><label>Branch they are responsible for</label>
+            <select id="mha-branch"><option value="">—</option>${branches.map((b) =>
+              `<option value="${b.id}" ${Number(b.id) === Number(a.branch_id) ? 'selected' : ''}>${Utils.escHtml(b.name)}</option>`
+            ).join('')}</select></div>
+          <div class="field full"><label><input type="checkbox" id="mha-active" ${a.is_active !== false ? 'checked' : ''}> Active portal access</label></div>
+          <div class="field full"><label><input type="checkbox" id="mha-warn" ${a.can_create_warnings ? 'checked' : ''}> May create formal warnings</label></div>
+          <div class="field full"><label><input type="checkbox" id="mha-recov" ${a.can_recommend_recovery !== false ? 'checked' : ''}> May recommend cost recovery</label></div>
+          <div class="field full"><label>Assigned employees (who they can supervise)</label>
+            <div style="display:flex;gap:8px;margin-bottom:6px;flex-wrap:wrap">
+              <input type="search" id="mha-emp-q" placeholder="Search employees…" style="flex:1;min-width:140px">
+              <button type="button" class="btn btn-sm btn-ghost" id="mha-emp-all">Select all</button>
+              <button type="button" class="btn btn-sm btn-ghost" id="mha-emp-none">Clear</button>
+            </div>
+            <div id="mha-emp-list" style="max-height:220px;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:8px">
+              ${emps.map((e) => `<label class="mha-emp-row" data-q="${Utils.escHtml(`${e.full_name} ${e.employee_code || ''} ${e.position || ''}`.toLowerCase())}" style="display:block;margin:4px 0"><input type="checkbox" class="mha-emp" value="${e.id}" ${selected.has(String(e.id)) ? 'checked' : ''}> ${Utils.escHtml(e.full_name)}${e.employee_code ? ` <span class="muted">(${Utils.escHtml(e.employee_code)})</span>` : ''}</label>`).join('') || '<span class="muted">No employees in Staff &amp; HR yet</span>'}
+            </div>
+          </div>
+          <div class="field full"><label>Notes</label><input id="mha-notes" value="${Utils.escHtml(a.notes || '')}"></div>
+        </div>`,
+        `<button class="btn btn-ghost" id="mha-cancel">Cancel</button><button class="btn btn-primary" id="mha-save" style="background:#c41e3a;border-color:#c41e3a">Save</button>`);
+      document.getElementById('mha-cancel')?.addEventListener('click', () => Utils.hideModal());
+      document.getElementById('mha-user-q')?.addEventListener('input', (ev) => {
+        const q = String(ev.target.value || '').toLowerCase();
+        document.querySelectorAll('#mha-user option').forEach((opt) => {
+          const label = (opt.dataset.label || opt.textContent || '').toLowerCase();
+          opt.hidden = q && !label.includes(q);
+        });
+      });
+      document.getElementById('mha-emp-q')?.addEventListener('input', (ev) => {
+        const q = String(ev.target.value || '').toLowerCase();
+        document.querySelectorAll('.mha-emp-row').forEach((row) => {
+          row.style.display = (!q || (row.dataset.q || '').includes(q)) ? 'block' : 'none';
+        });
+      });
+      document.getElementById('mha-emp-all')?.addEventListener('click', () => {
+        document.querySelectorAll('.mha-emp-row:not([style*="display: none"]) .mha-emp').forEach((c) => { c.checked = true; });
+      });
+      document.getElementById('mha-emp-none')?.addEventListener('click', () => {
+        document.querySelectorAll('.mha-emp').forEach((c) => { c.checked = false; });
+      });
+      document.getElementById('mha-save')?.addEventListener('click', async () => {
+        const payload = {
+          id: a.id || undefined,
+          user_id: document.getElementById('mha-user')?.value,
+          portal_role: document.getElementById('mha-role')?.value,
+          branch_id: document.getElementById('mha-branch')?.value || null,
+          is_active: !!document.getElementById('mha-active')?.checked,
+          can_create_warnings: !!document.getElementById('mha-warn')?.checked,
+          can_recommend_recovery: !!document.getElementById('mha-recov')?.checked,
+          notes: document.getElementById('mha-notes')?.value,
+          employee_ids: [...document.querySelectorAll('.mha-emp:checked')].map((x) => Number(x.value))
+        };
+        if (!payload.user_id) return Utils.toast('Select a staff user account', 'error');
+        if (!payload.employee_ids.length) return Utils.toast('Select at least one employee they can supervise', 'error');
+        const r = await API.mgrHrSaveAssignment(payload, this.app.user);
+        if (r?.success === false) return Utils.toast(r.error || 'Save failed', 'error');
+        Utils.hideModal();
+        Utils.toast('Assignment saved — they can sign in to the Manager & Supervisor Portal', 'success');
+        this.renderMgrHrAssignments(el);
+      });
+    };
+
+    document.getElementById('mgrhr-assign-add')?.addEventListener('click', () => openForm(null));
+    document.getElementById('mgrhr-open-portal')?.addEventListener('click', () => {
+      if (typeof App !== 'undefined' && App.openMgrHrPortal) App.openMgrHrPortal({ fromAdmin: true });
+    });
+    el.querySelectorAll('.mgrhr-edit').forEach((b) => {
+      b.addEventListener('click', async () => {
+        const r = await API.mgrHrGetAssignment(Number(b.dataset.id), this.app.user);
+        if (r?.success === false) return Utils.toast(r.error || 'Could not load', 'error');
+        const a = r?.data || r;
+        if (!a?.id) return Utils.toast('Could not load assignment', 'error');
+        openForm(a);
+      });
+    });
+    el.querySelectorAll('.mgrhr-toggle').forEach((b) => {
+      b.addEventListener('click', async () => {
+        const r = await API.mgrHrSetAssignmentActive(Number(b.dataset.id), Number(b.dataset.on) === 1, this.app.user);
+        if (r?.success === false) return Utils.toast(r.error || 'Failed', 'error');
+        Utils.toast(Number(b.dataset.on) === 1 ? 'Activated' : 'Revoked', 'success');
+        this.renderMgrHrAssignments(el);
+      });
+    });
+  };
+
+  AdminPage.renderMgrHrCasesAdmin = async function (el) {
+    const r = await API.mgrHrListCases({ limit: 200 }, this.app.user);
+    const rows = r?.data || r || [];
+    el.innerHTML = `<h4 style="margin:0 0 8px">Manager/Supervisor Cases</h4>
+      <p class="muted">Cases reported from the Manager &amp; Supervisor Portal. Open a case to review employee responses, recommendations, and finalise decisions.</p>
+      <div class="table-wrap"><table><thead><tr>
+        <th>Case</th><th>Employee</th><th>Branch</th><th>Reported by</th><th>Type</th><th>Severity</th><th>Status</th><th>Loss</th><th></th>
+      </tr></thead><tbody>
+        ${(Array.isArray(rows) ? rows : []).map((c) => `<tr>
+          <td><strong>${Utils.escHtml(c.case_number)}</strong></td>
+          <td>${Utils.escHtml(c.employee_name || '')}</td>
+          <td>${Utils.escHtml(c.branch_name || '—')}</td>
+          <td>${Utils.escHtml(c.reporter_name || '')}<div class="muted" style="font-size:11px">${Utils.escHtml(c.reporter_portal_role || '')}</div></td>
+          <td>${Utils.escHtml(c.incident_type)}</td>
+          <td>${Utils.escHtml(c.severity)}</td>
+          <td>${Utils.escHtml(String(c.status || '').replace(/_/g, ' '))}</td>
+          <td>${Number(c.reported_loss) > 0 ? Utils.formatMoney(c.reported_loss, this.settings?.currency || 'R') : '—'}</td>
+          <td><button type="button" class="btn btn-sm btn-primary mgrhr-case-open" data-id="${c.id}">Open</button></td>
+        </tr>`).join('') || '<tr><td colspan="9" class="muted">No manager/supervisor cases yet</td></tr>'}
+      </tbody></table></div>`;
+    el.querySelectorAll('.mgrhr-case-open').forEach((b) => {
+      b.addEventListener('click', async () => {
+        const detailRes = await API.mgrHrGetCase(Number(b.dataset.id), this.app.user);
+        const c = detailRes?.data || detailRes;
+        if (!c?.id) return Utils.toast('Could not load case', 'error');
+        const openCaseActions = async (mode) => {
+          const doc = await API.mgrHrCaseDocumentHtml(c.id, this.app.user);
+          const html = doc?.data?.html || doc?.html;
+          if (!html) return Utils.toast('Could not build case document', 'error');
+          if (mode === 'save') {
+            const blob = new Blob([html], { type: 'text/html' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = `${c.case_number || 'case'}.html`;
+            a.click();
+            Utils.toast('Saved — open file and Print to PDF if needed', 'success');
+            return;
+          }
+          await Utils.printToA4(html, `${c.case_number || 'case'}.pdf`);
+        };
+        Utils.showModal(`${c.case_number}`, `
+          <div style="display:grid;gap:8px;font-size:14px;max-height:60vh;overflow:auto">
+            <div><strong>Employee:</strong> ${Utils.escHtml(c.employee_name)} ${c.employee_phone ? `· ${Utils.escHtml(c.employee_phone)}` : ''}</div>
+            <div><strong>Status:</strong> ${Utils.escHtml(c.status)}</div>
+            <div><strong>Type / severity:</strong> ${Utils.escHtml(c.incident_type)} · ${Utils.escHtml(c.severity)}</div>
+            <div><strong>Description:</strong> ${Utils.escHtml(c.description || '')}</div>
+            <div><strong>Decision taken:</strong> ${Utils.escHtml(c.decision_taken || '—')}</div>
+            <div><strong>Recommendation:</strong> ${Utils.escHtml(c.recommended_action || '—')}</div>
+            ${Array.isArray(c.evidence_paths) && c.evidence_paths.length ? `<div><strong>Attachments:</strong>
+              <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(88px,1fr));gap:8px;margin-top:6px">
+                ${c.evidence_paths.map((p, i) => /^data:image\//i.test(String(p))
+    ? `<img src="${p}" alt="Evidence ${i + 1}" style="width:100%;height:72px;object-fit:cover;border-radius:8px">`
+    : `<span class="muted">File ${i + 1}</span>`).join('')}
+              </div></div>` : ''}
+            ${c.cost ? `<div><strong>Costs:</strong> Reported ${Utils.formatMoney(c.cost.reported_loss)} · Recommended ${Utils.formatMoney(c.cost.recommended_recovery)} · Approved ${Utils.formatMoney(c.cost.approved_recovery)} (not auto payroll)</div>` : ''}
+            <h4>Employee responses</h4>
+            ${(c.responses || []).map((resp) => `<div style="border:1px solid var(--border);border-radius:8px;padding:8px;margin-bottom:6px;background:#f8fafc">
+              <strong>v${resp.version}</strong> ${Utils.escHtml(resp.agree_disagree || '')}
+              <div style="white-space:pre-wrap;margin-top:6px">${Utils.escHtml(resp.response_text || '')}</div>
+              ${resp.explanation ? `<div class="muted" style="white-space:pre-wrap;margin-top:4px">${Utils.escHtml(resp.explanation)}</div>` : ''}
+              <small class="muted">${Utils.escHtml(String(resp.submitted_at || '').slice(0, 16))}</small></div>`).join('') || '<p class="muted">No response yet</p>'}
+            ${c.final_decision ? `<div><strong>Final decision:</strong> ${Utils.escHtml(c.final_decision)}
+              <div class="muted">${Utils.escHtml(c.final_decision_notes || '')}</div></div>` : ''}
+            <h4>Audit history</h4>
+            <ul>${(c.events || []).map((e) => `<li><strong>${Utils.escHtml(e.action)}</strong> ${Utils.escHtml(e.previous_status || '')} → ${Utils.escHtml(e.new_status || '')}
+              — ${Utils.escHtml(e.actor_name || '')} · ${Utils.escHtml(String(e.created_at || '').slice(0, 16))}<br>${Utils.escHtml(e.notes || '')}</li>`).join('')}</ul>
+          </div>`,
+          `           <button class="btn btn-ghost" id="mhc-close">Close</button>
+           <button class="btn btn-ghost" id="mhc-print">Print / PDF</button>
+           <button class="btn btn-ghost" id="mhc-save">Save PDF</button>
+           <button class="btn btn-success" id="mhc-wa">WhatsApp</button>
+           <button class="btn btn-success" id="mhc-decide">Finalise decision</button>
+           <button class="btn btn-danger" id="mhc-delete">Delete case</button>`);
+        document.getElementById('mhc-close')?.addEventListener('click', () => Utils.hideModal());
+        document.getElementById('mhc-print')?.addEventListener('click', () => openCaseActions('print'));
+        document.getElementById('mhc-save')?.addEventListener('click', () => openCaseActions('save'));
+        document.getElementById('mhc-wa')?.addEventListener('click', () => {
+          let phone = c.employee_phone || '';
+          if (!phone) phone = prompt('Worker WhatsApp number:', '') || '';
+          if (!phone) return Utils.toast('No phone on employee record', 'error');
+          const shop = this.app?.settings?.shop_name || 'Management';
+          const last = (c.responses || [])[(c.responses || []).length - 1];
+          const msg = [
+            `Dear ${c.employee_name || 'colleague'},`,
+            '',
+            `Official case notice from ${shop}.`,
+            `Case: ${c.case_number}`,
+            `Type: ${c.incident_type || ''}`,
+            `Date: ${c.incident_date || '—'}`,
+            '',
+            `Details: ${(c.description || '').slice(0, 400)}`,
+            c.final_decision ? `Decision: ${c.final_decision}` : '',
+            last?.response_text ? `Your reply: "${String(last.response_text).slice(0, 200)}"` : '',
+            '',
+            `Kind regards,\n${shop}`
+          ].filter(Boolean).join('\n');
+          Utils.openWhatsApp(phone, msg);
+        });
+        document.getElementById('mhc-delete')?.addEventListener('click', async () => {
+          if (!confirm(`Delete case ${c.case_number} permanently?`)) return;
+          const rDel = await API.mgrHrDeleteCase(c.id, this.app.user);
+          if (!rDel.success) return Utils.toast(rDel.error || 'Delete failed', 'error');
+          Utils.hideModal();
+          Utils.toast('Case deleted', 'success');
+          this.renderMgrHrCasesAdmin(el);
+        });
+        document.getElementById('mhc-decide')?.addEventListener('click', () => {
+          Utils.showModal(`Finalise — ${c.case_number}`, `
+            <div class="field"><label>Final decision *</label>
+              <textarea id="mhc-final-decision" rows="3" style="width:100%">${Utils.escHtml(c.final_decision || '')}</textarea></div>
+            <div class="field"><label>Notes</label>
+              <textarea id="mhc-final-notes" rows="2" style="width:100%">${Utils.escHtml(c.final_decision_notes || '')}</textarea></div>
+            <div class="field"><label>Approved recovery (R, not auto-deducted)</label>
+              <input id="mhc-final-recovery" type="number" min="0" step="0.01" value="${Number(c.cost?.approved_recovery || 0)}"></div>
+            <div class="field"><label><input type="checkbox" id="mhc-final-close" checked> Close case after decision</label></div>
+          `, '<button class="btn btn-ghost" id="mhc-final-cancel">Cancel</button><button class="btn btn-success" id="mhc-final-save">Save decision</button>');
+          document.getElementById('mhc-final-cancel')?.addEventListener('click', () => Utils.hideModal());
+          document.getElementById('mhc-final-save')?.addEventListener('click', async () => {
+            const decision = document.getElementById('mhc-final-decision')?.value.trim() || '';
+            if (!decision) return Utils.toast('Enter the final decision', 'error');
+            const r2 = await API.mgrHrAdminDecide(c.id, {
+              final_decision: decision,
+              final_decision_notes: document.getElementById('mhc-final-notes')?.value.trim() || '',
+              approved_recovery: document.getElementById('mhc-final-recovery')?.value || '0',
+              close: !!document.getElementById('mhc-final-close')?.checked
+            }, this.app.user);
+            if (!r2.success) return Utils.toast(r2.error || 'Failed', 'error');
+            Utils.hideModal();
+            Utils.toast('Decision recorded', 'success');
+            this.renderMgrHrCasesAdmin(el);
+          });
+        });
+      });
+    });
+  };
+
+  AdminPage.renderMgrHrRecordingsAdmin = async function (el) {
+    const r = await API.mgrHrListRecordings({ limit: 200 }, this.app.user);
+    const rows = r?.data || r || [];
+    el.innerHTML = `<h4 style="margin:0 0 8px">Manager/Supervisor Recordings</h4>
+      <p class="muted">Conversation and hearing recordings from the portal. Listen, run AI, download, print A4 PDF, highlight, set decision, or delete.</p>
+      <div class="table-wrap"><table><thead><tr>
+        <th>No.</th><th>Between</th><th>Type</th><th>By</th><th>AI</th><th>When</th><th></th>
+      </tr></thead><tbody>
+        ${(Array.isArray(rows) ? rows : []).map((rec) => `<tr>
+          <td><strong>${Utils.escHtml(rec.recording_number)}</strong></td>
+          <td>${Utils.escHtml(rec.party_a || '')} · ${Utils.escHtml(rec.party_b || '')}</td>
+          <td>${Utils.escHtml(rec.conversation_type || '')}</td>
+          <td>${Utils.escHtml(rec.recorded_by_name || '')}</td>
+          <td>${Utils.escHtml(rec.ai_status || 'pending')}</td>
+          <td>${Utils.escHtml(String(rec.created_at || '').slice(0, 16))}</td>
+          <td><button type="button" class="btn btn-sm btn-primary mgrhr-rec-open" data-id="${rec.id}">Open</button></td>
+        </tr>`).join('') || '<tr><td colspan="7" class="muted">No recordings yet</td></tr>'}
+      </tbody></table></div>`;
+    el.querySelectorAll('.mgrhr-rec-open').forEach((b) => {
+      b.addEventListener('click', async () => {
+        const detailRes = await API.mgrHrGetRecording(Number(b.dataset.id), this.app.user);
+        const rec = detailRes?.data || detailRes;
+        if (!rec?.id) return Utils.toast('Could not load recording', 'error');
+        const points = Array.isArray(rec.ai_key_points) ? rec.ai_key_points : [];
+        Utils.showModal(`${rec.recording_number}`, `
+          <div style="display:grid;gap:10px;font-size:14px;max-height:65vh;overflow:auto">
+            <div><strong>Between:</strong> ${Utils.escHtml(rec.party_a || '')} and ${Utils.escHtml(rec.party_b || '')}</div>
+            <div><strong>Type:</strong> ${Utils.escHtml(rec.conversation_type || '')} · ${Utils.escHtml(rec.recorded_by_name || '')}</div>
+            ${rec.audio_data ? `<audio controls src="${rec.audio_data}" style="width:100%"></audio>` : '<p class="muted">No audio</p>'}
+            <h4>Original transcript</h4>
+            <div style="white-space:pre-wrap;background:#f8fafc;border:1px solid var(--border);border-radius:8px;padding:10px">${Utils.escHtml(rec.transcript_original || '—')}</div>
+            <h4>AI summary</h4>
+            <div style="white-space:pre-wrap;background:#f8fafc;border:1px solid var(--border);border-radius:8px;padding:10px">${Utils.escHtml(rec.transcript_summary || 'Not analysed yet')}</div>
+            ${points.length ? `<ul>${points.map((p) => `<li>${Utils.escHtml(p)}</li>`).join('')}</ul>` : ''}
+            <div><strong>AI suggested decision:</strong> ${Utils.escHtml(rec.ai_suggested_decision || '—')}</div>
+            <div class="field"><label>Decision taken</label><textarea id="mhr-decision" rows="3">${Utils.escHtml(rec.final_decision || '')}</textarea></div>
+            <div class="field"><label>Highlight phrases (comma-separated)</label><input id="mhr-highlights" value="${Utils.escHtml((rec.admin_highlights || []).map((h) => h.text || h).join(', '))}"></div>
+          </div>`,
+        `<button class="btn btn-ghost" id="mhr-close">Close</button>
+         <button class="btn btn-primary" id="mhr-ai">Run AI</button>
+         <button class="btn btn-success" id="mhr-save">Save</button>
+         <button class="btn btn-ghost" id="mhr-print">Print AI PDF</button>
+         <button class="btn btn-ghost" id="mhr-save-doc">Save PDF</button>
+         <button class="btn btn-success" id="mhr-wa">WhatsApp</button>
+         <button class="btn btn-ghost" id="mhr-dl">Download audio</button>
+         <button class="btn btn-danger" id="mhr-del">Delete</button>`);
+        document.getElementById('mhr-close')?.addEventListener('click', () => Utils.hideModal());
+        document.getElementById('mhr-ai')?.addEventListener('click', async () => {
+          const r2 = await API.mgrHrAnalyzeRecording(rec.id, { transcript_original: rec.transcript_original }, this.app.user);
+          if (!r2.success) return Utils.toast(r2.error || 'AI failed', 'error');
+          Utils.hideModal();
+          Utils.toast('AI analysis ready', 'success');
+          this.renderMgrHrRecordingsAdmin(el);
+        });
+        document.getElementById('mhr-save')?.addEventListener('click', async () => {
+          const final_decision = document.getElementById('mhr-decision')?.value || '';
+          const admin_highlights = String(document.getElementById('mhr-highlights')?.value || '')
+            .split(',').map((s) => s.trim()).filter(Boolean).map((text) => ({ text }));
+          const r2 = await API.mgrHrUpdateRecording(rec.id, { final_decision, admin_highlights }, this.app.user);
+          if (!r2.success) return Utils.toast(r2.error || 'Save failed', 'error');
+          Utils.toast('Saved', 'success');
+        });
+        document.getElementById('mhr-print')?.addEventListener('click', async () => {
+          const doc = await API.mgrHrRecordingDocumentHtml(rec.id, this.app.user);
+          const html = doc?.data?.html || doc?.html;
+          if (!html) return Utils.toast('Could not build document', 'error');
+          await Utils.printToA4(html, `${rec.recording_number}.pdf`);
+        });
+        document.getElementById('mhr-save-doc')?.addEventListener('click', async () => {
+          const doc = await API.mgrHrRecordingDocumentHtml(rec.id, this.app.user);
+          const html = doc?.data?.html || doc?.html;
+          if (!html) return Utils.toast('Could not build document', 'error');
+          const blob = new Blob([html], { type: 'text/html' });
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = `${rec.recording_number || 'recording'}.html`;
+          a.click();
+          Utils.toast('Saved', 'success');
+        });
+        document.getElementById('mhr-wa')?.addEventListener('click', () => {
+          const phone = prompt('WhatsApp number:', '') || '';
+          if (!phone) return;
+          const shop = this.app?.settings?.shop_name || 'Management';
+          const points = Array.isArray(rec.ai_key_points) ? rec.ai_key_points : [];
+          const msg = [
+            `${shop} — ${rec.recording_number}`,
+            `Between ${rec.party_a || ''} and ${rec.party_b || ''}`,
+            '',
+            'AI summary:',
+            rec.transcript_summary || '(Run AI first)',
+            points.length ? `\nKey points:\n- ${points.join('\n- ')}` : '',
+            rec.ai_suggested_decision ? `\nSuggested: ${rec.ai_suggested_decision}` : '',
+            rec.final_decision ? `\nDecision: ${rec.final_decision}` : ''
+          ].filter(Boolean).join('\n');
+          Utils.openWhatsApp(phone, msg);
+        });
+        document.getElementById('mhr-dl')?.addEventListener('click', () => {
+          if (!rec.audio_data) return Utils.toast('No audio', 'error');
+          const a = document.createElement('a');
+          a.href = rec.audio_data;
+          a.download = `${rec.recording_number}.webm`;
+          a.click();
+        });
+        document.getElementById('mhr-del')?.addEventListener('click', async () => {
+          if (!confirm('Delete this recording?')) return;
+          const r2 = await API.mgrHrDeleteRecording(rec.id, this.app.user);
+          if (!r2.success) return Utils.toast(r2.error || 'Delete failed', 'error');
+          Utils.hideModal();
+          Utils.toast('Deleted', 'success');
+          this.renderMgrHrRecordingsAdmin(el);
+        });
+      });
+    });
   };
 
   AdminPage.renderStaffDisciplinaryAdmin = async function (el) {
@@ -1637,44 +2393,74 @@
   };
 
   AdminPage.renderStaffReports = async function (el) {
-    el.innerHTML = `<div style="display:flex;gap:8px;flex-wrap:wrap">
+    this._srFrom = this._srFrom || Utils.daysAgo(30);
+    this._srTo = this._srTo || Utils.today();
+    el.innerHTML = `<div class="card" style="margin-bottom:12px"><div class="card-body">
+      <h4 style="margin:0 0 8px">Report period</h4>
+      <p class="muted" style="margin:0 0 10px">Attendance and payroll reports use these dates. Staff list is current employees.</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+        <div class="field"><label>From</label><input type="date" id="sr-from" value="${this._srFrom}"></div>
+        <div class="field"><label>To</label><input type="date" id="sr-to" value="${this._srTo}"></div>
+      </div></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
       <button class="btn btn-primary" id="sr-staff">Staff List PDF</button>
       <button class="btn btn-ghost" id="sr-att">Attendance PDF</button>
       <button class="btn btn-ghost" id="sr-att-excel">Attendance Excel</button>
       <button class="btn btn-ghost" id="sr-payroll">Payroll Dashboard PDF</button>
       <button class="btn btn-ghost" id="sr-payroll-excel">Payroll Dashboard Excel</button></div>`;
+    const period = () => {
+      const from = document.getElementById('sr-from')?.value || Utils.daysAgo(30);
+      const to = document.getElementById('sr-to')?.value || Utils.today();
+      this._srFrom = from;
+      this._srTo = to;
+      if (from > to) {
+        Utils.toast('From date must be before To date', 'error');
+        return null;
+      }
+      return { from, to };
+    };
     document.getElementById('sr-staff').addEventListener('click', async () => {
+      const p = period();
+      if (!p) return;
       const r = await API.getEmployees({});
-      const buf = await API.getStaffReportPdf('staff_list', r.data || []);
-      await saveStaffPdf('staff-list.pdf', buf);
+      const buf = await API.getStaffReportPdf('staff_list', { rows: r.data || [], from: p.from, to: p.to });
+      await saveStaffPdf(`staff-list-${p.from}-to-${p.to}.pdf`, buf);
     });
     document.getElementById('sr-att').addEventListener('click', async () => {
-      const r = await API.getStaffAttendance({ from: Utils.daysAgo(30), to: Utils.today() });
-      const buf = await API.getStaffReportPdf('attendance', r.data || []);
-      await saveStaffPdf('attendance-report.pdf', buf);
+      const p = period();
+      if (!p) return;
+      const r = await API.getStaffAttendance({ from: p.from, to: p.to });
+      if (!r.success) return Utils.toast(r.error || 'Could not load attendance', 'error');
+      const buf = await API.getStaffReportPdf('attendance', { rows: r.data || [], from: p.from, to: p.to });
+      await saveStaffPdf(`attendance-${p.from}-to-${p.to}.pdf`, buf);
     });
     document.getElementById('sr-att-excel').addEventListener('click', async () => {
-      const r = await API.getStaffAttendance({ from: Utils.daysAgo(30), to: Utils.today() });
+      const p = period();
+      if (!p) return;
+      const r = await API.getStaffAttendance({ from: p.from, to: p.to });
+      if (!r.success) return Utils.toast(r.error || 'Could not load attendance', 'error');
       const rows = r.data || [];
-      await Export.toExcel('attendance-report.xlsx', [{
+      await Export.toExcel(`attendance-${p.from}-to-${p.to}.xlsx`, [{
         name: 'Attendance',
         headers: ['Date', 'Employee', 'Branch', 'In', 'Out', 'Worked', 'Late', 'Status'],
         rows: rows.map(a => [a.work_date, a.full_name, a.branch || '', a.clock_in || '', a.clock_out || '', a.hours_worked, a.late_minutes, a.status])
       }]);
     });
     document.getElementById('sr-payroll').addEventListener('click', async () => {
-      const from = Utils.daysAgo(30);
-      const to = Utils.today();
-      const r = await API.getPayrollDashboard({ from, to }, this.app.user);
-      const buf = await API.getStaffReportPdf('payroll_dashboard', r.data || []);
-      await saveStaffPdf('payroll-dashboard.pdf', buf);
+      const p = period();
+      if (!p) return;
+      const r = await API.getPayrollDashboard({ from: p.from, to: p.to }, this.app.user);
+      if (!r.success) return Utils.toast(r.error || 'Could not load payroll', 'error');
+      const buf = await API.getStaffReportPdf('payroll_dashboard', { rows: r.data || [], from: p.from, to: p.to });
+      await saveStaffPdf(`payroll-dashboard-${p.from}-to-${p.to}.pdf`, buf);
     });
     document.getElementById('sr-payroll-excel').addEventListener('click', async () => {
-      const from = Utils.daysAgo(30);
-      const to = Utils.today();
-      const r = await API.getPayrollDashboard({ from, to }, this.app.user);
+      const p = period();
+      if (!p) return;
+      const r = await API.getPayrollDashboard({ from: p.from, to: p.to }, this.app.user);
+      if (!r.success) return Utils.toast(r.error || 'Could not load payroll', 'error');
       const rows = r.data || [];
-      await Export.toExcel('payroll-dashboard.xlsx', [{
+      await Export.toExcel(`payroll-dashboard-${p.from}-to-${p.to}.xlsx`, [{
         name: 'Payroll',
         headers: ['Employee', 'Scheduled', 'Worked', 'Missed', 'Late', 'OT', 'Gross', 'Deductions', 'Net'],
         rows: rows.map(x => [x.full_name, x.scheduled_hours, x.hours_worked, x.hours_missed, x.late_minutes, x.overtime_hours, x.gross_pay, x.total_deductions, x.net_salary])
@@ -1782,17 +2568,19 @@
       <div class="field"><label>From</label><input type="date" id="sf-from" value="${from}"></div>
       <div class="field"><label>To</label><input type="date" id="sf-to" value="${to}"></div>
       <button class="btn btn-primary" id="sf-filter">Filter</button></div>
-      <div class="table-wrap"><table><thead><tr><th>Photo</th><th>Employee</th><th>Date</th><th>Time</th><th>Status</th><th></th></tr></thead>
+      <p class="muted" style="margin:0 0 8px">Login, start break, end break, and clock-out selfies all appear here.</p>
+      <div class="table-wrap"><table><thead><tr><th>Photo</th><th>Employee</th><th>Event</th><th>Date</th><th>Time</th><th>Status</th><th></th></tr></thead>
       <tbody>${rows.map(s => `<tr>
         <td><img src="${s.photo_data}" alt="" style="width:56px;height:56px;object-fit:cover;border-radius:8px;cursor:pointer" class="sf-thumb" data-id="${s.id}"></td>
         <td><strong>${s.employee_name}</strong><br><small>${s.employee_code || ''} · ${s.branch || '—'}</small></td>
+        <td><span class="tag">${Utils.escHtml(selfieEventLabel(s.event_type))}</span></td>
         <td>${s.login_date}</td>
         <td>${Utils.formatDateTime(s.login_at)}</td>
         <td>${s.is_edited ? '<span class="tag" style="background:var(--warning)">Edited</span>' : '<span class="tag">Original</span>'}</td>
         <td><button class="btn btn-sm btn-ghost sf-view" data-id="${s.id}">View</button>
           <button class="btn btn-sm btn-ghost sf-edit" data-id="${s.id}">Replace</button>
           <button class="btn btn-sm btn-danger sf-del" data-id="${s.id}">Delete</button></td>
-      </tr>`).join('') || '<tr><td colspan="6" class="muted">No login selfies in this period</td></tr>'}
+      </tr>`).join('') || '<tr><td colspan="7" class="muted">No selfies in this period</td></tr>'}
       </tbody></table></div>`;
     document.getElementById('sf-filter').addEventListener('click', () => {
       this._selfieFrom = document.getElementById('sf-from').value;
@@ -1803,26 +2591,35 @@
       const r = await API.getStaffSelfie(parseInt(id, 10), this.app.user);
       const s = r.data;
       if (!s) return Utils.toast('Not found', 'error');
-      Utils.showModal(`${s.employee_name} — ${s.login_date}${s.is_edited ? ' (Edited)' : ''}`, `
+      Utils.showModal(`${s.employee_name} — ${selfieEventLabel(s.event_type)} · ${s.login_date}${s.is_edited ? ' (Edited)' : ''}`, `
         <img src="${s.photo_data}" alt="" style="width:100%;max-width:400px;border-radius:12px;display:block;margin:0 auto">
         ${s.is_edited ? `<p class="muted" style="margin-top:8px">Edited by ${s.edited_by_name || 'admin'} on ${Utils.formatDateTime(s.edited_at)}${s.edit_notes ? ` — ${s.edit_notes}` : ''}</p>
           <details style="margin-top:8px"><summary>View original photo</summary><img src="${s.original_photo_data}" alt="" style="width:100%;max-width:400px;margin-top:8px;border-radius:8px"></details>` : ''}
-        ${edit ? `<div class="field" style="margin-top:12px"><label>Replacement photo</label><input type="file" id="sf-replace" accept="image/*"></div>
+        ${edit ? `<div class="field" style="margin-top:12px"><label>Replacement selfie</label>
+            <p class="muted" style="font-size:12px">Opens the front camera only — gallery is not allowed.</p>
+            <button type="button" class="btn btn-primary" id="sf-take">Take selfie</button>
+            <input type="hidden" id="sf-replace-data"></div>
           <div class="field"><label>Edit notes</label><input id="sf-notes" placeholder="Reason for change"></div>` : ''}`,
         edit ? '<button type="button" class="btn btn-primary" id="sf-save-replace">Save Replacement</button>' : '<button type="button" class="btn btn-ghost" id="sf-close">Close</button>');
       if (edit) {
+        document.getElementById('sf-take')?.addEventListener('click', async () => {
+          try {
+            const data = await (window.StaffSelfieCapture?.captureNativeSelfie?.() || Utils.captureSelfiePhoto());
+            if (!data) return Utils.toast('No selfie captured', 'error');
+            document.getElementById('sf-replace-data').value = data;
+            Utils.toast('Selfie captured — tap Save Replacement', 'success');
+          } catch (err) {
+            Utils.toast(err.message || 'Camera unavailable', 'error');
+          }
+        });
         document.getElementById('sf-save-replace').addEventListener('click', async () => {
-          const file = document.getElementById('sf-replace').files?.[0];
-          if (!file) return Utils.toast('Choose a replacement photo', 'error');
-          const reader = new FileReader();
-          reader.onload = async () => {
-            const ur = await API.updateStaffSelfie(s.id, reader.result, document.getElementById('sf-notes').value.trim(), this.app.user);
-            if (!ur.success) return Utils.toast(ur.error || 'Update failed', 'error');
-            Utils.hideModal();
-            Utils.toast('Photo updated', 'success');
-            this.renderStaffSelfies(el);
-          };
-          reader.readAsDataURL(file);
+          const data = document.getElementById('sf-replace-data')?.value;
+          if (!data) return Utils.toast('Take a selfie with the camera first', 'error');
+          const ur = await API.updateStaffSelfie(s.id, data, document.getElementById('sf-notes').value.trim(), this.app.user);
+          if (!ur.success) return Utils.toast(ur.error || 'Update failed', 'error');
+          Utils.hideModal();
+          Utils.toast('Photo updated', 'success');
+          this.renderStaffSelfies(el);
         });
       } else {
         document.getElementById('sf-close')?.addEventListener('click', Utils.hideModal);
@@ -1842,8 +2639,23 @@
   AdminPage.renderStaffNotifications = async function (el) {
     const res = await API.getStaffNotifications();
     const notes = res.data || [];
-    el.innerHTML = notes.length ? notes.map(n =>
-      `<div class="card" style="margin-bottom:8px"><div class="card-body"><strong>${n.title}</strong><p class="muted">${n.message}</p></div></div>`).join('')
+    el.innerHTML = notes.length ? notes.map((n, i) =>
+      `<div class="card staff-alert-card" data-alert="${i}" style="margin-bottom:8px"><div class="card-body">
+        <strong>${Utils.escHtml(n.title)}</strong>
+        <p class="muted" style="margin:6px 0 0">${Utils.escHtml(n.message)}</p>
+        <p class="muted" style="margin:8px 0 0;font-size:12px">Click to open the exact place</p>
+      </div></div>`).join('')
       : '<p class="muted">No alerts right now</p>';
+    el.querySelectorAll('[data-alert]').forEach((card) => {
+      card.addEventListener('click', () => {
+        const n = notes[parseInt(card.dataset.alert, 10)];
+        if (!n) return;
+        const section = n.section || 'staffhr';
+        const tab = n.tab || (n.type === 'leave' ? 'leave' : n.type === 'payroll_due' ? 'payroll' : 'attendance');
+        if (section === 'hrcontracts' && window.AdminHrPage) AdminHrPage.tab = tab;
+        if (section === 'staffhr') this.staffTab = tab;
+        App.navigateToAdminSection?.(section, tab);
+      });
+    });
   };
 })();

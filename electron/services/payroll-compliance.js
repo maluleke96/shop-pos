@@ -39,7 +39,9 @@ function defaultPayrollSettings() {
     company_sdl_number: '',
     company_coida_number: '',
     sars_tax_office: '',
-    compliance_reminders: true
+    compliance_reminders: true,
+    claim_open_days_before_pay: 30,
+    claim_close_days_before_pay: 3
   };
 }
 
@@ -534,7 +536,7 @@ function buildComplianceReportPdf(type, from, to, shopName, currency) {
       body: data.map(r => [r.full_name, r.employee_code, `${r.period_start}–${r.period_end}`, `${currency}${Number(r.gross_salary).toFixed(2)}`, `${currency}${Number(r.net_salary).toFixed(2)}`])
     });
   }
-  return doc.output('arraybuffer');
+  return require('./pdf-bytes').pdfBytes(doc);
 }
 
 function buildEnhancedPayslipPdf(row, deductions, shopName, currency, settings) {
@@ -747,7 +749,7 @@ function buildEnhancedPayslipPdf(row, deductions, shopName, currency, settings) 
   doc.text('This payslip is computer-generated and serves as an official record of remuneration.', 14, 285);
   doc.text(`${shopName || shop.shop_name || 'Shop POS'} — Confidential`, pageW - 14, 285, { align: 'right' });
 
-  return doc.output('arraybuffer');
+  return require('./pdf-bytes').pdfBytes(doc);
 }
 
 const WEEKDAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];

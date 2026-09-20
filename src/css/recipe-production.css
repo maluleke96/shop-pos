@@ -521,3 +521,131 @@ body.capacitor-android .rp-sidebar {
   overflow-y: auto;
 }
 body.capacitor-android .rp-shell.rp-nav-open .rp-sidebar { transform: translateX(0); }
+
+#screen-recipe-production, .rp-shell, .rp-main, #rp-content {
+  min-width: 0;
+  max-width: 100%;
+}
+.rp-main { overflow: auto; -webkit-overflow-scrolling: touch; }
+#rp-content.rp-refreshing { opacity: 0.92; transition: opacity 0.1s ease; }
+#rp-content { transition: opacity 0.08s ease; }
+.rp-nav-btn { transition: background 0.1s ease, color 0.1s ease; }
+.rp-nav-btn:active { transform: scale(0.98); }
+.rp-panel { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.rp-embed-pos .table-wrap {
+  max-height: calc(100dvh - 180px);
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+}
+@media (max-width: 1100px) {
+  .rp-shell { grid-template-columns: 200px 1fr; }
+}
+@media (max-width: 900px) {
+  .rp-shell { grid-template-columns: 1fr; }
+  #rp-content { padding-bottom: 24px; }
+  .rp-topbar { position: sticky; top: 0; z-index: 50; }
+}
+
+.rp-ig-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+}
+.rp-ig-card {
+  text-align: left;
+  background: var(--rp-surface);
+  border: 1px solid var(--rp-border);
+  border-radius: 12px;
+  padding: 14px 14px 14px 16px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  box-shadow: var(--rp-shadow);
+  position: relative;
+}
+.rp-ig-card:hover { border-color: var(--ig-color, #0ea5e9); }
+.rp-ig-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--ig-color, #0ea5e9);
+  position: absolute;
+  top: 14px;
+  right: 14px;
+}
+.rp-ig-preview {
+  font-size: 12px;
+  color: var(--rp-muted, #64748b);
+  line-height: 1.35;
+}
+.rp-ig-chips, .rp-ig-row-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+.rp-ig-chip {
+  border: 1px solid var(--rp-border);
+  background: var(--rp-surface);
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 13px;
+  cursor: pointer;
+  box-shadow: inset 0 0 0 3px transparent;
+}
+.rp-ig-chip.active {
+  border-color: var(--ig-color, #0ea5e9);
+  box-shadow: inset 0 0 0 2px var(--ig-color, #0ea5e9);
+  font-weight: 600;
+}
+.rp-ig-tag {
+  font-size: 11px;
+  border-radius: 999px;
+  padding: 2px 8px;
+  background: color-mix(in srgb, var(--ig-color, #0ea5e9) 16%, transparent);
+  color: inherit;
+}
+.rp-mix-attach {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--rp-border);
+}
+.rp-ing-pick-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 8px;
+  max-height: min(58vh, 420px);
+  overflow: auto;
+  padding: 4px 2px 8px;
+  -webkit-overflow-scrolling: touch;
+}
+.rp-ing-pick-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  text-align: left;
+  padding: 12px 14px;
+  border: 1.5px solid var(--rp-border, #d1d5db);
+  border-radius: 10px;
+  background: var(--rp-surface, #fff);
+  cursor: pointer;
+  min-height: 56px;
+  transition: border-color 0.12s ease, background 0.12s ease, transform 0.08s ease;
+}
+.rp-ing-pick-btn:hover {
+  border-color: #0ea5e9;
+  background: rgba(14, 165, 233, 0.06);
+}
+.rp-ing-pick-btn:active { transform: scale(0.98); }
+.rp-ing-pick-btn strong { font-size: 14px; line-height: 1.25; }
+.rp-ing-pick-btn .rp-muted { font-size: 11px; }
+.rp-ing-pick-btn--done,
+.rp-ing-pick-btn:disabled {
+  opacity: 0.75;
+  border-color: #22c55e;
+  background: rgba(34, 197, 94, 0.08);
+  cursor: default;
+}
+#modal.modal-wide { max-width: min(720px, 96vw); width: 96vw; }

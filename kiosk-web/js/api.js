@@ -10,5 +10,6 @@ const KioskAPI = {
   pairingStatus: (code) => KioskAPI.call('kiosk:pairingStatus', [code]),
   catalog: (tok) => KioskAPI.call('kiosk:catalog', [tok]),
   placeOrder: (tok, data) => KioskAPI.call('kiosk:placeOrder', [tok, data]),
+  validateVoucher: (tok, code, opts) => KioskAPI.call('kiosk:validateVoucher', [tok, code, opts || {}]),
   heartbeat: (tok, payload) => KioskAPI.call('kiosk:heartbeat', [tok, payload || {}])
 };

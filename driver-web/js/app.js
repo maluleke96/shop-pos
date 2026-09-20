@@ -434,6 +434,12 @@ const DriverApp = {
     return `https://wa.me/${wa}`;
   },
 
+  mapsLink(address) {
+    const a = String(address || '').trim();
+    if (!a) return '#';
+    return `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(a)}`;
+  },
+
   availDot(avail) {
     const on = avail === 'online';
     return `<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${on ? '#22c55e' : '#94a3b8'};margin-right:6px"></span>`;
@@ -476,7 +482,7 @@ const DriverApp = {
         await this.refresh();
         if (this._dataSignature() !== before) this.renderBody();
       } catch (_) { /* */ }
-    }, 12000);
+    }, 8000);
   },
 
   stopPolling() {
@@ -964,52 +970,32 @@ const DriverApp = {
         <div class="order-actions contact-row">
           ${phone ? `<a class="drv-btn secondary contact-btn" href="${this.phoneLink(phone)}">📞 Call</a>` : ''}
           ${phone ? `<a class="drv-btn secondary contact-btn" href="${this.whatsappLink(phone)}" target="_blank" rel="noopener">💬 WhatsApp</a>` : ''}
+          ${o.delivery_address ? `<a class="drv-btn secondary contact-btn" href="${this.mapsLink(o.delivery_address)}" target="_blank" rel="noopener">🗺️ Navigate</a>` : ''}
         </div>
       </div>
       <p class="muted">${this.esc(items)}</p>
       <p><strong>Your fee: ${this.money(o.delivery_fee)}</strong></p>
       <div class="order-actions">
-        ${pool || st === 'awaiting_driver' ? '<button class="drv-btn" data-act="accept">Accept delivery</button>' : ''}
-        ${st === 'assigned' ? '<button class="drv-btn" data-act="accept">Accept</button><button class="drv-btn warn secondary" data-act="reject">Reject (pickup at store)</button>' : ''}
-        ${['driver_accepted', 'assigned', 'picked_up'].includes(st) ? '<button class="drv-btn warn secondary" data-act="release">Release to other drivers</button>' : ''}
-        ${['driver_accepted', 'assigned', 'picking_up'].includes(st) ? '<button class="drv-btn" data-act="picked_up">Picked up</button>' : ''}
-        ${st === 'picked_up' ? '<button class="drv-btn" data-act="on_way">On the way</button>' : ''}
-        ${['picked_up', 'on_way'].includes(st) ? '<button class="drv-btn" data-act="delivered">Delivered</button>' : ''}
-        ${!pool && !['delivered', 'failed', 'cancelled'].includes(st) ? '<button class="drv-btn warn secondary" data-act="failed">Unable to deliver</button>' : ''}
+        ${pool || st === 'awaiting_driver' ? '<button type="button" class="drv-btn" data-act="accept">Accept delivery</button>' : ''}
+        ${st === 'assigned' ? '<button type="button" class="drv-btn" data-act="accept">Accept</button><button type="button" class="drv-btn warn secondary" data-act="reject">Reject (pickup at store)</button>' : ''}
+        ${['assigned', 'driver_accepted'].includes(st) ? '<button type="button" class="drv-btn warn secondary" data-act="release">Release to other drivers</button>' : ''}
+        ${st === 'driver_accepted' ? '<button type="button" class="drv-btn" data-act="picked_up">Picked up</button>' : ''}
+        ${st === 'picked_up' ? '<button type="button" class="drv-btn" data-act="on_way">On the way</button>' : ''}
+        ${['picked_up', 'on_way'].includes(st) ? '<button type="button" class="drv-btn" data-act="delivered">Delivered</button>' : ''}
+        ${['picked_up', 'on_way'].includes(st) ? '<button type="button" class="drv-btn warn secondary" data-act="failed">Unable to deliver</button>' : ''}
       </div>
     </div>`;
   },
 
   bindLogin() {
-    document.getElementById('app').onclick = async (e) => {
-      const btn = e.target.closest('[data-act]');
-      if (btn?.dataset.act === 'forgot-password') { await this.showForgotPassword(); return; }
-      if (btn?.dataset.act !== 'login') return;
-      try {
-        const r = await DriverAPI.login(document.getElementById('drv-user').value.trim(), document.getElementById('drv-pass').value, this.deviceInfo());
-        this.token = r.token;
-        localStorage.setItem('driver_token', r.token);
-        sessionStorage.setItem('driver_token', r.token);
-        this.initNotify();
-        await this.refresh();
-        this.view = 'main';
-        this.tab = 'home';
-        this._loggedIn = true;
-        this.bindExitGuard();
-        this.startPolling();
-        this.render();
-      } catch (err) {
-        const msg = String(err.message || 'Incorrect username or password');
-        this.toast(msg.includes('does not exist') ? 'System updating — try again in a minute.' : msg, 'error');
-        if (!msg.includes('does not exist')) {
-          window.alert(`Sign in failed\n\n${msg.includes('Invalid') || msg.includes('password') || msg.includes('credentials') ? msg : 'Incorrect username or password. Please try again.'}`);
-        }
-      }
-    };
+    // Keep using the shared main click handler so Accept / status buttons
+    // still work after sign-in (bindLogin must not permanently replace it).
+    this.bindMain();
   },
 
   bindMain() {
     const app = document.getElementById('app');
+    if (!app) return;
     app.onchange = (e) => {
       if (e.target.id === 'drv-notify') {
         const on = e.target.checked;
@@ -1019,6 +1005,32 @@ const DriverApp = {
       }
     };
     app.onclick = async (e) => {
+      if (this.view === 'login') {
+        const loginBtn = e.target.closest('[data-act]');
+        if (loginBtn?.dataset.act === 'forgot-password') { await this.showForgotPassword(); return; }
+        if (loginBtn?.dataset.act !== 'login') return;
+        try {
+          const r = await DriverAPI.login(document.getElementById('drv-user').value.trim(), document.getElementById('drv-pass').value, this.deviceInfo());
+          this.token = r.token;
+          localStorage.setItem('driver_token', r.token);
+          sessionStorage.setItem('driver_token', r.token);
+          this.initNotify();
+          await this.refresh();
+          this.view = 'main';
+          this.tab = 'home';
+          this._loggedIn = true;
+          this.bindExitGuard();
+          this.startPolling();
+          this.render();
+        } catch (err) {
+          const msg = String(err.message || 'Incorrect username or password');
+          this.toast(msg.includes('does not exist') ? 'System updating — try again in a minute.' : msg, 'error');
+          if (!msg.includes('does not exist')) {
+            window.alert(`Sign in failed\n\n${msg.includes('Invalid') || msg.includes('password') || msg.includes('credentials') ? msg : 'Incorrect username or password. Please try again.'}`);
+          }
+        }
+        return;
+      }
       if (e.target.closest('a.contact-btn')) return;
       const histBtn = e.target.closest('[data-history-id]');
       if (histBtn) {
@@ -1145,8 +1157,12 @@ const DriverApp = {
         }
         return;
       }
+      if (act === 'logout') {
+        await this.doLogout();
+        return;
+      }
       if (act === 'release' && id) {
-        const reason = prompt('Release this delivery for another driver? Optional reason:') ?? '';
+        const reason = prompt('Release this delivery for another driver? Optional reason:');
         if (reason === null) return;
         this.orders = (this.orders || []).filter((o) => String(o.id) !== String(id));
         this._normalizeOrderLists();
@@ -1166,13 +1182,14 @@ const DriverApp = {
         return;
       }
       if (act === 'reject' && id) {
-        const reason = prompt('Reason?') || 'Unavailable';
+        const reason = prompt('Reason?');
+        if (reason === null) return;
         this.orders = (this.orders || []).filter((o) => String(o.id) !== String(id));
         this.available = (this.available || []).filter((o) => String(o.id) !== String(id));
         this._normalizeOrderLists();
         this.renderBody();
         try {
-          await DriverAPI.reject(id, reason);
+          await DriverAPI.reject(id, reason || 'Unavailable');
           this.syncDeliveryAlert();
           await this.refresh();
           this.renderBody();
@@ -1183,11 +1200,15 @@ const DriverApp = {
         }
         return;
       }
-      if (act === 'picked_up' && id || act === 'on_way' && id || act === 'delivered' && id || act === 'failed' && id) {
+      if ((act === 'picked_up' || act === 'on_way' || act === 'delivered' || act === 'failed') && id) {
         const statusMap = { picked_up: 'picked_up', on_way: 'on_way', delivered: 'delivered', failed: 'failed' };
         const status = statusMap[act];
         let reason;
-        if (act === 'failed') reason = prompt('Reason?') || 'Failed';
+        if (act === 'failed') {
+          reason = prompt('Reason?');
+          if (reason === null) return;
+          reason = reason || 'Failed';
+        }
         this.orders = (this.orders || []).map((o) => String(o.id) === String(id) ? { ...o, status } : o);
         if (status === 'delivered') this.orders = this.orders.filter((o) => String(o.id) !== String(id));
         this.renderBody();

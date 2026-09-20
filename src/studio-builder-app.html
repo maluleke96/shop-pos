@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Menu &amp; Promo Studio</title>
+  <script>window.__SHOP_POS_APP_MODE__ = 'studio-builder';</script>
+  <script>
+    (function () {
+      try {
+        var q = new URLSearchParams(location.search || '');
+        var mod = q.get('module') || 'menu';
+        location.replace('index.html?app=studio-builder&module=' + encodeURIComponent(mod) + '&studio=1');
+      } catch (e) {
+        location.replace('index.html?app=studio-builder&studio=1');
+      }
+    })();
+  </script>
+</head>
+<body>
+  <p style="font-family:system-ui;padding:24px;text-align:center">Opening Studio…</p>
+</body>
+</html>

@@ -7,10 +7,10 @@ const OrderApp = {
   categoryId: null,
   search: '',
   cart: [],
-  token: sessionStorage.getItem('order_token') || '',
+  token: (typeof localStorage !== 'undefined' && localStorage.getItem('order_token')) || (typeof sessionStorage !== 'undefined' && sessionStorage.getItem('order_token')) || '',
   customer: null,
   product: null,
-  checkout: { fulfillment_type: 'collection', payment_method: 'card', coupon_code: '', loyalty_points_used: 0, notes: '', delivery_address: '' },
+  checkout: { fulfillment_type: 'collection', payment_method: 'card', coupon_code: '', loyalty_points_used: 0, notes: '', delivery_address: '', delivery_place_id: '', delivery_place: '' },
   lastOrder: null,
   selectedOrder: null,
   quote: null,
@@ -24,6 +24,122 @@ const OrderApp = {
   _menuBranchId: null,
   _menuLoadPromise: null,
   _searchTimer: null,
+  openJobs: [],
+  myIssues: [],
+  _accountCache: null,
+  _ordersCache: null,
+  _pendingSaveCreds: null,
+
+  isAuthView(view = this.view) {
+    return ['login', 'register', 'register-verify', 'forgot', 'forgot-verify'].includes(view);
+  },
+
+  findMenuProduct(productId) {
+    const id = String(productId || '');
+    if (!id || !this._menuFull) return null;
+    const cats = this._menuFull.categories || this.menu?.categories || [];
+    for (const c of cats) {
+      for (const p of (c.products || [])) {
+        if (String(p.id) === id || String(p.product_id) === id) return { ...p };
+      }
+    }
+    for (const p of (this._menuFull.specials || this.menu?.specials || [])) {
+      if (String(p.id) === id || String(p.product_id) === id) return { ...p };
+    }
+    return null;
+  },
+
+  rememberAskSaveLater(loginId, password) {
+    this._pendingSaveCreds = loginId && password ? { loginId, password } : null;
+    try {
+      localStorage.setItem('order_ask_save_on_order', '1');
+      if (loginId) localStorage.setItem('order_saved_login_id', String(loginId));
+    } catch (_) { /* */ }
+  },
+
+  clearAskSaveLater() {
+    this._pendingSaveCreds = null;
+    try { localStorage.removeItem('order_ask_save_on_order'); } catch (_) { /* */ }
+  },
+
+  shouldAskSaveOnOrder() {
+    try {
+      return localStorage.getItem('order_ask_save_on_order') === '1'
+        && localStorage.getItem('order_stay_signed_in') !== '1'
+        && !!this.token;
+    } catch (_) { return false; }
+  },
+
+  async maybeAskSavePasswordOnOrder() {
+    if (!this.shouldAskSaveOnOrder()) return;
+    const creds = this._pendingSaveCreds || {};
+    const loginId = creds.loginId || (() => {
+      try { return localStorage.getItem('order_saved_login_id') || ''; } catch (_) { return ''; }
+    })();
+    const password = creds.password || '';
+    let stay = false;
+    try {
+      stay = await Promise.race([
+        this.askStaySignedIn(loginId || this.customer?.email || this.customer?.phone || 'account', password || ' '),
+        new Promise((resolve) => setTimeout(() => resolve(false), 15000))
+      ]);
+    } catch (_) { stay = false; }
+    if (stay) {
+      this.persistSession(this.token, true);
+      if (loginId && password && password !== ' ') {
+        await this.storeBrowserPassword(loginId, password, this.customer?.first_name);
+      }
+      this.clearAskSaveLater();
+      this.toast('Password saved — you stay signed in on this phone', 'success');
+    } else {
+      this.rememberAskSaveLater(loginId, password);
+    }
+  },
+
+  async pollPaymentReturn(orderNumber) {
+    if (!orderNumber || !this.token) return;
+    if (this._payPollTimer) clearInterval(this._payPollTimer);
+    let tries = 0;
+    const tick = async () => {
+      tries += 1;
+      const statusEl = document.getElementById('pay-pending-status');
+      try {
+        const st = await OrderAPI.getPaymentStatus(orderNumber, this.token);
+        const paid = st?.paid || String(st?.payment_status || '').toUpperCase() === 'PAID';
+        if (statusEl) {
+          statusEl.textContent = paid
+            ? 'Payment confirmed!'
+            : `Status: ${st?.payment_status || 'PENDING'} (waiting for bank confirmation…)`;
+        }
+        if (paid) {
+          clearInterval(this._payPollTimer);
+          this._payPollTimer = null;
+          try {
+            const orders = await OrderAPI.listOrders(this.token);
+            this.lastOrder = (orders || []).find((o) => o.order_number === orderNumber) || this.lastOrder;
+          } catch (_) { /* */ }
+          this.view = 'confirmed';
+          this.paymentReturn = null;
+          this.render();
+          return;
+        }
+        if (String(st?.payment_status || '').toUpperCase() === 'FAILED') {
+          clearInterval(this._payPollTimer);
+          this._payPollTimer = null;
+          if (statusEl) statusEl.textContent = st.failure_reason || 'Payment failed';
+        }
+      } catch (err) {
+        if (statusEl) statusEl.textContent = err.message || 'Could not check payment status';
+      }
+      if (tries >= 60) {
+        clearInterval(this._payPollTimer);
+        this._payPollTimer = null;
+        if (statusEl) statusEl.textContent = 'Still confirming — check My orders shortly. Payment is only confirmed after bank verification.';
+      }
+    };
+    await tick();
+    this._payPollTimer = setInterval(tick, 2500);
+  },
 
   parseTimeToday(timeStr) {
     const [h, m] = String(timeStr || '18:00').split(':').map(Number);
@@ -47,13 +163,19 @@ const OrderApp = {
 
   isShopOpenNow() {
     const oh = this.getOperatingSettings();
-    const weekly = oh.weekly || [];
-    if (!weekly.length && !oh.enabled) return true;
+    if (oh.force_online === 'open') return true;
+    if (oh.force_online === 'closed') return false;
+    if (oh.apply_to_online === false || oh.apply_to_online === 0 || oh.apply_to_online === '0') return true;
+    const weekly = Array.isArray(oh.weekly) ? oh.weekly : [];
     const now = new Date();
-    const day = weekly.find((w) => Number(w.day) === now.getDay());
-    if (!day || day.closed) return false;
+    const day = weekly.find((w) => Number(w.day) === now.getDay())
+      || { open: oh.open_time || '08:00', close: oh.close_time || '18:00', closed: false };
+    if (day.closed) return false;
     const openAt = this.parseTimeToday(day.open || oh.open_time || '08:00');
     const closeAt = this.parseTimeToday(day.close || oh.close_time || '18:00');
+    if (closeAt.getTime() <= openAt.getTime()) {
+      return now >= openAt || now < closeAt;
+    }
     return now >= openAt && now < closeAt;
   },
 
@@ -64,8 +186,9 @@ const OrderApp = {
     for (let i = 0; i < 8; i++) {
       const d = new Date(now);
       d.setDate(d.getDate() + i);
-      const day = weekly.find((w) => Number(w.day) === d.getDay());
-      if (!day || day.closed) continue;
+      const day = weekly.find((w) => Number(w.day) === d.getDay())
+        || { open: oh.open_time || '08:00', close: oh.close_time || '18:00', closed: false, name: d.toLocaleDateString(undefined, { weekday: 'long' }) };
+      if (day.closed) continue;
       const openAt = this.parseTimeToday(day.open || oh.open_time || '08:00');
       openAt.setFullYear(d.getFullYear(), d.getMonth(), d.getDate());
       if (openAt > now) {
@@ -73,6 +196,48 @@ const OrderApp = {
       }
     }
     return null;
+  },
+
+  applyHoursStatus(status) {
+    const oh = status?.operating_hours || status;
+    if (!oh || typeof oh !== 'object') return;
+    const prevForce = this.settings?.operating_hours?.force_online;
+    const prevRev = this.settings?.operating_hours?.hours_revision;
+    const wasOpen = this.isShopOpenNow();
+    this.settings = {
+      ...(this.settings || {}),
+      operating_hours: { ...(this.settings?.operating_hours || {}), ...oh }
+    };
+    const isOpen = this.isShopOpenNow();
+    this.mountClosedOverlay();
+    if (wasOpen !== isOpen || prevForce !== oh.force_online || prevRev !== oh.hours_revision) {
+      this.render();
+    }
+  },
+
+  startHoursWatch() {
+    if (this._hoursWatch) return;
+    const tick = async () => {
+      try {
+        const status = OrderAPI.getHoursStatus
+          ? await OrderAPI.getHoursStatus()
+          : await OrderAPI.getSettings();
+        this.applyHoursStatus(status?.operating_hours ? status : { operating_hours: status?.operating_hours || status });
+      } catch (_) {
+        try {
+          const next = await OrderAPI.getSettings();
+          this.applyHoursStatus({ operating_hours: next?.operating_hours });
+        } catch (__) { /* keep last settings */ }
+      }
+    };
+    this._hoursWatch = setInterval(tick, 2000);
+    tick();
+    try {
+      this._hoursBc = new BroadcastChannel('shop-pos-hours');
+      this._hoursBc.onmessage = (ev) => {
+        if (ev.data) this.applyHoursStatus({ operating_hours: ev.data });
+      };
+    } catch (_) { /* */ }
   },
 
   startClosedCountdown() {
@@ -93,26 +258,49 @@ const OrderApp = {
   },
 
   renderClosedOverlay() {
-    if (this.isShopOpenNow()) return '';
+    setTimeout(() => this.mountClosedOverlay(), 0);
+    return '';
+  },
+
+  mountClosedOverlay() {
+    const existing = document.getElementById('order-closed-overlay');
+    if (this.isShopOpenNow()) {
+      existing?.remove();
+      return;
+    }
     const shop = this.settings?.shop_name || 'Our shop';
     const next = this.getNextOpenInfo();
+    const forced = this.getOperatingSettings().force_online === 'closed';
     const wa = (this.settings?.whatsapp_number || this.settings?.phone || '').replace(/\D/g, '');
     const waLink = wa ? `https://wa.me/${wa.startsWith('27') ? wa : '27' + wa.replace(/^0/, '')}?text=${encodeURIComponent('Hi, I tried to order online while you were closed.')}` : '';
-    setTimeout(() => this.startClosedCountdown(), 0);
-    return `<div id="order-closed-overlay" class="closed-overlay" role="dialog" aria-modal="true">
-      <div class="closed-card">
+    const html = `<div class="closed-card closed-card-xl">
         ${this.settings?.logo_path ? `<img class="closed-logo" src="/api/logo" alt="" onerror="this.style.display='none'">` : '<div class="closed-logo-placeholder">🛍️</div>'}
+        <div class="closed-kicker">Closed for online orders</div>
         <h2>${this.esc(shop)}</h2>
-        <p class="closed-lead">We're currently closed for online orders.</p>
-        <p class="muted">Opens ${next ? `${next.label} at ${next.at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'soon'}</p>
-        <div class="closed-countdown-wrap">Opens in <strong id="closed-countdown">${next ? this.formatCountdown(next.at - Date.now()) : '—'}</strong></div>
-        <p class="closed-note">You can't place an order until we open. We'll reply as soon as we're back.</p>
+        <p class="closed-lead">${forced ? 'Online ordering is closed right now.' : 'We are closed for online orders.'}</p>
+        <p class="muted">${forced ? 'The shop closed online orders.' : `Opens ${next ? `${next.label} at ${next.at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'soon'}`}</p>
+        <div class="closed-countdown-wrap">${forced ? 'Closed now' : `Opens in <strong id="closed-countdown">${next ? this.formatCountdown(next.at - Date.now()) : '—'}</strong>`}</div>
+        <p class="closed-note">Online ordering, job applications, and customer reports are closed until we open.</p>
         ${waLink ? `<a class="btn-primary btn-block closed-wa" href="${waLink}" target="_blank" rel="noopener">Message us on WhatsApp</a>` : ''}
-      </div></div>`;
+      </div>`;
+    if (existing) {
+      existing.innerHTML = html;
+    } else {
+      const overlay = document.createElement('div');
+      overlay.id = 'order-closed-overlay';
+      overlay.className = 'closed-overlay';
+      overlay.setAttribute('role', 'dialog');
+      overlay.setAttribute('aria-modal', 'true');
+      overlay.innerHTML = html;
+      document.body.appendChild(overlay);
+    }
+    this.startClosedCountdown();
   },
 
   goBack() {
     if (this.view === 'order-detail') { this.stopOrderPolling(); this.view = 'orders'; this.selectedOrder = null; }
+    else if (this.view === 'forgot-verify') { this.view = 'forgot'; }
+    else if (this.view === 'forgot') { this.view = 'login'; }
     else if (this.view === 'product') { this.view = 'menu'; this.editingCartKey = null; }
     else if (this.view === 'cart') { this.view = 'menu'; }
     else if (this.view === 'checkout') { this.view = 'cart'; }
@@ -123,6 +311,26 @@ const OrderApp = {
   money(n) {
     const c = this.settings?.currency || 'R';
     return `${c}${(Number(n) || 0).toFixed(2)}`;
+  },
+
+  /** Fast DOM update for checkout totals without full re-render (delivery place pick). */
+  updateCheckoutTotalsDom() {
+    const q = this.quote || {};
+    const fulfillment = this.checkout?.fulfillment_type || 'collection';
+    const ptsUsed = Number(this.checkout?.loyalty_points_used) || 0;
+    const el = document.getElementById('checkout-totals');
+    if (el) {
+      el.innerHTML = `
+        <div>Subtotal <span>${this.money(q.subtotal)}</span></div>
+        ${q.discount ? `<div>Discount${q.coupon?.code ? ` (${this.esc(q.coupon.code)})` : ''}${q.loyalty_discount ? ` · Loyalty ${ptsUsed} pts` : ''} <span>-${this.money(q.discount)}</span></div>` : ''}
+        ${q.gift_card_amount ? `<div>Gift card <span>-${this.money(q.gift_card_amount)}</span></div>` : ''}
+        ${q.delivery_fee != null && fulfillment === 'delivery' ? `<div>Delivery${q.delivery_place ? ` (${this.esc(q.delivery_place)})` : ''} <span>${this.money(q.delivery_fee)}</span></div>` : ''}
+        ${q.tax_amount ? `<div>Tax <span>${this.money(q.tax_amount)}</span></div>` : ''}
+        <div class="total-line">Total <strong>${this.money(q.total)}</strong></div>`;
+    }
+    const btn = document.getElementById('checkout-place-btn')
+      || document.querySelector('[data-act="place-order"]');
+    if (btn) btn.textContent = `Place order · ${this.money(q.total)}`;
   },
 
   calcPromoUnitPrice(product, mods) {
@@ -201,13 +409,20 @@ const OrderApp = {
       if (type === 'radio' || type === 'radio-optional') {
         const sel = g.querySelector('input:checked');
         if (sel) {
+          g.classList.remove('mod-group-missing');
           mods.push({
             id: Number.isFinite(Number(sel.value)) ? Number(sel.value) : sel.value,
             name: sel.dataset.name,
             extra_price: Number(sel.dataset.extra || 0),
             modifier_type: sel.dataset.modType || 'option'
           });
-        } else if (required) throw new Error(`Please choose ${g.dataset.modGroup}`);
+        } else if (required) {
+          g.classList.add('mod-group-missing');
+          g.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          throw new Error(`Please choose ${g.dataset.modGroup}`);
+        } else {
+          g.classList.remove('mod-group-missing');
+        }
       } else {
         g.querySelectorAll('input:checked').forEach((cb) => {
           mods.push({
@@ -301,33 +516,234 @@ const OrderApp = {
     setTimeout(() => el.remove(), ms);
   },
 
-  showAuthErrorModal(msg) {
+  openWhatsApp(url) {
+    if (!url) return false;
+    try {
+      const a = document.createElement('a');
+      a.href = url;
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      return true;
+    } catch (_) {
+      try { window.open(url, '_blank', 'noopener,noreferrer'); return true; } catch (__) { return false; }
+    }
+  },
+
+  applyCodeSend(sent) {
+    if (!sent) return;
+    if (this.regLink) this.regLink.whatsapp_url = sent.whatsapp_url || this.regLink.whatsapp_url || '';
+    if (sent.whatsapp_url) this.openWhatsApp(sent.whatsapp_url);
+    this.toast(sent.message || 'WhatsApp is ready with your verification code', 'success');
+  },
+
+  bindModal() {
     const root = document.getElementById('modal-root');
+    if (!root || root.dataset.bound === '1') return;
+    root.dataset.bound = '1';
+    root.addEventListener('click', async (e) => {
+      const btn = e.target.closest('[data-act]');
+      if (!btn) return;
+      const act = btn.dataset.act;
+      if (act === 'stay-yes') {
+        if (this._stayResolve) this._stayResolve(true);
+        return;
+      }
+      if (act === 'stay-no' || act === 'modal-close') {
+        if (this._stayResolve) this._stayResolve(false);
+        else {
+          this._deletePending = false;
+          this.hideAuthModal();
+        }
+        return;
+      }
+      if (act === 'delete-account-confirm') {
+        await this.confirmDeleteAccount();
+      }
+    });
+  },
+
+  async confirmDeleteAccount() {
+    const pass = document.getElementById('del-pass')?.value || '';
+    if (!pass) { this.toast('Enter your password first', 'error'); return; }
+    const btn = document.querySelector('#modal-root [data-act="delete-account-confirm"]');
+    if (btn) { btn.disabled = true; btn.textContent = 'Deleting…'; }
+    try {
+      await OrderAPI.deleteAccount(this.token, pass);
+      this._deletePending = false;
+      this.hideAuthModal();
+      this.clearSession();
+      this.view = 'login';
+      this.toast('Account deleted', 'success');
+      this.render();
+    } catch (err) {
+      if (btn) { btn.disabled = false; btn.textContent = 'Delete'; }
+      this.toast(err.message || 'Could not delete account', 'error');
+    }
+  },
+
+  hideAuthModal() {
+    const root = document.getElementById('modal-root');
+    if (!root) return;
+    root.classList.add('hidden');
+    root.setAttribute('aria-hidden', 'true');
     const title = document.getElementById('modal-title');
     const body = document.getElementById('modal-body');
     const foot = document.getElementById('modal-foot');
-    if (!root || !title || !body) return;
-    title.textContent = 'Sign in failed';
-    body.innerHTML = `<p>${this.esc(msg || 'Incorrect credentials. Please check your email/phone and password.')}</p>`;
-    if (foot) foot.innerHTML = '<button type="button" class="btn-primary" data-act="modal-close">OK</button>';
+    if (title) title.textContent = '';
+    if (body) body.innerHTML = '';
+    if (foot) foot.innerHTML = '';
+  },
+
+  showPopup({ title, body, footer }) {
+    const root = document.getElementById('modal-root');
+    if (!root) return false;
+    const t = document.getElementById('modal-title');
+    const b = document.getElementById('modal-body');
+    const f = document.getElementById('modal-foot');
+    if (t) t.textContent = title || '';
+    if (b) b.innerHTML = body || '';
+    if (f) f.innerHTML = footer || '';
     root.classList.remove('hidden');
     root.setAttribute('aria-hidden', 'false');
+    return true;
+  },
+
+  persistSession(token, staySignedIn) {
+    this.token = token || '';
+    try { sessionStorage.setItem('order_token', this.token); } catch (_) { /* */ }
+    try {
+      if (staySignedIn && this.token) {
+        localStorage.setItem('order_token', this.token);
+        localStorage.setItem('order_stay_signed_in', '1');
+        if (this.branch?.id) localStorage.setItem('order_branch', String(this.branch.id));
+      } else {
+        localStorage.removeItem('order_token');
+        localStorage.removeItem('order_stay_signed_in');
+      }
+    } catch (_) { /* */ }
+  },
+
+  clearSession() {
+    this.token = '';
+    this.customer = null;
+    this.loyaltyAccount = null;
+    this._accountCache = null;
+    this._ordersCache = null;
+    try {
+      sessionStorage.removeItem('order_token');
+      localStorage.removeItem('order_token');
+      localStorage.removeItem('order_stay_signed_in');
+    } catch (_) { /* */ }
+  },
+
+  async tryAutofillLogin() {
+    try {
+      const savedId = localStorage.getItem('order_saved_login_id') || '';
+      const idEl = document.getElementById('login-id');
+      if (idEl && savedId && !idEl.value) idEl.value = savedId;
+    } catch (_) { /* */ }
+    if (!navigator.credentials?.get) return;
+    try {
+      const cred = await navigator.credentials.get({ password: true, mediation: 'optional' });
+      if (!cred) return;
+      const idEl = document.getElementById('login-id');
+      const passEl = document.getElementById('login-pass');
+      if (idEl && cred.id) idEl.value = cred.id;
+      if (passEl && cred.password) passEl.value = cred.password;
+    } catch (_) { /* */ }
+  },
+
+  async storeBrowserPassword(loginId, password, name) {
+    if (!loginId || !password || !navigator.credentials || !window.PasswordCredential) return;
+    try {
+      await navigator.credentials.store(new PasswordCredential({
+        id: String(loginId),
+        password: String(password),
+        name: name || 'Order Online'
+      }));
+    } catch (_) { /* browser declined */ }
+  },
+
+  askStaySignedIn(loginId, password) {
+    return new Promise((resolve) => {
+      this._stayResolve = (stay) => {
+        this._stayResolve = null;
+        this.hideAuthModal();
+        resolve(!!stay);
+      };
+      const opened = this.showPopup({
+        title: 'Save password?',
+        body: `<p>Stay signed in on this phone so you can open Order Online without signing in again.</p>
+          <p class="muted">Choose <strong>Save password</strong> to remember this login, or <strong>Not now</strong> if this is a shared phone (we’ll ask again next time you place an order).</p>`,
+        footer: `<button type="button" class="btn-outline" data-act="stay-no">Not now</button>
+          <button type="button" class="btn-primary" data-act="stay-yes">Save password</button>`
+      });
+      if (!opened) resolve(false);
+      this._pendingCreds = { loginId, password };
+    });
+  },
+
+  async finishSignIn({ token, customer, loginId, password, nextView }) {
+    this.customer = customer || this.customer;
+    this.token = token || '';
+    try { sessionStorage.setItem('order_token', this.token); } catch (_) { /* */ }
+    let stay = false;
+    try {
+      stay = await Promise.race([
+        this.askStaySignedIn(loginId, password),
+        new Promise((resolve) => setTimeout(() => resolve(false), 12000))
+      ]);
+    } catch (_) { stay = false; }
+    this.persistSession(token, stay);
+    if (stay) {
+      try { localStorage.setItem('order_saved_login_id', String(loginId || '')); } catch (_) { /* */ }
+      await this.storeBrowserPassword(loginId, password, customer?.first_name);
+      this.clearAskSaveLater();
+    } else {
+      this.rememberAskSaveLater(loginId, password);
+    }
+    await this.refreshLoyaltyAccount();
+    this.authReturn = null;
+    if (!this.branch) {
+      try { sessionStorage.removeItem('order_branch'); } catch (_) { /* */ }
+      this.view = 'branches';
+    } else {
+      this.view = nextView || 'home';
+    }
+    this.toast(stay ? 'You are signed in — you won’t need to log in again on this phone' : 'You are signed in', 'success');
+    this.render();
   },
 
   async refreshLoyaltyAccount() {
     if (!this.token) { this.loyaltyAccount = null; this.giftWallet = []; return; }
     try {
       const acct = await OrderAPI.account(this.token);
-      this.loyaltyAccount = acct.loyalty || null;
-      this.giftWallet = acct.wallet || [];
-      this.customer = acct.profile || this.customer;
-    } catch (_) { this.loyaltyAccount = null; this.giftWallet = []; }
+      const loyalty = acct?.loyalty || null;
+      this.loyaltyAccount = {
+        balance: Math.max(0, Math.floor(Number(loyalty?.balance) || 0)),
+        value: Number(loyalty?.value) >= 0 ? Number(loyalty.value) : 0
+      };
+      // Recompute value if API omitted it
+      if (!loyalty?.value && this.loyaltyAccount.balance) {
+        const pv = this.loyaltySettings().point_value || 1;
+        this.loyaltyAccount.value = this.loyaltyAccount.balance * pv;
+      }
+      this.giftWallet = acct?.wallet || [];
+      this.customer = acct?.profile || this.customer;
+    } catch (_) {
+      if (!this.loyaltyAccount) this.loyaltyAccount = { balance: 0, value: 0 };
+    }
   },
 
   loyaltySettings() {
     const ls = this.settings?.loyalty || {};
+    const online = this.settings?.online || {};
+    const onlineLoyaltyOff = online.loyalty_enabled === false || online.loyalty_enabled === 0 || online.loyalty_enabled === '0';
     return {
-      enabled: ls.enabled !== false && this.settings?.online?.loyalty_enabled !== false,
+      enabled: ls.enabled !== false && !onlineLoyaltyOff,
       spend_amount: Number(ls.spend_amount) > 0 ? Number(ls.spend_amount) : 10,
       points_earned: Number(ls.points_earned) > 0 ? Number(ls.points_earned) : 1,
       point_value: Number(ls.point_value) > 0 ? Number(ls.point_value) : 1,
@@ -349,6 +765,308 @@ const OrderApp = {
     const preTax = Math.max(0, Number(subtotal) || 0);
     const maxByTotal = Math.floor(preTax / ls.point_value);
     return Math.min(bal, maxByTotal);
+  },
+
+  async loadApplyScript() {
+    if (window.ApplyJobPage) return;
+    await new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = `/js/pages/apply-job.js?v=${Date.now()}`;
+      s.onload = resolve;
+      s.onerror = () => reject(new Error('Could not load the job application form'));
+      document.head.appendChild(s);
+    });
+  },
+
+  openJobApplyPopup() {
+    let overlay = document.getElementById('order-job-overlay');
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'order-job-overlay';
+      document.body.appendChild(overlay);
+    }
+    overlay.className = 'job-apply-overlay';
+    overlay.innerHTML = `<div class="job-apply-sheet">
+      <header class="job-apply-head">
+        <button type="button" class="job-apply-cancel" id="order-job-cancel">Cancel</button>
+        <strong>Apply for a job</strong>
+        <span></span>
+      </header>
+      <div id="order-job-body" class="job-apply-body"><p class="muted">Loading application…</p></div>
+    </div>`;
+    document.body.classList.add('job-apply-open');
+    overlay.querySelector('#order-job-cancel')?.addEventListener('click', () => this.closeJobApplyPopup());
+    this.loadApplyScript().then(() => {
+      window.ApplyJobPage.renderInto(document.getElementById('order-job-body'), {
+        embedded: true,
+        standalone: false,
+        onSubmitted: () => this.closeJobApplyPopup(),
+        onDeleted: () => this.closeJobApplyPopup()
+      });
+    }).catch((err) => {
+      const body = document.getElementById('order-job-body');
+      if (body) body.innerHTML = `<p class="muted">${this.esc(err.message)}</p>`;
+    });
+  },
+
+  closeJobApplyPopup() {
+    document.getElementById('order-job-overlay')?.remove();
+    document.body.classList.remove('job-apply-open');
+  },
+
+  closeIssuePopup() {
+    this.stopIssueCamera();
+    document.getElementById('order-issue-overlay')?.remove();
+    document.body.classList.remove('job-apply-open');
+  },
+
+  stopIssueCamera() {
+    if (this._issueStream) {
+      this._issueStream.getTracks().forEach((t) => t.stop());
+      this._issueStream = null;
+    }
+  },
+
+  async openIssueBackCamera() {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      throw new Error('Camera is not available on this device');
+    }
+    const attempts = [
+      { video: { facingMode: { exact: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false },
+      { video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false },
+      { video: { facingMode: { ideal: 'environment' } }, audio: false },
+      { video: true, audio: false }
+    ];
+    let lastErr;
+    for (const constraints of attempts) {
+      try {
+        return await navigator.mediaDevices.getUserMedia(constraints);
+      } catch (err) {
+        lastErr = err;
+      }
+    }
+    throw lastErr || new Error('Could not open the back camera');
+  },
+
+  compressIssuePhoto(dataUrl) {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        const max = 1280;
+        let w = img.width || max;
+        let h = img.height || max;
+        if (w > max || h > max) {
+          const scale = Math.min(max / w, max / h);
+          w = Math.round(w * scale);
+          h = Math.round(h * scale);
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL('image/jpeg', 0.82));
+      };
+      img.onerror = () => resolve(dataUrl);
+      img.src = dataUrl;
+    });
+  },
+
+  async openIssuePopup(opts = {}) {
+    let overlay = document.getElementById('order-issue-overlay');
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'order-issue-overlay';
+      document.body.appendChild(overlay);
+    }
+    overlay.className = 'job-apply-overlay';
+    const cachedOrders = this._ordersCache || [];
+    const cachedReplies = (this.myIssues || []).filter((i) => i.admin_reply);
+    const buildHtml = (orders, replies) => `<div class="job-apply-sheet">
+      <header class="job-apply-head">
+        <button type="button" class="job-apply-cancel" id="order-issue-cancel">Cancel</button>
+        <strong>Report a problem</strong>
+        <span></span>
+      </header>
+      <div class="job-apply-body">
+        <p class="muted">Tell us what went wrong with an order or the app. You can attach a photo. If this is about an order, we will show which cashier took it on the POS.</p>
+        <div class="field"><label>Your name *</label><input id="iss-name" value="${this.esc(this.customer?.first_name || '')}"></div>
+        <div class="field"><label>Phone</label><input id="iss-phone" value="${this.esc(this.customer?.phone || '')}" placeholder="082…"></div>
+        <div class="field"><label>Related order</label>
+          <select id="iss-order"><option value="">${orders.length ? 'Latest / not sure' : 'Loading orders…'}</option>
+          ${orders.map((o) => `<option value="${this.esc(o.id)}">#${this.esc(o.order_number || o.id)} · ${this.esc(o.status || '')}${o.cashier || o.accepted_by ? ` · POS: ${this.esc(o.cashier || o.accepted_by)}` : ''}</option>`).join('')}
+          </select></div>
+        <div class="field"><label>What was the problem? *</label><textarea id="iss-msg" rows="4" placeholder="Describe what happened…"></textarea></div>
+        <div class="field"><label>Photo (optional)</label>
+          <p class="muted" style="margin:0 0 8px">Upload a picture, or take one with the back camera.</p>
+          <div class="issue-photo-actions">
+            <button type="button" class="btn-primary" id="iss-take-photo">📷 Take photo</button>
+            <button type="button" class="btn-ghost" id="iss-upload-photo">📁 Upload photo</button>
+            <button type="button" class="btn-ghost hidden" id="iss-clear-photo">Remove photo</button>
+          </div>
+          <input type="file" id="iss-photo" accept="image/*" hidden>
+          <div id="iss-camera-wrap" class="issue-camera-wrap hidden">
+            <video id="iss-video" autoplay playsinline muted></video>
+            <div class="issue-photo-actions" style="margin-top:8px">
+              <button type="button" class="btn-primary" id="iss-snap">Capture photo</button>
+              <button type="button" class="btn-ghost" id="iss-cancel-cam">Cancel camera</button>
+            </div>
+          </div>
+          <img id="iss-preview" class="issue-photo-preview hidden" alt="Attached photo">
+          <small class="muted" id="iss-photo-label"></small>
+        </div>
+        <button type="button" class="btn-primary" id="iss-send">Send to the shop</button>
+        <p class="muted" id="iss-status"></p>
+        ${replies.length ? `<h3 style="margin-top:24px">Replies from the shop</h3>
+          ${replies.map((i) => `<div class="checkout-card" style="margin-bottom:10px">
+            <p>${this.esc(i.message)}</p>
+            ${i.pos_cashier_name ? `<p class="muted">POS cashier: ${this.esc(i.pos_cashier_name)}</p>` : ''}
+            <p><strong>Shop reply:</strong> ${this.esc(i.admin_reply)}</p>
+          </div>`).join('')}` : ''}
+      </div>
+    </div>`;
+
+    // Open instantly with cache, then refresh order list
+    overlay.innerHTML = buildHtml(cachedOrders, cachedReplies);
+    document.body.classList.add('job-apply-open');
+
+    overlay.querySelector('#order-issue-cancel')?.addEventListener('click', () => this.closeIssuePopup());
+    let photoData = '';
+    let photoName = '';
+    const fileInput = overlay.querySelector('#iss-photo');
+    const preview = overlay.querySelector('#iss-preview');
+    const label = overlay.querySelector('#iss-photo-label');
+    const camWrap = overlay.querySelector('#iss-camera-wrap');
+    const video = overlay.querySelector('#iss-video');
+    const clearBtn = overlay.querySelector('#iss-clear-photo');
+    const showPreview = (dataUrl, name) => {
+      photoData = dataUrl;
+      photoName = name;
+      if (preview) {
+        preview.src = dataUrl;
+        preview.classList.remove('hidden');
+      }
+      if (label) label.textContent = name || 'Photo attached';
+      clearBtn?.classList.remove('hidden');
+    };
+    const hideCamera = () => {
+      this.stopIssueCamera();
+      camWrap?.classList.add('hidden');
+      if (video) video.srcObject = null;
+    };
+    // Background refresh so the report form opens immediately
+    if (this.token) {
+      Promise.all([
+        OrderAPI.listOrders(this.token, 20).catch(() => cachedOrders),
+        OrderAPI.listMyIssues(this.token).catch(() => this.myIssues || [])
+      ]).then(([orders, issues]) => {
+        if (Array.isArray(orders)) this._ordersCache = orders;
+        if (Array.isArray(issues)) this.myIssues = issues;
+        const sel = overlay.querySelector('#iss-order');
+        if (sel && Array.isArray(orders)) {
+          sel.innerHTML = `<option value="">Latest / not sure</option>${orders.map((o) => `<option value="${this.esc(o.id)}">#${this.esc(o.order_number || o.id)} · ${this.esc(o.status || '')}${o.cashier || o.accepted_by ? ` · POS: ${this.esc(o.cashier || o.accepted_by)}` : ''}</option>`).join('')}`;
+        }
+      });
+    }
+    overlay.querySelector('#iss-upload-photo')?.addEventListener('click', () => {
+      hideCamera();
+      if (!fileInput) return;
+      fileInput.removeAttribute('capture');
+      fileInput.value = '';
+      fileInput.click();
+    });
+    overlay.querySelector('#iss-take-photo')?.addEventListener('click', async () => {
+      overlay.querySelector('#iss-status').textContent = '';
+      try {
+        this.stopIssueCamera();
+        this._issueStream = await this.openIssueBackCamera();
+        if (video) {
+          video.srcObject = this._issueStream;
+          await video.play();
+        }
+        camWrap?.classList.remove('hidden');
+        preview?.classList.add('hidden');
+      } catch (err) {
+        hideCamera();
+        if (fileInput) {
+          fileInput.setAttribute('capture', 'environment');
+          fileInput.value = '';
+          fileInput.click();
+        }
+        overlay.querySelector('#iss-status').textContent = err.message || 'Could not open the back camera. Choose a photo instead.';
+      }
+    });
+    overlay.querySelector('#iss-snap')?.addEventListener('click', async () => {
+      if (!video?.videoWidth) {
+        overlay.querySelector('#iss-status').textContent = 'Wait for the camera to open, then capture.';
+        return;
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      canvas.getContext('2d').drawImage(video, 0, 0);
+      const raw = canvas.toDataURL('image/jpeg', 0.86);
+      hideCamera();
+      showPreview(await this.compressIssuePhoto(raw), `camera-${Date.now()}.jpg`);
+    });
+    overlay.querySelector('#iss-cancel-cam')?.addEventListener('click', hideCamera);
+    overlay.querySelector('#iss-clear-photo')?.addEventListener('click', () => {
+      photoData = '';
+      photoName = '';
+      if (fileInput) fileInput.value = '';
+      if (preview) {
+        preview.removeAttribute('src');
+        preview.classList.add('hidden');
+      }
+      if (label) label.textContent = '';
+      clearBtn?.classList.add('hidden');
+      hideCamera();
+    });
+    fileInput?.addEventListener('change', (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      if (file.size > 8 * 1024 * 1024) {
+        overlay.querySelector('#iss-status').textContent = 'Photo must be under 8MB.';
+        e.target.value = '';
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = async () => {
+        showPreview(await this.compressIssuePhoto(String(reader.result || '')), file.name);
+      };
+      reader.readAsDataURL(file);
+    });
+    overlay.querySelector('#iss-send')?.addEventListener('click', async () => {
+      const name = overlay.querySelector('#iss-name').value.trim();
+      const message = overlay.querySelector('#iss-msg').value.trim();
+      const status = overlay.querySelector('#iss-status');
+      if (!name || !message) {
+        status.textContent = 'Name and the problem description are required.';
+        return;
+      }
+      const btn = overlay.querySelector('#iss-send');
+      btn.disabled = true;
+      status.textContent = 'Sending…';
+      try {
+        const saved = await OrderAPI.submitIssue({
+          name,
+          phone: overlay.querySelector('#iss-phone').value.trim(),
+          message,
+          order_id: overlay.querySelector('#iss-order')?.value || '',
+          photo_data: photoData || undefined,
+          photo_name: photoName || undefined
+        }, this.token || null);
+        const cashier = saved?.pos_cashier_name;
+        this.stopIssueCamera();
+        overlay.querySelector('.job-apply-body').innerHTML = `<div style="background:#fff;border-radius:16px;padding:28px;text-align:center">
+          <h2 style="margin:0 0 8px">Report sent</h2>
+          <p class="muted">Thank you. The shop has your report${cashier ? ` and can see that <strong>${this.esc(cashier)}</strong> took the order on the POS` : ''}.</p>
+        </div>`;
+        setTimeout(() => this.closeIssuePopup(), 1800);
+      } catch (err) {
+        btn.disabled = false;
+        status.textContent = err.message || 'Could not send.';
+      }
+    });
   },
 
   phoneLink(phone) {
@@ -384,13 +1102,26 @@ const OrderApp = {
     </div>`;
   },
 
+  firstOnlineGiftHtml(gift) {
+    if (!gift?.gift_card_code) return '';
+    return `<div class="first-gift-banner">
+      <h2>🎉 Congratulations!</h2>
+      <p>You are one of today's first online customers!</p>
+      <p>You've received a <strong>${this.money(gift.amount)}</strong> Gift Card${gift.position ? ` · Winner #${gift.position}` : ''}.</p>
+      <p class="muted" style="margin:8px 0 4px">Your Gift Card Code:</p>
+      <code class="gift-code first-gift-code">${this.esc(gift.gift_card_code)}</code>
+      <button type="button" class="btn-primary" data-act="copy-gift" data-code="${this.esc(gift.gift_card_code)}" style="margin-top:12px">Copy Gift Card</button>
+      <p class="muted" style="margin:10px 0 0">Use this gift card during your next checkout. It is also saved under My Gift Cards.</p>
+    </div>`;
+  },
+
   giftWalletHtml() {
     if (!this.token) return '';
     if (!this.giftWallet?.length) {
-      return `<div class="loyalty-card gift-wallet-card"><h3>🎁 Gift card wallet</h3><p class="muted" style="margin:0">No gift cards yet. Apply a code at checkout.</p></div>`;
+      return `<div class="loyalty-card gift-wallet-card"><h3>🎁 My Gift Cards</h3><p class="muted" style="margin:0">No gift cards yet. Apply a code at checkout.</p></div>`;
     }
     return `<div class="loyalty-card gift-wallet-card">
-      <h3>🎁 Your gift cards</h3>
+      <h3>🎁 My Gift Cards</h3>
       ${this.giftWallet.map((g) => `<div class="gift-wallet-row">
         <div><code class="gift-code" data-gift-code="${this.esc(g.code)}">${this.esc(g.code)}</code>
         <button type="button" class="btn-sm" data-act="copy-gift" data-code="${this.esc(g.code)}">Copy</button></div>
@@ -442,19 +1173,20 @@ const OrderApp = {
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('sw.js').catch(() => {});
     }
-    window.addEventListener('beforeunload', (e) => {
-      if (this.token && this.view !== 'login') {
-        e.preventDefault();
-        e.returnValue = 'You are signed in. Leave and sign out?';
-      }
-    });
-    this.token = sessionStorage.getItem('order_token') || '';
+    this.hideAuthModal();
+    this.bindModal();
+    try {
+      this.token = localStorage.getItem('order_token') || sessionStorage.getItem('order_token') || '';
+    } catch (_) {
+      this.token = sessionStorage.getItem('order_token') || '';
+    }
     const savedCat = sessionStorage.getItem('order_category');
     if (savedCat != null && savedCat !== '') this.categoryId = savedCat;
     const savedSearch = sessionStorage.getItem('order_search');
     if (savedSearch) this.search = savedSearch;
     try {
       this.settings = await OrderAPI.getSettings();
+      this.startHoursWatch();
       if (window.PanelNotify && !this._notifyReady) {
         this._notifyReady = true;
         PanelNotify.init({
@@ -468,9 +1200,9 @@ const OrderApp = {
           const acct = await OrderAPI.account(this.token);
           this.customer = acct.profile;
           this.loyaltyAccount = acct.loyalty || null;
-        } catch (_) { this.token = ''; sessionStorage.removeItem('order_token'); }
+        } catch (_) { this.clearSession(); }
       }
-      const savedBranch = sessionStorage.getItem('order_branch');
+      const savedBranch = localStorage.getItem('order_branch') || sessionStorage.getItem('order_branch');
       if (savedBranch) {
         const branches = await OrderAPI.getBranches();
         this.branch = branches.find((b) => String(b.id) === savedBranch) || null;
@@ -501,6 +1233,42 @@ const OrderApp = {
           this.view = savedView && safeViews.includes(savedView) ? savedView : 'home';
         }
       }
+      try {
+        this.openJobs = await OrderAPI.listPublicJobs() || [];
+      } catch (_) {
+        this.openJobs = [];
+      }
+      if (this.token) {
+        try { this.myIssues = await OrderAPI.listMyIssues(this.token) || []; } catch (_) { this.myIssues = []; }
+      }
+
+      // Return from hosted payment gateway — never trust success URL alone; poll server
+      try {
+        const params = new URLSearchParams(window.location.search || '');
+        const ref = (params.get('ref') || '').trim();
+        if (ref) {
+          try {
+            localStorage.setItem('order_ref', ref);
+            sessionStorage.setItem('order_ref', ref);
+          } catch (_) { /* ignore */ }
+          this.referralCode = ref.toUpperCase();
+          try { OrderAPI.recordReferralClick?.(ref); } catch (_) { /* optional */ }
+          try { fetch('/rpc', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ method: 'referral:recordClick', params: [ref, {}] }) }).catch(() => {}); } catch (_) { /* ignore */ }
+        } else {
+          try {
+            this.referralCode = (sessionStorage.getItem('order_ref') || localStorage.getItem('order_ref') || '').toUpperCase() || null;
+          } catch (_) { this.referralCode = null; }
+        }
+        if (params.get('payment') === 'return' && params.get('order')) {
+          this.paymentReturn = {
+            orderNumber: params.get('order'),
+            returnStatus: params.get('status') || 'success'
+          };
+          this.view = 'payment-pending';
+          history.replaceState({}, '', window.location.pathname + (window.location.hash || ''));
+        }
+      } catch (_) { /* */ }
+
       await this.render();
       if (this.branch) {
         this.loadMenu();
@@ -523,7 +1291,13 @@ const OrderApp = {
       if (!this.branch) return;
       if (!['home', 'menu', 'product'].includes(this.view)) return;
       this.loadMenu({ force: true, preserveScroll: true });
-    }, 20000);
+    }, 4000);
+    window.addEventListener('storage', (e) => {
+      if (e.key !== 'shop-pos-catalog-ts' || !e.newValue) return;
+      if (!this.branch) return;
+      if (!['home', 'menu', 'product'].includes(this.view)) return;
+      this.loadMenu({ force: true, preserveScroll: true });
+    });
   },
 
   async loadMenu(opts = {}) {
@@ -557,18 +1331,27 @@ const OrderApp = {
     } catch (err) { this.toast(err.message, 'error'); }
   },
 
-  prefetchMenuImages(products, limit = 32) {
+  prefetchMenuImages(products, limit = 80) {
     const urls = [];
     for (const p of products || []) {
       if (p.image) urls.push(p.image);
-      if (p.combo_thumbs?.length) urls.push(...p.combo_thumbs.slice(0, 3));
+      if (p.combo_thumbs?.length) urls.push(...p.combo_thumbs);
       if (urls.length >= limit) break;
     }
-    for (const url of urls.slice(0, limit)) {
+    const unique = [...new Set(urls)].slice(0, limit);
+    unique.forEach((url, i) => {
+      if (i < 12 && !document.querySelector(`link[rel="preload"][href="${CSS.escape ? CSS.escape(url) : url}"]`)) {
+        const link = document.createElement('link');
+        link.rel = 'preload';
+        link.as = 'image';
+        link.href = url;
+        document.head.appendChild(link);
+      }
       const img = new Image();
       img.decoding = 'async';
+      img.fetchPriority = i < 16 ? 'high' : 'low';
       img.src = url;
-    }
+    });
   },
 
   filterMenuProducts(allProducts, categoryId, search) {
@@ -680,6 +1463,14 @@ const OrderApp = {
     if (existing) existing.quantity += item.quantity || 1;
     else this.cart.push({ ...item, _key: key });
     this.saveCart();
+    try {
+      window.WebTracker?.track?.('add_to_cart', {
+        page: 'menu',
+        page_label: 'Menu',
+        product_id: item.product_id || item.combo_id,
+        product_name: item.name
+      });
+    } catch (_) { /* */ }
     this.toast('Added to cart', 'success');
     if (this.view === 'menu' || this.view === 'home') this.updateCartUi();
     else this.render();
@@ -706,6 +1497,8 @@ const OrderApp = {
         combo_components: c.combo_components || undefined
       })),
       fulfillment_type: this.checkout.fulfillment_type,
+      delivery_place_id: this.checkout.delivery_place_id || undefined,
+      delivery_place: this.checkout.delivery_place || undefined,
       coupon_code: this.checkout.coupon_code || undefined,
       loyalty_points_used: this.checkout.loyalty_points_used || 0,
       gift_card_code: this.checkout.gift_card_code || undefined,
@@ -802,15 +1595,45 @@ const OrderApp = {
   },
 
   bind() {
+    try {
+      const special = !!(this.product?.on_sale || this.product?.is_special);
+      window.WebTracker?.trackView?.(this.view, {
+        page_label: this.view === 'product' ? (this.product?.name || 'Product') : this.view,
+        product_id: this.product?.id || this.product?.product_id,
+        product_name: this.product?.name,
+        special
+      });
+    } catch (_) { /* analytics optional */ }
     const app = document.getElementById('app');
     app.onclick = async (e) => {
+      const actBtn = e.target.closest('[data-act="add-cart"], [data-act="quick-add"]');
       const productCard = e.target.closest('.product-card[data-product-id]');
-      if (productCard && !e.target.closest('[data-act="quick-add"]')) {
+      if (productCard && !actBtn) {
         const pid = productCard.dataset.productId;
-        this.product = await OrderAPI.getProduct(this.branch.id, pid);
         this.editingCartKey = null;
-        this.view = 'product';
-        this.render();
+        const cached = this.findMenuProduct(pid);
+        if (cached) {
+          this.product = cached;
+          this.view = 'product';
+          this.render();
+          OrderAPI.getProduct(this.branch.id, pid).then((full) => {
+            if (this.view === 'product' && String(this.product?.id || this.product?.product_id) === String(pid)) {
+              this.product = full;
+              this.render();
+            }
+          }).catch(() => { /* keep cached product */ });
+          return;
+        }
+        productCard.classList.add('is-loading');
+        try {
+          this.product = await OrderAPI.getProduct(this.branch.id, pid);
+          this.view = 'product';
+          this.render();
+        } catch (err) {
+          this.toast(err.message || 'Could not open product', 'error');
+        } finally {
+          productCard.classList.remove('is-loading');
+        }
         return;
       }
       const catChip = e.target.closest('[data-cat-id]');
@@ -827,11 +1650,17 @@ const OrderApp = {
       const act = btn.dataset.act;
       if (act === 'nav') {
         const next = btn.dataset.view;
-        if (!this.token && !['login', 'register'].includes(next)) {
+        if (!this.token && !this.isAuthView(next)) {
           this.view = 'login';
           this.authReturn = next;
-        } else {
-          this.view = next;
+          this.render();
+          return;
+        }
+        this.view = next;
+        // Instant tab paint for Orders / Account (far-right) — use cache then refresh
+        if (this.view === 'orders' || this.view === 'account') {
+          this.render();
+          return;
         }
         if (this.view === 'menu') {
           if (this._menuFull && this._menuBranchId === this.branch?.id) {
@@ -842,6 +1671,18 @@ const OrderApp = {
             this.loadMenu();
           }
         } else this.render();
+        return;
+      }
+      if (act === 'job-apply') {
+        if (!this.isShopOpenNow()) { this.toast('Hiring is closed while the shop is closed for online orders', 'error'); return; }
+        this.openJobApplyPopup();
+        return;
+      }
+      if (act === 'job-apply-close') { this.closeJobApplyPopup(); return; }
+      if (act === 'issue-report') {
+        if (!this.isShopOpenNow()) { this.toast('Customer reports are closed while the shop is closed for online orders', 'error'); return; }
+        // Open immediately — load order list inside without blocking the first paint
+        this.openIssuePopup({ fast: true });
         return;
       }
       if (act === 'back') { this.goBack(); return; }
@@ -881,6 +1722,9 @@ const OrderApp = {
         const branches = await OrderAPI.getBranches();
         this.branch = branches.find((b) => String(b.id) === id);
         sessionStorage.setItem('order_branch', id);
+        try {
+          if (localStorage.getItem('order_stay_signed_in') === '1') localStorage.setItem('order_branch', id);
+        } catch (_) { /* */ }
         this._menuFull = null;
         this._menuBranchId = null;
         this.view = 'home';
@@ -930,19 +1774,7 @@ const OrderApp = {
             this.editingCartKey = null;
           }
           if (this.product.is_combo) {
-            const comboComponents = [];
-            document.querySelectorAll('[data-combo-item]').forEach((section) => {
-              const productId = Number(section.dataset.comboItem);
-              const mods = this.collectModifiersFromDom(section);
-              const itemMeta = (this.product.combo_items || []).find((ci) => Number(ci.product_id) === productId);
-              comboComponents.push({
-                product_id: productId,
-                product_name: itemMeta?.product_name || 'Item',
-                quantity: Number(itemMeta?.quantity) || 1,
-                modifiers: mods,
-                modifiers_text: mods.map((m) => m.name).join(', ')
-              });
-            });
+            if (!this.product.available) throw new Error('This combo is not available');
             for (const section of document.querySelectorAll('[data-combo-item]')) {
               for (const input of section.querySelectorAll('input[data-mod-type="removal"]:checked')) {
                 if (input.dataset.priceConfirmed !== '1') {
@@ -955,25 +1787,26 @@ const OrderApp = {
                   if (choice === 'normal') {
                     input.checked = true;
                     input.dataset.priceConfirmed = '1';
-                  } else {
+                  } else if (choice === 'sale') {
                     input.checked = false;
                     delete input.dataset.priceConfirmed;
+                  } else {
+                    throw new Error('Confirm the pap price to add this combo');
                   }
                 }
               }
             }
-            const finalComponents = [];
-            document.querySelectorAll('[data-combo-item]').forEach((section) => {
-              const productId = Number(section.dataset.comboItem);
-              const mods = this.collectModifiersFromDom(section);
-              const itemMeta = (this.product.combo_items || []).find((ci) => Number(ci.product_id) === productId);
-              finalComponents.push({
-                product_id: productId,
-                product_name: itemMeta?.product_name || 'Item',
-                quantity: Number(itemMeta?.quantity) || 1,
+            const finalComponents = (this.product.combo_items || []).map((ci, idx) => {
+              const section = document.querySelector(`[data-combo-item="${ci.product_id}"]`)
+                || document.querySelector(`[data-combo-item="idx-${idx}"]`);
+              const mods = section ? this.collectModifiersFromDom(section) : [];
+              return {
+                product_id: ci.product_id,
+                product_name: ci.product_name || 'Item',
+                quantity: Number(ci.quantity) || 1,
                 modifiers: mods,
                 modifiers_text: mods.map((m) => m.name).join(', ')
-              });
+              };
             });
             this.addToCart({
               product_id: null,
@@ -1032,19 +1865,30 @@ const OrderApp = {
       if (act === 'checkout') {
         if (!this.isShopOpenNow()) { this.toast('We are closed for online orders right now', 'error'); this.render(); return; }
         if (!this.token) { this.view = 'register'; this.authReturn = 'checkout'; this.render(); return; }
-        this.quote = await this.validateCurrentCart();
-        if (this.quote && !this.quote.valid) {
-          const gcIssue = (this.quote.errors || []).some((msg) => /gift card/i.test(msg));
-          if (gcIssue && this.checkout.gift_card_code) {
-            this.checkout.gift_card_code = '';
-            this.toast('Gift card removed — no balance remaining on that code', 'warning');
-            this.quote = await this.validateCurrentCart();
-          }
-        }
-        if (this.quote && !this.quote.valid) { this.toast(this.quote.errors.join('; '), 'error'); return; }
-        await this.refreshLoyaltyAccount();
+        // Instant navigation — validate in background so checkout feels immediate
         this.view = 'checkout';
         this.render();
+        this.validateCurrentCart().then((q) => {
+          this.quote = q;
+          if (this.quote && !this.quote.valid) {
+            const gcIssue = (this.quote.errors || []).some((msg) => /gift card/i.test(msg));
+            if (gcIssue && this.checkout.gift_card_code) {
+              this.checkout.gift_card_code = '';
+              this.toast('Gift card removed — no balance remaining on that code', 'warning');
+              return this.validateCurrentCart().then((q2) => { this.quote = q2; });
+            }
+          }
+        }).then(() => {
+          if (this.view !== 'checkout') return;
+          if (this.quote && !this.quote.valid) {
+            this.toast((this.quote.errors || []).join('; ') || 'Cart needs attention', 'error');
+            this.view = 'cart';
+            this.render();
+            return;
+          }
+          this.refreshLoyaltyAccount().catch(() => {});
+          this.render();
+        }).catch(() => {});
         return;
       }
       if (act === 'copy-gift' || act === 'copy-code') {
@@ -1067,7 +1911,7 @@ const OrderApp = {
           return;
         }
         try {
-          const card = await OrderAPI.checkGiftCard(code);
+          const card = await OrderAPI.checkGiftCard(code, this.token);
           this.checkout.gift_card_code = card.code || code;
           this.quote = await this.validateCurrentCart();
           if (this.quote?.errors?.length) {
@@ -1085,7 +1929,15 @@ const OrderApp = {
         return;
       }
       if (act === 'apply-coupon') {
-        this.checkout.coupon_code = document.getElementById('coupon-code')?.value.trim() || '';
+        const code = document.getElementById('coupon-code')?.value.trim().toUpperCase() || '';
+        this.checkout.coupon_code = code;
+        if (code) {
+          this.referralCode = code;
+          try {
+            localStorage.setItem('order_ref', code);
+            sessionStorage.setItem('order_ref', code);
+          } catch (_) { /* */ }
+        }
         this.quote = await this.validateCurrentCart();
         this.render();
         return;
@@ -1108,17 +1960,36 @@ const OrderApp = {
         if (!this.isShopOpenNow()) { this.toast('We are closed for online orders right now', 'error'); return; }
         const btn2 = btn;
         btn2.disabled = true;
+        const prevLabel = btn2.textContent;
+        btn2.textContent = 'Placing order…';
         try {
           if (!this.cart.length) { this.toast('Your cart is empty', 'error'); return; }
+          await this.maybeAskSavePasswordOnOrder();
           this.checkout.loyalty_points_used = parseInt(document.getElementById('loyalty-points')?.value || String(this.checkout.loyalty_points_used || 0), 10) || 0;
           const idem = `web-${Date.now()}-${Math.random().toString(36).slice(2)}`;
           this.checkout.fulfillment_type = document.querySelector('input[name=fulfillment]:checked')?.value || 'collection';
           this.checkout.payment_method = document.querySelector('input[name=payment_method]:checked')?.value || 'card';
           this.checkout.delivery_address = document.getElementById('delivery-address')?.value || '';
+          const placeRadio = document.querySelector('input[name=delivery_place]:checked');
+          if (placeRadio) {
+            this.checkout.delivery_place_id = placeRadio.value;
+            this.checkout.delivery_place = placeRadio.dataset.name || '';
+          }
           this.checkout.notes = document.getElementById('order-notes')?.value || '';
           this.checkout.gift_card_code = document.getElementById('gift-card-code')?.value.trim().toUpperCase() || this.checkout.gift_card_code || '';
+          const enteredCode = (document.getElementById('coupon-code')?.value || this.checkout.coupon_code || this.referralCode || '').trim().toUpperCase();
+          if (enteredCode) {
+            this.checkout.coupon_code = enteredCode;
+            this.referralCode = enteredCode;
+            try {
+              localStorage.setItem('order_ref', enteredCode);
+              sessionStorage.setItem('order_ref', enteredCode);
+            } catch (_) { /* */ }
+          }
           const orderPayload = {
             ...this.checkout,
+            coupon_code: enteredCode || this.checkout.coupon_code || null,
+            referral_code: enteredCode || this.referralCode || null,
             items: this.cart.map((c) => ({
               product_id: c.combo_id ? `combo-${c.combo_id}` : c.product_id,
               combo_id: c.combo_id || undefined,
@@ -1126,13 +1997,42 @@ const OrderApp = {
               modifiers: c.modifiers || []
             }))
           };
+          const payMethod = String(this.checkout.payment_method || 'card').toLowerCase();
+          const gatewayPay = payMethod === 'pay_online' || payMethod === 'yoco';
+          const cardLike = !gatewayPay && ['card', 'snapscan', 'mobile'].includes(payMethod);
+          if (cardLike) {
+            this.quote = this.quote || await this.validateCurrentCart();
+            const total = Number(this.quote?.total || 0);
+            const intent = await OrderAPI.initiateCardPayment(this.branch.id, total, this.token, payMethod);
+            const ref = `TEST-${intent.intent_token.slice(0, 12)}`;
+            await OrderAPI.confirmCardPayment(intent.intent_token, ref);
+            orderPayload.payment_intent_token = intent.intent_token;
+            orderPayload.expected_total = total;
+          }
           this.lastOrder = await OrderAPI.submitOrder(this.branch.id, orderPayload, this.token, idem);
+          if (gatewayPay) {
+            const pay = await OrderAPI.startOnlinePayment(this.lastOrder.id, this.token);
+            const redirect = pay?.redirect_url || pay?.data?.redirect_url;
+            if (!redirect) throw new Error('Could not start online payment');
+            this.cart = [];
+            this.saveCart();
+            window.location.href = redirect;
+            return;
+          }
           this.cart = [];
           this.saveCart();
+          try { await this.refreshLoyaltyAccount(); } catch (_) { /* */ }
+          try {
+            window.WebTracker?.track?.('complete_order', {
+              page: 'checkout',
+              page_label: 'Checkout',
+              order_id: this.lastOrder?.id || this.lastOrder?.order_id
+            });
+          } catch (_) { /* */ }
           this.view = 'confirmed';
           this.render();
         } catch (err) { this.toast(err.message, 'error'); }
-        finally { btn2.disabled = false; }
+        finally { btn2.disabled = false; btn2.textContent = prevLabel; }
         return;
       }
       if (act === 'login-submit') {
@@ -1145,25 +2045,18 @@ const OrderApp = {
         btn.textContent = 'Signing in…';
         try {
           const r = await OrderAPI.login(loginId, loginPass);
-          this.token = r.token;
-          sessionStorage.setItem('order_token', this.token);
-          this.customer = r.customer;
-          await this.refreshLoyaltyAccount();
           const ret = this.authReturn;
-          this.authReturn = null;
-          if (!this.branch) {
-            sessionStorage.removeItem('order_branch');
-            this.view = 'branches';
-          } else {
-            const ok = ['home', 'menu', 'account', 'orders', 'checkout'].includes(ret);
-            this.view = ok ? ret : 'home';
-          }
-          this.toast('Welcome back!', 'success');
-          this.render();
+          const ok = ['home', 'menu', 'account', 'orders', 'checkout'].includes(ret);
+          await this.finishSignIn({
+            token: r.token,
+            customer: r.customer,
+            loginId,
+            password: loginPass,
+            nextView: ok ? ret : 'home'
+          });
         } catch (err) {
-          const msg = err.message || 'Incorrect email/phone or password';
-          this.toast(msg, 'error');
-          this.showAuthErrorModal(msg);
+          this.hideAuthModal();
+          this.toast(err.message || 'Could not sign in — try again', 'error');
         }
         finally { btn.disabled = false; btn.textContent = prev; }
         return;
@@ -1198,22 +2091,28 @@ const OrderApp = {
             this.render();
             try {
               const sent = await OrderAPI.sendRegistrationCode({ email, phone });
-              if (sent.whatsapp_url) window.open(sent.whatsapp_url, '_blank');
-              this.toast(sent.message || 'Verification code sent', 'success');
+              this.applyCodeSend(sent);
+              if (this.view === 'register-verify') this.render();
             } catch (err) { this.toast(err.message || 'Could not send code', 'error'); }
             return;
           }
           btn.textContent = 'Creating account…';
-          const r = await OrderAPI.register({ first_name: first, last_name: last, email, phone, password: pass });
-          this.token = r.token;
-          sessionStorage.setItem('order_token', this.token);
-          this.customer = r.customer;
+          const r = await OrderAPI.register({
+            first_name: first,
+            last_name: last,
+            email,
+            phone,
+            password: pass,
+            referral_code: this.referralCode || sessionStorage.getItem('order_ref') || localStorage.getItem('order_ref') || null
+          });
           this.regLink = null;
-          await this.refreshLoyaltyAccount();
-          this.authReturn = null;
-          this.view = 'branches';
-          this.toast('Account created', 'success');
-          this.render();
+          await this.finishSignIn({
+            token: r.token,
+            customer: r.customer,
+            loginId: email || phone,
+            password: pass,
+            nextView: 'branches'
+          });
         } catch (err) { this.toast(err.message, 'error'); }
         finally { btn.disabled = false; btn.textContent = prev; }
         return;
@@ -1232,20 +2131,26 @@ const OrderApp = {
           const r = await OrderAPI.register({
             ...form,
             password: pass,
-            verification_code: code
+            verification_code: code,
+            referral_code: this.referralCode || sessionStorage.getItem('order_ref') || localStorage.getItem('order_ref') || null
           });
-          this.token = r.token;
-          sessionStorage.setItem('order_token', this.token);
-          this.customer = r.customer;
           this.regLink = null;
-          await this.refreshLoyaltyAccount();
-          this.authReturn = null;
-          this.view = 'branches';
-          const pts = r.loyalty_points || this.loyaltyAccount?.balance;
-          this.toast(pts ? `Account linked — ${pts} loyalty points ready to use` : 'Account activated', 'success');
-          this.render();
+          await this.finishSignIn({
+            token: r.token,
+            customer: r.customer,
+            loginId: form.email || form.phone,
+            password: pass,
+            nextView: 'branches'
+          });
         } catch (err) { this.toast(err.message, 'error'); }
         finally { btn.disabled = false; btn.textContent = prev; }
+        return;
+      }
+      if (act === 'open-wa-code') {
+        const url = this.regLink?.whatsapp_url;
+        if (!url) { this.toast('Request the WhatsApp code first', 'error'); return; }
+        this.openWhatsApp(url);
+        this.toast('WhatsApp opened — tap Send, then enter the code here', 'success');
         return;
       }
       if (act === 'resend-reg-code') {
@@ -1254,35 +2159,107 @@ const OrderApp = {
         btn.disabled = true;
         try {
           const sent = await OrderAPI.sendRegistrationCode({ email: form.email, phone: form.phone });
-          if (sent.whatsapp_url) window.open(sent.whatsapp_url, '_blank');
-          this.toast(sent.message || 'New code sent', 'success');
+          this.applyCodeSend(sent);
+          if (this.view === 'register-verify') this.render();
         } catch (err) { this.toast(err.message, 'error'); }
         finally { btn.disabled = false; }
         return;
       }
       if (act === 'delete-account') {
-        if (!confirm('Delete your online account? Your in-store profile and purchase history stay linked to your phone number.')) return;
-        try {
-          await OrderAPI.deleteAccount(this.token);
-          this.token = '';
-          this.customer = null;
-          sessionStorage.removeItem('order_token');
-          this.toast('Account deleted', 'success');
-          this.view = 'login';
-          this.render();
-        } catch (err) { this.toast(err.message, 'error'); }
+        this._deletePending = true;
+        this.showPopup({
+          title: 'Delete online account',
+          body: `<p>Enter the password you use to sign in. Your in-store profile stays linked to your phone number.</p>
+            <label>Password<input type="password" id="del-pass" autocomplete="current-password" required></label>`,
+          footer: `<button type="button" class="btn-outline" data-act="modal-close">Cancel</button>
+            <button type="button" class="btn-danger" data-act="delete-account-confirm">Delete</button>`
+        });
+        setTimeout(() => document.getElementById('del-pass')?.focus(), 50);
         return;
       }
       if (act === 'logout') {
-        this.token = '';
-        this.customer = null;
-        sessionStorage.removeItem('order_token');
+        this.clearSession();
         this.view = 'login';
         this.render();
         return;
       }
+      if (act === 'forgot-send') {
+        const loginId = document.getElementById('forgot-id')?.value.trim() || '';
+        if (!loginId) { this.toast('Enter your email or phone', 'error'); return; }
+        btn.disabled = true;
+        const prev = btn.textContent;
+        btn.textContent = 'Sending code…';
+        try {
+          const payload = loginId.includes('@') ? { email: loginId } : { phone: loginId };
+          const sent = await OrderAPI.sendPasswordReset(payload);
+          this.resetLink = { login: loginId, ...sent };
+          this.view = 'forgot-verify';
+          this.render();
+          if (sent.whatsapp_url) this.openWhatsApp(sent.whatsapp_url);
+          else if (sent.email_url) this.openWhatsApp(sent.email_url);
+          this.toast(sent.message || 'Reset code is ready', 'success');
+        } catch (err) { this.toast(err.message || 'Could not send reset code', 'error'); }
+        finally { btn.disabled = false; btn.textContent = prev; }
+        return;
+      }
+      if (act === 'forgot-reset') {
+        const loginId = this.resetLink?.login || document.getElementById('forgot-id')?.value.trim() || '';
+        const code = document.getElementById('forgot-code')?.value.trim() || '';
+        const pass = document.getElementById('forgot-pass')?.value || '';
+        const confirmPass = document.getElementById('forgot-pass-2')?.value || '';
+        if (!code) { this.toast('Enter the reset code', 'error'); return; }
+        if (pass.length < 6) { this.toast('New password must be at least 6 characters', 'error'); return; }
+        if (pass !== confirmPass) { this.toast('The two passwords do not match', 'error'); return; }
+        btn.disabled = true;
+        const prev = btn.textContent;
+        btn.textContent = 'Saving…';
+        try {
+          const payload = loginId.includes('@')
+            ? { email: loginId, code, password: pass }
+            : { phone: loginId, code, password: pass };
+          const r = await OrderAPI.resetPassword(payload);
+          this.resetLink = null;
+          this.view = 'login';
+          this.render();
+          this.toast(r.message || 'Password updated — sign in with your new password', 'success');
+        } catch (err) { this.toast(err.message || 'Could not reset password', 'error'); }
+        finally { btn.disabled = false; btn.textContent = prev; }
+        return;
+      }
+      if (act === 'open-reset-wa') {
+        const url = this.resetLink?.whatsapp_url;
+        if (!url) { this.toast('Request the WhatsApp code first', 'error'); return; }
+        this.openWhatsApp(url);
+        return;
+      }
+      if (act === 'open-reset-email') {
+        const url = this.resetLink?.email_url;
+        if (!url) { this.toast('Request the email code first', 'error'); return; }
+        this.openWhatsApp(url);
+        return;
+      }
+      if (act === 'resend-reset-code') {
+        const loginId = this.resetLink?.login || '';
+        if (!loginId) return;
+        btn.disabled = true;
+        try {
+          const payload = loginId.includes('@') ? { email: loginId } : { phone: loginId };
+          const sent = await OrderAPI.sendPasswordReset(payload);
+          this.resetLink = { login: loginId, ...sent };
+          if (this.view === 'forgot-verify') this.render();
+          if (sent.whatsapp_url) this.openWhatsApp(sent.whatsapp_url);
+          else if (sent.email_url) this.openWhatsApp(sent.email_url);
+          this.toast(sent.message || 'Reset code sent again', 'success');
+        } catch (err) { this.toast(err.message, 'error'); }
+        finally { btn.disabled = false; }
+        return;
+      }
       if (act === 'modal-close') {
-        document.getElementById('modal-root').classList.add('hidden');
+        if (this._stayResolve) this._stayResolve(false);
+        else {
+          this._deletePending = false;
+          this.hideAuthModal();
+        }
         return;
       }
     };
@@ -1290,7 +2267,7 @@ const OrderApp = {
       const form = e.target.closest('form[data-form]');
       if (!form) return;
       e.preventDefault();
-      const submit = form.querySelector('[data-act="login-submit"], [data-act="register-submit"], [data-act="register-verify-submit"]');
+      const submit = form.querySelector('[data-act="login-submit"], [data-act="register-submit"], [data-act="register-verify-submit"], [data-act="forgot-send"], [data-act="forgot-reset"]');
       submit?.click();
     };
     app.oninput = (e) => {
@@ -1312,8 +2289,44 @@ const OrderApp = {
         this.checkout.fulfillment_type = e.target.value;
         const firstPay = (this.settings?.online?.payment_methods || []).find((m) => m.enabled !== false && (!m.fulfillment || m.fulfillment === 'any' || m.fulfillment === e.target.value));
         if (firstPay) this.checkout.payment_method = firstPay.id;
-        this.quote = await this.validateCurrentCart();
+        // Show delivery places immediately — don't wait on validate
         this.render();
+        const reqId = (this._fulfillQuoteSeq = (this._fulfillQuoteSeq || 0) + 1);
+        this.validateCurrentCart().then((q) => {
+          if (reqId !== this._fulfillQuoteSeq) return;
+          this.quote = q;
+          this.updateCheckoutTotalsDom?.();
+        }).catch(() => { /* ignore */ });
+      }
+      if (e.target.name === 'delivery_place') {
+        this.checkout.delivery_place_id = e.target.value;
+        this.checkout.delivery_place = e.target.dataset.name || '';
+        // Instant optimistic fee from branch places — no full page wait
+        const place = (this.branch?.delivery_places || []).find((p) => String(p.id) === String(e.target.value));
+        const sub = Number(this.quote?.subtotal) || 0;
+        let fee = 0;
+        if (place) {
+          const freeAbove = Number(place.free_delivery_above) || 0;
+          const baseFee = Number(place.delivery_fee) || 0;
+          fee = freeAbove > 0 && sub >= freeAbove ? 0 : baseFee;
+        }
+        const prevFee = Number(this.quote?.delivery_fee) || 0;
+        const prevTotal = Number(this.quote?.total) || 0;
+        this.quote = {
+          ...(this.quote || {}),
+          delivery_fee: fee,
+          delivery_place: this.checkout.delivery_place,
+          delivery_place_id: this.checkout.delivery_place_id,
+          total: Math.max(0, prevTotal - prevFee + fee)
+        };
+        this.updateCheckoutTotalsDom?.();
+        // Confirm with server in background (no full re-render)
+        const reqId = (this._placeQuoteSeq = (this._placeQuoteSeq || 0) + 1);
+        this.validateCurrentCart().then((q) => {
+          if (reqId !== this._placeQuoteSeq) return;
+          this.quote = q;
+          this.updateCheckoutTotalsDom?.();
+        }).catch(() => { /* keep optimistic totals */ });
       }
       if (e.target.id === 'loyalty-points') {
         this.checkout.loyalty_points_used = parseInt(e.target.value, 10) || 0;
@@ -1323,20 +2336,35 @@ const OrderApp = {
   },
 
   shell(body, title = '') {
+    if (this.isAuthView()) {
+      return `<div class="order-app order-app--auth">
+        <main class="main main-auth">${body}</main>
+      </div>`;
+    }
     const showBack = ['product', 'cart', 'checkout'].includes(this.view);
     const branchChip = this.branch ? `<div class="branch-banner">
       <span>📍 Ordering from <strong>${this.esc(this.branch.name)}</strong></span>
       <button type="button" data-act="nav" data-view="branches" class="link-btn branch-change-btn">Change branch</button>
     </div>` : '';
     const cartBtn = `<button type="button" class="cart-fab" data-act="nav" data-view="cart">${this.cartCount() ? `<span class="cart-badge">${this.cartCount()}</span>` : ''}🛒</button>`;
+    const profileName = this.customer
+      ? (this.customer.first_name || this.customer.full_name || this.customer.phone || 'Account')
+      : '';
     return `<div class="order-app">
       <header class="topbar">${showBack ? `<button type="button" class="back-btn" data-act="back" aria-label="Back">←</button>` : ''}
-        <div class="brand"><img src="/api/logo" alt="" class="brand-logo" onerror="this.style.display='none'">${this.esc(this.settings?.shop_name || 'Order Online')}</div>
+        <div class="brand"><img src="/api/logo" alt="" class="brand-logo" onerror="this.style.display='none'"><span class="brand-name">${this.esc(this.settings?.shop_name || 'Order Online')}</span></div>
         <div class="top-actions">
-          ${this.customer
-            ? `<button type="button" class="ghost-btn" data-act="nav" data-view="account">${this.esc(this.customer.first_name)}</button>`
-            : `<button type="button" class="ghost-btn" data-act="nav" data-view="register">Register</button>
-               <button type="button" class="ghost-btn" data-act="nav" data-view="login" style="margin-left:6px">Sign in</button>`}
+          ${this.isShopOpenNow() ? `<button type="button" class="job-icon-btn${this.openJobs.length ? ' job-icon-btn--open' : ''}" data-act="job-apply" aria-label="${this.openJobs.length ? 'Hiring now — apply for a job' : 'Apply for a job'}" title="${this.openJobs.length ? 'Hiring now — tap to apply' : 'Apply for a job'}">
+            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M10 4h4a2 2 0 0 1 2 2v1h4a2 2 0 0 1 2 2v3H2V9a2 2 0 0 1 2-2h4V6a2 2 0 0 1 2-2Zm0 3h4V6h-4v1ZM2 13h20v6a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-6Z"/></svg>
+            ${this.openJobs.length ? `<span class="job-badge">${this.openJobs.length > 1 ? `${this.openJobs.length}` : 'Hire'}</span>` : ''}
+          </button>
+          <button type="button" class="report-problem-btn${this.myIssues.some((i) => i.admin_reply) ? ' report-problem-btn--reply' : ''}" data-act="issue-report" aria-label="Report a problem" title="Report a problem with an order or the app">
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm1 15h-2v-2h2Zm0-4h-2V7h2Z"/></svg>
+            <span class="report-problem-text"><span>Report a</span><span>problem</span></span>
+          </button>` : ''}
+          ${profileName
+            ? `<button type="button" class="ghost-btn profile-chip" data-act="nav" data-view="account"><span class="profile-chip-name">${this.esc(profileName)}</span></button>`
+            : ''}
         </div></header>
       ${this.contactHeaderHtml()}
       ${branchChip}
@@ -1346,12 +2374,16 @@ const OrderApp = {
       <nav class="bottom-nav">
         <button type="button" data-act="nav" data-view="home" class="${this.view === 'home' ? 'active' : ''}">Home</button>
         <button type="button" data-act="nav" data-view="menu" class="${this.view === 'menu' ? 'active' : ''}">Menu</button>
-        <button type="button" data-act="nav" data-view="orders" class="${this.view === 'orders' ? 'active' : ''}">Orders</button>
+        <button type="button" data-act="nav" data-view="orders" class="${this.view === 'orders' || this.view === 'order-detail' ? 'active' : ''}">Orders</button>
         <button type="button" data-act="nav" data-view="account" class="${this.view === 'account' ? 'active' : ''}">Account</button>
       </nav></div>`;
   },
 
   async render() {
+    if (!this._stayResolve && !this._deletePending) this.hideAuthModal();
+    if (!this.token && !this.isAuthView() && this.view !== 'branches') {
+      this.view = 'login';
+    }
     try { sessionStorage.setItem('order_view', this.view); } catch (_) { /* ignore */ }
     const app = document.getElementById('app');
     if (this.view === 'branches') {
@@ -1380,17 +2412,8 @@ const OrderApp = {
       return;
     }
     if (this.view === 'welcome') {
-      app.innerHTML = this.shell(`<section class="page">
-        <div class="hero-card">
-          <h1>Welcome to ${this.esc(this.settings?.shop_name || 'our shop')}</h1>
-          <p class="lead">Order for collection or delivery from <strong>${this.esc(this.branch?.name)}</strong></p>
-          <button type="button" class="btn-primary btn-block" data-act="nav" data-view="register" style="margin-bottom:10px">Create account &amp; earn points</button>
-          <button type="button" class="btn-outline btn-block" data-act="nav" data-view="login" style="border-color:#fff;color:#fff">I already have an account</button>
-        </div>
-        <button type="button" class="link-btn" data-act="nav" data-view="home">Continue as guest →</button>
-      </section>`);
-      this.bind();
-      return;
+      this.view = 'login';
+      return this.render();
     }
     if (this.view === 'home') {
       const specials = this.menu?.specials || [];
@@ -1400,10 +2423,10 @@ const OrderApp = {
           <p class="lead">Fresh food from <strong>${this.esc(this.branch?.name)}</strong> — delivery or collection</p>
           <button type="button" class="btn-primary btn-block" data-act="nav" data-view="menu">Browse menu</button>
         </div>
-        ${this.loyaltyAccount && this.loyaltySettings().enabled ? `<div class="loyalty-card">
+        ${this.token && this.loyaltySettings().enabled ? `<div class="loyalty-card">
           <h3>⭐ Your loyalty points</h3>
-          <div class="loyalty-balance">${this.loyaltyAccount.balance} pts</div>
-          <div class="muted">Worth ${this.money(this.loyaltyAccount.value)} at checkout</div>
+          <div class="loyalty-balance">${Math.floor(Number(this.loyaltyAccount?.balance) || 0)} pts</div>
+          <div class="muted">Worth ${this.money(this.loyaltyAccount?.value || 0)} at checkout</div>
         </div>` : (this.token ? `<div class="loyalty-card"><h3>⭐ Loyalty points</h3><p class="muted" style="margin:0">Earn points on every order you place.</p></div>` : `<div class="checkout-card"><p class="muted" style="margin:0 0 10px">Register to earn points on every order.</p>
           <button type="button" class="btn-primary btn-sm" data-act="nav" data-view="register">Register now</button></div>`)}
         ${this.giftWalletHtml()}
@@ -1461,21 +2484,29 @@ const OrderApp = {
             ${this.esc(o.name)}${o.extra_price ? ` ${o.extra_price < 0 ? '' : '+'}${this.money(o.extra_price)}` : ''}${o.out_of_stock ? ' (Out of stock)' : ''}</label>`).join('')}
         </fieldset>`;
       }).join('');
-      const comboModSections = p.is_combo && (p.combo_items || []).some((ci) => ci.modifier_groups?.length || ci.allow_pap_choice)
-        ? (p.combo_items || []).filter((ci) => ci.modifier_groups?.length || ci.allow_pap_choice).map((ci) => `
-        <div class="checkout-card combo-item-options" data-combo-item="${ci.product_id}">
+      const comboIncludes = p.is_combo && (p.combo_items || []).length
+        ? `<div class="checkout-card"><h3>Includes</h3>
+            <div class="combo-includes-grid">${p.combo_items.map((ci) => `
+              <div class="combo-include-item">
+                ${ci.image ? `<img src="${this.esc(ci.image)}" alt="">` : '<div class="combo-include-ph">🍽️</div>'}
+                <span>${this.esc(ci.product_name || 'Item')} × ${ci.quantity || 1}</span>
+              </div>`).join('')}
+            </div></div>`
+        : '';
+      const comboModSections = p.is_combo
+        ? (p.combo_items || []).filter((ci) => ci.modifier_groups?.length || ci.allow_pap_choice).map((ci, idx) => `
+        <div class="checkout-card combo-item-options" data-combo-item="${ci.product_id || `idx-${idx}`}">
           <h3>${this.esc(ci.product_name || 'Item')} × ${ci.quantity || 1}</h3>
           ${ci.image ? `<img src="${this.esc(ci.image)}" alt="" style="max-height:72px;border-radius:8px;margin-bottom:8px">` : ''}
           ${renderModGroups(ci.modifier_groups, `ci${ci.product_id}-`)}
         </div>`).join('')
-        : (p.is_combo && (p.combo_items || []).length
-          ? `<div class="checkout-card"><h3>Includes</h3><ul class="combo-includes">${p.combo_items.map((ci) => `<li>${this.esc(ci.product_name || 'Item')} × ${ci.quantity || 1}</li>`).join('')}</ul></div>`
-          : '');
+        : '';
       app.innerHTML = this.shell(`<section class="page product-detail">
         ${p.image ? `<img class="prod-img" src="${this.esc(p.image)}" alt="" fetchpriority="high">` : '<div class="prod-img placeholder">🍽️</div>'}
         ${p.is_combo && p.combo_thumbs?.length ? `<div class="combo-thumb-row">${p.combo_thumbs.map((u) => `<img src="${this.esc(u)}" alt="" loading="eager">`).join('')}</div>` : ''}
         <h1>${p.is_combo ? '🎁 ' : ''}${this.esc(p.name)}</h1>
         <p class="muted">${this.esc(p.description)}</p>
+        ${comboIncludes}
         ${comboModSections}
         <div class="price-row">${p.is_combo
           ? (p.on_sale ? `<s>${this.money(p.price)}</s> <strong class="sale" id="live-prod-price">${this.money(p.sale_price)}</strong>` : `<strong id="live-prod-price">${this.money(p.price)}</strong>`)
@@ -1483,7 +2514,8 @@ const OrderApp = {
         <span class="stock ${p.available ? 'ok' : 'out'}">${p.available ? '● Available' : 'Out of stock'}</span></div>
         ${!p.is_combo ? renderModGroups(groups) : ''}
         <div class="qty-row"><label>Qty</label><input type="number" id="prod-qty" min="1" value="${qtyVal}" class="qty-input"></div>
-        <button type="button" class="btn-primary btn-block" data-act="add-cart" data-id="${p.is_combo ? p.id : p.id}" ${p.available && this.isShopOpenNow() ? '' : 'disabled'}>${editLine ? 'Update item' : 'Add to cart'}</button>
+        <button type="button" class="btn-primary btn-block" data-act="add-cart" data-id="${p.id}" ${p.available ? '' : 'disabled'}>${editLine ? 'Update item' : 'Add to cart'}</button>
+        ${!this.isShopOpenNow() ? '<p class="muted" style="text-align:center;margin-top:8px">Ordering is closed right now — you can still choose options.</p>' : ''}
       </section>`);
       this.bind();
       this.bindModifierInputs();
@@ -1512,7 +2544,6 @@ const OrderApp = {
       const maxPts = this.maxRedeemPoints(q.subtotal);
       const ptsUsed = this.checkout.loyalty_points_used || 0;
       const earnPts = this.previewEarnPoints(q.total);
-      const couponsOn = this.settings?.online?.coupons_enabled !== false;
       const giftCardsOn = this.settings?.online?.gift_cards_enabled !== false;
       const payMethods = (this.settings?.online?.payment_methods || []).filter((m) => m.enabled !== false).filter((m) => {
         const mf = String(m.fulfillment || 'any').toLowerCase();
@@ -1534,15 +2565,34 @@ const OrderApp = {
           <label><input type="radio" name="fulfillment" value="delivery" ${fulfillment === 'delivery' ? 'checked' : ''}> 🚚 Delivery</label>
         </div>
         <div id="delivery-fields" class="checkout-card ${fulfillment === 'delivery' ? '' : 'hidden'}">
+          <h3>Delivery place</h3>
+          <p class="muted" style="margin:0 0 8px;font-size:13px">Choose your area — the delivery fee is added to your total.</p>
+          <div id="delivery-places-list" style="display:flex;flex-direction:column;gap:8px;margin-bottom:12px">
+            ${(this.branch?.delivery_places || []).length
+              ? (this.branch.delivery_places || []).map((p) => {
+                  const freeAbove = Number(p.free_delivery_above) || 0;
+                  const fee = Number(p.delivery_fee) || 0;
+                  const sub = Number(q.subtotal) || 0;
+                  const due = freeAbove > 0 && sub >= freeAbove ? 0 : fee;
+                  const selected = String(this.checkout.delivery_place_id || '') === String(p.id)
+                    || String(this.checkout.delivery_place || '').toLowerCase() === String(p.name || '').toLowerCase();
+                  return `<label style="border:1px solid var(--border,#e2e8f0);border-radius:10px;padding:10px;cursor:pointer">
+                    <input type="radio" name="delivery_place" value="${this.esc(p.id)}" data-name="${this.esc(p.name)}" ${selected ? 'checked' : ''}>
+                    <strong>${this.esc(p.name)}</strong>
+                    <div class="muted" style="font-size:12px;margin-top:4px">Delivery fee: <strong>${this.money(due)}</strong>${freeAbove > 0 ? ` · free above ${this.money(freeAbove)}` : ''}${Number(p.min_order) > 0 ? ` · min ${this.money(p.min_order)}` : ''}</div>
+                  </label>`;
+                }).join('')
+              : '<p class="muted" style="margin:0;font-size:13px">Flat branch delivery fee applies.</p>'}
+          </div>
           <h3>Delivery address</h3>
           <textarea id="delivery-address" rows="3" placeholder="Street, suburb, city…">${this.esc(this.checkout.delivery_address)}</textarea>
         </div>
         <div class="checkout-card"><h3>Payment</h3>
           ${methods.map((m) => `<label><input type="radio" name="payment_method" value="${this.esc(m.id)}" ${(this.checkout.payment_method || methods[0]?.id) === m.id ? 'checked' : ''}> ${this.esc(m.label || m.id)}</label>`).join('')}
         </div>
-        ${ls.enabled && this.loyaltyAccount ? `<div class="loyalty-card">
+        ${ls.enabled && this.token ? `<div class="loyalty-card">
           <h3>⭐ Use loyalty points</h3>
-          <div class="loyalty-balance">${this.loyaltyAccount.balance} pts available · ${this.money(this.loyaltyAccount.value)}</div>
+          <div class="loyalty-balance">${Math.floor(Number(this.loyaltyAccount?.balance) || 0)} pts available · ${this.money(this.loyaltyAccount?.value || 0)}</div>
           <div class="loyalty-redeem">
             <label>Points to redeem (max ${maxPts})</label>
             <input type="range" id="loyalty-points" min="0" max="${maxPts}" value="${ptsUsed}" step="1">
@@ -1555,10 +2605,13 @@ const OrderApp = {
           <button type="button" class="btn-outline btn-block" data-act="apply-loyalty" style="margin-top:10px">Apply points</button>
         </div>` : ''}
         ${this.giftWalletHtml()}
-        ${couponsOn ? `<div class="checkout-card">
-          <h3>Coupon code</h3>
-          <div style="display:flex;gap:8px"><input id="coupon-code" value="${this.esc(this.checkout.coupon_code)}" placeholder="Enter code"><button type="button" class="btn-sm" data-act="apply-coupon">Apply</button></div>
-        </div>` : ''}
+        <div class="checkout-card">
+          <h3>Referral code</h3>
+          <p class="muted" style="margin:0 0 8px;font-size:13px">Enter your agent’s referral code so they earn commission on this order (as set by the shop).</p>
+          ${this.referralCode ? `<p class="muted" style="margin:0 0 8px;font-size:13px">Linked code: <strong>${this.esc(this.referralCode)}</strong></p>` : ''}
+          <div style="display:flex;gap:8px"><input id="coupon-code" value="${this.esc(this.checkout.coupon_code || this.referralCode || '')}" placeholder="e.g. HAPPY41" autocomplete="off"><button type="button" class="btn-sm" data-act="apply-coupon">Apply</button></div>
+          ${q.coupon?.type === 'referral' ? `<p class="muted" style="margin:8px 0 0;color:var(--success,#059669)">${this.esc(q.coupon.message || `Referral code ${q.coupon.code} applied`)}</p>` : ''}
+        </div>
         ${giftCardsOn ? `<div class="checkout-card">
           <h3>🎁 Gift card</h3>
           <div style="display:flex;gap:8px"><input id="gift-card-code" value="${this.esc(this.checkout.gift_card_code || '')}" placeholder="Enter gift card code"><button type="button" class="btn-sm" data-act="apply-gift-card">Apply</button></div>
@@ -1568,17 +2621,36 @@ const OrderApp = {
           <h3>Special instructions</h3>
           <textarea id="order-notes" rows="2" placeholder="Allergies, gate code, etc.">${this.esc(this.checkout.notes)}</textarea>
         </div>
-        <div class="totals">
+        <div class="totals" id="checkout-totals">
           <div>Subtotal <span>${this.money(q.subtotal)}</span></div>
           ${q.discount ? `<div>Discount${q.coupon?.code ? ` (${this.esc(q.coupon.code)}${q.coupon.discount_type ? ` · ${this.esc(q.coupon.discount_type)}` : ''})` : ''}${q.loyalty_discount ? ` · Loyalty ${ptsUsed} pts` : ''} <span>-${this.money(q.discount)}</span></div>` : ''}
           ${q.gift_card_amount ? `<div>Gift card <span>-${this.money(q.gift_card_amount)}</span></div>` : ''}
-          ${q.delivery_fee ? `<div>Delivery <span>${this.money(q.delivery_fee)}</span></div>` : ''}
+          ${q.delivery_fee != null && fulfillment === 'delivery' ? `<div>Delivery${q.delivery_place ? ` (${this.esc(q.delivery_place)})` : ''} <span>${this.money(q.delivery_fee)}</span></div>` : ''}
           ${q.tax_amount ? `<div>Tax${this.settings?.tax_enabled && this.settings?.tax_rate ? ` (${this.settings.tax_rate}%)` : ''} <span>${this.money(q.tax_amount)}</span></div>` : (this.settings?.tax_enabled && this.settings?.tax_rate ? `<div class="muted" style="font-size:13px">Tax (${this.settings.tax_rate}%) calculated at checkout</div>` : '')}
           <div class="total-line">Total <strong>${this.money(q.total)}</strong></div>
         </div>
-        <button type="button" class="btn-primary btn-block" data-act="place-order">Place order · ${this.money(q.total)}</button>
+        <button type="button" class="btn-primary btn-block" data-act="place-order" id="checkout-place-btn">Place order · ${this.money(q.total)}</button>
       </section>`);
       this.bind();
+      return;
+    }
+    if (this.view === 'payment-pending') {
+      const orderNum = this.paymentReturn?.orderNumber || this.lastOrder?.order_number;
+      const ret = this.paymentReturn?.returnStatus || 'success';
+      const headline = ret === 'cancel' ? 'Payment cancelled' : (ret === 'failure' ? 'Payment unsuccessful' : 'Confirming payment…');
+      const detail = ret === 'cancel' || ret === 'failure'
+        ? 'You can try again from your cart or choose another payment method.'
+        : 'Please wait while we confirm your payment with the bank. Do not close this page.';
+      app.innerHTML = this.shell(`<section class="page confirmed">
+        <h1>${this.esc(headline)}</h1>
+        ${orderNum ? `<p class="order-num">Order ${this.esc(orderNum)}</p>` : ''}
+        <p class="muted">${this.esc(detail)}</p>
+        <p id="pay-pending-status" class="muted">Checking payment status…</p>
+        <button type="button" class="btn-outline btn-block" data-act="nav" data-view="orders" style="margin-top:16px">My orders</button>
+        <button type="button" class="link-btn" data-act="nav" data-view="menu">Back to menu</button>
+      </section>`);
+      this.bind();
+      this.pollPaymentReturn(orderNum);
       return;
     }
     if (this.view === 'confirmed' && this.lastOrder) {
@@ -1589,6 +2661,7 @@ const OrderApp = {
         <h1>Order confirmed</h1>
         <p class="order-num">Order ${this.esc(o.order_number)}</p>
         ${isDelivery ? this.handoffCodeHtml(o, { copy: true }) : ''}
+        ${this.firstOnlineGiftHtml(o.first_online_gift)}
         <p><strong>${this.esc(this.branch?.name)}</strong> · ${this.money(o.total)}</p>
         ${o.accepted_by || o.cashier ? `<p class="muted">Accepted by <strong>${this.esc(o.accepted_by || o.cashier)}</strong></p>` : '<p class="muted">We\'ll notify you when the branch accepts your order.</p>'}
         ${this.driverCardHtml(o.driver)}
@@ -1601,18 +2674,7 @@ const OrderApp = {
     }
     if (this.view === 'orders') {
       if (!this.token) { this.view = 'login'; this.authReturn = 'orders'; return this.render(); }
-      let orders = [];
-      try {
-        orders = await OrderAPI.listOrders(this.token);
-      } catch (err) {
-        if (/invalid|expired|session/i.test(err.message)) {
-          this.token = ''; sessionStorage.removeItem('order_token'); this.customer = null;
-          this.view = 'login'; this.authReturn = 'orders'; this.toast('Please sign in again', 'error'); return this.render();
-        }
-        this.toast(err.message, 'error');
-      }
-      app.innerHTML = this.shell(`<section class="page"><h1>My orders</h1>
-        ${orders.length ? orders.map((o) => {
+      const ordersHtml = (orders) => `${orders.length ? orders.map((o) => {
           const items = Array.isArray(o.items) ? o.items : [];
           const preview = items.slice(0, 2).map((i) => `${i.name} ×${i.quantity}`).join(', ');
           const more = items.length > 2 ? ` +${items.length - 2} more` : '';
@@ -1633,9 +2695,28 @@ const OrderApp = {
               <span class="muted">View details →</span>
             </div>
           </button>`;
-        }).join('') : '<p class="muted">No orders yet.</p>'}
+        }).join('') : '<p class="muted">No orders yet.</p>'}`;
+
+      // Instant paint from cache
+      const cached = this._ordersCache;
+      app.innerHTML = this.shell(`<section class="page"><h1>My orders</h1>
+        <div id="orders-list">${cached ? ordersHtml(cached) : '<p class="muted">Loading…</p>'}</div>
       </section>`);
       this.bind();
+
+      try {
+        const orders = await OrderAPI.listOrders(this.token);
+        this._ordersCache = orders || [];
+        const list = document.getElementById('orders-list');
+        if (list && this.view === 'orders') list.innerHTML = ordersHtml(this._ordersCache);
+        this.bind();
+      } catch (err) {
+        if (/invalid|expired|session/i.test(err.message)) {
+          this.clearSession();
+          this.view = 'login'; this.authReturn = 'orders'; return this.render();
+        }
+        if (!cached) this.toast(err.message, 'error');
+      }
       return;
     }
     if (this.view === 'order-detail') {
@@ -1652,6 +2733,7 @@ const OrderApp = {
         <p><span class="order-status">${this.esc(String(o.status_label || o.status || 'pending').toUpperCase())}</span>
           · ${this.esc(String(o.created_at).slice(0, 16))}</p>
         ${this.isDeliveryOrder(o) ? this.handoffCodeHtml(o, { copy: true }) : ''}
+        ${this.firstOnlineGiftHtml(o.first_online_gift)}
         ${o.accepted_by || o.cashier ? `<div class="checkout-card"><h3>Shop accepted your order</h3><p><strong>${this.esc(o.accepted_by || o.cashier)}</strong> is handling your order.</p></div>` : ''}
           ${steps.length ? `<div class="checkout-card"><h3>Track order</h3>${this.trackingTimelineHtml(steps)}</div>` : ''}
           ${this.driverCardHtml(o.driver)}
@@ -1691,20 +2773,52 @@ const OrderApp = {
       return;
     }
     if (this.view === 'login') {
-      app.innerHTML = `<div class="auth-page"><form class="auth-card" data-form="login" novalidate>
+      app.innerHTML = this.shell(`<div class="auth-page"><form class="auth-card" data-form="login" novalidate>
         <h1>Sign in</h1>
-        <p class="muted auth-lead">Sign in to checkout, track orders, and earn loyalty points.</p>
-        <label>Email or phone<input id="login-id" type="text" autocomplete="username" required placeholder="you@email.com or 082…"></label>
+        <p class="muted auth-lead">Sign in with your email, or your full phone number (082… or +27…), then your password.</p>
+        <label>Email or full phone number<input id="login-id" type="text" autocomplete="username" required placeholder="you@email.com or 082 123 4567"></label>
         <label>Password<input type="password" id="login-pass" autocomplete="current-password" required placeholder="Your password"></label>
         <button type="submit" class="btn-primary btn-block" data-act="login-submit">Sign in</button>
+        <button type="button" class="link-btn" data-act="nav" data-view="forgot">Forgot password?</button>
         <button type="button" class="link-btn" data-act="nav" data-view="register">Create account</button>
-      </form></div>`;
+      </form></div>`);
       this.bind();
       document.getElementById('login-id')?.focus();
+      this.tryAutofillLogin();
+      return;
+    }
+    if (this.view === 'forgot') {
+      app.innerHTML = this.shell(`<div class="auth-page"><form class="auth-card" data-form="forgot" novalidate>
+        <h1>Forgot password</h1>
+        <p class="muted auth-lead">Enter the email or the full phone number on your account. We send a reset code, then you set a new password on the next screen.</p>
+        <label>Email or full phone number<input id="forgot-id" type="text" autocomplete="username" required placeholder="you@email.com or 082 123 4567"></label>
+        <button type="submit" class="btn-primary btn-block" data-act="forgot-send">Send reset code</button>
+        <button type="button" class="link-btn" data-act="nav" data-view="login">Back to sign in</button>
+      </form></div>`);
+      this.bind();
+      document.getElementById('forgot-id')?.focus();
+      return;
+    }
+    if (this.view === 'forgot-verify') {
+      const link = this.resetLink || {};
+      app.innerHTML = this.shell(`<div class="auth-page"><form class="auth-card" data-form="forgot-verify" novalidate>
+        <h1>Set a new password</h1>
+        <p class="muted auth-lead">${this.esc(link.message || 'Enter the 6-digit code, then type the password you will use next time.')}</p>
+        <label>Reset code<input id="forgot-code" inputmode="numeric" autocomplete="one-time-code" placeholder="6-digit code" required></label>
+        <label>New password<input type="password" id="forgot-pass" autocomplete="new-password" minlength="6" required></label>
+        <label>Rewrite new password<input type="password" id="forgot-pass-2" autocomplete="new-password" minlength="6" required></label>
+        <button type="submit" class="btn-primary btn-block" data-act="forgot-reset">Save new password</button>
+        ${link.whatsapp_url ? `<button type="button" class="btn-block" data-act="open-reset-wa">Open WhatsApp code</button>` : ''}
+        ${link.email_url ? `<button type="button" class="btn-block" data-act="open-reset-email">Open email with code</button>` : ''}
+        <button type="button" class="link-btn" data-act="resend-reset-code">Resend code</button>
+        <button type="button" class="link-btn" data-act="nav" data-view="login">Back to sign in</button>
+      </form></div>`);
+      this.bind();
+      document.getElementById('forgot-code')?.focus();
       return;
     }
     if (this.view === 'register') {
-      app.innerHTML = `<div class="auth-page"><form class="auth-card" data-form="register" novalidate>
+      app.innerHTML = this.shell(`<div class="auth-page"><form class="auth-card" data-form="register" novalidate>
         <h1>Create account</h1>
         <p class="muted auth-lead">Register once — order faster next time. If you already shop with us in-store, we will link your loyalty points after WhatsApp verification.</p>
         <label>First name<input id="reg-first" autocomplete="given-name" required></label>
@@ -1714,7 +2828,7 @@ const OrderApp = {
         <label>Password (min 6 characters)<input type="password" id="reg-pass" autocomplete="new-password" required minlength="6"></label>
         <button type="submit" class="btn-primary btn-block" data-act="register-submit">Create account</button>
         <button type="button" class="link-btn" data-act="nav" data-view="login">Already have an account?</button>
-      </form></div>`;
+      </form></div>`);
       this.bind();
       document.getElementById('reg-first')?.focus();
       return;
@@ -1722,47 +2836,80 @@ const OrderApp = {
     if (this.view === 'register-verify') {
       const link = this.regLink?.check || {};
       const form = this.regLink?.form || {};
-      app.innerHTML = `<div class="auth-page"><form class="auth-card" data-form="register-verify" novalidate>
+      app.innerHTML = this.shell(`<div class="auth-page"><form class="auth-card" data-form="register-verify" novalidate>
         <h1>Verify your account</h1>
         <p class="muted auth-lead">${this.esc(link.message || 'We found your in-store profile. Enter the WhatsApp code to activate online ordering.')}</p>
         ${link.points ? `<div class="loyalty-card" style="margin-bottom:12px"><strong>${link.points} loyalty points</strong> will be linked to your online account.</div>` : ''}
         <label>WhatsApp verification code<input id="reg-code" inputmode="numeric" autocomplete="one-time-code" placeholder="6-digit code" required></label>
         <label>Choose password<input type="password" id="reg-verify-pass" autocomplete="new-password" minlength="6" value="${this.esc(form.password || '')}" required></label>
         <button type="submit" class="btn-primary btn-block" data-act="register-verify-submit">Activate account</button>
+        ${this.regLink?.whatsapp_url ? `<button type="button" class="btn-block" data-act="open-wa-code">Open WhatsApp code</button>` : ''}
         <button type="button" class="link-btn" data-act="resend-reg-code">Resend WhatsApp code</button>
         <button type="button" class="link-btn" data-act="nav" data-view="register">Back</button>
-      </form></div>`;
+      </form></div>`);
       this.bind();
       document.getElementById('reg-code')?.focus();
       return;
     }
     if (this.view === 'account') {
       if (!this.token) { this.view = 'login'; this.authReturn = 'account'; return this.render(); }
-      let acct = null;
-      try { acct = await OrderAPI.account(this.token); } catch (err) {
-        this.token = ''; sessionStorage.removeItem('order_token'); this.customer = null;
-        this.toast(err.message || 'Session expired — please sign in again', 'error');
-        this.view = 'login'; this.authReturn = 'account'; return this.render();
-      }
-      app.innerHTML = this.shell(`<section class="page"><h1>My account</h1>
+      const accountHtml = (acct) => `<section class="page"><h1>My account</h1>
         <p><strong>${this.esc(acct.profile.first_name)} ${this.esc(acct.profile.last_name || '')}</strong></p>
         <p class="muted">${this.esc(acct.profile.email || acct.profile.phone)}</p>
         ${acct.pos_profile ? `<div class="checkout-card"><h3>Unified profile</h3>
           <p class="muted" style="margin:0">Linked to in-store customer <strong>${this.esc(acct.pos_profile.name || '')}</strong>${acct.pos_profile.phone ? ` · ${this.esc(acct.pos_profile.phone)}` : ''}</p></div>` : ''}
-        <div class="loyalty-card"><h3>Loyalty</h3><strong>${acct.loyalty.balance} points</strong> · ${this.money(acct.loyalty.value)} value</div>
-        ${acct.wallet?.length ? `<div class="checkout-card"><h3>🎁 Gift card wallet</h3>
-          ${acct.wallet.map((g) => `<div class="wallet-line"><strong>${this.esc(g.code)}</strong> · ${this.money(g.balance)}${g.expires_at ? ` <span class="muted">expires ${this.esc(g.expires_at.slice(0, 10))}</span>` : ''}</div>`).join('')}
+        <div class="loyalty-card"><h3>Loyalty</h3><strong>${acct.loyalty?.balance ?? 0} points</strong> · ${this.money(acct.loyalty?.value)} value</div>
+        ${acct.wallet?.length ? `<div class="checkout-card gift-wallet-card"><h3>🎁 My Gift Cards</h3>
+          ${acct.wallet.map((g) => `<div class="gift-wallet-row">
+            <div><code class="gift-code">${this.esc(g.code)}</code>
+            <button type="button" class="btn-sm" data-act="copy-gift" data-code="${this.esc(g.code)}">Copy</button></div>
+            <strong>${this.money(g.balance)}</strong>
+            ${g.expires_at ? `<div class="muted" style="font-size:12px">Expires ${this.esc(String(g.expires_at).slice(0, 10))}</div>` : ''}
+          </div>`).join('')}
         </div>` : ''}
         <div class="checkout-card"><h3>Notifications</h3>
           <p class="muted" style="margin:0 0 8px">Get a sound and pop-up when your order status changes (even when this tab is in the background).</p>
           ${window.PanelNotify ? PanelNotify.soundToggleHtml('online', { id: 'order-notify-sound', label: 'Order update alerts' }) : ''}
         </div>
-        <button type="button" class="link-btn" data-act="logout">Logout</button>
-        <button type="button" class="link-btn danger" data-act="delete-account" style="margin-top:12px;display:block">Delete online account</button>
-      </section>`);
-      const orderNotify = document.getElementById('order-notify-sound');
-      if (orderNotify && window.PanelNotify) PanelNotify.bindSoundToggle(orderNotify, 'online');
-      this.bind();
+        <div class="account-actions">
+          <button type="button" class="btn-outline btn-block" data-act="logout">Logout</button>
+          <button type="button" class="btn-danger btn-block" data-act="delete-account">Delete online account</button>
+        </div>
+      </section>`;
+
+      const cached = this._accountCache || (this.customer ? {
+        profile: this.customer,
+        loyalty: this.loyaltyAccount || { balance: 0, value: 0 },
+        wallet: this.giftWallet || [],
+        pos_profile: null
+      } : null);
+      if (cached) {
+        app.innerHTML = this.shell(accountHtml(cached));
+        const orderNotify = document.getElementById('order-notify-sound');
+        if (orderNotify && window.PanelNotify) PanelNotify.bindSoundToggle(orderNotify, 'online');
+        this.bind();
+      } else {
+        app.innerHTML = this.shell(`<section class="page"><h1>My account</h1><p class="muted">Loading…</p></section>`);
+        this.bind();
+      }
+      try {
+        const acct = await OrderAPI.account(this.token);
+        this._accountCache = acct;
+        this.customer = acct.profile || this.customer;
+        this.loyaltyAccount = acct.loyalty || this.loyaltyAccount;
+        this.giftWallet = acct.wallet || [];
+        if (this.view === 'account') {
+          app.innerHTML = this.shell(accountHtml(acct));
+          const orderNotify2 = document.getElementById('order-notify-sound');
+          if (orderNotify2 && window.PanelNotify) PanelNotify.bindSoundToggle(orderNotify2, 'online');
+          this.bind();
+        }
+      } catch (err) {
+        if (!cached) {
+          this.clearSession();
+          this.view = 'login'; this.authReturn = 'account'; return this.render();
+        }
+      }
       return;
     }
     if (this.view === 'product' && !this.product) {
@@ -1782,7 +2929,7 @@ const OrderApp = {
       ? `<img src="${this.esc(p.image)}" alt="" decoding="async" ${idx < 24 ? 'loading="eager" fetchpriority="high"' : 'loading="lazy"'}>`
       : `<div class="thumb">${p.is_combo ? '🎁' : '🍽️'}</div>`;
     const comboThumbs = p.is_combo && p.combo_thumbs?.length
-      ? `<div class="combo-mini-thumbs">${p.combo_thumbs.slice(0, 3).map((u) => `<img src="${this.esc(u)}" alt="" decoding="async" loading="eager">`).join('')}</div>`
+      ? `<div class="combo-mini-thumbs">${p.combo_thumbs.map((u) => `<img src="${this.esc(u)}" alt="" decoding="async" loading="eager">`).join('')}</div>`
       : '';
     return `<article class="product-card ${p.available ? '' : 'unavailable'} ${p.is_combo ? 'combo-card' : ''}" data-product-id="${this.esc(p.id)}" role="button" tabindex="0">
       ${imgTag}

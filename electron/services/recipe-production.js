@@ -145,7 +145,11 @@ function assertCanManageRecipeAccess(actor) {
   if (user.role === 'owner') {
     return { ...user, recipe_role: 'administrator', recipe_enabled: true };
   }
-  throw new Error('Only the owner (Admin) can grant Recipe & Production access.');
+  const access = getRecipeAccess(user.id);
+  if (['manager', 'assistant_manager'].includes(user.role) && access?.enabled && access.recipe_role === 'administrator') {
+    return { ...user, recipe_role: 'administrator', recipe_enabled: true };
+  }
+  throw new Error('Only the owner or a Recipe Administrator can grant Recipe & Production access.');
 }
 
 function setRecipeUserAccess(data, actor) {
@@ -363,7 +367,7 @@ function updateIngredient(data, actor) {
     db.prepare(`
       UPDATE products SET name=?, unit=?, stock_unit=?, purchase_unit=?, purchase_unit_qty=?, purchase_unit_label=?,
         min_stock=?, buying_price=?, item_type=COALESCE(NULLIF(item_type,''), 'ingredient'),
-        updated_at=datetime('now') WHERE id=?
+        online_enabled=0, show_on_pos=0, updated_at=datetime('now') WHERE id=?
     `).run(name, unit, unit, purchaseUnit, packQty > 0 ? packQty : 1, packLabel, minStock, buying, id);
   } catch (_) {
     try {
@@ -629,6 +633,12 @@ function findOrCreateIngredientByName(name, unit, actor) {
     newId = row?.id ? parseInt(row.id, 10) : 0;
   }
   if (!newId) throw new Error('Could not create ingredient — try again');
+  try {
+    db.prepare(`UPDATE products SET item_type='ingredient', online_enabled=0, show_on_pos=0,
+      selling_price=0, updated_at=datetime('now') WHERE id=?`).run(newId);
+  } catch (_) {
+    try { db.prepare(`UPDATE products SET item_type='ingredient' WHERE id=?`).run(newId); } catch (__) { /* older schema */ }
+  }
   logActivity(actor, 'create_ingredient', 'product', newId, null, { name: trimmed, unit: u });
   return db.prepare('SELECT * FROM products WHERE id=?').get(newId);
 }
@@ -883,7 +893,7 @@ function saveRecipe(data, actor) {
     try { db.prepare('UPDATE products SET allergens = ? WHERE id = ?').run(fields.allergens, productId); } catch (_) { /* until migrate */ }
   }
 
-  if (productId && items.length) {
+  if (productId && items.length && !data.skip_bom) {
     inventory.saveProductRecipe(productId, items);
     if (data.conversions) inventory.saveProductConversions(productId, data.conversions);
     inventory.updateProductRecipeMetrics(productId, costing.selling_price);
@@ -900,7 +910,7 @@ function saveRecipe(data, actor) {
         SELECT id FROM recipe_versions WHERE recipe_profile_id = ? ORDER BY id DESC LIMIT 1
       )
     `).run(JSON.stringify({ profile: getDb().prepare('SELECT * FROM recipe_profiles WHERE id = ?').get(profileId), items }), profileId);
-  } else if (items.length) {
+  } else if (items.length && !data.skip_snapshot) {
     // Always keep a working snapshot of current items
     const profile = db.prepare('SELECT * FROM recipe_profiles WHERE id = ?').get(profileId);
     const latest = db.prepare('SELECT id FROM recipe_versions WHERE recipe_profile_id = ? AND version = ?').get(profileId, profile.version);
@@ -1613,14 +1623,71 @@ function listProductionMeals(actor, filters = {}) {
   return { approved_profiles: profiles, meals, branch_id: scope.branchId, all_branches: scope.allBranches };
 }
 
+function ensureRecipeRestockSchema() {
+  const db = getDb();
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS recipe_restock_batches (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        user_name TEXT,
+        target_meals INTEGER,
+        total_spend REAL NOT NULL DEFAULT 0,
+        projected_meals INTEGER,
+        projected_revenue REAL,
+        projected_gross_profit REAL,
+        projected_net_after_buy REAL,
+        line_count INTEGER NOT NULL DEFAULT 0,
+        notes TEXT,
+        created_at TEXT DEFAULT (datetime('now'))
+      );
+      CREATE TABLE IF NOT EXISTS recipe_restock_batch_lines (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        batch_id INTEGER NOT NULL,
+        product_id INTEGER,
+        product_name TEXT,
+        quantity_purchased REAL,
+        purchase_unit TEXT,
+        quantity_stock REAL,
+        total_cost REAL,
+        stock_after REAL
+      );
+    `);
+  } catch (_) { /* migration may have created tables */ }
+}
+
+function stockMovementSaleChannelSql(alias = 'sm') {
+  return `
+    CASE
+      WHEN ${alias}.reference_type = 'sale' AND ${alias}.reference_id IS NOT NULL AND EXISTS (
+        SELECT 1 FROM sales s WHERE s.id = ${alias}.reference_id
+          AND lower(trim(coalesce(s.order_type,''))) IN ('online','delivery','web')
+      ) THEN 'online'
+      WHEN ${alias}.movement_type IN ('sale','remove') AND ${alias}.reference_type = 'sale' THEN 'pos'
+      ELSE NULL
+    END`;
+}
+
+function appendStockChannelFilter(sql, params, channel) {
+  const ch = String(channel || 'all').toLowerCase();
+  if (ch === 'pos') {
+    sql += ` AND ${stockMovementSaleChannelSql('sm')} = 'pos'`;
+  } else if (ch === 'online') {
+    sql += ` AND ${stockMovementSaleChannelSql('sm')} = 'online'`;
+  }
+  return sql;
+}
+
 function getIngredientStockHistory(filters = {}, actor) {
   canAccessRecipeModule(actor);
   const from = filters.from || null;
   const to = filters.to || null;
   const productId = filters.product_id ? Number(filters.product_id) : null;
+  const channel = filters.channel || 'all';
   let sql = `
     SELECT sm.*, p.name AS product_name, p.stock_quantity AS stock_left,
-      p.stock_unit, p.unit, u.full_name AS user_name
+      p.stock_unit, p.unit, u.full_name AS user_name,
+      ${stockMovementSaleChannelSql('sm')} AS sale_channel
     FROM stock_movements sm
     JOIN products p ON p.id = sm.product_id
     LEFT JOIN users u ON u.id = sm.user_id
@@ -1632,6 +1699,7 @@ function getIngredientStockHistory(filters = {}, actor) {
   if (productId) { sql += ' AND sm.product_id = ?'; params.push(productId); }
   if (from) { sql += ' AND date(sm.created_at) >= date(?)'; params.push(from); }
   if (to) { sql += ' AND date(sm.created_at) <= date(?)'; params.push(to); }
+  sql = appendStockChannelFilter(sql, params, channel);
   sql += ' ORDER BY sm.created_at DESC LIMIT 500';
   const rows = getDb().prepare(sql).all(...params);
   const usedTypes = new Set(['sale', 'remove', 'production', 'recipe_waste', 'waste']);
@@ -1657,7 +1725,176 @@ function getIngredientStockHistory(filters = {}, actor) {
       summaryMap[key].qty_added += q;
     }
   }
-  return { from, to, movements: rows, summary: Object.values(summaryMap) };
+  return { from, to, channel, movements: rows, summary: Object.values(summaryMap) };
+}
+
+/** Preview spend vs projected meal revenue/profit for restock lines (before save). */
+function computeRestockPreview(data = {}, actor) {
+  canAccessRecipeModule(actor);
+  const db = getDb();
+  const linesIn = Array.isArray(data.lines) ? data.lines : [];
+  const target = Math.max(1, Math.floor(Number(data.target_meals) || 20));
+  let totalSpend = 0;
+  const lines = [];
+  for (const raw of linesIn) {
+    const productId = Number(raw.product_id);
+    const qtyPurch = Number(raw.quantity);
+    if (!productId || !(qtyPurch > 0)) continue;
+    const product = db.prepare('SELECT * FROM products WHERE id = ?').get(productId);
+    if (!product) continue;
+    const stockUnit = product.stock_unit || product.unit || 'each';
+    const unit = (raw.unit || product.purchase_unit || stockUnit || 'each').toString().trim() || 'each';
+    const qtyStock = inventory.convertQuantity(productId, qtyPurch, unit, stockUnit);
+    let lineCost = Number(raw.total_cost);
+    if (!(lineCost > 0) && Number(product.buying_price) > 0) {
+      lineCost = qtyStock * Number(product.buying_price);
+    }
+    lineCost = Math.round((lineCost || 0) * 100) / 100;
+    totalSpend += lineCost;
+    lines.push({
+      product_id: productId,
+      product_name: product.name,
+      quantity: qtyPurch,
+      unit,
+      quantity_stock: qtyStock,
+      total_cost: lineCost
+    });
+  }
+  const mealRows = db.prepare(`
+    SELECT selling_price, gross_profit, recipe_cost FROM products
+    WHERE is_active=1 AND has_recipe=1
+      AND (item_type IS NULL OR item_type != 'ingredient')
+  `).all();
+  let avgSell = 0;
+  let avgProfit = 0;
+  if (mealRows.length) {
+    avgSell = mealRows.reduce((s, m) => s + (Number(m.selling_price) || 0), 0) / mealRows.length;
+    avgProfit = mealRows.reduce((s, m) => {
+      const gp = Number(m.gross_profit);
+      if (Number.isFinite(gp) && gp !== 0) return s + gp;
+      return s + Math.max(0, (Number(m.selling_price) || 0) - (Number(m.recipe_cost) || 0));
+    }, 0) / mealRows.length;
+  }
+  const projectedRevenue = Math.round(target * avgSell * 100) / 100;
+  const projectedGross = Math.round(target * avgProfit * 100) / 100;
+  const totalSpendR = Math.round(totalSpend * 100) / 100;
+  return {
+    target_meals: target,
+    line_count: lines.length,
+    total_spend: totalSpendR,
+    projected_meals: target,
+    projected_revenue: projectedRevenue,
+    projected_gross_profit: projectedGross,
+    projected_net_after_buy: Math.round((projectedGross - totalSpendR) * 100) / 100,
+    avg_selling_price: Math.round(avgSell * 100) / 100,
+    avg_profit_per_meal: Math.round(avgProfit * 100) / 100,
+    lines
+  };
+}
+
+function listRestockBatches(filters = {}, actor) {
+  canAccessRecipeModule(actor);
+  ensureRecipeRestockSchema();
+  const from = filters.from || null;
+  const to = filters.to || null;
+  const limit = Math.min(Number(filters.limit) || 50, 200);
+  let sql = `
+    SELECT b.*,
+      (SELECT GROUP_CONCAT(l.product_name, ', ') FROM recipe_restock_batch_lines l WHERE l.batch_id = b.id LIMIT 5) AS sample_lines
+    FROM recipe_restock_batches b WHERE 1=1
+  `;
+  const params = [];
+  if (from) { sql += ' AND date(b.created_at) >= date(?)'; params.push(from); }
+  if (to) { sql += ' AND date(b.created_at) <= date(?)'; params.push(to); }
+  sql += ' ORDER BY b.created_at DESC LIMIT ?';
+  params.push(limit);
+  const batches = getDb().prepare(sql).all(...params);
+  return { batches, from, to };
+}
+
+function getRestockBatchDetail(batchId, actor) {
+  canAccessRecipeModule(actor);
+  ensureRecipeRestockSchema();
+  const id = Number(batchId);
+  const batch = getDb().prepare('SELECT * FROM recipe_restock_batches WHERE id = ?').get(id);
+  if (!batch) throw new Error('Restock record not found');
+  const lines = getDb().prepare(`
+    SELECT * FROM recipe_restock_batch_lines WHERE batch_id = ? ORDER BY id
+  `).all(id);
+  return { batch, lines };
+}
+
+function recordRestockBatch(actor, preview, linesMeta, notes) {
+  ensureRecipeRestockSchema();
+  const db = getDb();
+  const userName = actor?.full_name || actor?.username || 'Staff';
+  const ins = db.prepare(`
+    INSERT INTO recipe_restock_batches (
+      user_id, user_name, target_meals, total_spend, projected_meals,
+      projected_revenue, projected_gross_profit, projected_net_after_buy, line_count, notes
+    ) VALUES (?,?,?,?,?,?,?,?,?,?)
+  `).run(
+    actor?.id || null,
+    userName,
+    preview.target_meals,
+    preview.total_spend,
+    preview.projected_meals,
+    preview.projected_revenue,
+    preview.projected_gross_profit,
+    preview.projected_net_after_buy,
+    linesMeta.length,
+    notes || null
+  );
+  const batchId = ins.lastInsertRowid;
+  const lineStmt = db.prepare(`
+    INSERT INTO recipe_restock_batch_lines (
+      batch_id, product_id, product_name, quantity_purchased, purchase_unit,
+      quantity_stock, total_cost, stock_after
+    ) VALUES (?,?,?,?,?,?,?,?)
+  `);
+  for (const lm of linesMeta) {
+    lineStmt.run(
+      batchId, lm.product_id, lm.product_name, lm.quantity_purchased, lm.purchase_unit,
+      lm.quantity_stock, lm.total_cost, lm.stock_after
+    );
+  }
+  return { batch_id: batchId, preview };
+}
+
+function restockIngredientsBatch(data, actor) {
+  requireRecipePerm(actor, 'produce');
+  const linesIn = (data?.lines || []).filter(l => Number(l.product_id) && Number(l.quantity) > 0);
+  if (!linesIn.length) throw new Error('Add at least one quantity to save');
+  const preview = computeRestockPreview({ lines: linesIn, target_meals: data.target_meals }, actor);
+  const linesMeta = [];
+  const pa = require('./production-availability');
+  pa.pauseRefresh();
+  try {
+    for (const line of linesIn) {
+      const updated = restockIngredient({
+        ...line,
+        notes: data.notes || line.notes,
+        _skipBatchRecord: true
+      }, actor);
+      linesMeta.push({
+        product_id: Number(line.product_id),
+        product_name: updated.name,
+        quantity_purchased: Number(line.quantity),
+        purchase_unit: (line.unit || updated.purchase_unit || updated.stock_unit || 'each').toString(),
+        quantity_stock: null,
+        total_cost: Number(line.total_cost) || null,
+        stock_after: updated.stock_quantity
+      });
+    }
+  } finally {
+    pa.resumeRefresh({
+      ingredientIds: linesIn.map((l) => Number(l.product_id)).filter(Boolean),
+      refresh: true
+    });
+  }
+  const recorded = recordRestockBatch(actor, preview, linesMeta, data.notes);
+  logActivity(actor, 'restock_batch', 'recipe_restock_batch', recorded.batch_id, null, preview);
+  return { ...recorded, lines_saved: linesMeta.length };
 }
 
 function getProfitsLosses(filters = {}, actor) {
@@ -1804,10 +2041,27 @@ function getRecipeDashboard(actor) {
           WHERE status='completed' AND date(completed_at)=?) AS produced_qty,
         (SELECT COUNT(*) FROM production_batches
           WHERE status='completed' AND date(completed_at)=?) AS produced_batches,
+        (SELECT COALESCE(SUM(produced_qty),0) FROM production_batches WHERE status='completed') AS produced_qty_all,
         (SELECT COALESCE(SUM(si.quantity),0) FROM sale_items si
           JOIN sales s ON s.id = si.sale_id
-          JOIN recipe_profiles r ON r.product_id = si.product_id
-          WHERE s.status='completed' AND date(s.created_at)=?) AS sold_qty,
+          WHERE s.status='completed' AND date(s.created_at)=?
+            AND si.product_id IN (
+              SELECT id FROM products WHERE is_active=1 AND COALESCE(item_type,'retail') != 'ingredient'
+                AND (COALESCE(has_recipe,0)=1
+                  OR id IN (SELECT product_id FROM recipe_profiles WHERE product_id IS NOT NULL)
+                  OR id IN (SELECT DISTINCT product_id FROM product_recipe_items))
+            )) AS sold_qty,
+        (SELECT COALESCE(SUM(si.quantity),0) FROM sale_items si
+          JOIN sales s ON s.id = si.sale_id
+          WHERE s.status='completed'
+            AND si.product_id IN (
+              SELECT id FROM products WHERE is_active=1 AND COALESCE(item_type,'retail') != 'ingredient'
+                AND (COALESCE(has_recipe,0)=1
+                  OR id IN (SELECT product_id FROM recipe_profiles WHERE product_id IS NOT NULL)
+                  OR id IN (SELECT DISTINCT product_id FROM product_recipe_items))
+            )) AS sold_qty_all,
+        (SELECT COALESCE(SUM(s.total),0) FROM sales s WHERE s.status='completed' AND date(s.created_at)=?) AS sales_today,
+        (SELECT COALESCE(SUM(s.total),0) FROM sales s WHERE s.status='completed') AS sales_all,
         (SELECT COUNT(*) FROM recipe_profiles WHERE status='pending') AS recipes_pending,
         (SELECT COUNT(*) FROM recipe_profiles) AS recipes_created,
         (SELECT COALESCE(SUM(cost),0) FROM recipe_waste_logs WHERE date(created_at)=?) AS waste_cost,
@@ -1815,14 +2069,19 @@ function getRecipeDashboard(actor) {
         (SELECT COUNT(*) FROM products WHERE is_active=1 AND stock_quantity <= COALESCE(min_stock,5)) AS low_stock,
         (SELECT COUNT(*) FROM products WHERE is_active=1 AND stock_quantity <= 0) AS out_of_stock,
         (SELECT COUNT(*) FROM recipe_promotions WHERE status='active') AS active_promotions`,
-      params: [t, t, t, t, t]
+      params: [t, t, t, t, t, t]
     },
     {
       method: 'all',
       sql: `SELECT si.product_id, MAX(si.product_name) AS product_name, SUM(si.quantity) AS sold, SUM(si.total) AS revenue
             FROM sale_items si JOIN sales s ON s.id = si.sale_id
-            JOIN recipe_profiles r ON r.product_id = si.product_id
             WHERE s.status='completed' AND date(s.created_at) >= date('now','-30 day')
+              AND si.product_id IN (
+                SELECT id FROM products WHERE is_active=1 AND COALESCE(item_type,'retail') != 'ingredient'
+                  AND (COALESCE(has_recipe,0)=1
+                    OR id IN (SELECT product_id FROM recipe_profiles WHERE product_id IS NOT NULL)
+                    OR id IN (SELECT DISTINCT product_id FROM product_recipe_items))
+              )
             GROUP BY si.product_id ORDER BY sold DESC LIMIT 5`,
       params: []
     },
@@ -1926,7 +2185,11 @@ function getRecipeDashboard(actor) {
 
   return {
     produced_today: { qty: kpis?.produced_qty || 0, batches: kpis?.produced_batches || 0 },
+    produced_to_date: { qty: kpis?.produced_qty_all || 0 },
     sold_today: { qty: kpis?.sold_qty || 0 },
+    sold_to_date: { qty: kpis?.sold_qty_all || 0 },
+    sales_today: kpis?.sales_today || 0,
+    sales_to_date: kpis?.sales_all || 0,
     recipes_created: kpis?.recipes_created || 0,
     recipes_pending: kpis?.recipes_pending || 0,
     waste_today: { cost: kpis?.waste_cost || 0, qty: kpis?.waste_qty || 0 },
@@ -2546,8 +2809,12 @@ function getBestSellers(period, actor) {
 function listMealProducts(filters = {}, actor) {
   canAccessRecipeModule(actor);
   const scope = resolveRecipeBranchScope(actor, filters);
+  // Keep this list lean — never SELECT p.* (picture blobs / long descriptions make Recipe Builder slow).
   let sql = `
-    SELECT p.*, c.name AS category_name,
+    SELECT p.id, p.name, p.selling_price, p.sku, p.barcode, p.category_id, p.has_recipe,
+      p.production_mode, p.item_type, p.is_active,
+      CASE WHEN p.picture_path IS NOT NULL AND length(p.picture_path) > 2 THEN 1 ELSE 0 END AS has_picture,
+      c.name AS category_name,
       (SELECT COUNT(*) FROM product_recipe_items pri WHERE pri.product_id = p.id) AS ingredient_count,
       r.id AS recipe_profile_id, r.status AS recipe_status, r.branch_id AS recipe_branch_id
     FROM products p
@@ -2631,11 +2898,30 @@ function listRestockIngredients(actor) {
     ORDER BY p.name
   `).all().filter(p => !onRecipeIds.has(p.id));
 
+  let groupIndex = [];
+  try {
+    ensureRecipeGroupSchema();
+    groupIndex = getDb().prepare(`
+      SELECT gi.ingredient_product_id, g.id, g.name, g.color
+      FROM recipe_ingredient_group_items gi
+      JOIN recipe_ingredient_groups g ON g.id = gi.group_id
+    `).all();
+  } catch (_) { groupIndex = []; }
+  const groupsByIng = new Map();
+  for (const g of groupIndex) {
+    const key = Number(g.ingredient_product_id);
+    if (!groupsByIng.has(key)) groupsByIng.set(key, []);
+    const list = groupsByIng.get(key);
+    if (!list.some((x) => Number(x.id) === Number(g.id))) {
+      list.push({ id: g.id, name: g.name, color: g.color });
+    }
+  }
   return [...onRecipes, ...orphans].map(p => {
     const stockUnit = p.stock_unit || p.unit || 'each';
     const recipeUnit = p.recipe_unit || stockUnit;
     // Restock buys in bulk — prefer purchase/stock unit, not tsp/g recipe measure
     const restockUnit = p.purchase_unit || stockUnit;
+    const groups = groupsByIng.get(Number(p.id)) || [];
     return {
       ...p,
       used_in_meals: p.used_in_meals || '',
@@ -2645,7 +2931,10 @@ function listRestockIngredients(actor) {
       recipe_unit: recipeUnit,
       purchase_unit: restockUnit,
       restock_unit: restockUnit,
-      display_unit: stockUnit
+      display_unit: stockUnit,
+      groups,
+      group_ids: groups.map((g) => g.id),
+      group_names: groups.map((g) => g.name).join(', ')
     };
   });
 }
@@ -2691,7 +2980,7 @@ function ensureMealOptionModifiers(productId, items) {
 }
 
 /** Open an existing POS product and its per-meal ingredient list. */
-function getProductMealRecipe(productId, actor) {
+function getProductMealRecipe(productId, actor, opts = {}) {
   canAccessRecipeModule(actor);
   const p = getDb().prepare(`
     SELECT p.*, c.name AS category_name FROM products p
@@ -2706,9 +2995,12 @@ function getProductMealRecipe(productId, actor) {
   });
   const profile = getDb().prepare('SELECT * FROM recipe_profiles WHERE product_id = ? ORDER BY id DESC LIMIT 1').get(productId);
   let availability = null;
-  try {
-    availability = require('./production-availability').calculateProductCapacity(productId);
-  } catch (_) { /* ignore */ }
+  // Capacity math is expensive — skip when opening the recipe editor
+  if (!opts.for_editor && !opts.skip_availability) {
+    try {
+      availability = require('./production-availability').calculateProductCapacity(productId);
+    } catch (_) { /* ignore */ }
+  }
   const modifiers = require('./store').getProductModifiers(productId) || [];
   return {
     product: p,
@@ -2720,6 +3012,233 @@ function getProductMealRecipe(productId, actor) {
     options: modifiers.filter(m => m.modifier_type === 'option'),
     removals: modifiers.filter(m => m.modifier_type === 'removal')
   };
+}
+
+let _recipeGroupSchemaReady = false;
+function ensureRecipeGroupSchema() {
+  if (_recipeGroupSchemaReady) return;
+  const db = getDb();
+  const sqliteSql = `
+    CREATE TABLE IF NOT EXISTS recipe_ingredient_groups (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      color TEXT,
+      description TEXT,
+      default_include_rule TEXT DEFAULT 'always',
+      default_option_name TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS recipe_ingredient_group_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      group_id INTEGER NOT NULL,
+      ingredient_product_id INTEGER NOT NULL,
+      quantity REAL NOT NULL DEFAULT 1,
+      unit TEXT DEFAULT 'g',
+      waste_pct REAL DEFAULT 0,
+      include_rule TEXT DEFAULT 'always',
+      option_name TEXT,
+      is_primary INTEGER DEFAULT 0,
+      sort_order INTEGER DEFAULT 0
+    );
+  `;
+  try {
+    db.exec(sqliteSql);
+  } catch (_) {
+    try {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS recipe_ingredient_groups (
+          id SERIAL PRIMARY KEY,
+          name TEXT NOT NULL,
+          color TEXT,
+          description TEXT,
+          default_include_rule TEXT DEFAULT 'always',
+          default_option_name TEXT,
+          created_at TEXT DEFAULT (now()::text),
+          updated_at TEXT DEFAULT (now()::text)
+        );
+        CREATE TABLE IF NOT EXISTS recipe_ingredient_group_items (
+          id SERIAL PRIMARY KEY,
+          group_id INTEGER NOT NULL,
+          ingredient_product_id INTEGER NOT NULL,
+          quantity REAL NOT NULL DEFAULT 1,
+          unit TEXT DEFAULT 'g',
+          waste_pct REAL DEFAULT 0,
+          include_rule TEXT DEFAULT 'always',
+          option_name TEXT,
+          is_primary INTEGER DEFAULT 0,
+          sort_order INTEGER DEFAULT 0
+        );
+      `);
+    } catch (__) { /* already exists */ }
+  }
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_recipe_ing_group_items_group ON recipe_ingredient_group_items(group_id)'); } catch (_) {}
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_recipe_ing_group_items_ing ON recipe_ingredient_group_items(ingredient_product_id)'); } catch (_) {}
+  _recipeGroupSchemaReady = true;
+}
+
+function listIngredientGroups(actor) {
+  canAccessRecipeModule(actor);
+  ensureRecipeGroupSchema();
+  const db = getDb();
+  const groups = db.prepare(`
+    SELECT g.*,
+      (SELECT COUNT(*) FROM recipe_ingredient_group_items gi WHERE gi.group_id = g.id) AS item_count
+    FROM recipe_ingredient_groups g
+    ORDER BY g.name
+  `).all();
+  return groups.map((g) => {
+    const items = db.prepare(`
+      SELECT gi.*, p.name AS ingredient_name, p.stock_quantity, p.stock_unit, p.unit
+      FROM recipe_ingredient_group_items gi
+      JOIN products p ON p.id = gi.ingredient_product_id
+      WHERE gi.group_id = ?
+      ORDER BY gi.sort_order, gi.id
+    `).all(g.id);
+    return { ...g, items, item_count: Number(g.item_count) || items.length };
+  });
+}
+
+function getIngredientGroup(id, actor) {
+  canAccessRecipeModule(actor);
+  ensureRecipeGroupSchema();
+  const groups = listIngredientGroups(actor);
+  return groups.find((g) => Number(g.id) === Number(id)) || null;
+}
+
+function saveIngredientGroup(data, actor) {
+  requireRecipePerm(actor, 'edit');
+  ensureRecipeGroupSchema();
+  const db = getDb();
+  const name = String(data.name || '').trim();
+  if (!name) throw new Error('Group name is required — e.g. Chakalaka, Pap, Cabbage');
+  const color = String(data.color || '#0ea5e9').trim() || '#0ea5e9';
+  const description = String(data.description || '').trim() || null;
+  const defaultRule = inventory.normalizeIncludeRule(data.default_include_rule);
+  const defaultOption = defaultRule === 'always' ? null : (String(data.default_option_name || '').trim() || null);
+  const id = Number(data.id) || null;
+  let groupId = id;
+  if (groupId) {
+    db.prepare(`
+      UPDATE recipe_ingredient_groups
+      SET name=?, color=?, description=?, default_include_rule=?, default_option_name=?, updated_at=datetime('now')
+      WHERE id=?
+    `).run(name, color, description, defaultRule, defaultOption, groupId);
+  } else {
+    const r = db.prepare(`
+      INSERT INTO recipe_ingredient_groups (name, color, description, default_include_rule, default_option_name)
+      VALUES (?,?,?,?,?)
+    `).run(name, color, description, defaultRule, defaultOption);
+    groupId = Number(r.lastInsertRowid) || Number(db.prepare(
+      'SELECT id FROM recipe_ingredient_groups WHERE name = ? ORDER BY id DESC LIMIT 1'
+    ).get(name)?.id);
+  }
+  if (!groupId) throw new Error('Could not save ingredient group');
+  db.prepare('DELETE FROM recipe_ingredient_group_items WHERE group_id = ?').run(groupId);
+  const seen = new Set();
+  let sort = 0;
+  for (const item of (data.items || [])) {
+    const ingId = Number(item.ingredient_product_id || item.id);
+    const qty = Number(item.quantity);
+    if (!ingId || !(qty > 0) || seen.has(ingId)) continue;
+    seen.add(ingId);
+    const rule = inventory.normalizeIncludeRule(item.include_rule || defaultRule);
+    const optionName = rule === 'always' ? null : (String(item.option_name || defaultOption || '').trim() || null);
+    db.prepare(`
+      INSERT INTO recipe_ingredient_group_items
+        (group_id, ingredient_product_id, quantity, unit, waste_pct, include_rule, option_name, is_primary, sort_order)
+      VALUES (?,?,?,?,?,?,?,?,?)
+    `).run(
+      groupId, ingId, qty,
+      String(item.unit || 'g').trim() || 'g',
+      Number(item.waste_pct) || 0,
+      rule, optionName,
+      item.is_primary ? 1 : 0,
+      sort++
+    );
+  }
+  logActivity(actor, id ? 'update_ingredient_group' : 'create_ingredient_group', 'recipe_ingredient_group', groupId, null, { name, items: sort });
+  return getIngredientGroup(groupId, actor);
+}
+
+function deleteIngredientGroup(id, actor) {
+  requireRecipePerm(actor, 'edit');
+  ensureRecipeGroupSchema();
+  const gid = Number(id);
+  if (!gid) throw new Error('Group required');
+  const db = getDb();
+  db.prepare('DELETE FROM recipe_ingredient_group_items WHERE group_id = ?').run(gid);
+  db.prepare('DELETE FROM recipe_ingredient_groups WHERE id = ?').run(gid);
+  logActivity(actor, 'delete_ingredient_group', 'recipe_ingredient_group', gid, null, null);
+  return { ok: true };
+}
+
+function expandIngredientGroups(groupIds, actor) {
+  const wanted = new Set((groupIds || []).map(Number).filter(Boolean));
+  if (!wanted.size) return [];
+  const groups = listIngredientGroups(actor);
+  const items = [];
+  const seen = new Set();
+  for (const g of groups) {
+    if (!wanted.has(Number(g.id))) continue;
+    for (const it of g.items || []) {
+      const ingId = Number(it.ingredient_product_id);
+      if (!ingId || seen.has(ingId)) continue;
+      seen.add(ingId);
+      items.push({
+        ingredient_product_id: ingId,
+        ingredient_name: it.ingredient_name,
+        quantity: Number(it.quantity) > 0 ? Number(it.quantity) : 1,
+        unit: it.unit || 'g',
+        waste_pct: Number(it.waste_pct) || 0,
+        include_rule: inventory.normalizeIncludeRule(it.include_rule),
+        option_name: it.option_name || '',
+        is_primary: !!Number(it.is_primary),
+        current_stock: it.stock_quantity,
+        group_id: g.id,
+        group_name: g.name,
+        group_color: g.color
+      });
+    }
+  }
+  return items;
+}
+
+/** Lightweight ingredient picker for Recipe Builder (no meal GROUP_CONCAT). */
+function listIngredientCatalog(actor) {
+  canAccessRecipeModule(actor);
+  const db = getDb();
+  const rows = db.prepare(`
+    SELECT p.id, p.name, p.stock_quantity, p.stock_unit, p.unit, p.purchase_unit,
+      p.buying_price, p.item_type, p.is_active,
+      COALESCE(
+        (SELECT pri.unit FROM product_recipe_items pri
+         WHERE pri.ingredient_product_id = p.id ORDER BY pri.id DESC LIMIT 1),
+        p.stock_unit, p.unit, 'g'
+      ) AS recipe_unit
+    FROM products p
+    WHERE p.is_active = 1
+      AND (
+        p.item_type = 'ingredient'
+        OR EXISTS (SELECT 1 FROM product_recipe_items pri WHERE pri.ingredient_product_id = p.id)
+        OR COALESCE(p.selling_price, 0) = 0
+      )
+    ORDER BY p.name
+    LIMIT 2000
+  `).all();
+  return rows.map((p) => ({
+    id: p.id,
+    name: p.name,
+    stock_quantity: p.stock_quantity,
+    stock_unit: p.stock_unit || p.unit || 'g',
+    unit: p.unit || p.stock_unit || 'g',
+    purchase_unit: p.purchase_unit || p.stock_unit || p.unit || 'g',
+    buying_price: p.buying_price,
+    item_type: p.item_type || 'ingredient',
+    recipe_unit: p.recipe_unit || p.stock_unit || p.unit || 'g',
+    from_recipe: true,
+    selling_price: 0
+  }));
 }
 
 /**
@@ -2855,13 +3374,34 @@ function saveProductMealRecipe(data, actor) {
     image_path: data.picture_path !== undefined ? (data.picture_path || null) : (profile?.image_path || null),
     status: profile?.status === 'approved' ? 'approved' : (data.status || profile?.status || 'draft'),
     id: profile?.id,
-    bump_version: false
+    bump_version: false,
+    // BOM already written above — skip duplicate write + snapshot on the hot path
+    skip_bom: true,
+    skip_snapshot: true
   };
   try {
-    saveRecipe(profilePayload, actor);
-    profile = getDb().prepare('SELECT * FROM recipe_profiles WHERE product_id = ? ORDER BY id DESC LIMIT 1').get(productId);
-    // Owner/manager (or explicit submit): keep Approvals + Production in sync with meal BOM
-    if (profile && profile.status !== 'approved') {
+    let createdProfile = false;
+    if (profile?.id) {
+      getDb().prepare(`
+        UPDATE recipe_profiles SET
+          name = ?, production_mode = ?, price_mode = ?, target_profit_pct = ?,
+          instructions = ?, notes = ?, allergens = ?,
+          recipe_cost = ?, food_cost_pct = ?, gross_profit = ?, profit_margin = ?,
+          selling_price = ?, updated_at = datetime('now'), updated_by = ?
+        WHERE id = ?
+      `).run(
+        product.name, mode, profilePayload.price_mode, profilePayload.target_profit_pct,
+        profilePayload.instructions, profilePayload.notes, profilePayload.allergens,
+        costing.recipe_cost, costing.food_cost_pct, costing.gross_profit, costing.profit_margin,
+        costing.selling_price || product.selling_price, actor?.id || null, profile.id
+      );
+    } else {
+      saveRecipe(profilePayload, actor);
+      createdProfile = true;
+      profile = getDb().prepare('SELECT * FROM recipe_profiles WHERE product_id = ? ORDER BY id DESC LIMIT 1').get(productId);
+    }
+    // Re-saves skip submit/approve — that extra chain is why Save felt frozen.
+    if (profile && profile.status !== 'approved' && (createdProfile || data.submit_for_approval || data.auto_approve)) {
       const canApprove = (() => {
         try { requireRecipePerm(actor, 'approve'); return true; } catch (_) { return false; }
       })();
@@ -2878,7 +3418,6 @@ function saveProductMealRecipe(data, actor) {
       }
     }
   } catch (err) {
-    // BOM already saved — do not fail the whole meal save on profile bookkeeping
     console.error('recipe profile save warning:', err.message);
   }
 
@@ -2893,19 +3432,20 @@ function saveProductMealRecipe(data, actor) {
     recipe_cost: costing.recipe_cost
   });
 
-  setImmediate(() => {
-    try {
-      const pa = require('./production-availability');
-      pa.refreshProductCapacity(productId);
-      for (const it of items) {
-        pa.refreshAffectedByIngredient(it.ingredient_product_id);
-      }
-    } catch (_) { /* ignore */ }
-  });
+  try {
+    require('./production-availability').refreshProductCapacity(productId);
+  } catch (_) { /* ignore */ }
 
-  const meal = getProductMealRecipe(productId, actor);
+  // Fast response — do not re-run capacity / full meal reload on the save path
   return {
-    ...meal,
+    product,
+    items: stored,
+    costing,
+    recipe_profile: profile || null,
+    availability: null,
+    modifiers: [],
+    options: [],
+    removals: [],
     saved: true,
     saved_count: stored.length,
     saved_items: stored.map(s => ({
@@ -2913,8 +3453,12 @@ function saveProductMealRecipe(data, actor) {
       ingredient_name: s.ingredient_name,
       quantity: s.quantity,
       unit: s.unit,
+      waste_pct: s.waste_pct || 0,
       include_rule: s.include_rule || 'always',
-      option_name: s.option_name || null
+      option_name: s.option_name || null,
+      is_primary: !!Number(s.is_primary),
+      cost_used: s.cost_used,
+      current_stock: s.current_stock
     }))
   };
 }
@@ -2973,7 +3517,28 @@ function restockIngredient(data, actor) {
     quantity: qty, unit: stockUnit, purchased_as: `${data.quantity} ${unit}`
   });
 
-  return getIngredient(productId, actor);
+  const ing = getIngredient(productId, actor);
+  if (!data._skipBatchRecord) {
+    const preview = computeRestockPreview({
+      lines: [{
+        product_id: productId,
+        quantity: data.quantity,
+        unit,
+        total_cost: data.total_cost
+      }],
+      target_meals: data.target_meals || 20
+    }, actor || {});
+    recordRestockBatch(actor, preview, [{
+      product_id: productId,
+      product_name: ing.name,
+      quantity_purchased: Number(data.quantity),
+      purchase_unit: unit,
+      quantity_stock: qty,
+      total_cost: Number(data.total_cost) || preview.total_spend,
+      stock_after: ing.stock_quantity
+    }], data.notes || `Single line: ${ing.name}`);
+  }
+  return ing;
 }
 
 /** Create a draft Purchase Order from restock lines / smart restock suggestions. */
@@ -3282,6 +3847,10 @@ module.exports = {
   ensureApprovedProfileForMeal,
   listProductionMeals,
   getIngredientStockHistory,
+  computeRestockPreview,
+  listRestockBatches,
+  getRestockBatchDetail,
+  restockIngredientsBatch,
   getProfitsLosses,
   listRecipePurchaseOrders,
   listRecipePromotions,
@@ -3304,6 +3873,12 @@ module.exports = {
   saveProductMealRecipe,
   restockIngredient,
   listRestockIngredients,
+  listIngredientCatalog,
+  listIngredientGroups,
+  getIngredientGroup,
+  saveIngredientGroup,
+  deleteIngredientGroup,
+  expandIngredientGroups,
   findOrCreateIngredientByName,
   ensureIngredient,
   updateIngredient,

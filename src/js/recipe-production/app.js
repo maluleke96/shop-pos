@@ -235,7 +235,10 @@ const RecipeProductionApp = {
     this.pageHistory = [];
     this._open = true;
     const root = document.getElementById('recipe-production-root');
-    if (root) root.innerHTML = '<div class="rp-login-wrap"><p class="rp-muted" style="padding:24px;text-align:center">Opening Recipe &amp; Production…</p></div>';
+    // Instant placeholder — never leave a blank screen while session resolves.
+    if (root) {
+      root.innerHTML = '<div class="rp-login-wrap"><p class="rp-muted" style="padding:24px;text-align:center">Opening Recipe &amp; Production…</p></div>';
+    }
     try {
       if (opts.fromApp && opts.posUser) {
         const r = await API.recipeSessionFromPos(opts.posUser);
@@ -280,10 +283,8 @@ const RecipeProductionApp = {
           <div class="field"><label>PIN <span class="rp-muted">(optional)</span></label><input type="password" id="rp-pin" maxlength="12" inputmode="numeric"></div>
         <p id="rp-login-err" class="error-msg hidden"></p>
         <button type="button" class="btn btn-primary btn-lg btn-block" id="rp-login-btn" style="margin-top:8px">Sign In to Recipe System</button>
-        <button type="button" class="btn btn-ghost btn-block" id="rp-back" style="margin-top:10px">${this.fromApp ? '← Back to Admin / POS' : '← Back to POS Login'}</button>
       </div>
     </div>`;
-    document.getElementById('rp-back').onclick = () => this.close();
     document.getElementById('rp-login-btn').onclick = () => this.doLogin();
     document.getElementById('rp-pass').onkeydown = (e) => { if (e.key === 'Enter') this.doLogin(); };
   },
@@ -323,6 +324,7 @@ const RecipeProductionApp = {
       ['prep', 'Prep Board', 'view'],
       ['ingredients', 'Ingredients', 'view'],
       ['recipes', 'Recipe Builder', 'view'],
+      ['ingredient-groups', 'Ingredient Groups', 'view'],
       ['restock', 'Restock Ingredients', 'produce'],
       ['purchase-orders', 'Purchase Orders', 'produce'],
       ['approvals', 'Approvals', 'approve'],
@@ -354,7 +356,7 @@ const RecipeProductionApp = {
         <div class="rp-brand">Recipe & Production<small>${this.user.recipe_role || 'user'} · ${this.user.full_name || this.user.username}</small></div>
         ${nav}
         <div style="flex:1"></div>
-        <button type="button" class="rp-nav-btn" id="rp-exit">${this.fromApp ? '← Back to Admin / POS' : 'Exit to POS Login'}</button>
+        <button type="button" class="rp-nav-btn" id="rp-exit">${this.fromApp ? '← Back to Admin' : 'Logout & Exit'}</button>
       </aside>
       <main class="rp-main">
         <div class="rp-topbar">
@@ -388,19 +390,11 @@ const RecipeProductionApp = {
     });
     document.getElementById('rp-sidebar-backdrop')?.addEventListener('click', closeRpMenu);
     this.bindBranchSelect(root);
+    // Catalog is only needed when editing a meal — warm after shell paints.
+    requestIdleCallback?.(() => this._warmIngredientCatalog().catch(() => {}))
+      || setTimeout(() => this._warmIngredientCatalog().catch(() => {}), 400);
     root.querySelectorAll('.rp-nav-btn[data-page]').forEach(b => b.addEventListener('click', () => {
-      if (this.page && this.page !== b.dataset.page) {
-        this.pageHistory.push(this.page);
-        if (this.pageHistory.length > 30) this.pageHistory.shift();
-      }
-      this.page = b.dataset.page;
-      try { sessionStorage.setItem('shoppos_rp_page', this.page); } catch (_) { /* ignore */ }
-      if (this.page === 'restock' || this.page === 'ingredients') this._ingredients = [];
-      // Fast nav: update active state + content only (avoid full shell rebuild)
-      root.querySelectorAll('.rp-nav-btn[data-page]').forEach(x =>
-        x.classList.toggle('active', x.dataset.page === this.page));
-      closeRpMenu();
-      this.renderPage();
+      this.goPage(b.dataset.page, { closeMenu: true, root });
     }));
     // In-app back (does not leave Recipe/POS without logout)
     const backBtn = document.createElement('button');
@@ -428,6 +422,145 @@ const RecipeProductionApp = {
     };
     this._bindCatalogLiveSync();
     this.renderPage();
+    // Prefetch Recipe Builder meals immediately (not idle) so that tab opens from cache.
+    this._prefetchMealProducts(true).catch(() => {});
+    // Warm catalog scripts + prefetch light pages in idle time
+    this.ensurePosCatalogPages().catch(() => {});
+    this._prefetchLightPages();
+  },
+
+  _mealListCacheTtlMs: 90000,
+
+  _mealCacheStorageKey(key) {
+    return `shoppos_rp_meals_v2:${key}`;
+  },
+
+  _readPersistedMealCache(key) {
+    try {
+      const raw = sessionStorage.getItem(this._mealCacheStorageKey(key));
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!parsed?.products?.length) return null;
+      return { key, products: parsed.products, at: Number(parsed.at) || 0 };
+    } catch (_) {
+      return null;
+    }
+  },
+
+  _writePersistedMealCache(key, products) {
+    try {
+      sessionStorage.setItem(this._mealCacheStorageKey(key), JSON.stringify({
+        products: (products || []).map((p) => ({
+          id: p.id,
+          name: p.name,
+          selling_price: p.selling_price,
+          category_name: p.category_name,
+          ingredient_count: p.ingredient_count,
+          has_picture: p.has_picture ? 1 : 0,
+          has_recipe: p.has_recipe,
+          recipe_status: p.recipe_status
+        })),
+        at: Date.now()
+      }));
+    } catch (_) { /* ignore quota */ }
+  },
+
+  async _prefetchMealProducts(force = false) {
+    if (!this.user || !API.recipeMealProducts) return null;
+    const filters = {};
+    const key = JSON.stringify({ ...filters, ...this.branchFilter() });
+    const mem = this._mealProductsCache;
+    if (!force && mem?.key === key && mem.products?.length && (Date.now() - (mem.at || 0)) < this._mealListCacheTtlMs) {
+      return mem.products;
+    }
+    const res = await API.recipeMealProducts({ ...filters, ...this.branchFilter() }, this.user);
+    if (!res?.success) return null;
+    const products = res.data || [];
+    this._mealProductsCache = { key, products, at: Date.now() };
+    this._writePersistedMealCache(key, products);
+    return products;
+  },
+
+  goPage(pageId, opts = {}) {
+    if (!pageId) {
+      if (opts.closeMenu) document.getElementById('rp-sidebar-backdrop')?.click();
+      return;
+    }
+    const same = pageId === this.page;
+    if (pageId !== 'recipes' || (!opts.keepEditor && !opts.force)) {
+      this._editingMealProductId = null;
+      this._editingRecipe = null;
+      this._useLegacyEditor = false;
+    }
+    if (pageId !== 'ingredient-groups' || !opts.force) {
+      if (pageId !== 'ingredient-groups') this._editingIngredientGroup = null;
+    }
+    if (same && !opts.force) {
+      if (opts.closeMenu) document.getElementById('rp-sidebar-backdrop')?.click();
+      // Recipe Builder: keep meal list cache — only Refresh / save should refetch.
+      if (pageId !== 'recipes') this.invalidatePageCache(pageId);
+      if (pageId === 'restock' || pageId === 'ingredients') {
+        this._restockListCache = null;
+        this._ingredients = [];
+      }
+      if (pageId === 'recipes' && this._mealProductsCache?.products?.length) {
+        requestAnimationFrame(() => this.renderPage());
+        return;
+      }
+      requestAnimationFrame(() => this.renderPage());
+      return;
+    }
+    if (!same && this.page) {
+      this.pageHistory.push(this.page);
+      if (this.pageHistory.length > 30) this.pageHistory.shift();
+    }
+    this.page = pageId;
+    try { sessionStorage.setItem('shoppos_rp_page', this.page); } catch (_) { /* ignore */ }
+    if (this.page === 'restock' || this.page === 'ingredients') this._ingredients = [];
+    const root = opts.root || document.getElementById('recipe-production-root');
+    root?.querySelectorAll('.rp-nav-btn[data-page]').forEach((x) =>
+      x.classList.toggle('active', x.dataset.page === this.page));
+    if (opts.closeMenu) root?.querySelector('.rp-shell')?.classList.remove('rp-nav-open');
+    requestAnimationFrame(() => this.renderPage());
+  },
+
+  _prefetchLightPages() {
+    if (this._prefetchStarted || !this.user) return;
+    this._prefetchStarted = true;
+    const light = ['dashboard', 'prep', 'ingredients', 'recipes', 'restock', 'approvals', 'production', 'waste', 'profits', 'reports', 'settings'];
+    const run = (i) => {
+      if (!this.user || i >= light.length) return;
+      const page = light[i];
+      const key = `${page}|${this.branchId == null ? 'all' : this.branchId}`;
+      if (this._pageCache[key]?.html) return setTimeout(() => run(i + 1), 40);
+      // Soft warmup: hit APIs that feed those boards when idle
+      const idle = window.requestIdleCallback || ((cb) => setTimeout(cb, 200));
+      idle(() => {
+        Promise.resolve()
+          .then(() => {
+            if (page === 'dashboard' && API.recipeDashboard) return API.recipeDashboard(this.user);
+            if (page === 'ingredients' || page === 'restock') return this._fetchRestockList();
+            if (page === 'recipes' && API.recipeMealProducts) {
+              return API.recipeMealProducts({ ...this.branchFilter() }, this.user);
+            }
+            if (page === 'prep' && API.recipePrepBoard) return API.recipePrepBoard(this.user);
+            if (page === 'approvals' && API.recipeList) return API.recipeList({ status: 'pending' }, this.user);
+            if (page === 'production' && API.recipeProductionMeals) {
+              return API.recipeProductionMeals(this.user, this.branchFilter?.() || {});
+            }
+            if (page === 'profits' && API.recipeProfitsLosses) {
+              const to = new Date().toLocaleDateString('en-CA');
+              const from = new Date(Date.now() - 7 * 86400000).toLocaleDateString('en-CA');
+              return API.recipeProfitsLosses({ from, to }, this.user);
+            }
+            if (page === 'waste' && API.recipeWasteList) return API.recipeWasteList({}, this.user);
+            return null;
+          })
+          .catch(() => {})
+          .finally(() => setTimeout(() => run(i + 1), 120));
+      });
+    };
+    setTimeout(() => run(0), 600);
   },
 
   _bindCatalogLiveSync() {
@@ -443,6 +576,7 @@ const RecipeProductionApp = {
         if (modal && !modal.classList.contains('hidden')) return;
         this._mealProductsCache = null;
         this._ingredients = [];
+        this._restockListCache = null;
         const appCtx = this.hostApp || window.App;
         if (this.page === 'products') {
           const host = document.getElementById('rp-products-host');
@@ -459,9 +593,39 @@ const RecipeProductionApp = {
           }
         }
         try { await this.renderPage(); } catch (_) { /* ignore */ }
-      }, 350);
+      }, 80);
     };
     window.addEventListener('shop-pos-catalog-updated', refresh);
+  },
+
+  _pageCache: {},
+  _renderSeq: 0,
+  _restockListCache: null,
+  _pageCacheKey() {
+    return `${this.page}|${this.branchId == null ? 'all' : this.branchId}`;
+  },
+  invalidatePageCache(page) {
+    if (!page) { this._pageCache = {}; return; }
+    Object.keys(this._pageCache).forEach((k) => {
+      if (k.startsWith(`${page}|`)) delete this._pageCache[k];
+    });
+  },
+  _pagesWithoutHtmlCache() {
+    return ['categories', 'products', 'ingredients', 'restock', 'ingredient-groups'];
+  },
+  async _fetchRestockList(opts = {}) {
+    const maxAge = opts.maxAgeMs ?? 45000;
+    const cached = this._restockListCache;
+    const freshEnough = cached?.data && (Date.now() - (cached.at || 0) < maxAge);
+    if (freshEnough && !opts.force) {
+      API.recipeRestockList(this.user).then((res) => {
+        if (res?.success) this._restockListCache = { data: res.data || [], at: Date.now() };
+      }).catch(() => {});
+      return { success: true, data: cached.data };
+    }
+    const res = await API.recipeRestockList(this.user);
+    if (res?.success) this._restockListCache = { data: res.data || [], at: Date.now() };
+    return res;
   },
 
   async renderPage() {
@@ -471,6 +635,7 @@ const RecipeProductionApp = {
     const titles = {
       dashboard: 'Dashboard', categories: 'Categories', products: 'Products',
       prep: 'Daily Prep Board', ingredients: 'Ingredient Master', recipes: 'Recipe Builder',
+      'ingredient-groups': 'Ingredient Groups',
       restock: 'Restock Ingredients', 'purchase-orders': 'Recipe Purchase Orders',
       approvals: 'Recipe Approvals', production: 'Production Planning', waste: 'Waste Management',
       profits: 'Profits & Losses',
@@ -478,7 +643,20 @@ const RecipeProductionApp = {
       promotions: 'Promotions', reports: 'Reports', users: 'Users & Access', settings: 'Settings'
     };
     if (title) title.textContent = titles[this.page] || 'Recipe System';
-    el.innerHTML = '<p class="rp-muted">Loading…</p>';
+    const seq = ++this._renderSeq;
+    const cacheKey = this._pageCacheKey();
+    const cached = this._pageCache[cacheKey];
+    const inRecipeEditor = this.page === 'recipes' && (this._editingMealProductId || this._editingRecipe);
+    const cacheable = !this._pagesWithoutHtmlCache().includes(this.page) && !inRecipeEditor;
+    // Instant paint from cache while we refresh + rebind handlers
+    if (cached?.html && cacheable) {
+      el.innerHTML = cached.html;
+      el.classList.add('rp-refreshing');
+    } else if (!el.querySelector('.rp-panel, .page-toolbar, table, .rp-grid, .rp-embed-pos')) {
+      el.innerHTML = '<p class="rp-muted">Loading…</p>';
+    } else {
+      el.classList.add('rp-refreshing');
+    }
     try {
       const map = {
         dashboard: () => this.pageDashboard(el),
@@ -487,6 +665,7 @@ const RecipeProductionApp = {
         prep: () => this.pagePrepBoard(el),
         ingredients: () => this.pageIngredients(el),
         recipes: () => this.pageRecipes(el),
+        'ingredient-groups': () => this.pageIngredientGroups(el),
         restock: () => this.pageRestock(el),
         'purchase-orders': () => this.pagePurchaseOrders(el),
         approvals: () => this.pageApprovals(el),
@@ -500,15 +679,28 @@ const RecipeProductionApp = {
         settings: () => this.pageSettings(el)
       };
       await (map[this.page] || map.dashboard)();
+      if (seq !== this._renderSeq) return;
+      el.classList.remove('rp-refreshing');
+      if (cacheable) {
+        this._pageCache[cacheKey] = { html: el.innerHTML, at: Date.now() };
+      }
     } catch (err) {
+      if (seq !== this._renderSeq) return;
+      el.classList.remove('rp-refreshing');
       el.innerHTML = `<p class="error-msg">${err.message || 'Failed to load'}</p>`;
     }
   },
 
+  async _bgRefreshPage() {
+    /* reserved for future soft refresh */
+  },
+
   async ensurePosCatalogPages() {
     if (typeof App?.ensurePageScripts === 'function') {
-      await App.ensurePageScripts('categories');
-      await App.ensurePageScripts('products');
+      await Promise.all([
+        App.ensurePageScripts('categories'),
+        App.ensurePageScripts('products')
+      ]);
     }
     if (!window.CategoriesPage?.render && typeof Utils?.loadScript === 'function') {
       try { await Utils.loadScript('js/pages/categories.js'); } catch (_) { /* ignore */ }
@@ -546,20 +738,27 @@ const RecipeProductionApp = {
 
   /* ── Dashboard ─────────────────────────────────────────────────────────── */
   async pageDashboard(el) {
-    const [dashRes, aiRes] = await Promise.all([
-      API.recipeDashboard(this.user),
-      API.recipeAi(this.user)
-    ]);
+    const dashRes = await API.recipeDashboard(this.user);
     if (!dashRes.success) throw new Error(dashRes.error || 'Dashboard failed');
     const d = dashRes.data || {};
-    const ai = aiRes.data || [];
+    API.recipeAi(this.user).then((aiRes) => {
+      const list = aiRes?.data || [];
+      const box = document.getElementById('rp-ai-box');
+      if (!box || !list.length) return;
+      box.innerHTML = list.map((a, idx) => `<div class="rp-ai-item ${a.severity || ''}" data-ai-idx="${idx}">
+        <strong>${a.title || ''}</strong><div class="rp-muted">${a.message || ''}</div></div>`).join('');
+    }).catch(() => {});
     const prod = d.production || {};
     const meals = prod.products || [];
     const restock = prod.restock_recommendations || [];
     el.innerHTML = `
       <div class="rp-cards">
+        <div class="rp-card"><div class="label">Total Sales Today</div><div class="value">${this.money(d.sales_today)}</div></div>
+        <div class="rp-card"><div class="label">Total Sales To Date</div><div class="value">${this.money(d.sales_to_date)}</div></div>
         <div class="rp-card"><div class="label">Total Meals Available</div><div class="value">${prod.total_meals_available ?? 0}</div></div>
         <div class="rp-card"><div class="label">Meals Sold Today</div><div class="value">${d.sold_today?.qty || 0}</div></div>
+        <div class="rp-card"><div class="label">Meals Sold To Date</div><div class="value">${d.sold_to_date?.qty || 0}</div></div>
+        <div class="rp-card"><div class="label">Produced To Date</div><div class="value">${d.produced_to_date?.qty || 0}</div></div>
         <div class="rp-card"><div class="label">Meals Almost Out</div><div class="value">${(prod.meals_almost_out || []).length}</div></div>
         <div class="rp-card"><div class="label">Meals Disabled (OOS)</div><div class="value">${(prod.products_disabled || []).length}</div></div>
         <div class="rp-card"><div class="label">Ingredients Low</div><div class="value">${(prod.ingredients_running_low || []).length}</div></div>
@@ -623,14 +822,7 @@ const RecipeProductionApp = {
           <tbody>${(d.best_sellers || []).map(b => `<tr><td>${b.product_name}</td><td>${b.sold}</td><td>${this.money(b.revenue)}</td></tr>`).join('') || '<tr><td colspan="3" class="rp-muted">No sales yet</td></tr>'}</tbody></table>
         </div>
         <div class="rp-panel"><h3>AI Suggestions</h3>
-          ${ai.length ? ai.map((a, idx) => `<div class="rp-ai-item ${a.severity || ''}" data-ai-idx="${idx}">
-            <strong>${a.title}</strong><div class="rp-muted">${a.message}</div>
-            ${a.type === 'price_review' && a.suggested_price && (a.product_id || a.recipe_id) && RecipePerms.can(this.user, 'edit')
-              ? `<button type="button" class="btn btn-sm btn-primary rp-ai-apply-price" style="margin-top:8px"
-                  data-recipe="${a.recipe_id || ''}" data-product="${a.product_id || ''}" data-price="${a.suggested_price}">
-                  Apply suggested sell price (${this.money(a.suggested_price)})
-                </button>` : ''}
-          </div>`).join('') : '<p class="rp-muted">No suggestions right now</p>'}
+          <div id="rp-ai-box"><p class="rp-muted">Checking suggestions…</p></div>
         </div>
       </div>
       <div class="rp-grid-2">
@@ -647,10 +839,10 @@ const RecipeProductionApp = {
       Utils.toast('Production capacity refreshed', 'success');
       this.pageDashboard(el);
     });
-    document.getElementById('rp-qa-recipe')?.addEventListener('click', () => { this.page = 'recipes'; this._editingMealProductId = null; this.render(); });
-    document.getElementById('rp-qa-restock')?.addEventListener('click', () => { this.page = 'restock'; this.render(); });
-    document.getElementById('rp-qa-ing')?.addEventListener('click', () => { this.page = 'ingredients'; this.render(); });
-    document.getElementById('rp-qa-rep')?.addEventListener('click', () => { this.page = 'reports'; this.render(); });
+    document.getElementById('rp-qa-recipe')?.addEventListener('click', () => { this._editingMealProductId = null; this.goPage('recipes', { force: true }); });
+    document.getElementById('rp-qa-restock')?.addEventListener('click', () => { this.goPage('restock'); });
+    document.getElementById('rp-qa-ing')?.addEventListener('click', () => { this.goPage('ingredients'); });
+    document.getElementById('rp-qa-rep')?.addEventListener('click', () => { this.goPage('reports', { force: true }); });
     el.querySelectorAll('.rp-ai-apply-price').forEach(btn => {
       btn.onclick = async () => {
         const res = await API.recipeApplySuggestedPrice({
@@ -750,15 +942,13 @@ const RecipeProductionApp = {
     });
     document.getElementById('rp-prep-refresh')?.addEventListener('click', () => this.pagePrepBoard(el));
     document.getElementById('rp-prep-settings')?.addEventListener('click', () => {
-      this.page = 'settings';
-      this.render();
+      this.goPage('settings');
     });
   },
 
   async pageIngredients(el) {
-    // Always load from saved/edited recipes (same source as Restock) — never a stale cache
     this._ingredients = [];
-    const listRes = await API.recipeRestockList(this.user);
+    const listRes = await this._fetchRestockList();
     if (!listRes.success) throw new Error(listRes.error || 'Failed to load ingredients');
     let list = listRes.data || [];
     const q = (this._ingSearch || '').trim().toLowerCase();
@@ -871,12 +1061,10 @@ const RecipeProductionApp = {
       this.pageIngredients(el);
     };
     document.getElementById('rp-ing-goto-restock').onclick = () => {
-      this.page = 'restock';
-      this.render();
+      this.goPage('restock');
     };
     document.getElementById('rp-ing-goto-recipes').onclick = () => {
-      this.page = 'recipes';
-      this.render();
+      this.goPage('recipes');
     };
     document.getElementById('rp-ing-hist-run')?.addEventListener('click', async () => {
       this._ingHistFrom = document.getElementById('rp-ing-hist-from').value;
@@ -894,14 +1082,58 @@ const RecipeProductionApp = {
         </tr>`).join('') || '<tr><td colspan="4" class="rp-muted">No usage in this date range</td></tr>'}</tbody></table>`;
     });
     document.getElementById('rp-ing-add')?.addEventListener('click', async () => {
-      const name = prompt('Ingredient name (shared across meals):');
-      if (!name?.trim()) return;
-      const unit = prompt('Default unit (g, ml, each…)', 'g') || 'g';
-      const r = await API.recipeEnsureIngredient({ name: name.trim(), unit: unit.trim() || 'g' }, this.user);
-      if (!r.success) return Utils.toast(r.error || 'Could not add ingredient', 'error');
-      Utils.toast(`Saved "${r.data?.name || name}" — reuse it in Recipe Builder with each meal’s amount`, 'success');
-      this._ingredients = [];
-      this.pageIngredients(el);
+      // Load full stock list so products can be added into Ingredient Master
+      let catalog = [];
+      try {
+        const stockRes = await API.getStockReport();
+        catalog = (stockRes.data || []).filter((p) => p && p.name !== '__Property Damage__');
+      } catch (_) { catalog = this._ingredients || []; }
+      Utils.showModal('Add ingredient', `
+        <p class="rp-muted">Create a new ingredient, or pick an existing product/stock item so it appears on Ingredients and Restock.</p>
+        <div class="field"><label>New ingredient name</label>
+          <input id="rp-ing-new-name" placeholder="e.g. Chicken breast, Oil, Pap"></div>
+        <div class="field"><label>Default unit</label>
+          <input id="rp-ing-new-unit" value="g" placeholder="g, ml, each…"></div>
+        <p class="rp-muted" style="margin:12px 0 8px;text-align:center">— or —</p>
+        <button type="button" class="btn btn-ghost" id="rp-ing-pick-existing" style="width:100%">🔍 Search existing products / stock…</button>`,
+        '<button class="btn btn-primary" id="rp-ing-create-new">Create new</button>');
+      document.getElementById('rp-ing-pick-existing')?.addEventListener('click', () => {
+        Utils.openProductSearchPicker({
+          items: catalog,
+          title: 'Add product to Ingredients',
+          hint: 'Tap a product — it will show on Ingredient Master / Restock (and can be used in recipes).',
+          onPick: async (row) => {
+            const r = await API.saveProduct({
+              id: row.id,
+              name: row.name,
+              item_type: 'ingredient',
+              stock_quantity: row.stock_quantity,
+              unit: row.unit || row.stock_unit || 'g',
+              stock_unit: row.stock_unit || row.unit || 'g',
+              buying_price: row.buying_price,
+              selling_price: 0,
+              min_stock: row.min_stock
+            }, this.user);
+            if (!r.success) return Utils.toast(r.error || 'Could not add', 'error');
+            this._ingredientCatalogCache = null;
+            this._ingredients = [];
+            Utils.toast(`"${row.name}" added to Ingredients`, 'success');
+            this.pageIngredients(el);
+          }
+        });
+      });
+      document.getElementById('rp-ing-create-new')?.addEventListener('click', async () => {
+        const name = document.getElementById('rp-ing-new-name')?.value.trim();
+        const unit = document.getElementById('rp-ing-new-unit')?.value.trim() || 'g';
+        if (!name) return Utils.toast('Enter a name', 'error');
+        const r = await API.recipeEnsureIngredient({ name, unit }, this.user);
+        if (!r.success) return Utils.toast(r.error || 'Could not add ingredient', 'error');
+        Utils.hideModal();
+        Utils.toast(`Saved "${r.data?.name || name}" — reuse it in Recipe Builder`, 'success');
+        this._ingredientCatalogCache = null;
+        this._ingredients = [];
+        this.pageIngredients(el);
+      });
     });
     el.querySelectorAll('.rp-ing-hist').forEach(btn => btn.addEventListener('click', async () => {
       const id = parseInt(btn.dataset.id, 10);
@@ -979,6 +1211,9 @@ const RecipeProductionApp = {
         drawConv();
       });
       document.getElementById('rp-ie-save').onclick = async () => {
+        const saveBtn = document.getElementById('rp-ie-save');
+        if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = 'Saving…'; }
+        Utils.toast('Saving…', 'info');
         const r = await API.recipeUpdateIngredient({
           id: p.id,
           name: document.getElementById('rp-ie-name').value.trim(),
@@ -990,9 +1225,15 @@ const RecipeProductionApp = {
           purchase_unit: document.getElementById('rp-ie-purchase').value.trim() || null,
           conversions: convs
         }, this.user);
-        if (!r.success) return Utils.toast(r.error || 'Update failed', 'error');
+        if (!r.success) {
+          if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = 'Save'; }
+          return Utils.toast(r.error || 'Update failed', 'error');
+        }
         Utils.hideModal();
         Utils.toast('Ingredient updated', 'success');
+        this.invalidatePageCache('ingredients');
+        this.invalidatePageCache('dashboard');
+        this.invalidatePageCache('restock');
         const u = r.data || {};
         const idx = this._ingredients.findIndex((x) => Number(x.id) === Number(p.id));
         if (idx >= 0) {
@@ -1036,8 +1277,325 @@ const RecipeProductionApp = {
     }));
   },
 
+  /**
+   * Popup ingredient chooser — large tappable names, search, pick one-by-one.
+   * onPick(catalogRow) is called immediately when an ingredient is tapped.
+   * Popup stays open so you can keep tapping more.
+   */
+  openIngredientChooserPopup(opts = {}) {
+    const catalog = Array.isArray(opts.catalog) ? opts.catalog : [];
+    const excludeIds = new Set((opts.excludeIds || []).map(Number).filter(Boolean));
+    const title = opts.title || 'Choose ingredients';
+    const hint = opts.hint || 'Tap each ingredient to add it. Keep tapping — the list stays open.';
+    const onPick = typeof opts.onPick === 'function' ? opts.onPick : () => {};
+    const onDone = typeof opts.onDone === 'function' ? opts.onDone : null;
+    if (!catalog.length) {
+      Utils.toast('No ingredients yet — add some in Ingredient Master first', 'error');
+      return;
+    }
+    let picked = 0;
+    const available = () => catalog.filter((c) => c && !excludeIds.has(Number(c.id)));
+    const paint = (q = '') => {
+      const list = document.getElementById('rp-ing-popup-list');
+      const countEl = document.getElementById('rp-ing-popup-count');
+      if (!list) return;
+      const needle = String(q || '').trim().toLowerCase();
+      const rows = available().filter((c) => {
+        if (!needle) return true;
+        return String(c.name || '').toLowerCase().includes(needle);
+      });
+      if (countEl) countEl.textContent = `${rows.length} shown · ${picked} added`;
+      list.innerHTML = rows.length
+        ? rows.map((c) => `
+            <button type="button" class="rp-ing-pick-btn" data-id="${c.id}">
+              <strong>${this.escapeAttr(c.name)}</strong>
+              <span class="rp-muted">${this.escapeAttr(c.recipe_unit || c.stock_unit || c.unit || '')}</span>
+            </button>`).join('')
+        : '<p class="rp-muted" style="padding:12px;margin:0">No matches — try another search, or all ingredients are already added.</p>';
+      list.querySelectorAll('.rp-ing-pick-btn').forEach((btn) => {
+        btn.onclick = () => {
+          const id = Number(btn.dataset.id);
+          const row = catalog.find((c) => Number(c.id) === id);
+          if (!row) return;
+          excludeIds.add(id);
+          picked += 1;
+          onPick(row);
+          btn.classList.add('rp-ing-pick-btn--done');
+          btn.disabled = true;
+          btn.innerHTML = `<strong>✓ ${this.escapeAttr(row.name)}</strong><span class="rp-muted">Added</span>`;
+          const qEl = document.getElementById('rp-ing-popup-q');
+          // Refresh after a short beat so the user sees the checkmark
+          setTimeout(() => paint(qEl?.value || ''), 180);
+        };
+      });
+    };
+    const body = `
+      <p class="rp-muted" style="margin:0 0 10px">${this.escapeAttr(hint)}</p>
+      <div class="rp-toolbar" style="margin:0 0 10px;flex-wrap:wrap">
+        <input type="search" id="rp-ing-popup-q" placeholder="Type to find… oil, pap, chicken…" style="flex:1;min-width:200px" autocomplete="off" autofocus>
+        <span class="rp-tag ok" id="rp-ing-popup-count">0 shown</span>
+      </div>
+      <div id="rp-ing-popup-list" class="rp-ing-pick-grid"></div>`;
+    const footer = `
+      <button type="button" class="btn btn-ghost" id="rp-ing-popup-close">Done</button>`;
+    Utils.showModal(title, body, footer, { wide: true });
+    paint('');
+    document.getElementById('rp-ing-popup-q')?.addEventListener('input', (e) => {
+      paint(e.target.value);
+    });
+    document.getElementById('rp-ing-popup-q')?.focus();
+    const finish = () => {
+      Utils.hideModal();
+      if (onDone) onDone(picked);
+    };
+    document.getElementById('rp-ing-popup-close')?.addEventListener('click', finish);
+  },
+
+  async pageIngredientGroups(el) {
+    const canEdit = RecipePerms.can(this.user, 'edit') || RecipePerms.can(this.user, 'create');
+    const catalogPromise = this._warmIngredientCatalog();
+    const [listRes, catalog] = await Promise.all([
+      API.recipeIngredientGroups(this.user),
+      catalogPromise
+    ]);
+    if (!listRes.success) throw new Error(listRes.error || 'Could not load ingredient groups');
+    const groups = listRes.data || [];
+    const ingCatalog = Array.isArray(catalog) ? catalog : [];
+    const editing = this._editingIngredientGroup;
+    if (editing) {
+      return this.renderIngredientGroupEditor(el, editing, groups, ingCatalog, canEdit);
+    }
+    el.innerHTML = `
+      <p class="rp-muted" style="margin-top:0">
+        Build reusable mixes such as <strong>Pap</strong>, <strong>Chakalaka</strong>, or <strong>Cabbage</strong>.
+        Select the ingredients once, then attach the whole mix onto a meal in Recipe Builder.
+        Restock can also filter by these categories.
+      </p>
+      <div class="rp-toolbar">
+        ${canEdit ? '<button type="button" class="btn btn-primary" id="rp-ig-create">Create a category</button>' : ''}
+        <button type="button" class="btn btn-ghost" id="rp-ig-to-recipes">Recipe Builder</button>
+        <button type="button" class="btn btn-ghost" id="rp-ig-to-restock">Restock Ingredients</button>
+        <span class="rp-tag ok">${groups.length} categor${groups.length === 1 ? 'y' : 'ies'}</span>
+      </div>
+      <div class="rp-ig-grid">
+        ${groups.map((g) => `
+          <button type="button" class="rp-ig-card" data-id="${g.id}" style="--ig-color:${this.escapeAttr(g.color || '#0ea5e9')}">
+            <span class="rp-ig-swatch"></span>
+            <strong>${this.escapeAttr(g.name)}</strong>
+            <span class="rp-muted">${Number(g.item_count) || (g.items || []).length} ingredient(s)</span>
+            <span class="rp-ig-preview">${(g.items || []).slice(0, 6).map((it) => this.escapeAttr(it.ingredient_name)).join(' · ') || 'No ingredients yet'}</span>
+          </button>`).join('') || '<p class="rp-muted">No categories yet. Create Pap, Chakalaka, Cabbage, then attach them to chicken meals.</p>'}
+      </div>`;
+    document.getElementById('rp-ig-create')?.addEventListener('click', () => {
+      this._editingIngredientGroup = { id: null };
+      this.pageIngredientGroups(el);
+    });
+    document.getElementById('rp-ig-to-recipes')?.addEventListener('click', () => this.goPage('recipes'));
+    document.getElementById('rp-ig-to-restock')?.addEventListener('click', () => this.goPage('restock'));
+    el.querySelectorAll('.rp-ig-card').forEach((btn) => {
+      btn.onclick = () => {
+        const found = groups.find((g) => Number(g.id) === Number(btn.dataset.id));
+        this._editingIngredientGroup = found || { id: Number(btn.dataset.id) };
+        this.pageIngredientGroups(el);
+      };
+    });
+  },
+
+  async renderIngredientGroupEditor(el, group, groups, catalog, canEdit) {
+    const current = group?.id
+      ? (groups.find((g) => Number(g.id) === Number(group.id)) || group)
+      : { name: '', color: '#0ea5e9', description: '', default_include_rule: 'always', default_option_name: '', items: [] };
+    let items = (current.items || []).map((it) => ({
+      ingredient_product_id: Number(it.ingredient_product_id),
+      ingredient_name: it.ingredient_name || '',
+      quantity: Number(it.quantity) > 0 ? Number(it.quantity) : 1,
+      unit: it.unit || 'g',
+      waste_pct: Number(it.waste_pct) || 0,
+      include_rule: it.include_rule || current.default_include_rule || 'always',
+      option_name: it.option_name || current.default_option_name || '',
+      is_primary: !!Number(it.is_primary)
+    }));
+    const draw = () => {
+      const listEl = document.getElementById('rp-ig-items');
+      if (!listEl) return;
+      listEl.innerHTML = items.map((it, idx) => {
+        const rule = it.include_rule || 'always';
+        return `<div class="form-grid rr-row" data-idx="${idx}" style="margin-bottom:10px;align-items:end;border-bottom:1px solid var(--rp-border);padding-bottom:10px">
+          <div class="field" style="flex:2"><label>Ingredient</label>
+            <strong>${this.escapeAttr(it.ingredient_name)}</strong></div>
+          <div class="field"><label>Amount for 1 meal</label>
+            <input type="number" step="0.001" min="0" class="ig-qty" value="${it.quantity}" ${canEdit ? '' : 'readonly'}></div>
+          <div class="field"><label>Unit of measure</label>
+            <input class="ig-unit" value="${this.escapeAttr(it.unit || 'g')}" ${canEdit ? '' : 'readonly'}></div>
+          <div class="field"><label>Include in sale</label>
+            <select class="ig-rule" ${canEdit ? '' : 'disabled'}>
+              <option value="always" ${rule === 'always' ? 'selected' : ''}>Always (required)</option>
+              <option value="unless_selected" ${rule === 'unless_selected' ? 'selected' : ''}>Skip if customer chooses…</option>
+              <option value="when_selected" ${rule === 'when_selected' ? 'selected' : ''}>Only if customer chooses…</option>
+            </select></div>
+          <div class="field ig-option-field" style="${rule === 'always' ? 'display:none' : ''}"><label>POS option name</label>
+            <input class="ig-option" value="${this.escapeAttr(it.option_name || '')}" placeholder="e.g. Without Pap" ${canEdit ? '' : 'readonly'}></div>
+          ${canEdit ? `<button type="button" class="btn btn-sm btn-danger ig-rm" data-idx="${idx}">Remove</button>` : ''}
+        </div>`;
+      }).join('') || '<p class="rp-muted">Tap <strong>Choose ingredients</strong> — a popup opens so you can add them one by one.</p>';
+      listEl.querySelectorAll('.ig-rm').forEach((b) => {
+        b.onclick = () => {
+          sync();
+          items.splice(parseInt(b.dataset.idx, 10), 1);
+          draw();
+          const tag = document.getElementById('rp-ig-pick-count');
+          if (tag) tag.textContent = `${items.length} selected`;
+        };
+      });
+      listEl.querySelectorAll('.ig-qty, .ig-unit, .ig-rule, .ig-option').forEach((inp) => {
+        inp.addEventListener('input', sync);
+        inp.addEventListener('change', () => {
+          sync();
+          draw();
+        });
+      });
+    };
+    const sync = () => {
+      const listEl = document.getElementById('rp-ig-items');
+      if (!listEl) return;
+      listEl.querySelectorAll('.rr-row').forEach((row, idx) => {
+        if (!items[idx]) return;
+        items[idx].quantity = parseFloat(row.querySelector('.ig-qty')?.value) || 0;
+        items[idx].unit = (row.querySelector('.ig-unit')?.value || 'g').trim() || 'g';
+        items[idx].include_rule = row.querySelector('.ig-rule')?.value || 'always';
+        items[idx].option_name = row.querySelector('.ig-option')?.value || '';
+      });
+    };
+    const addIngredientFromCatalog = (c) => {
+      const id = Number(c.id);
+      if (!id || items.some((i) => Number(i.ingredient_product_id) === id)) return false;
+      const defRule = document.getElementById('rp-ig-def-rule')?.value || 'always';
+      const defOpt = document.getElementById('rp-ig-def-opt')?.value || '';
+      items.push({
+        ingredient_product_id: id,
+        ingredient_name: c.name,
+        quantity: 1,
+        unit: c.recipe_unit || c.stock_unit || c.unit || 'g',
+        waste_pct: 0,
+        include_rule: defRule,
+        option_name: defRule === 'always' ? '' : defOpt,
+        is_primary: false
+      });
+      draw();
+      const tag = document.getElementById('rp-ig-pick-count');
+      if (tag) tag.textContent = `${items.length} selected`;
+      return true;
+    };
+    const openChooser = () => {
+      this.openIngredientChooserPopup({
+        catalog,
+        excludeIds: items.map((i) => i.ingredient_product_id),
+        title: current.name ? `Choose ingredients — ${current.name}` : 'Choose ingredients for this category',
+        hint: 'Tap one ingredient at a time. Each tap adds it. Search at the top if the list is long.',
+        onPick: (row) => {
+          if (addIngredientFromCatalog(row)) {
+            Utils.toast(`Added ${row.name}`, 'success');
+          }
+        },
+        onDone: (n) => {
+          if (n) Utils.toast(`${n} ingredient(s) on this category — set amounts, then Save`, 'success');
+        }
+      });
+    };
+
+    el.innerHTML = `
+      <div class="rp-toolbar">
+        <button type="button" class="btn btn-ghost" id="rp-ig-back">← Back to categories</button>
+        ${current.id && canEdit ? '<button type="button" class="btn btn-danger" id="rp-ig-delete">Delete category</button>' : ''}
+      </div>
+      <div class="rp-panel">
+        <h3>${current.id ? 'Edit category' : 'Create a category'}</h3>
+        <p class="rp-muted">Name the mix (Pap, Chakalaka, Cabbage), then tap <strong>Choose ingredients</strong> — pick them one by one from the popup.</p>
+        <div class="form-grid">
+          <div class="field"><label>Category name</label>
+            <input id="rp-ig-name" value="${this.escapeAttr(current.name || '')}" placeholder="e.g. Chakalaka" ${canEdit ? '' : 'readonly'}></div>
+          <div class="field"><label>Colour</label>
+            <input type="color" id="rp-ig-color" value="${this.escapeAttr(current.color || '#0ea5e9')}" ${canEdit ? '' : 'disabled'}></div>
+          <div class="field" style="flex:2"><label>Notes</label>
+            <input id="rp-ig-desc" value="${this.escapeAttr(current.description || '')}" placeholder="Optional kitchen note" ${canEdit ? '' : 'readonly'}></div>
+          <div class="field"><label>Default include</label>
+            <select id="rp-ig-def-rule" ${canEdit ? '' : 'disabled'}>
+              <option value="always" ${(current.default_include_rule || 'always') === 'always' ? 'selected' : ''}>Always required</option>
+              <option value="unless_selected" ${current.default_include_rule === 'unless_selected' ? 'selected' : ''}>Skip if customer chooses…</option>
+              <option value="when_selected" ${current.default_include_rule === 'when_selected' ? 'selected' : ''}>Only if customer chooses…</option>
+            </select></div>
+          <div class="field"><label>Default POS option</label>
+            <input id="rp-ig-def-opt" value="${this.escapeAttr(current.default_option_name || '')}" placeholder="Without Pap / With Chakalaka" ${canEdit ? '' : 'readonly'}></div>
+        </div>
+      </div>
+      ${canEdit ? `
+      <div class="rp-panel">
+        <h3>Choose ingredients</h3>
+        <p class="rp-muted" style="margin-top:0">A popup opens with all your ingredients. Tap each one you want — no long scrolling on this page.</p>
+        <div class="rp-toolbar">
+          <button type="button" class="btn btn-primary" id="rp-ig-open-pick">Choose ingredients…</button>
+          <span class="rp-tag ok" id="rp-ig-pick-count">${items.length} selected</span>
+        </div>
+      </div>` : ''}
+      <div class="rp-panel">
+        <h3>Amounts for one meal</h3>
+        <div id="rp-ig-items"></div>
+      </div>
+      <div class="rp-toolbar">
+        ${canEdit ? '<button type="button" class="btn btn-primary" id="rp-ig-save">Save category</button>' : ''}
+      </div>`;
+
+    draw();
+    document.getElementById('rp-ig-back').onclick = () => {
+      this._editingIngredientGroup = null;
+      this.pageIngredientGroups(el);
+    };
+    document.getElementById('rp-ig-open-pick')?.addEventListener('click', openChooser);
+    // New category: open the popup immediately so choosing ingredients is the first action
+    if (canEdit && !current.id && !items.length && catalog.length) {
+      setTimeout(() => openChooser(), 120);
+    }
+    document.getElementById('rp-ig-save')?.addEventListener('click', async () => {
+      sync();
+      const name = document.getElementById('rp-ig-name')?.value?.trim();
+      if (!name) return Utils.toast('Enter a category name', 'error');
+      const filled = items.filter((i) => i.ingredient_product_id && Number(i.quantity) > 0);
+      if (!filled.length) return Utils.toast('Add at least one ingredient with an amount', 'error');
+      for (const i of filled) {
+        if ((i.include_rule || 'always') !== 'always' && !(i.option_name || '').trim()) {
+          return Utils.toast(`Set the POS option name for "${i.ingredient_name}"`, 'error');
+        }
+      }
+      const payload = {
+        id: current.id || undefined,
+        name,
+        color: document.getElementById('rp-ig-color')?.value || '#0ea5e9',
+        description: document.getElementById('rp-ig-desc')?.value || '',
+        default_include_rule: document.getElementById('rp-ig-def-rule')?.value || 'always',
+        default_option_name: document.getElementById('rp-ig-def-opt')?.value || '',
+        items: filled
+      };
+      const res = await API.recipeSaveIngredientGroup(payload, this.user);
+      if (!res.success) return Utils.toast(res.error || 'Save failed', 'error');
+      Utils.toast(`Saved ${name}`, 'success');
+      this._editingIngredientGroup = null;
+      this.invalidatePageCache('ingredient-groups');
+      this.pageIngredientGroups(el);
+    });
+    document.getElementById('rp-ig-delete')?.addEventListener('click', async () => {
+      if (!current.id) return;
+      if (!confirm(`Delete category "${current.name}"? Meals already using these ingredients keep their recipes.`)) return;
+      const res = await API.recipeDeleteIngredientGroup(current.id, this.user);
+      if (!res.success) return Utils.toast(res.error || 'Delete failed', 'error');
+      Utils.toast('Category deleted', 'success');
+      this._editingIngredientGroup = null;
+      this.pageIngredientGroups(el);
+    });
+  },
+
   /* ── Recipes (product-first: click meal → add ingredients for ONE meal) ─── */
   async pageRecipes(el) {
+    // Defer catalog warmup — meal list does not need 2000 ingredients.
     if (this._editingMealProductId) {
       return this.renderMealRecipeEditor(el, this._editingMealProductId);
     }
@@ -1050,12 +1608,12 @@ const RecipeProductionApp = {
     if (this._mealRecipeFilter === 'with') filters.with_recipe = true;
     if (this._mealRecipeFilter === 'without') filters.with_recipe = false;
     const mealCacheKey = JSON.stringify({ ...filters, ...this.branchFilter() });
-    const paintMealGrid = (products) => {
+    const paintMealGrid = (products, { refreshing = false } = {}) => {
       el.innerHTML = `
       <p class="rp-muted" style="margin-top:0">
         <strong>How it works:</strong> Click a meal already in POS (e.g. Quarter Chicken).
         Add each ingredient you use for <em>one</em> meal (chicken piece, oil, paprika, spice — with amounts).
-        Save. When POS sells that meal, stock is deducted from those ingredients.
+        Save once. When POS or Order Online sells that meal, stock is deducted from those ingredients.
         Use <strong>Restock Ingredients</strong> when you buy oil by the litre, spice by the gram, etc.
       </p>
       <div class="rp-toolbar">
@@ -1066,16 +1624,17 @@ const RecipeProductionApp = {
           <option value="with" ${this._mealRecipeFilter === 'with' ? 'selected' : ''}>With recipe</option>
           <option value="without" ${this._mealRecipeFilter === 'without' ? 'selected' : ''}>No recipe yet</option>
         </select>
+        <button type="button" class="btn btn-primary" id="rp-meal-create-group">Create a category</button>
+        <button type="button" class="btn btn-ghost" id="rp-meal-groups">Categories</button>
+        ${refreshing ? '<span class="rp-tag warn">Updating…</span>' : `<span class="rp-tag ok">${products.length} meal(s)</span>`}
       </div>
       <div class="rp-meal-grid" id="rp-meal-grid">
         ${products.map(p => `
           <button type="button" class="rp-meal-card" data-id="${p.id}">
-            <div class="rp-meal-card-media">${p.picture_path
-              ? `<img src="${p.picture_path}" alt="">`
-              : `<span>${(p.name || '?').charAt(0)}</span>`}</div>
+            <div class="rp-meal-card-media"><span>${(p.name || '?').charAt(0)}</span></div>
             <div class="rp-meal-card-body">
-              <strong>${p.name}</strong>
-              <span class="rp-muted">${p.category_name || 'Uncategorised'} · ${this.money(p.selling_price)}</span>
+              <strong>${this.escapeAttr(p.name)}</strong>
+              <span class="rp-muted">${this.escapeAttr(p.category_name || 'Uncategorised')} · ${this.money(p.selling_price)}</span>
               <span>${Number(p.ingredient_count) > 0
                 ? `<span class="rp-tag ok">${p.ingredient_count} ingredient(s)</span>`
                 : `<span class="rp-tag warn">No recipe</span>`}</span>
@@ -1083,9 +1642,13 @@ const RecipeProductionApp = {
           </button>`).join('') || '<p class="rp-muted">No products found. Add meals in POS Products first.</p>'}
       </div>`;
 
-      const reload = async () => {
+      const reload = async (force = true) => {
         this._mealFilter = document.getElementById('rp-meal-q').value.trim();
         this._mealRecipeFilter = document.getElementById('rp-meal-filter').value;
+        if (force) {
+          this._mealProductsCache = null;
+          try { sessionStorage.removeItem(this._mealCacheStorageKey(mealCacheKey)); } catch (_) { /* ignore */ }
+        }
         this.pageRecipes(el);
       };
       const bindCards = () => {
@@ -1096,22 +1659,46 @@ const RecipeProductionApp = {
           this.renderMealRecipeEditor(el, this._editingMealProductId);
         });
       };
-      document.getElementById('rp-meal-q').onkeydown = (e) => { if (e.key === 'Enter') reload(); };
-      document.getElementById('rp-meal-refresh').onclick = reload;
-      document.getElementById('rp-meal-filter').onchange = reload;
+      document.getElementById('rp-meal-q').onkeydown = (e) => { if (e.key === 'Enter') reload(true); };
+      document.getElementById('rp-meal-refresh').onclick = () => reload(true);
+      document.getElementById('rp-meal-filter').onchange = () => reload(true);
+      document.getElementById('rp-meal-create-group')?.addEventListener('click', () => {
+        this._editingIngredientGroup = { id: null };
+        this.goPage('ingredient-groups', { force: true });
+      });
+      document.getElementById('rp-meal-groups')?.addEventListener('click', () => {
+        this._editingIngredientGroup = null;
+        this.goPage('ingredient-groups');
+      });
       bindCards();
     };
 
-    const cachedMeals = this._mealProductsCache?.key === mealCacheKey ? this._mealProductsCache.products : null;
-    if (cachedMeals?.length) paintMealGrid(cachedMeals);
+    // Instant paint: memory → sessionStorage → loading shell
+    let mem = this._mealProductsCache?.key === mealCacheKey ? this._mealProductsCache : null;
+    if (!mem?.products?.length) {
+      const persisted = this._readPersistedMealCache(mealCacheKey);
+      if (persisted?.products?.length) {
+        mem = persisted;
+        this._mealProductsCache = persisted;
+      }
+    }
+    const cacheFresh = mem?.products?.length && (Date.now() - (mem.at || 0)) < this._mealListCacheTtlMs;
+    if (mem?.products?.length) {
+      paintMealGrid(mem.products, { refreshing: !cacheFresh });
+      if (cacheFresh && !filter && !this._mealRecipeFilter) return;
+    } else {
+      paintMealGrid([], { refreshing: true });
+      el.querySelector('#rp-meal-grid').innerHTML = '<p class="rp-muted">Loading meals…</p>';
+    }
 
     const res = await API.recipeMealProducts({ ...filters, ...this.branchFilter() }, this.user);
     if (!res.success) {
-      if (!cachedMeals?.length) throw new Error(res.error || 'Failed to load products');
+      if (!mem?.products?.length) throw new Error(res.error || 'Failed to load products');
       return;
     }
     const products = res.data || [];
-    this._mealProductsCache = { key: mealCacheKey, products };
+    this._mealProductsCache = { key: mealCacheKey, products, at: Date.now() };
+    if (!filter && !this._mealRecipeFilter) this._writePersistedMealCache(mealCacheKey, products);
     paintMealGrid(products);
   },
 
@@ -1123,20 +1710,48 @@ const RecipeProductionApp = {
       .replace(/>/g, '&gt;');
   },
 
+  _warmIngredientCatalog() {
+    if (this._ingredientCatalogCache?.length) return Promise.resolve(this._ingredientCatalogCache);
+    if (this._catalogWarmPromise) return this._catalogWarmPromise;
+    this._catalogWarmPromise = (async () => {
+      const catFn = API.recipeIngredientCatalog || API.recipeRestockList;
+      const catRes = await catFn.call(API, this.user);
+      // Include all stockable items so products selected as ingredients appear in the chooser
+      // and on Ingredient Master / Restock after they are saved on a recipe.
+      let list = (catRes.success ? (catRes.data || []) : []).filter((c) => c && c.name !== '__Property Damage__');
+      if (!list.length) {
+        try {
+          const stockRes = await API.getStockReport();
+          list = (stockRes.data || []).filter((c) => c && c.name !== '__Property Damage__'
+            && String(c.item_type || '') !== 'service');
+        } catch (_) { list = []; }
+      }
+      list = list.slice().sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), undefined, { sensitivity: 'base' }));
+      this._ingredientCatalogCache = list;
+      return this._ingredientCatalogCache;
+    })().finally(() => { this._catalogWarmPromise = null; });
+    return this._catalogWarmPromise;
+  },
+
   async renderMealRecipeEditor(el, productId) {
     this._editingMealProductId = productId;
-    const res = await API.recipeGetMeal(productId, this.user);
-    if (!res.success) throw new Error(res.error || 'Could not open product');
-    const meal = res.data;
+    el.innerHTML = `<div class="rp-panel"><p class="rp-muted" style="padding:16px;margin:0">Opening recipe…</p></div>`;
+    const catalogPromise = this._warmIngredientCatalog();
+    const [mealRes, catalogLoaded] = await Promise.all([
+      API.recipeGetMeal(productId, this.user, { for_editor: true }),
+      catalogPromise
+    ]);
+    if (!mealRes.success) throw new Error(mealRes.error || 'Could not open product');
+    const meal = mealRes.data;
     const product = meal.product;
     // Saved ingredients catalog — reuse across meals; only amount changes per meal
-    const catRes = await API.recipeRestockList(this.user);
-    let catalog = (catRes.success ? (catRes.data || []) : [])
-      .filter(c => c && (c.from_recipe || c.item_type === 'ingredient' || !c.selling_price || Number(c.selling_price) === 0 || c.recipe_unit))
-      .slice()
-      .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), undefined, { sensitivity: 'base' }));
-    // Prefer dedicated ingredients; keep any restock-listed shared stock so recipes still work
-    if (!catalog.length && catRes.success) catalog = (catRes.data || []).slice();
+    let catalog = Array.isArray(catalogLoaded) ? catalogLoaded : [];
+    if (!catalog.length) {
+      const catRes = await API.recipeRestockList(this.user);
+      catalog = (catRes.success ? (catRes.data || []) : []).slice();
+      this._ingredientCatalogCache = catalog;
+    }
+    // Prefer cached/dedicated ingredients; keep any restock-listed shared stock so recipes still work
     const catalogById = () => {
       const m = new Map();
       catalog.forEach(c => m.set(Number(c.id), c));
@@ -1255,20 +1870,26 @@ const RecipeProductionApp = {
         </p>
         ${canEdit && catalog.length ? `
         <div class="rp-panel" style="margin:0 0 12px;padding:12px;background:var(--rp-surface-2, transparent);border:1px dashed var(--rp-border)">
-          <p class="rp-muted" style="margin:0 0 8px"><strong>Choose ingredients:</strong> search → multi-select from Ingredient Master → Add selected. Or copy another meal’s recipe.</p>
+          <p class="rp-muted" style="margin:0 0 8px"><strong>Choose ingredients:</strong> tap the button — a popup opens. Add them one by one. Or copy another meal’s recipe / attach a category mix.</p>
           <div class="rp-toolbar" style="margin-bottom:8px;flex-wrap:wrap">
-            <input type="search" id="rr-ing-filter" placeholder="Search ingredients…" style="min-width:200px;flex:1" autocomplete="off">
-            <button type="button" class="btn btn-sm btn-ghost" id="rr-pick-all-vis">Select visible</button>
-            <button type="button" class="btn btn-sm btn-ghost" id="rr-pick-clear">Clear</button>
-            <button type="button" class="btn btn-sm btn-primary" id="rr-add-selected">Add selected</button>
+            <button type="button" class="btn btn-primary" id="rr-open-ing-modal">Choose ingredients…</button>
+            <span class="rp-tag ok" id="rr-pick-count">${items.filter((i) => i.ingredient_product_id || i.ingredient_name).length} on this meal</span>
           </div>
           <div id="rr-recent-chips" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px"></div>
-          <select id="rr-pick-multi" multiple size="7" style="width:100%;min-height:140px"></select>
           <div class="rp-toolbar" style="margin-top:10px;flex-wrap:wrap">
             <label class="rp-muted">Copy from meal</label>
             <select id="rr-copy-meal" style="min-width:220px"><option value="">Choose a meal with a recipe…</option></select>
             <button type="button" class="btn btn-sm btn-ghost" id="rr-copy-apply">Copy ingredients</button>
             <button type="button" class="btn btn-sm btn-ghost" id="rr-bulk-toggle">Bulk paste…</button>
+          </div>
+          <div class="rp-mix-attach">
+            <p class="rp-muted" style="margin:0 0 8px"><strong>Add from category:</strong> pick Pap, Chakalaka, Cabbage — every ingredient in that mix appears, then edit amounts and whether it is always required.</p>
+            <div class="rp-toolbar" style="margin:0;flex-wrap:wrap">
+              <select id="rr-group-multi" multiple size="4" style="min-width:240px;flex:1"></select>
+              <button type="button" class="btn btn-sm btn-primary" id="rr-apply-groups">Add selected categories</button>
+              <button type="button" class="btn btn-sm btn-ghost" id="rr-goto-create-group">Create a category</button>
+              <button type="button" class="btn btn-sm btn-ghost" id="rr-goto-groups">Categories</button>
+            </div>
           </div>
           <div id="rr-bulk-box" style="display:none;margin-top:8px">
             <textarea id="rr-bulk-text" rows="4" placeholder="One per line: Chicken breast, 150, g&#10;Oil, 10, ml&#10;Paprika, 5, g" style="width:100%"></textarea>
@@ -1276,10 +1897,10 @@ const RecipeProductionApp = {
           </div>
         </div>` : (canEdit ? `
         <div class="rp-panel" style="margin:0 0 12px;padding:12px;border:1px dashed var(--rp-border)">
-          <p class="rp-muted" style="margin:0">No saved ingredients yet. Go to <strong>Ingredient Master</strong> to add chicken, oil, spices, etc., then come back and multi-select them here.</p>
+          <p class="rp-muted" style="margin:0">No saved ingredients yet. Go to <strong>Ingredient Master</strong> to add chicken, oil, spices, etc., then come back and choose them here.</p>
           <button type="button" class="btn btn-primary btn-sm" id="rr-goto-ing-master" style="margin-top:8px">Open Ingredient Master</button>
         </div>` : '')}
-        <datalist id="rr-ing-list">${catalog.map(c => `<option value="${this.escapeAttr(c.name)}"></option>`).join('')}</datalist>
+        <datalist id="rr-ing-list"></datalist>
         <datalist id="rr-unit-list">${unitSuggestions.map(u => `<option value="${u}">`).join('')}</datalist>
         <datalist id="rr-option-list">${optionSuggestions.map(u => `<option value="${this.escapeAttr(u)}">`).join('')}</datalist>
         <div id="rr-items"></div>
@@ -1498,9 +2119,10 @@ const RecipeProductionApp = {
           ingredient_name: c.name,
           quantity: Number(c._qty) > 0 ? Number(c._qty) : 1,
           unit: c._unit || c.recipe_unit || c.stock_unit || c.unit || 'g',
-          waste_pct: 0,
-          include_rule: 'always',
-          option_name: '',
+          waste_pct: Number(c.waste_pct) || 0,
+          include_rule: c._rule || c.include_rule || 'always',
+          option_name: c._option || c.option_name || '',
+          is_primary: !!c._primary || !!c.is_primary,
           current_stock: c.stock_quantity
         };
         const blankIdx = items.findIndex(i => !i.ingredient_name && !i.ingredient_product_id);
@@ -1526,22 +2148,13 @@ const RecipeProductionApp = {
     };
 
     const refreshPicker = () => {
-      const filterEl = document.getElementById('rr-ing-filter');
-      const multi = document.getElementById('rr-pick-multi');
       const chips = document.getElementById('rr-recent-chips');
-      if (!multi) return;
-      const q = (filterEl?.value || '').trim().toLowerCase();
+      const countEl = document.getElementById('rr-pick-count');
       const onMeal = new Set(items.map(i => Number(i.ingredient_product_id)).filter(Boolean));
-      const visible = catalog.filter(c => {
-        if (onMeal.has(Number(c.id))) return false;
-        if (!q) return true;
-        const hay = `${c.name || ''} ${c.used_in_meals || ''}`.toLowerCase();
-        return hay.includes(q);
-      }).slice(0, 200);
-      multi.innerHTML = visible.map(c => {
-        const also = (c.used_in_meals || '').split(',').map(s => s.trim()).filter(m => m && m.toLowerCase() !== String(product.name).toLowerCase()).slice(0, 2).join(', ');
-        return `<option value="${c.id}">${this.escapeAttr(c.name)}${also ? ` — ${this.escapeAttr(also)}` : ''}</option>`;
-      }).join('') || '<option disabled>(no matches)</option>';
+      if (countEl) {
+        const n = items.filter((i) => i.ingredient_product_id || (i.ingredient_name || '').trim()).length;
+        countEl.textContent = `${n} on this meal`;
+      }
       if (chips) {
         const recent = this.recentIngredientIds()
           .map(id => catalogById().get(id))
@@ -1566,18 +2179,38 @@ const RecipeProductionApp = {
     setDirty(false);
     refreshPicker();
 
-    // Load meals for "copy recipe" picker
-    (async () => {
-      const sel = document.getElementById('rr-copy-meal');
-      if (!sel) return;
-      try {
-        const mealsRes = await API.recipeMealProducts({ with_recipe: true, ...this.branchFilter() }, this.user);
-        const meals = (mealsRes.success ? mealsRes.data : []) || [];
-        sel.innerHTML = `<option value="">Choose a meal with a recipe…</option>` +
-          meals.filter(m => Number(m.id) !== Number(productId))
-            .map(m => `<option value="${m.id}">${this.escapeAttr(m.name)} (${m.ingredient_count || '?'})</option>`).join('');
-      } catch (_) { /* ignore */ }
-    })();
+    // Fill ingredient name datalist once (capped) — avoid 2000 options on first paint.
+    let ingListFilled = false;
+    const fillIngDatalist = () => {
+      if (ingListFilled) return;
+      const dl = document.getElementById('rr-ing-list');
+      if (!dl) return;
+      ingListFilled = true;
+      const cap = catalog.slice(0, 120);
+      dl.innerHTML = cap.map((c) => `<option value="${this.escapeAttr(c.name)}"></option>`).join('');
+    };
+    el.addEventListener('focusin', (e) => {
+      if (e.target?.classList?.contains('rr-name')) fillIngDatalist();
+    });
+
+    // Load "copy recipe" meals only when the user opens that dropdown.
+    const copySel = document.getElementById('rr-copy-meal');
+    if (copySel) {
+      let copyLoaded = false;
+      const loadCopyMeals = async () => {
+        if (copyLoaded) return;
+        copyLoaded = true;
+        try {
+          const mealsRes = await API.recipeMealProducts({ with_recipe: true, ...this.branchFilter() }, this.user);
+          const meals = (mealsRes.success ? mealsRes.data : []) || [];
+          copySel.innerHTML = `<option value="">Choose a meal with a recipe…</option>` +
+            meals.filter((m) => Number(m.id) !== Number(productId))
+              .map((m) => `<option value="${m.id}">${this.escapeAttr(m.name)} (${m.ingredient_count || '?'})</option>`).join('');
+        } catch (_) { /* ignore */ }
+      };
+      copySel.addEventListener('focus', loadCopyMeals);
+      copySel.addEventListener('mousedown', loadCopyMeals);
+    }
 
     document.getElementById('rp-back-meals').onclick = () => leaveEditor(() => {
       this._editingMealProductId = null;
@@ -1591,24 +2224,60 @@ const RecipeProductionApp = {
       const last = itemsEl.querySelector('.rr-row:last-child .rr-name');
       last?.focus();
     });
-    document.getElementById('rr-ing-filter')?.addEventListener('input', () => refreshPicker());
-    document.getElementById('rr-pick-all-vis')?.addEventListener('click', () => {
-      const multi = document.getElementById('rr-pick-multi');
-      if (!multi) return;
-      [...multi.options].forEach(o => { if (!o.disabled) o.selected = true; });
+    (async () => {
+      const sel = document.getElementById('rr-group-multi');
+      if (!sel || !API.recipeIngredientGroups) return;
+      try {
+        const res = await API.recipeIngredientGroups(this.user);
+        const groups = (res.success ? res.data : []) || [];
+        sel.innerHTML = groups.map((g) =>
+          `<option value="${g.id}">${this.escapeAttr(g.name)} (${Number(g.item_count) || (g.items || []).length})</option>`
+        ).join('') || '<option disabled>No categories yet — create Pap, Chakalaka, Cabbage</option>';
+      } catch (_) { /* ignore */ }
+    })();
+    document.getElementById('rr-apply-groups')?.addEventListener('click', async () => {
+      const sel = document.getElementById('rr-group-multi');
+      const ids = [...(sel?.selectedOptions || [])].map((o) => Number(o.value)).filter(Boolean);
+      if (!ids.length) return Utils.toast('Select one or more categories first', 'error');
+      const res = await API.recipeExpandIngredientGroups(ids, this.user);
+      if (!res.success) return Utils.toast(res.error || 'Could not load category ingredients', 'error');
+      const rows = (res.data || []).map((it) => ({
+        id: it.ingredient_product_id,
+        name: it.ingredient_name,
+        _qty: it.quantity,
+        _unit: it.unit,
+        _rule: it.include_rule,
+        _option: it.option_name,
+        _primary: it.is_primary,
+        stock_quantity: it.current_stock
+      }));
+      const n = addCatalogRows(rows, { focusQty: false });
+      if (n) Utils.toast(`Added ${n} ingredient(s) from categor${ids.length === 1 ? 'y' : 'ies'} — mark the main POS stock, then edit amounts`, 'success');
     });
-    document.getElementById('rr-pick-clear')?.addEventListener('click', () => {
-      const multi = document.getElementById('rr-pick-multi');
-      if (!multi) return;
-      [...multi.options].forEach(o => { o.selected = false; });
-    });
-    document.getElementById('rr-add-selected')?.addEventListener('click', () => {
-      const multi = document.getElementById('rr-pick-multi');
-      const ids = [...(multi?.selectedOptions || [])].map(o => Number(o.value)).filter(Boolean);
-      if (!ids.length) return Utils.toast('Select one or more ingredients first', 'error');
-      const rows = ids.map(id => catalogById().get(id)).filter(Boolean);
-      const n = addCatalogRows(rows);
-      if (n) Utils.toast(`Added ${n} ingredient(s) — set amounts for 1 ${product.name}`, 'success');
+    document.getElementById('rr-goto-create-group')?.addEventListener('click', () => leaveEditor(() => {
+      this._editingMealProductId = null;
+      this._editingIngredientGroup = { id: null };
+      this.goPage('ingredient-groups', { force: true });
+    }));
+    document.getElementById('rr-goto-groups')?.addEventListener('click', () => leaveEditor(() => {
+      this._editingMealProductId = null;
+      this._editingIngredientGroup = null;
+      this.goPage('ingredient-groups');
+    }));
+    document.getElementById('rr-open-ing-modal')?.addEventListener('click', () => {
+      this.openIngredientChooserPopup({
+        catalog,
+        excludeIds: items.map((i) => i.ingredient_product_id),
+        title: `Choose ingredients — ${product.name}`,
+        hint: 'Tap each ingredient to add it to this meal. Keep tapping — search at the top if you need to find one fast.',
+        onPick: (row) => {
+          const n = addCatalogRows([row], { focusQty: false });
+          if (n) Utils.toast(`Added ${row.name}`, 'success');
+        },
+        onDone: (n) => {
+          if (n) Utils.toast(`${n} ingredient(s) added — set amounts for 1 ${product.name}`, 'success');
+        }
+      });
     });
     document.getElementById('rr-copy-apply')?.addEventListener('click', async () => {
       const id = parseInt(document.getElementById('rr-copy-meal')?.value, 10);
@@ -1730,19 +2399,15 @@ const RecipeProductionApp = {
     });
     document.getElementById('rr-goto-restock').onclick = () => leaveEditor(() => {
       this._editingMealProductId = null;
-      this.page = 'restock';
-      this.render();
+      this.goPage('restock');
     });
     document.getElementById('rr-goto-ing-master')?.addEventListener('click', () => leaveEditor(() => {
       this._editingMealProductId = null;
-      this.page = 'ingredients';
-      this.render();
+      this.goPage('ingredients');
     }));
     document.getElementById('rr-goto-report').onclick = () => leaveEditor(() => {
       this._editingMealProductId = null;
-      this.page = 'reports';
-      this._preferMealProfitReport = true;
-      this.render();
+      this._preferMealProfitReport = true; this.goPage('reports', { force: true });
     });
     document.getElementById('rr-save-meal')?.addEventListener('click', async () => {
       if (saving) return;
@@ -1779,7 +2444,10 @@ const RecipeProductionApp = {
         }))
       };
       try {
+        const saveBtn = document.getElementById('rr-save-meal');
+        if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = 'Saving…'; }
         const saved = await API.recipeSaveMeal(payload, this.user);
+        if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = 'Save recipe'; }
         if (!saved.success) {
           saving = false;
           setDirty(true);
@@ -1789,6 +2457,12 @@ const RecipeProductionApp = {
         const names = (saved.data?.saved_items || saved.data?.items || [])
           .map(i => `${i.ingredient_name} ${i.quantity} ${i.unit}`).join(' · ');
         Utils.toast(`Saved ${count} ingredient(s) for ${product.name}`, 'success');
+        this.invalidatePageCache('recipes');
+        this._mealProductsCache = null;
+        try {
+          Object.keys(sessionStorage).filter((k) => k.startsWith('shoppos_rp_meals_v2:')).forEach((k) => sessionStorage.removeItem(k));
+        } catch (_) { /* ignore */ }
+        this._prefetchMealProducts(true).catch(() => {});
         const savedItems = saved.data?.items || saved.data?.saved_items || [];
         if (savedItems.length) {
           items.length = 0;
@@ -1829,9 +2503,8 @@ const RecipeProductionApp = {
   },
 
   async pageRestock(el) {
-    // Fresh from DB every time — picks up recipe saves / re-edits immediately
     this._ingredients = [];
-    const listRes = await API.recipeRestockList(this.user);
+    const listRes = await this._fetchRestockList();
     if (!listRes.success) throw new Error(listRes.error || 'Failed to load restock list');
     const all = listRes.data || [];
     const onRecipe = all.filter(p => p.from_recipe);
@@ -1843,9 +2516,16 @@ const RecipeProductionApp = {
     el.innerHTML = `
       <div class="rp-restock">
       <p class="rp-muted" style="margin-top:0">
-        Restock once per <strong>shared ingredient</strong>. Enter target meals and tap <strong>Calculate for me</strong>
-        — the system fills buy quantities from every recipe (main ingredient drives POS stock).
+        Restock once per <strong>shared ingredient</strong>. POS and <strong>Order Online</strong> both deduct ingredients when an order is completed (online orders create a POS sale on accept).
+        Enter target meals and tap <strong>Calculate for me</strong> — buy quantities follow every saved recipe.
       </p>
+      <div class="rp-cost-box rp-restock-summary" id="rp-rs-summary" style="margin-bottom:12px">
+        <div><div class="rp-muted">Target meals</div><strong id="rp-rs-sum-meals">20</strong></div>
+        <div><div class="rp-muted">Buy cost (filled lines)</div><strong id="rp-rs-sum-spend">${this.money(0)}</strong></div>
+        <div><div class="rp-muted">Est. sales value</div><strong id="rp-rs-sum-rev">${this.money(0)}</strong></div>
+        <div><div class="rp-muted">Est. gross profit</div><strong id="rp-rs-sum-gp">${this.money(0)}</strong></div>
+        <div><div class="rp-muted">Est. after buy</div><strong id="rp-rs-sum-net">${this.money(0)}</strong></div>
+      </div>
       <div class="rp-toolbar rp-restock-toolbar">
         <label class="rp-muted">Target meals</label>
         <input type="number" id="rp-rs-target" min="1" step="1" value="20" style="width:80px">
@@ -1858,18 +2538,30 @@ const RecipeProductionApp = {
         ${this.docActionsHtml('rp-rs')}
       </div>
       <div class="rp-panel rp-restock-hist">
-        <h3>Stock usage history</h3>
-        <div class="rp-toolbar">
+        <h3>Ingredient usage history</h3>
+        <div class="rp-toolbar" style="flex-wrap:wrap">
+          <button type="button" class="btn btn-sm btn-ghost rp-rs-ch-tab active" data-ch="all">All usage</button>
+          <button type="button" class="btn btn-sm btn-ghost rp-rs-ch-tab" data-ch="pos">POS history</button>
+          <button type="button" class="btn btn-sm btn-ghost rp-rs-ch-tab" data-ch="online">Online history</button>
           <label class="rp-muted">From</label><input type="date" id="rp-rs-hist-from" value="${this._rsHistFrom || new Date(Date.now() - 7 * 86400000).toLocaleDateString('en-CA')}">
           <label class="rp-muted">To</label><input type="date" id="rp-rs-hist-to" value="${this._rsHistTo || new Date().toLocaleDateString('en-CA')}">
-          <button class="btn btn-ghost btn-sm" id="rp-rs-hist-run">Filter usage</button>
+          <button class="btn btn-ghost btn-sm" id="rp-rs-hist-run">Show</button>
         </div>
-        <div id="rp-rs-hist"><p class="rp-muted">Apply a date filter to see stock used / added per ingredient.</p></div>
+        <div id="rp-rs-hist"><p class="rp-muted">Pick POS or Online to see where ingredients were deducted. Stock restocks appear under All usage.</p></div>
+      </div>
+      <div class="rp-panel rp-restock-admin-hist">
+        <h3>Restock save history</h3>
+        <p class="rp-muted">Each save records who restocked, spend, and projected profit for the target meals.</p>
+        <div id="rp-rs-batch-hist"><p class="rp-muted">Loading…</p></div>
       </div>
       <div class="rp-panel rp-restock-lines">
         <div class="rp-restock-lines-head">
           <h3>Restock by line</h3>
-          <p class="rp-muted">Stock left is shown per ingredient. Also try: Calculate for me, Create PO, low-stock filter on Ingredients, Profits &amp; Losses tab.</p>
+          <p class="rp-muted">Search filters the table only — <strong>Save all filled lines</strong> still saves every row with a quantity, even if hidden.</p>
+          <div class="rp-toolbar" style="margin-top:8px;flex-wrap:wrap">
+            <input type="search" id="rp-rs-line-search" placeholder="Search ingredient…" autocomplete="off" style="min-width:220px;flex:1">
+          </div>
+          <div class="rp-ig-chips" id="rp-rs-group-chips"></div>
         </div>
         ${!ingredients.length
           ? '<p class="rp-muted">No ingredients yet. Add them in Ingredient Master or Recipe Builder, then restock here.</p>'
@@ -1880,10 +2572,13 @@ const RecipeProductionApp = {
               const stockU = p.stock_unit || p.unit || 'each';
               const buyU = p.restock_unit || p.purchase_unit || stockU;
               const recipeU = p.recipe_unit && p.recipe_unit !== stockU ? p.recipe_unit : null;
-              return `<tr data-id="${p.id}">
+              return `<tr data-id="${p.id}" data-groups="${(p.group_ids || []).join(',')}">
               <td><strong>${p.name}</strong>
                 ${p.from_recipe ? '' : '<div class="rp-muted" style="font-size:11px">Not on a current recipe</div>'}
                 ${recipeU ? `<div class="rp-muted" style="font-size:11px">Recipe uses: ${recipeU}</div>` : ''}
+                ${(p.groups || []).length ? `<div class="rp-ig-row-tags">${p.groups.map((g) =>
+                  `<span class="rp-ig-tag" style="--ig-color:${this.escapeAttr(g.color || '#0ea5e9')}">${this.escapeAttr(g.name)}</span>`
+                ).join('')}</div>` : ''}
               </td>
               <td class="rp-muted rp-restock-meals">${p.used_in_meals || '—'}</td>
               <td><strong>${p.stock_quantity}</strong> <span class="rp-muted">${stockU}</span></td>
@@ -1919,34 +2614,152 @@ const RecipeProductionApp = {
       this.pageRestock(el);
     });
     document.getElementById('rp-rs-po-page')?.addEventListener('click', () => {
-      this.page = 'purchase-orders';
-      this.render();
+      this.goPage('purchase-orders');
     });
-    document.getElementById('rp-rs-hist-run')?.addEventListener('click', async () => {
-      this._rsHistFrom = document.getElementById('rp-rs-hist-from').value;
-      this._rsHistTo = document.getElementById('rp-rs-hist-to').value;
-      const res = await API.recipeIngredientStockHistory({
-        from: this._rsHistFrom, to: this._rsHistTo
-      }, this.user);
+    this._rsHistChannel = this._rsHistChannel || 'all';
+    const renderUsageHistory = async () => {
+      this._rsHistFrom = document.getElementById('rp-rs-hist-from')?.value;
+      this._rsHistTo = document.getElementById('rp-rs-hist-to')?.value;
       const box = document.getElementById('rp-rs-hist');
+      if (!box) return;
+      box.innerHTML = '<p class="rp-muted">Loading…</p>';
+      const res = await API.recipeIngredientStockHistory({
+        from: this._rsHistFrom, to: this._rsHistTo, channel: this._rsHistChannel
+      }, this.user);
       if (!res.success) {
         box.innerHTML = `<p class="error-msg">${res.error || 'Failed'}</p>`;
         return;
       }
+      const chLabel = { all: 'All', pos: 'POS', online: 'Online' }[this._rsHistChannel] || 'All';
       const summary = res.data?.summary || [];
       const moves = (res.data?.movements || []).slice(0, 40);
       box.innerHTML = `
+        <p class="rp-muted">${chLabel} — ${this._rsHistFrom || ''} → ${this._rsHistTo || ''}</p>
         <table class="rp-table"><thead><tr><th>Ingredient</th><th>Stock left</th><th>Used</th><th>Added</th><th>Moves</th></tr></thead>
         <tbody>${summary.map(s => `<tr>
           <td>${s.product_name}</td><td><strong>${s.stock_left}</strong> ${s.unit || ''}</td>
           <td>${s.qty_used}</td><td>${s.qty_added}</td><td>${s.movements}</td>
         </tr>`).join('') || '<tr><td colspan="5" class="rp-muted">No movements in range</td></tr>'}</tbody></table>
         <h4 style="margin-top:12px">Recent movements</h4>
-        <table class="rp-table"><thead><tr><th>When</th><th>Ingredient</th><th>Type</th><th>Qty</th><th>Notes</th></tr></thead>
+        <table class="rp-table"><thead><tr><th>When</th><th>Ingredient</th><th>Channel</th><th>Type</th><th>Qty</th><th>Notes</th></tr></thead>
         <tbody>${moves.map(m => `<tr>
-          <td>${m.created_at}</td><td>${m.product_name}</td><td>${m.movement_type}</td>
+          <td>${m.created_at}</td><td>${m.product_name}</td>
+          <td>${m.sale_channel === 'online' ? 'Online' : m.sale_channel === 'pos' ? 'POS' : '—'}</td>
+          <td>${m.movement_type}</td>
           <td>${m.quantity}</td><td class="rp-muted">${m.notes || '—'}</td>
-        </tr>`).join('') || '<tr><td colspan="5" class="rp-muted">—</td></tr>'}</tbody></table>`;
+        </tr>`).join('') || '<tr><td colspan="6" class="rp-muted">—</td></tr>'}</tbody></table>`;
+    };
+    el.querySelectorAll('.rp-rs-ch-tab').forEach(btn => {
+      btn.addEventListener('click', () => {
+        this._rsHistChannel = btn.dataset.ch || 'all';
+        el.querySelectorAll('.rp-rs-ch-tab').forEach(b => b.classList.toggle('active', b === btn));
+        renderUsageHistory();
+      });
+    });
+    document.getElementById('rp-rs-hist-run')?.addEventListener('click', () => renderUsageHistory());
+
+    const loadBatchHistory = async () => {
+      const box = document.getElementById('rp-rs-batch-hist');
+      if (!box) return;
+      const res = await API.recipeRestockBatchHistory({ limit: 25 }, this.user);
+      if (!res.success) {
+        box.innerHTML = `<p class="error-msg">${res.error || 'Failed'}</p>`;
+        return;
+      }
+      const batches = res.data?.batches || [];
+      box.innerHTML = batches.length ? `
+        <table class="rp-table"><thead><tr>
+          <th>When</th><th>Saved by</th><th>Lines</th><th>Spend</th><th>Target meals</th><th>Est. profit</th><th>After buy</th>
+        </tr></thead><tbody>${batches.map(b => `<tr>
+          <td>${b.created_at}</td><td>${b.user_name || '—'}</td><td>${b.line_count}</td>
+          <td>${this.money(b.total_spend)}</td><td>${b.target_meals ?? '—'}</td>
+          <td>${this.money(b.projected_gross_profit)}</td><td>${this.money(b.projected_net_after_buy)}</td>
+        </tr>`).join('')}</tbody></table>` : '<p class="rp-muted">No restock saves yet.</p>';
+    };
+    loadBatchHistory();
+
+    const collectFilledRestockLines = () => {
+      const lines = [];
+      el.querySelectorAll('tbody tr').forEach(tr => {
+        const qty = parseFloat(tr.querySelector('.rp-rs-qty')?.value) || 0;
+        if (!(qty > 0) || !tr.dataset.id) return;
+        lines.push({
+          product_id: parseInt(tr.dataset.id, 10),
+          quantity: qty,
+          unit: tr.querySelector('.rp-rs-unit')?.value?.trim() || 'each',
+          total_cost: tr.querySelector('.rp-rs-cost')?.value || null
+        });
+      });
+      return lines;
+    };
+    const refreshRestockSummary = async () => {
+      const target = parseInt(document.getElementById('rp-rs-target')?.value, 10) || 20;
+      const sumMeals = document.getElementById('rp-rs-sum-meals');
+      if (sumMeals) sumMeals.textContent = String(target);
+      const lines = collectFilledRestockLines();
+      if (!lines.length) return;
+      const res = await API.recipeRestockPreview({ lines, target_meals: target }, this.user);
+      if (!res.success || !res.data) return;
+      const p = res.data;
+      const set = (id, val) => { const n = document.getElementById(id); if (n) n.textContent = val; };
+      set('rp-rs-sum-spend', this.money(p.total_spend));
+      set('rp-rs-sum-rev', this.money(p.projected_revenue));
+      set('rp-rs-sum-gp', this.money(p.projected_gross_profit));
+      set('rp-rs-sum-net', this.money(p.projected_net_after_buy));
+    };
+    let summaryTimer = null;
+    const scheduleSummary = () => {
+      clearTimeout(summaryTimer);
+      summaryTimer = setTimeout(() => refreshRestockSummary(), 280);
+    };
+    document.getElementById('rp-rs-target')?.addEventListener('input', scheduleSummary);
+    el.querySelectorAll('.rp-rs-qty, .rp-rs-cost, .rp-rs-unit').forEach(inp => {
+      inp.addEventListener('input', scheduleSummary);
+    });
+    const groupMap = new Map();
+    ingredients.forEach((p) => {
+      (p.groups || []).forEach((g) => {
+        if (!g?.id) return;
+        if (!groupMap.has(Number(g.id))) groupMap.set(Number(g.id), g);
+      });
+    });
+    if (!this._restockGroupIds) this._restockGroupIds = new Set();
+    const applyRestockFilters = () => {
+      const q = String(document.getElementById('rp-rs-line-search')?.value || '').trim().toLowerCase();
+      const selected = this._restockGroupIds;
+      el.querySelectorAll('.rp-restock-table tbody tr').forEach((tr) => {
+        const name = tr.querySelector('td strong')?.textContent?.toLowerCase() || '';
+        const ids = String(tr.dataset.groups || '').split(',').map((x) => Number(x)).filter(Boolean);
+        const groupOk = !selected.size || ids.some((id) => selected.has(id));
+        const nameOk = !q || name.includes(q);
+        tr.style.display = groupOk && nameOk ? '' : 'none';
+      });
+    };
+    const paintGroupChips = () => {
+      const host = document.getElementById('rp-rs-group-chips');
+      if (!host) return;
+      const list = [...groupMap.values()];
+      if (!list.length) {
+        host.innerHTML = '<span class="rp-muted">No mix categories yet. Create Pap / Chakalaka / Cabbage under Ingredient Groups, then restock by category here.</span>';
+        return;
+      }
+      host.innerHTML = `<button type="button" class="rp-ig-chip ${this._restockGroupIds.size ? '' : 'active'}" data-id="">All ingredients</button>` +
+        list.map((g) => `<button type="button" class="rp-ig-chip ${this._restockGroupIds.has(Number(g.id)) ? 'active' : ''}" data-id="${g.id}" style="--ig-color:${this.escapeAttr(g.color || '#0ea5e9')}">${this.escapeAttr(g.name)}</button>`).join('');
+      host.querySelectorAll('.rp-ig-chip').forEach((btn) => {
+        btn.onclick = () => {
+          const id = Number(btn.dataset.id);
+          if (!id) this._restockGroupIds.clear();
+          else if (this._restockGroupIds.has(id)) this._restockGroupIds.delete(id);
+          else this._restockGroupIds.add(id);
+          paintGroupChips();
+          applyRestockFilters();
+        };
+      });
+    };
+    paintGroupChips();
+    applyRestockFilters();
+    document.getElementById('rp-rs-line-search')?.addEventListener('input', () => {
+      applyRestockFilters();
     });
     document.getElementById('rp-rs-calc')?.addEventListener('click', async () => {
       const target = parseInt(document.getElementById('rp-rs-target')?.value, 10) || 20;
@@ -1968,6 +2781,7 @@ const RecipeProductionApp = {
       Utils.toast(filled
         ? `Filled ${filled} line(s) to support ~${target} meals — review & Save`
         : `Stock already covers ~${target} meals`, 'success');
+      scheduleSummary();
     });
     document.getElementById('rp-rs-po')?.addEventListener('click', async () => {
       const items = [];
@@ -1986,9 +2800,10 @@ const RecipeProductionApp = {
       const res = await API.recipeCreateRestockPo({ items, notes: 'From Recipe Restock' }, this.user);
       if (!res.success) return Utils.toast(res.error || 'PO failed', 'error');
       Utils.toast(`Draft PO ${res.data?.po_number || ''} created`, 'success');
-      this.page = 'purchase-orders';
-      this.render();
+      this.goPage('purchase-orders');
     });
+
+    const restockTargetMeals = () => parseInt(document.getElementById('rp-rs-target')?.value, 10) || 20;
 
     const saveRow = async (tr) => {
       const qty = parseFloat(tr.querySelector('.rp-rs-qty').value) || 0;
@@ -1997,9 +2812,17 @@ const RecipeProductionApp = {
         product_id: parseInt(tr.dataset.id, 10),
         quantity: qty,
         unit: tr.querySelector('.rp-rs-unit').value.trim() || 'each',
-        total_cost: tr.querySelector('.rp-rs-cost').value || null
+        total_cost: tr.querySelector('.rp-rs-cost').value || null,
+        target_meals: restockTargetMeals()
       }, this.user);
       return res;
+    };
+
+    const clearRowInputs = (tr, u) => {
+      const stockCell = tr.querySelector('td:nth-child(3) strong');
+      if (stockCell && u?.stock_quantity != null) stockCell.textContent = u.stock_quantity;
+      tr.querySelector('.rp-rs-qty').value = '';
+      tr.querySelector('.rp-rs-cost').value = '';
     };
 
     el.querySelectorAll('.rp-rs-one').forEach(btn => {
@@ -2008,29 +2831,56 @@ const RecipeProductionApp = {
         const res = await saveRow(tr);
         if (res.skipped) return Utils.toast('Enter quantity bought', 'error');
         if (!res.success) return Utils.toast(res.error, 'error');
-        Utils.toast('Stock updated', 'success');
-        const u = res.data || {};
-        const stockCell = tr.querySelector('td:nth-child(3) strong');
-        if (stockCell && u.stock_quantity != null) stockCell.textContent = u.stock_quantity;
-        tr.querySelector('.rp-rs-qty').value = '';
-        tr.querySelector('.rp-rs-cost').value = '';
+        Utils.toast('Stock updated — saved to restock history', 'success');
+        clearRowInputs(tr, res.data || {});
+        loadBatchHistory();
+        scheduleSummary();
+        this.invalidatePageCache('restock');
       };
     });
     document.getElementById('rp-rs-all')?.addEventListener('click', async () => {
-      let n = 0;
-      for (const tr of el.querySelectorAll('tbody tr')) {
+      const lines = collectFilledRestockLines();
+      if (!lines.length) return Utils.toast('Fill quantity on at least one line', 'error');
+      const target = restockTargetMeals();
+      if (lines.length === 1) {
+        const tr = el.querySelector(`tbody tr[data-id="${lines[0].product_id}"]`);
         const res = await saveRow(tr);
-        if (res.skipped) continue;
         if (!res.success) return Utils.toast(res.error, 'error');
-        n++;
-        const u = res.data || {};
-        const stockCell = tr.querySelector('td:nth-child(3) strong');
-        if (stockCell && u.stock_quantity != null) stockCell.textContent = u.stock_quantity;
-        tr.querySelector('.rp-rs-qty').value = '';
-        tr.querySelector('.rp-rs-cost').value = '';
+        clearRowInputs(tr, res.data || {});
+        loadBatchHistory();
+        scheduleSummary();
+        return Utils.toast('Stock updated', 'success');
       }
-      if (!n) return Utils.toast('Fill quantity on at least one line', 'error');
-      Utils.toast(`Updated ${n} ingredient(s)`, 'success');
+      const res = await API.recipeRestockBatchSave({ lines, target_meals: target }, this.user);
+      if (!res.success) return Utils.toast(res.error, 'error');
+      const preview = res.data?.preview || {};
+      for (const line of lines) {
+        const tr = el.querySelector(`tbody tr[data-id="${line.product_id}"]`);
+        if (!tr) continue;
+        clearRowInputs(tr, {});
+        const stockCell = tr.querySelector('td:nth-child(3) strong');
+        if (stockCell) {
+          const ing = (this._ingredients || []).find(p => Number(p.id) === Number(line.product_id));
+          if (ing) stockCell.textContent = ing.stock_quantity;
+        }
+      }
+      this._ingredients = [];
+      const listRes = await API.recipeRestockList(this.user);
+      if (listRes.success) {
+        const byId = new Map((listRes.data || []).map(p => [Number(p.id), p]));
+        el.querySelectorAll('tbody tr').forEach(tr => {
+          const p = byId.get(Number(tr.dataset.id));
+          const stockCell = tr.querySelector('td:nth-child(3) strong');
+          if (p && stockCell) stockCell.textContent = p.stock_quantity;
+        });
+      }
+      loadBatchHistory();
+      scheduleSummary();
+      this.invalidatePageCache('restock');
+      Utils.toast(
+        `Saved ${res.data?.lines_saved || lines.length} line(s) · spend ${this.money(preview.total_spend)} · est. profit ${this.money(preview.projected_gross_profit)}`,
+        'success'
+      );
     });
   },
 
@@ -2074,6 +2924,7 @@ const RecipeProductionApp = {
   },
 
   async renderRecipeEditor(el, recipe) {
+    el.innerHTML = `<div class="rp-panel"><p class="rp-muted" style="padding:16px;margin:0">Opening technical recipe…</p></div>`;
     if (!this._ingredients.length) {
       const ing = await API.recipeIngredients({}, this.user);
       this._ingredients = ing.data || [];
@@ -2342,8 +3193,9 @@ const RecipeProductionApp = {
   async pageApprovals(el) {
     const [pendingRes, prodRes] = await Promise.all([
       API.recipeList({ status: 'pending', ...this.branchFilter() }, this.user),
-      API.recipeProductionMeals ? API.recipeProductionMeals(this.user, this.branchFilter()) : Promise.resolve({ data: {} })
+      API.recipeProductionMeals ? API.recipeProductionMeals(this.user, this.branchFilter()) : Promise.resolve({ success: true, data: {} })
     ]);
+    if (!pendingRes.success) throw new Error(pendingRes.error || 'Failed to load approvals');
     const list = pendingRes.data || [];
     const meals = (prodRes.data?.meals || []).filter(m => m.profile_status === 'pending' || m.profile_status === 'draft');
     const can = RecipePerms.can(this.user, 'approve');
@@ -2401,24 +3253,14 @@ const RecipeProductionApp = {
     el.querySelectorAll('.rp-open').forEach(b => b.onclick = async () => {
       const pid = parseInt(b.dataset.pid, 10);
       if (pid) {
-        this.page = 'recipes';
-        this._editingMealProductId = pid;
-        this._useLegacyEditor = false;
-        this.render();
+        this._editingMealProductId = pid; this._useLegacyEditor = false; this.goPage('recipes', { force: true });
         return;
       }
       const res = await API.recipeGet(parseInt(b.dataset.id, 10), this.user);
-      this.page = 'recipes';
-      this._editingRecipe = res.data;
-      this._useLegacyEditor = true;
-      this._editingMealProductId = null;
-      this.render();
+      this._editingRecipe = res.data; this._useLegacyEditor = true; this._editingMealProductId = null; this.goPage('recipes', { force: true });
     });
     el.querySelectorAll('.rp-open-meal').forEach(b => b.onclick = () => {
-      this.page = 'recipes';
-      this._editingMealProductId = parseInt(b.dataset.pid, 10);
-      this._useLegacyEditor = false;
-      this.render();
+      this._editingMealProductId = parseInt(b.dataset.pid, 10); this._useLegacyEditor = false; this.goPage('recipes', { force: true });
     });
     el.querySelectorAll('.rp-ensure').forEach(b => b.onclick = async () => {
       const res = await API.recipeEnsureMealProfile(parseInt(b.dataset.pid, 10), this.user);
@@ -2939,8 +3781,7 @@ const RecipeProductionApp = {
     }));
     document.getElementById('rp-po-refresh')?.addEventListener('click', () => this.pagePurchaseOrders(el));
     document.getElementById('rp-po-goto-restock')?.addEventListener('click', () => {
-      this.page = 'restock';
-      this.render();
+      this.goPage('restock');
     });
     el.querySelectorAll('.rp-po-view').forEach(b => b.onclick = async () => {
       const res = await API.getPurchaseOrder(parseInt(b.dataset.id, 10));
@@ -3163,14 +4004,16 @@ const RecipeProductionApp = {
 
   /* ── Promotions ────────────────────────────────────────────────────────── */
   async pagePromotions(el) {
-    const r = await API.recipePromos(this.user);
-    const list = r.data || [];
     const can = RecipePerms.can(this.user, 'promotions');
-    if (!this._ingredients.length) {
-      const ing = await API.recipeIngredients({}, this.user);
-      this._ingredients = ing.data || [];
-    }
-    const recipes = (await API.recipeList({ status: 'approved', ...this.branchFilter() }, this.user)).data || [];
+    const [r, ingRes, recipesRes] = await Promise.all([
+      API.recipePromos(this.user),
+      this._ingredients.length ? Promise.resolve({ success: true, data: this._ingredients }) : API.recipeIngredients({}, this.user),
+      API.recipeList({ status: 'approved', ...this.branchFilter() }, this.user)
+    ]);
+    if (!r.success) throw new Error(r.error || 'Failed to load promotions');
+    const list = r.data || [];
+    if (ingRes?.success) this._ingredients = ingRes.data || this._ingredients;
+    const recipes = recipesRes.success ? (recipesRes.data || []) : [];
     const productsWithRecipe = this._ingredients.filter(p => p.has_recipe || p.production_mode);
     el.innerHTML = `
       ${can ? `<div class="rp-panel"><h3>New Promotion</h3>
@@ -3357,19 +4200,20 @@ const RecipeProductionApp = {
 
   /* ── Settings ──────────────────────────────────────────────────────────── */
   async pageSettings(el) {
-    if (!this._ingredients.length) {
-      const ing = await API.recipeIngredients({}, this.user);
-      this._ingredients = ing.data || [];
-    }
-    const mealsRes = await API.recipeMealProducts({ ...this.branchFilter() }, this.user);
-    const meals = mealsRes.data || [];
-    const recipes = (await API.recipeList({ status: 'approved', ...this.branchFilter() }, this.user)).data || [];
-    const best = (await API.recipeBestSellers('month', this.user)).data || [];
-    const [subsRes, forecastRes, catsRes] = await Promise.all([
+    const branch = this.branchFilter();
+    const [mealsRes, recipesRes, bestRes, subsRes, forecastRes, catsRes, ingRes] = await Promise.all([
+      API.recipeMealProducts({ ...branch }, this.user),
+      API.recipeList({ status: 'approved', ...branch }, this.user),
+      API.recipeBestSellers('month', this.user),
       API.recipeListSubs({ status: 'pending' }, this.user),
       API.recipeForecast(14, this.user),
-      API.getCategories({})
+      API.getCategories({}),
+      this._ingredients.length ? Promise.resolve({ success: true, data: this._ingredients }) : API.recipeIngredients({}, this.user)
     ]);
+    if (ingRes?.success && ingRes.data?.length) this._ingredients = ingRes.data;
+    const meals = mealsRes.success ? (mealsRes.data || []) : [];
+    const recipes = recipesRes.success ? (recipesRes.data || []) : [];
+    const best = bestRes.success ? (bestRes.data || []) : [];
     const subs = subsRes.data || [];
     const forecast = forecastRes.data || [];
     const categories = catsRes.data || catsRes || [];

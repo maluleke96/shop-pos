@@ -3,14 +3,25 @@ const LaybyPage = {
   to: null,
   statusFilter: 'all',
 
+  async activate(el, app) {
+    this.app = app;
+    this._host = el;
+    if (el?.querySelector?.('#new-layby') && (this._laybyes || []).length) {
+      this.render(el, app);
+      return;
+    }
+    return this.render(el, app);
+  },
+
   async render(el, app) {
     this.app = app;
+    this._host = el;
     this.from = this.from || Utils.daysAgo(90);
     this.to = this.to || Utils.today();
     const currency = app.settings?.currency || 'R';
     el.innerHTML = `<div class="page-toolbar"><h3>Lay-Bye / Partial Payments</h3>
       <button class="btn btn-primary" id="new-layby">+ New Lay-Bye</button></div>
-      <p class="muted">Loading lay-byes…</p>`;
+      <p class="muted">${this._laybyes?.length ? '' : 'Opening…'}</p>`;
     const filters = { from: this.from, to: this.to };
     if (this.statusFilter && this.statusFilter !== 'all') filters.status = this.statusFilter;
     const [res, settingsRes] = await Promise.all([
@@ -18,6 +29,7 @@ const LaybyPage = {
       API.getLaybySettings(app.user).catch(() => ({ success: true, data: {} }))
     ]);
     const laybyes = res.data || [];
+    this._laybyes = laybyes;
     const settings = settingsRes.data || {};
     const canSettings = ['owner', 'manager'].includes(app.user?.role);
     const canRefund = ['owner', 'manager', 'assistant_manager', 'supervisor'].includes(app.user?.role);
@@ -134,7 +146,7 @@ const LaybyPage = {
       Utils.toast(`Paid — remaining ${Utils.formatMoney(r.data?.balance, currency)}`, 'success');
       await this.printReceipt(id, true);
       await this.sendWhatsApp(id, true);
-      this.render(document.getElementById('page-content'), this.app);
+      this.render(this._host || document.querySelector('.page-host[data-page="layby"]') || document.querySelector('.page-host-active'), this.app);
     });
   },
 
@@ -146,7 +158,7 @@ const LaybyPage = {
     Utils.toast(`Refunded ${Utils.formatMoney(l.refunded_amount || 0, this.app.settings?.currency)} (fee ${Utils.formatMoney(l.refund_fee || 0, this.app.settings?.currency)})`, 'success');
     await this.printReceipt(id, true);
     await this.sendWhatsApp(id, true);
-    this.render(document.getElementById('page-content'), this.app);
+    this.render(this._host || document.querySelector('.page-host[data-page="layby"]') || document.querySelector('.page-host-active'), this.app);
   },
 
   async showDetail(id) {
@@ -240,7 +252,7 @@ const LaybyPage = {
       Utils.hideModal();
       Utils.toast(`Lay-bye ${r.data.laybyNumber} created`, 'success');
       await this.printReceipt(r.data.id, true);
-      this.render(document.getElementById('page-content'), this.app);
+      this.render(this._host || document.querySelector('.page-host[data-page="layby"]') || document.querySelector('.page-host-active'), this.app);
     });
   }
 };

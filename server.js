@@ -24,9 +24,11 @@ process.on('uncaughtException', (err) => {
 
 const CUSTOMER_WEB = path.join(ROOT, 'customer-web');
 const MANAGER_WEB = path.join(ROOT, 'manager-web');
-const REFERRAL_WEB = path.join(ROOT, 'referral-web');
 const DRIVER_WEB = path.join(ROOT, 'driver-web');
 const EXPENSE_WEB = path.join(ROOT, 'expense-web');
+const STUDIO_WEB = path.join(ROOT, 'studio-web');
+const RADIO_WEB = path.join(ROOT, 'radio-web');
+const RADIO_STUDIO_WEB = path.join(ROOT, 'radio-studio-web');
 const INVESTOR_WEB = path.join(ROOT, 'investor-web');
 const RELEASE_WEB = path.join(ROOT, 'release-web');
 const MEETING_WEB = path.join(ROOT, 'meeting-web');
@@ -44,6 +46,45 @@ const { bootRpc, handleRpcPost } = require('./lib/rpc-app');
 const PORT = Number(process.env.PORT || process.env.SHOP_POS_PORT || 3000);
 const SRC = path.join(ROOT, 'src');
 const SHARED = path.join(ROOT, 'shared');
+
+/**
+ * Decode HTML/text buffers that may have been saved as UTF-16 (Windows notepad)
+ * or prefixed with mangled BOM bytes. Always returns a clean UTF-8 string.
+ */
+function decodeTextBuffer(buf) {
+  if (!buf || !buf.length) return '';
+  // UTF-16 LE BOM
+  if (buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xfe) {
+    return buf.slice(2).toString('utf16le');
+  }
+  // UTF-16 BE BOM
+  if (buf.length >= 2 && buf[0] === 0xfe && buf[1] === 0xff) {
+    const swapped = Buffer.alloc(buf.length - 2);
+    for (let i = 2; i + 1 < buf.length; i += 2) {
+      swapped[i - 2] = buf[i + 1];
+      swapped[i - 1] = buf[i];
+    }
+    return swapped.toString('utf16le');
+  }
+  // Mangled BOM (EF BF BD ×2) then UTF-16 LE payload — seen after bad PowerShell writes
+  if (
+    buf.length >= 8 &&
+    buf[0] === 0xef && buf[1] === 0xbf && buf[2] === 0xbd &&
+    buf[3] === 0xef && buf[4] === 0xbf && buf[5] === 0xbd &&
+    buf[6] === 0x3c && buf[7] === 0x00
+  ) {
+    return buf.slice(6).toString('utf16le');
+  }
+  // UTF-16 LE without BOM: ASCII tag with nulls between chars (<!DOCTYPE / <html)
+  if (
+    buf.length >= 8 &&
+    buf[1] === 0x00 && buf[3] === 0x00 && buf[5] === 0x00 &&
+    ((buf[0] === 0x3c && buf[2] === 0x21) || (buf[0] === 0x3c && buf[2] === 0x68))
+  ) {
+    return buf.toString('utf16le');
+  }
+  return buf.toString('utf8');
+}
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -105,20 +146,25 @@ function serveManagerWeb(req, res) {
       const index = path.join(MANAGER_WEB, 'index.html');
       return fs.readFile(index, (e2, buf) => {
         if (e2) { res.writeHead(404); return res.end('Not found'); }
+        const html = injectDeployCacheBust(buf.toString('utf8'), readDeployVersion());
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...corsHeaders() });
-        res.end(buf);
+        res.end(html);
       });
     }
     const ext = path.extname(filePath).toLowerCase();
     const type = MIME[ext] || 'application/octet-stream';
     fs.readFile(filePath, (e2, buf) => {
       if (e2) { res.writeHead(500); return res.end('Read error'); }
+      let body = buf;
+      if (ext === '.html') {
+        body = Buffer.from(injectDeployCacheBust(buf.toString('utf8'), readDeployVersion()), 'utf8');
+      }
       res.writeHead(200, {
         'Content-Type': type,
         'Cache-Control': (ext === '.html' || ext === '.js' || ext === '.css') ? 'no-cache' : 'public, max-age=3600',
         ...corsHeaders()
       });
-      res.end(buf);
+      res.end(body);
     });
   });
 }
@@ -150,33 +196,6 @@ function syncManagerWebConfig() {
   }
 }
 
-function syncReferralWebConfig() {
-  const railwayDomain = process.env.RAILWAY_PUBLIC_DOMAIN || '';
-  const apiBase = (
-    process.env.SHOP_POS_PUBLIC_URL ||
-    process.env.SHOP_POS_SYNC_URL ||
-    (railwayDomain ? `https://${railwayDomain}` : '') ||
-    'https://chisafood.up.railway.app'
-  ).replace(/\/$/, '');
-  const rpc = (
-    process.env.SHOP_POS_PUBLIC_RPC_URL ||
-    process.env.SHOP_POS_RPC_URL ||
-    `${apiBase}/rpc`
-  ).replace(/\/$/, '');
-  const out = `window.__REFERRAL_CONFIG__ = {
-  rpcUrl: ${JSON.stringify(rpc)},
-  apiBase: ${JSON.stringify(apiBase)},
-  referralPath: "/r/"
-};
-`;
-  try {
-    fs.mkdirSync(path.join(REFERRAL_WEB, 'js'), { recursive: true });
-    fs.writeFileSync(path.join(REFERRAL_WEB, 'js', 'config.js'), out, 'utf8');
-  } catch (e) {
-    console.warn('[referral-web] config write failed:', e.message);
-  }
-}
-
 function syncExpenseWebConfig() {
   const railwayDomain = process.env.RAILWAY_PUBLIC_DOMAIN || '';
   const apiBase = (
@@ -204,6 +223,70 @@ function syncExpenseWebConfig() {
   }
 }
 
+function syncStudioWebConfig() {
+  const railwayDomain = process.env.RAILWAY_PUBLIC_DOMAIN || '';
+  const apiBase = (
+    process.env.SHOP_POS_PUBLIC_URL ||
+    process.env.SHOP_POS_SYNC_URL ||
+    (railwayDomain ? `https://${railwayDomain}` : '') ||
+    'https://chisafood.up.railway.app'
+  ).replace(/\/$/, '');
+  const rpc = (
+    process.env.SHOP_POS_PUBLIC_RPC_URL ||
+    process.env.SHOP_POS_RPC_URL ||
+    `${apiBase}/rpc`
+  ).replace(/\/$/, '');
+  const out = `window.__STUDIO_CONFIG__ = {
+  rpcUrl: ${JSON.stringify(rpc)},
+  apiBase: ${JSON.stringify(apiBase)},
+  studioPath: "/studio/"
+};
+`;
+  try {
+    fs.mkdirSync(path.join(STUDIO_WEB, 'js'), { recursive: true });
+    fs.writeFileSync(path.join(STUDIO_WEB, 'js', 'config.js'), out, 'utf8');
+  } catch (e) {
+    console.warn('[studio-web] config write failed:', e.message);
+  }
+}
+
+function syncRadioWebConfigs() {
+  const railwayDomain = process.env.RAILWAY_PUBLIC_DOMAIN || '';
+  const apiBase = (
+    process.env.SHOP_POS_PUBLIC_URL ||
+    process.env.SHOP_POS_SYNC_URL ||
+    (railwayDomain ? `https://${railwayDomain}` : '') ||
+    'https://chisafood.up.railway.app'
+  ).replace(/\/$/, '');
+  const rpc = (
+    process.env.SHOP_POS_PUBLIC_RPC_URL ||
+    process.env.SHOP_POS_RPC_URL ||
+    `${apiBase}/rpc`
+  ).replace(/\/$/, '');
+  try {
+    fs.mkdirSync(path.join(RADIO_WEB, 'js'), { recursive: true });
+    fs.writeFileSync(path.join(RADIO_WEB, 'js', 'config.js'), `window.__RADIO_CONFIG__ = {
+  rpcUrl: ${JSON.stringify(rpc)},
+  apiBase: ${JSON.stringify(apiBase)},
+  radioPath: "/radio/"
+};
+`, 'utf8');
+  } catch (e) {
+    console.warn('[radio-web] config write failed:', e.message);
+  }
+  try {
+    fs.mkdirSync(path.join(RADIO_STUDIO_WEB, 'js'), { recursive: true });
+    fs.writeFileSync(path.join(RADIO_STUDIO_WEB, 'js', 'config.js'), `window.__RADIO_STUDIO_CONFIG__ = {
+  rpcUrl: ${JSON.stringify(rpc)},
+  apiBase: ${JSON.stringify(apiBase)},
+  studioPath: "/radio-studio/"
+};
+`, 'utf8');
+  } catch (e) {
+    console.warn('[radio-studio-web] config write failed:', e.message);
+  }
+}
+
 function serveExpenseWeb(req, res) {
   let urlPath = (req.url || '/').split('?')[0];
   if (urlPath === '/expenses') urlPath = '/';
@@ -214,22 +297,153 @@ function serveExpenseWeb(req, res) {
     res.writeHead(403);
     return res.end('Forbidden');
   }
+  const sendHtml = (buf) => {
+    const html = injectPanelCacheBust(buf.toString('utf8'), readDeployVersion());
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache', ...corsHeaders() });
+    res.end(html);
+  };
   fs.stat(filePath, (err, st) => {
     if (err || !st.isFile()) {
       const index = path.join(EXPENSE_WEB, 'index.html');
       return fs.readFile(index, (e2, buf) => {
         if (e2) { res.writeHead(404); return res.end('Not found'); }
-        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...corsHeaders() });
-        res.end(buf);
+        sendHtml(buf);
       });
     }
     const ext = path.extname(filePath).toLowerCase();
     const type = MIME[ext] || 'application/octet-stream';
     fs.readFile(filePath, (e2, buf) => {
       if (e2) { res.writeHead(500); return res.end('Read error'); }
+      if (ext === '.html') return sendHtml(buf);
       res.writeHead(200, {
         'Content-Type': type,
-        'Cache-Control': (ext === '.html' || ext === '.js' || ext === '.css') ? 'no-cache' : 'public, max-age=3600',
+        'Cache-Control': (ext === '.js' || ext === '.css') ? 'no-cache' : 'public, max-age=3600',
+        ...corsHeaders()
+      });
+      res.end(buf);
+    });
+  });
+}
+
+function serveStudioWeb(req, res) {
+  let urlPath = (req.url || '/').split('?')[0];
+  if (urlPath === '/studio') urlPath = '/';
+  else if (urlPath.startsWith('/studio/')) urlPath = urlPath.slice('/studio'.length);
+  if (urlPath === '/') urlPath = '/index.html';
+  const filePath = safeJoin(STUDIO_WEB, urlPath);
+  if (!filePath) {
+    res.writeHead(403);
+    return res.end('Forbidden');
+  }
+  const sendHtml = (buf) => {
+    const html = injectPanelCacheBust(buf.toString('utf8'), readDeployVersion());
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache', ...corsHeaders() });
+    res.end(html);
+  };
+  fs.stat(filePath, (err, st) => {
+    if (err || !st.isFile()) {
+      const index = path.join(STUDIO_WEB, 'index.html');
+      return fs.readFile(index, (e2, buf) => {
+        if (e2) { res.writeHead(404); return res.end('Not found'); }
+        sendHtml(buf);
+      });
+    }
+    const ext = path.extname(filePath).toLowerCase();
+    const type = MIME[ext] || 'application/octet-stream';
+    fs.readFile(filePath, (e2, buf) => {
+      if (e2) { res.writeHead(500); return res.end('Read error'); }
+      if (ext === '.html') return sendHtml(buf);
+      res.writeHead(200, {
+        'Content-Type': type,
+        'Cache-Control': (ext === '.js' || ext === '.css') ? 'no-cache' : 'public, max-age=3600',
+        ...corsHeaders()
+      });
+      res.end(buf);
+    });
+  });
+}
+
+/** Public listener site: /radio/ or /radio/:slug/ */
+function serveRadioWeb(req, res) {
+  let urlPath = (req.url || '/').split('?')[0];
+  if (urlPath === '/radio') urlPath = '/';
+  else if (urlPath.startsWith('/radio/')) urlPath = urlPath.slice('/radio'.length);
+  // Strip optional station slug segment when requesting assets or root
+  // /main → /  ;  /main/css/x → /css/x  ;  /css/x stays
+  if (urlPath === '/' || urlPath === '') urlPath = '/index.html';
+  else {
+    const parts = urlPath.split('/').filter(Boolean);
+    const assetExt = /\.(js|css|png|jpg|jpeg|svg|ico|webp|woff2?|map)$/i;
+    if (parts.length >= 1 && !assetExt.test(parts[0]) && parts[0] !== 'js' && parts[0] !== 'css') {
+      // first segment is slug
+      urlPath = '/' + parts.slice(1).join('/');
+      if (urlPath === '/') urlPath = '/index.html';
+    }
+  }
+  const filePath = safeJoin(RADIO_WEB, urlPath);
+  if (!filePath) {
+    res.writeHead(403);
+    return res.end('Forbidden');
+  }
+  const sendHtml = (buf) => {
+    const html = injectPanelCacheBust(buf.toString('utf8'), readDeployVersion());
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache', ...corsHeaders() });
+    res.end(html);
+  };
+  fs.stat(filePath, (err, st) => {
+    if (err || !st.isFile()) {
+      const index = path.join(RADIO_WEB, 'index.html');
+      return fs.readFile(index, (e2, buf) => {
+        if (e2) { res.writeHead(404); return res.end('Not found'); }
+        sendHtml(buf);
+      });
+    }
+    const ext = path.extname(filePath).toLowerCase();
+    const type = MIME[ext] || 'application/octet-stream';
+    fs.readFile(filePath, (e2, buf) => {
+      if (e2) { res.writeHead(500); return res.end('Read error'); }
+      if (ext === '.html') return sendHtml(buf);
+      res.writeHead(200, {
+        'Content-Type': type,
+        'Cache-Control': (ext === '.js' || ext === '.css') ? 'no-cache' : 'public, max-age=3600',
+        ...corsHeaders()
+      });
+      res.end(buf);
+    });
+  });
+}
+
+function serveRadioStudioWeb(req, res) {
+  let urlPath = (req.url || '/').split('?')[0];
+  if (urlPath === '/radio-studio') urlPath = '/';
+  else if (urlPath.startsWith('/radio-studio/')) urlPath = urlPath.slice('/radio-studio'.length);
+  if (urlPath === '/') urlPath = '/index.html';
+  const filePath = safeJoin(RADIO_STUDIO_WEB, urlPath);
+  if (!filePath) {
+    res.writeHead(403);
+    return res.end('Forbidden');
+  }
+  const sendHtml = (buf) => {
+    const html = injectPanelCacheBust(buf.toString('utf8'), readDeployVersion());
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache', ...corsHeaders() });
+    res.end(html);
+  };
+  fs.stat(filePath, (err, st) => {
+    if (err || !st.isFile()) {
+      const index = path.join(RADIO_STUDIO_WEB, 'index.html');
+      return fs.readFile(index, (e2, buf) => {
+        if (e2) { res.writeHead(404); return res.end('Not found'); }
+        sendHtml(buf);
+      });
+    }
+    const ext = path.extname(filePath).toLowerCase();
+    const type = MIME[ext] || 'application/octet-stream';
+    fs.readFile(filePath, (e2, buf) => {
+      if (e2) { res.writeHead(500); return res.end('Read error'); }
+      if (ext === '.html') return sendHtml(buf);
+      res.writeHead(200, {
+        'Content-Type': type,
+        'Cache-Control': (ext === '.js' || ext === '.css') ? 'no-cache' : 'public, max-age=3600',
         ...corsHeaders()
       });
       res.end(buf);
@@ -405,43 +619,6 @@ function serveTrackingWeb(req, res) {
   });
 }
 
-function serveReferralWeb(req, res) {
-  let urlPath = (req.url || '/').split('?')[0];
-  if (urlPath === '/r') urlPath = '/r/';
-  if (!urlPath.startsWith('/r/')) {
-    res.writeHead(404);
-    return res.end('Not found');
-  }
-  urlPath = urlPath.slice(2) || '/';
-  if (urlPath === '/') urlPath = '/index.html';
-  const filePath = safeJoin(REFERRAL_WEB, urlPath);
-  if (!filePath) {
-    res.writeHead(403);
-    return res.end('Forbidden');
-  }
-  fs.stat(filePath, (err, st) => {
-    if (err || !st.isFile()) {
-      const index = path.join(REFERRAL_WEB, 'index.html');
-      return fs.readFile(index, (e2, buf) => {
-        if (e2) { res.writeHead(404); return res.end('Not found'); }
-        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...corsHeaders() });
-        res.end(buf);
-      });
-    }
-    const ext = path.extname(filePath).toLowerCase();
-    const type = MIME[ext] || 'application/octet-stream';
-    fs.readFile(filePath, (e2, buf) => {
-      if (e2) { res.writeHead(500); return res.end('Read error'); }
-      res.writeHead(200, {
-        'Content-Type': type,
-        'Cache-Control': (ext === '.html' || ext === '.js' || ext === '.css') ? 'no-cache' : 'public, max-age=3600',
-        ...corsHeaders()
-      });
-      res.end(buf);
-    });
-  });
-}
-
 function serveCustomerWeb(req, res) {
   let urlPath = (req.url || '/').split('?')[0];
   if (urlPath.startsWith('/order')) urlPath = urlPath.slice(6) || '/';
@@ -451,22 +628,27 @@ function serveCustomerWeb(req, res) {
     res.writeHead(403);
     return res.end('Forbidden');
   }
+  const sendHtml = (buf) => {
+    const html = injectPanelCacheBust(buf.toString('utf8'), readDeployVersion());
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache', ...corsHeaders() });
+    res.end(html);
+  };
   fs.stat(filePath, (err, st) => {
     if (err || !st.isFile()) {
       const index = path.join(CUSTOMER_WEB, 'index.html');
       return fs.readFile(index, (e2, buf) => {
         if (e2) { res.writeHead(404); return res.end('Not found'); }
-        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...corsHeaders() });
-        res.end(buf);
+        sendHtml(buf);
       });
     }
     const ext = path.extname(filePath).toLowerCase();
     const type = MIME[ext] || 'application/octet-stream';
     fs.readFile(filePath, (e2, buf) => {
       if (e2) { res.writeHead(500); return res.end('Read error'); }
+      if (ext === '.html') return sendHtml(buf);
       res.writeHead(200, {
         'Content-Type': type,
-        'Cache-Control': (ext === '.html' || ext === '.js' || ext === '.css') ? 'no-cache' : 'public, max-age=3600',
+        'Cache-Control': (ext === '.js' || ext === '.css') ? 'no-cache' : 'public, max-age=3600',
         ...corsHeaders()
       });
       res.end(buf);
@@ -498,6 +680,39 @@ function serveShared(req, res) {
   });
 }
 
+function readDeployVersion() {
+  try {
+    return fs.readFileSync(path.join(__dirname, 'deploy-version.txt'), 'utf8').trim();
+  } catch (_) {
+    return '';
+  }
+}
+
+/** Bust browser cache for core bundles that change every deploy. */
+function injectDeployCacheBust(html, deployVersion) {
+  if (!deployVersion || !html) return html;
+  const q = `?v=${encodeURIComponent(deployVersion)}`;
+  return html
+    .replace(
+      /(<script defer src="js\/(?:utils|data-cache|offline-store|supabase-bootstrap|api|app)\.js)">/g,
+      `$1${q}">`
+    )
+    .replace(
+      /(<script src="(?:js\/app\.js|\/shared\/panel-notify\.js|\/shared\/panel-sound\.js)">)/g,
+      (m) => (m.includes('?v=') ? m : m.replace('.js">', `.js${q}">`))
+    );
+}
+
+/** Bust cache for panel HTML (Expenses / Manager / Driver) script and CSS tags. */
+function injectPanelCacheBust(html, deployVersion) {
+  if (!deployVersion || !html) return html;
+  const q = `?v=${encodeURIComponent(deployVersion)}`;
+  return html.replace(
+    /((?:src|href)=")((?:\/shared\/|shared\/|js\/|css\/)[^"?]+\.(?:js|css))(")/g,
+    (_, a, url, c) => `${a}${url}${q}${c}`
+  );
+}
+
 function serveStatic(req, res) {
   let urlPath = (req.url || '/').split('?')[0];
   if (urlPath === '/') urlPath = '/index.html';
@@ -517,8 +732,9 @@ function serveStatic(req, res) {
           res.writeHead(404);
           return res.end('Not found');
         }
+        const html = injectDeployCacheBust(decodeTextBuffer(buf), readDeployVersion());
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...corsHeaders() });
-        res.end(buf);
+        res.end(html);
       });
     }
     const ext = path.extname(filePath).toLowerCase();
@@ -532,8 +748,12 @@ function serveStatic(req, res) {
         res.writeHead(500);
         return res.end('Read error');
       }
+      let body = buf;
+      if (ext === '.html') {
+        body = Buffer.from(injectDeployCacheBust(decodeTextBuffer(buf), readDeployVersion()), 'utf8');
+      }
       res.writeHead(200, { 'Content-Type': type, 'Cache-Control': cache, ...corsHeaders() });
-      res.end(buf);
+      res.end(body);
     });
   });
 }
@@ -618,9 +838,10 @@ window.__SHOP_POS_DEPLOY__ = ${JSON.stringify(deployVersion)};
 async function main() {
   syncOrderWebConfig();
   syncManagerWebConfig();
-  syncReferralWebConfig();
   syncDriverWebConfig();
   syncExpenseWebConfig();
+  syncStudioWebConfig();
+  syncRadioWebConfigs();
   syncInvestorWebConfig();
   syncReleaseWebConfig();
   syncMeetingWebConfig();
@@ -639,6 +860,36 @@ async function main() {
     const migrations = ensurePgMigrations(db);
     const accounting = ensureAccSchema(db);
     console.log('[DB] Accounting bootstrap:', JSON.stringify({ migrations, accounting }));
+    try {
+      const store = require('./electron/services/store');
+      store.runStartupTasks();
+      console.log('[DB] Startup tasks completed (loyalty backfill, reminders, etc.)');
+    } catch (e) {
+      console.warn('[DB] Startup tasks:', e.message || e);
+    }
+    try {
+      require('./electron/services/payment-gateway').ensurePaymentGatewaySchema();
+      console.log('[DB] Payment gateway schema ready');
+    } catch (e) {
+      console.warn('[DB] Payment gateway schema:', e.message || e);
+    }
+    try {
+      const storage = require('./electron/services/system-storage');
+      storage.ensureSchema();
+      // Deferred lightweight snapshot — does not block boot or POS traffic
+      setTimeout(() => {
+        storage.recordStorageSnapshot().then((r) => {
+          if (r?.success) console.log('[DB] Storage snapshot:', r.database_size_pretty);
+        }).catch((err) => console.warn('[DB] Storage snapshot:', err.message || err));
+      }, 45000);
+      setInterval(() => {
+        storage.recordStorageSnapshot().catch((err) =>
+          console.warn('[DB] Storage snapshot:', err.message || err));
+      }, 6 * 60 * 60 * 1000); // every 6 hours
+      console.log('[DB] Storage monitor schema ready');
+    } catch (e) {
+      console.warn('[DB] Storage monitor:', e.message || e);
+    }
   } catch (e) {
     console.error('[DB] Accounting bootstrap failed:', e.message || e);
   }
@@ -661,8 +912,54 @@ async function main() {
         public_url: base,
         handlers: Object.keys(rpc.handlers).length,
         customer_ordering: `${base}/order/`,
-        portals: `${base}/portals.html`
+        portals: `${base}/portals.html`,
+        whatsapp_webhook: `${base}/api/webhooks/whatsapp`
       });
+    }
+
+    // Meta WhatsApp Cloud API webhooks (GET verify + POST events)
+    if (urlPath === '/api/webhooks/whatsapp') {
+      const waHook = require('./electron/services/whatsapp-webhook');
+      if (req.method === 'GET') {
+        const q = Object.fromEntries(new URL(req.url || '/', 'http://localhost').searchParams.entries());
+        const result = waHook.handleVerify(q);
+        res.writeHead(result.status, {
+          'Content-Type': result.contentType || 'text/plain; charset=utf-8',
+          ...corsHeaders()
+        });
+        return res.end(result.body);
+      }
+      if (req.method === 'POST') {
+        const chunks = [];
+        for await (const c of req) chunks.push(c);
+        const rawBody = Buffer.concat(chunks);
+        try {
+          const result = waHook.handleEvent(rawBody, req.headers);
+          return writeJson(res, result.status || 200, result.body || { success: true });
+        } catch (e) {
+          console.error('[webhook] whatsapp:', e.message || e);
+          // Still 200 so Meta does not storm retries on handler bugs after ack path
+          return writeJson(res, 200, { success: true });
+        }
+      }
+      res.writeHead(405, corsHeaders());
+      return res.end('Method Not Allowed');
+    }
+
+    // Payment gateway webhooks (raw body required for signature verification)
+    if (urlPath.startsWith('/api/webhooks/payments/') && req.method === 'POST') {
+      const provider = decodeURIComponent(urlPath.replace('/api/webhooks/payments/', '').split('/')[0] || '');
+      const chunks = [];
+      for await (const c of req) chunks.push(c);
+      const rawBody = Buffer.concat(chunks);
+      try {
+        const payGw = require('./electron/services/payment-gateway');
+        const result = await payGw.processWebhook(provider, rawBody, req.headers);
+        return writeJson(res, result.status || 200, result.body || { success: true });
+      } catch (e) {
+        console.error('[webhook] payment:', e.message || e);
+        return writeJson(res, 500, { success: false, error: 'Webhook handler error' });
+      }
     }
 
     if (urlPath === '/api/mobile-releases.json') {
@@ -830,10 +1127,14 @@ async function main() {
       try {
         const { getExpenseInvoice } = require('./lib/expense-documents');
         const file = getExpenseInvoice(expenseId);
+        const send = (buf) => {
+          res.writeHead(200, { 'Content-Type': file.mime || 'image/jpeg', 'Cache-Control': 'private, max-age=3600', ...corsHeaders() });
+          res.end(buf);
+        };
+        if (file.buffer) return send(file.buffer);
         return fs.readFile(file.path, (err, buf) => {
           if (err) { res.writeHead(404); return res.end('Not found'); }
-          res.writeHead(200, { 'Content-Type': file.mime, 'Cache-Control': 'private, max-age=3600', ...corsHeaders() });
-          res.end(buf);
+          send(buf);
         });
       } catch (e) {
         res.writeHead(404);
@@ -897,6 +1198,53 @@ async function main() {
           res.writeHead(200, { 'Content-Type': file.mime, 'Cache-Control': 'private, max-age=3600', ...corsHeaders() });
           res.end(buf);
         });
+      } catch (e) {
+        res.writeHead(403);
+        return res.end(String(e.message || 'Forbidden'));
+      }
+    }
+
+    if (urlPath.startsWith('/radio-media/')) {
+      const mediaId = urlPath.replace('/radio-media/', '').split('?')[0];
+      const q = (req.url || '').split('?')[1] || '';
+      const token = new URLSearchParams(q).get('token');
+      try {
+        const radio = require('./electron/services/radio-platform');
+        const file = radio.getMediaFile(Number(mediaId), token);
+        const stat = fs.statSync(file.path);
+        const total = stat.size;
+        const mime = file.mime || 'audio/mpeg';
+        const range = req.headers.range;
+        const cors = corsHeaders();
+        if (range) {
+          const m = String(range).match(/bytes=(\d*)-(\d*)/);
+          let start = m && m[1] ? parseInt(m[1], 10) : 0;
+          let end = m && m[2] ? parseInt(m[2], 10) : total - 1;
+          if (Number.isNaN(start)) start = 0;
+          if (Number.isNaN(end) || end >= total) end = total - 1;
+          if (start >= total || start > end) {
+            res.writeHead(416, { 'Content-Range': `bytes */${total}`, ...cors });
+            return res.end();
+          }
+          const chunkSize = end - start + 1;
+          res.writeHead(206, {
+            'Content-Type': mime,
+            'Content-Length': chunkSize,
+            'Content-Range': `bytes ${start}-${end}/${total}`,
+            'Accept-Ranges': 'bytes',
+            'Cache-Control': 'public, max-age=3600',
+            ...cors
+          });
+          return fs.createReadStream(file.path, { start, end }).pipe(res);
+        }
+        res.writeHead(200, {
+          'Content-Type': mime,
+          'Content-Length': total,
+          'Accept-Ranges': 'bytes',
+          'Cache-Control': 'public, max-age=3600',
+          ...cors
+        });
+        return fs.createReadStream(file.path).pipe(res);
       } catch (e) {
         res.writeHead(403);
         return res.end(String(e.message || 'Forbidden'));
@@ -982,6 +1330,19 @@ async function main() {
       return writeJson(res, result.status, result.json, result.headers);
     }
 
+    if (urlPath === '/apply' || urlPath.startsWith('/apply/')) {
+      const applyFile = path.join(SRC, 'apply.html');
+      return fs.readFile(applyFile, (e2, buf) => {
+        if (e2) {
+          res.writeHead(404);
+          return res.end('Apply page not found');
+        }
+        const html = injectPanelCacheBust(buf.toString('utf8'), readDeployVersion());
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache', ...corsHeaders() });
+        res.end(html);
+      });
+    }
+
     // Customer ordering website (PWA)
     if (urlPath === '/order') {
       res.writeHead(301, { Location: '/order/', ...corsHeaders() });
@@ -995,16 +1356,24 @@ async function main() {
       return serveManagerWeb(req, res);
     }
 
-    if (urlPath === '/r' || urlPath.startsWith('/r/')) {
-      return serveReferralWeb(req, res);
-    }
-
     if (urlPath === '/driver' || urlPath.startsWith('/driver/')) {
       return serveDriverWeb(req, res);
     }
 
     if (urlPath === '/expenses' || urlPath.startsWith('/expenses/')) {
       return serveExpenseWeb(req, res);
+    }
+
+    if (urlPath === '/studio' || urlPath.startsWith('/studio/')) {
+      return serveStudioWeb(req, res);
+    }
+
+    if (urlPath === '/radio-studio' || urlPath.startsWith('/radio-studio/')) {
+      return serveRadioStudioWeb(req, res);
+    }
+
+    if (urlPath === '/radio' || urlPath.startsWith('/radio/')) {
+      return serveRadioWeb(req, res);
     }
 
     if (urlPath === '/investor' || urlPath.startsWith('/investor/')) {
@@ -1054,9 +1423,11 @@ async function main() {
     console.log(`  RPC:    http://localhost:${PORT}/rpc`);
     console.log(`  Order:   http://localhost:${PORT}/order/`);
     console.log(`  Manager: http://localhost:${PORT}/manager/`);
-    console.log(`  Referral: http://localhost:${PORT}/r/CODE`);
     console.log(`  Driver:   http://localhost:${PORT}/driver/`);
     console.log(`  Expenses: http://localhost:${PORT}/expenses/`);
+    console.log(`  Studio:   http://localhost:${PORT}/studio/`);
+    console.log(`  Radio:    http://localhost:${PORT}/radio/main/`);
+    console.log(`  Radio Studio: http://localhost:${PORT}/radio-studio/`);
     console.log(`  Investor: http://localhost:${PORT}/investor/`);
     console.log(`  Release:  http://localhost:${PORT}/release/`);
     console.log(`  Meeting:  http://localhost:${PORT}/meeting/`);

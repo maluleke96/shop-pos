@@ -14,6 +14,7 @@ const BookkeepingPage = {
 
   async render(el, app) {
     this.app = app;
+    this._host = el;
     this.el = el;
     const sec = app.settings?.security_settings || {};
     if (sec.bookkeeping_password_configured && !this.unlocked) {
@@ -50,12 +51,20 @@ const BookkeepingPage = {
       ['dashboard', 'Dashboard'], ['ledger', 'Auto Ledger'], ['income', 'Income'], ['expenses', 'Expenses'],
       ['cashbook', 'Cash Book'], ['bankbook', 'Bank Book'], ['payroll', 'Payroll'], ['tax', 'Tax'],
       ['donations', 'Donations'], ['reports', 'Reports'], ['performance', 'Performance'], ['documents', 'Documents'],
-      ['audit', 'Audit Trail'], ['budgets', 'Budgets'], ['alerts', 'Alerts'], ['settings', 'Settings']
+      ['audit', 'Audit Trail'], ['budgets', 'Budgets'], ['alerts', 'Alerts'], ['accounting', 'Accounting'],
+      ['settings', 'Settings']
     ];
 
-    el.innerHTML = `<div class="page-toolbar"><h3>Bookkeeping & Financial Management</h3>
-      ${branchFilter}
-      <button class="btn btn-sm btn-primary" id="bk-sync">Sync Ledger</button></div>
+    el.innerHTML = `<div class="page-toolbar" style="align-items:flex-start">
+      <div>
+        <h3 style="margin:0">Bookkeeping &amp; Financial Management</h3>
+        <p class="muted" style="margin:4px 0 0;font-size:13px">Live ledger from sales, expenses, payroll, stock &amp; more — sync to refresh</p>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        ${branchFilter}
+        <button class="btn btn-sm btn-primary" id="bk-sync">Sync Ledger</button>
+      </div>
+    </div>
       ${Utils.extendedDateFilterHTML('bk-date-filter', this.from, this.to)}
       <div class="form-tabs" id="bk-tabs" style="flex-wrap:wrap;margin:12px 0">${tabs.map(([id, label]) =>
         `<button type="button" class="form-tab ${this.tab === id ? 'active' : ''}" data-tab="${id}">${label}</button>`).join('')}</div>
@@ -108,7 +117,7 @@ const BookkeepingPage = {
   currency() { return this.app.settings?.currency || 'R'; },
 
   async renderTab() {
-    const content = document.getElementById('bk-content');
+    const content = this.el?.querySelector?.('#bk-content') || document.getElementById('bk-content');
     if (!content) return;
     content.innerHTML = '<p class="muted">Loading…</p>';
     try {
@@ -128,6 +137,7 @@ const BookkeepingPage = {
         audit: () => this.renderAudit(content),
         budgets: () => this.renderBudgets(content),
         alerts: () => this.renderAlerts(content),
+        accounting: () => this.renderAccountingLink(content),
         settings: () => this.renderSettings(content)
       };
       await (map[this.tab] || map.dashboard)();
@@ -570,6 +580,26 @@ const BookkeepingPage = {
       ? notes.map(n => `<div class="card" style="margin-bottom:8px;padding:12px;border-left:4px solid ${n.type.includes('over') || n.type === 'low_cash' ? 'var(--danger)' : 'var(--warning)'}">
         <strong>${n.title}</strong><br><small>${n.message}</small></div>`).join('')
       : '<p class="muted">No financial alerts right now</p>';
+  },
+
+  renderAccountingLink(el) {
+    el.innerHTML = `<div class="card"><div class="card-body">
+      <h4 style="margin-top:0">Accounting Command Centre</h4>
+      <p class="muted">Bookkeeping keeps its own cash book, bank book, budgets, donations, and reports on this page. Use Accounting for full double-entry journals, invoices, bank reconciliation, and trial balance.</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:16px">
+        <button type="button" class="btn btn-primary" id="bk-open-accounting">Open Accounting Command Centre</button>
+        <button type="button" class="btn btn-ghost" id="bk-acc-sync">Sync POS → Accounting</button>
+      </div>
+      <p class="muted" style="font-size:13px;margin-top:12px">Tip: use <strong>Sync Ledger</strong> at the top for bookkeeping entries, and Accounting sync for the central GL.</p>
+    </div></div>`;
+    el.querySelector('#bk-open-accounting')?.addEventListener('click', () => {
+      this.app?.openAccounting?.({ fromApp: true, skipLogin: true });
+    });
+    el.querySelector('#bk-acc-sync')?.addEventListener('click', async () => {
+      const r = await API.accSyncMissing(this.app.user);
+      if (r?.success === false) return Utils.toast(r.error || 'Accounting sync failed', 'error');
+      Utils.toast(`Accounting sync complete (${r?.data?.synced ?? r?.synced ?? 0} posted)`, 'success');
+    });
   },
 
   async renderSettings(el) {

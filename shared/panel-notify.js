@@ -10,7 +10,7 @@ window.PanelNotify = {
   _loggedIn: () => true,
   _loaded: false,
 
-  PANELS: ['pos', 'admin', 'driver', 'manager', 'online', 'delivery', 'staff', 'recipe'],
+  PANELS: ['pos', 'admin', 'driver', 'manager', 'online', 'delivery', 'staff', 'recipe', 'referral', 'referral-commission'],
 
   init(opts = {}) {
     this.panel = opts.panel || this.panel;
@@ -112,18 +112,72 @@ window.PanelNotify = {
   },
 
   async requestPermission() {
+    // Android / Capacitor native tray permission
+    try {
+      const LN = window.Capacitor?.Plugins?.LocalNotifications;
+      if (LN?.requestPermissions) await LN.requestPermissions();
+    } catch (_) { /* ignore */ }
     if (typeof Notification === 'undefined') return;
     if (Notification.permission === 'default') {
       try { await Notification.requestPermission(); } catch (_) { /* */ }
     }
   },
 
-  notifyBrowser(title, body, tag) {
+  /** Schedule a native tray notification (phone popup). Tap opens app; dismiss does not. */
+  notifyNative(title, body, tag, extra = {}) {
+    const LN = window.Capacitor?.Plugins?.LocalNotifications;
+    if (!LN?.schedule) return;
+    const id = Math.abs(String(tag || title || Date.now()).split('').reduce((s, c) => ((s * 31) + c.charCodeAt(0)) | 0, 0)) || Date.now();
+    const url = extra.url || '/';
+    Promise.resolve(LN.requestPermissions?.())
+      .then(() => LN.schedule({
+        notifications: [{
+          title: title || 'New alert',
+          body: String(body || '').slice(0, 180),
+          id: id % 2147483647,
+          extra: { url, panel: this.panel, tag, eventKey: extra.eventKey || tag }
+        }]
+      }))
+      .catch(() => {});
+  },
+
+  notifyPhone(title, body, tag, extra = {}) {
+    this.notifyBrowser(title, body, tag, extra);
+    this.notifyNative(title, body, tag, extra);
+  },
+
+  notifyBrowser(title, body, tag, extra = {}) {
     if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
-    if (!this.shouldPlaySound()) return;
-    try {
-      new Notification(title, { body, tag: tag || `${this.panel}-${Date.now()}` });
-    } catch (_) { /* */ }
+    if (!this._loggedIn()) return;
+    const url = extra.url || (this.panel === 'manager' ? '/manager/' : '/');
+    const opts = {
+      body: body || '',
+      tag: tag || `${this.panel}-${Date.now()}`,
+      requireInteraction: true,
+      silent: false,
+      data: { url, panel: this.panel }
+    };
+    if (navigator.vibrate) {
+      try { navigator.vibrate([180, 80, 180]); } catch (_) { /* */ }
+    }
+    const fallback = () => {
+      try {
+        const n = new Notification(title || 'New alert', opts);
+        n.onclick = () => {
+          try { window.focus(); } catch (_) { /* */ }
+          if (url && document.hidden) location.href = url;
+          n.close();
+        };
+      } catch (_) { /* */ }
+    };
+    if (navigator.serviceWorker?.ready) {
+      navigator.serviceWorker.ready.then((reg) => {
+        if (reg.showNotification) return reg.showNotification(title || 'New alert', opts);
+        fallback();
+      }).catch(fallback);
+      return;
+    }
+    fallback();
   },
 
   onLogout() {

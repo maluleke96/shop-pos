@@ -209,18 +209,36 @@ function installApiReadCache() {
   if (!window.API || API._dataCacheInstalled) return;
   API._dataCacheInstalled = true;
 
-  const wrap = (name, ns, ttlMs, pickArgs = (a) => a) => {
+  const wrap = (name, ns, ttlMs, pickArgs = (a) => a, opts = {}) => {
     const orig = API[name];
     if (typeof orig !== 'function') return;
+    const swr = opts.swr !== false;
+    const transform = opts.transform;
     API[name] = function (...args) {
-      // Dedupe + store only. Pages use DataCache.peek for instant paint (SWR).
-      return DataCache.fetch(ns, pickArgs(args), () => orig.apply(API, args), { ttlMs, swr: false });
+      return DataCache.fetch(ns, pickArgs(args), () => {
+        return Promise.resolve(orig.apply(API, args)).then((res) => (
+          typeof transform === 'function' ? transform(res, args) : res
+        ));
+      }, { ttlMs, swr });
     };
     API[name]._uncached = orig;
   };
 
-  wrap('getProducts', 'products', 90000, (a) => [a[0] || {}]);
-  wrap('getCategories', 'categories', 300000, (a) => [a[0] || {}]);
+  wrap('getProduct', 'productOne', 600000, (a) => [a[0]]);
+  wrap('getProducts', 'products', 300000, (a) => [a[0] || {}], {
+    swr: true,
+    transform(res, args) {
+      if (!args[0]?.for_pos || !Array.isArray(res?.data)) return res;
+      return { ...res, data: Utils.slimPosCatalogProducts(res.data) };
+    }
+  });
+  wrap('getCategories', 'categories', 600000, (a) => [a[0] || {}], {
+    swr: true,
+    transform(res, args) {
+      if (!args[0]?.for_pos || !Array.isArray(res?.data)) return res;
+      return { ...res, data: res.data.map((c) => Utils.slimPosCatalogItem(c, 'category')) };
+    }
+  });
   wrap('getCustomers', 'customers', 120000, (a) => [typeof a[0] === 'string' ? a[0] : '']);
   wrap('getSuppliers', 'suppliers', 300000, (a) => [a[0] || '']);
   wrap('getDashboardStats', 'dashboard', 60000, (a) => [a[0], a[1]]);
@@ -229,17 +247,27 @@ function installApiReadCache() {
   wrap('getSalesReport', 'salesReport', 60000, (a) => [a[0], a[1]]);
   wrap('getEmployees', 'employees', 120000, (a) => [a[0] || {}, a[1]?.id || null]);
   wrap('getOpenShift', 'openShift', 20000, (a) => [a[0]?.id || a[0] || null]);
-  wrap('getActiveCombos', 'combos', 120000, (a) => [a[0] || {}]);
-  wrap('getActiveCampaigns', 'campaigns', 60000, (a) => [a[0] ?? null]);
+  wrap('getActiveCombos', 'combos', 300000, (a) => [a[0] || {}], {
+    swr: true,
+    transform(res, args) {
+      if (!args[0]?.for_pos || !Array.isArray(res?.data)) return res;
+      return { ...res, data: res.data.map((c) => Utils.slimPosCatalogItem(c, 'combo')) };
+    }
+  });
   wrap('getKitchenOrders', 'kitchen', 15000, (a) => [a[0] ?? null]);
   wrap('getSettingsParsed', 'settings', 300000, () => []);
-  wrap('getNotifications', 'notifications', 20000, (a) => [a?.id || a?.role || a || null]);
+  wrap('getNotifications', 'notifications', 1500, (a) => [a?.id || a?.role || a || null], { swr: true });
   wrap('getAdminDashboard', 'adminDashboard', 45000, (a) => [a[0], a[1]]);
   wrap('getSalesList', 'salesList', 30000, (a) => [a[0] || {}]);
   wrap('getSoldProductsReport', 'soldProductsReport', 60000, (a) => [a[0], a[1]]);
   wrap('getPromoRequestHistory', 'promoHistory', 45000, (a) => [a[0] || {}]);
   wrap('getCombos', 'combosList', 60000, (a) => [a[0] || {}]);
   wrap('globalSearch', 'globalSearch', 15000, (a) => [String(a[0] || '').toLowerCase().trim()]);
+  wrap('getQuotes', 'quotes', 60000, (a) => [a[0] || {}]);
+  wrap('getLaybyes', 'laybyes', 60000, (a) => [a[0] || {}]);
+  wrap('getGiftCards', 'giftcards', 60000, (a) => [a[0] || {}]);
+  wrap('getExpenseCategories', 'expenseCategories', 300000, () => []);
+  wrap('getWhatsAppTemplates', 'waTemplates', 120000, (a) => [a[0] || {}]);
 
   let catalogBroadcast = null;
   try {
@@ -251,11 +279,10 @@ function installApiReadCache() {
   /** Invalidate menu/catalog caches and notify POS, Recipe, and embedded admin views instantly. */
   const notifyCatalogChanged = (detail = {}) => {
     DataCache.invalidate(
-      'products', 'stockReport', 'stockHistory', 'dashboard', 'pos', 'categories',
+      'products', 'productOne', 'stockReport', 'stockHistory', 'dashboard', 'pos', 'categories',
       'promoHistory', 'combos', 'combosList', 'campaigns'
     );
     try {
-      Utils.sessionCacheClear?.('products_page');
       Utils.sessionCacheClear?.('pos_');
     } catch (_) { /* ignore */ }
     const stamp = String(Date.now());
@@ -304,8 +331,14 @@ function installApiReadCache() {
       try { window.dispatchEvent(new CustomEvent('shop-pos-targets-updated')); } catch (_) { /* */ }
     }
   });
-  after('saveProduct', (res) => {
-    if (res?.success !== false) invalidateProducts();
+  after('saveProduct', (res, args) => {
+    if (res?.success === false) return;
+    const id = res?.data?.id || args?.[0]?.id;
+    if (id != null) {
+      try { window.Utils?._offlineImageUrls?.delete?.(String(id)); } catch (_) { /* ignore */ }
+      try { window.OfflineStore?.revokeImageObjectUrl?.(id); } catch (_) { /* ignore */ }
+    }
+    invalidateProducts();
   });
   after('saveOtherSellItem', (res) => {
     if (res?.success !== false && res?.data?.id) invalidateProducts();
@@ -329,6 +362,18 @@ function installApiReadCache() {
     if (res?.success !== false) invalidateProducts();
   });
   after('recipeRestockIngredient', (res) => {
+    if (res?.success !== false) invalidateProducts();
+  });
+  after('recipeRestockBatchSave', (res) => {
+    if (res?.success !== false) invalidateProducts();
+  });
+  after('recipeRefreshProduction', (res) => {
+    if (res?.success !== false) invalidateProducts();
+  });
+  after('recipeSaveIngredientGroup', (res) => {
+    if (res?.success !== false) invalidateProducts();
+  });
+  after('recipeDeleteIngredientGroup', (res) => {
     if (res?.success !== false) invalidateProducts();
   });
   after('recipeSetAvailableToday', (res) => {
@@ -365,9 +410,6 @@ function installApiReadCache() {
     if (res?.success !== false) notifyCatalogChanged();
   });
   after('recipeSetPosMenuFlags', (res) => {
-    if (res?.success !== false) notifyCatalogChanged();
-  });
-  after('applyFlyerPosPrices', (res) => {
     if (res?.success !== false) notifyCatalogChanged();
   });
   after('rejectPromoRequest', (res) => {

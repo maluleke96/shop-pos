@@ -15,6 +15,9 @@ const CustomersPage = {
       el.innerHTML = `<div class="page-toolbar"><h3>Customers</h3></div><div class="card">${Utils.pageSkeleton(4)}</div>`;
     }
     try {
+      if (['owner', 'manager'].includes(app.user?.role)) {
+        try { await API.syncMissingLoyaltyPoints(app.user); } catch (_) { /* best effort */ }
+      }
       const res = await API.getCustomers('');
       this._allCustomers = res.data || (Array.isArray(res) ? res : []);
       this.customers = this._searchQuery ? this.filterLocal(this._searchQuery) : [...this._allCustomers];
@@ -70,7 +73,7 @@ const CustomersPage = {
         <button class="btn btn-primary" id="add-cust">+ Add Customer</button>
       </div>
       <div class="card"><div class="table-wrap"><table>
-        <thead><tr><th>Name</th><th>Phone</th><th>Email</th><th>Balance</th><th>Points</th><th></th></tr></thead>
+        <thead><tr><th>Name</th><th>Phone</th><th>Email</th><th>Balance</th><th>Loyalty Points</th><th></th></tr></thead>
         <tbody id="cust-table">${this.renderRows()}</tbody>
       </table></div></div>`;
 
@@ -92,6 +95,20 @@ const CustomersPage = {
   },
 
   async activate(el, app) {
+    this.app = app;
+    this._host = el;
+    if (el?.querySelector?.('#cust-table') && (this._allCustomers || []).length) {
+      API.getCustomers('').then((res) => {
+        this._allCustomers = res.data || (Array.isArray(res) ? res : []);
+        this.customers = this._searchQuery ? this.filterLocal(this._searchQuery) : [...this._allCustomers];
+        const tbody = document.getElementById('cust-table');
+        if (tbody) {
+          tbody.innerHTML = this.renderRows();
+          this.bindEvents();
+        }
+      }).catch(() => {});
+      return;
+    }
     return this.render(el, app);
   },
 
@@ -131,7 +148,7 @@ const CustomersPage = {
       if (!r.success) return Utils.toast(r.error, 'error');
       Utils.toast('Customer deleted', 'success');
       this._searchQuery = '';
-      CustomersPage.render(document.getElementById('page-content'), this.app);
+      CustomersPage.render(this._host || document.querySelector('.page-host[data-page="customers"]') || document.querySelector('.page-host-active'), this.app);
     }));
   },
 
@@ -154,6 +171,15 @@ const CustomersPage = {
       const sales = s.sales || [];
       const ledger = ledgerRes?.data ?? ledgerRes ?? [];
       const loyalty = loyaltyRes?.data ?? loyaltyRes ?? [];
+      const isOwner = this.app.user?.role === 'owner';
+      let restorableIds = new Set();
+      if (isOwner) {
+        try {
+          const restRes = await API.listRestorableExpiredPoints({ customerId, limit: 50 }, this.app.user);
+          const restRows = restRes?.data ?? (Array.isArray(restRes) ? restRes : []);
+          restorableIds = new Set(restRows.map((r) => String(r.id)));
+        } catch (_) { /* optional */ }
+      }
       Utils.showModal(`Customer: ${Utils.escHtml(customer?.name || '')}`, `
         <div class="stats-grid" style="margin-bottom:16px">
           <div class="stat-card"><div class="label">Total Spent</div><div class="value">${Utils.formatMoney(s.totalSpent || 0, currency)}</div></div>
@@ -165,19 +191,44 @@ const CustomersPage = {
           <div class="stat-card"><div class="label">Loyalty Points</div><div class="value">${Math.floor(customer?.loyalty_points || 0)}</div></div>
         </div>
         <h4>Purchase History</h4>
-        ${sales.length ? `<div class="table-wrap"><table style="width:100%"><tr><th>Receipt</th><th>Total</th><th>Cashier</th><th>Date</th></tr>
-          ${sales.map(x => `<tr><td>${Utils.escHtml(x.receipt_number || '—')}</td><td>${Utils.formatMoney(x.total, currency)}</td><td>${Utils.escHtml(x.cashier_name || '—')}</td><td>${Utils.formatDateTime(x.created_at)}</td></tr>`).join('')}</table></div>`
+        ${sales.length ? `<div class="table-wrap"><table style="width:100%"><tr><th>Receipt / Order</th><th>Source</th><th>Total</th><th>Cashier</th><th>Status</th><th>Date</th></tr>
+          ${sales.map(x => `<tr><td>${Utils.escHtml(x.receipt_number || x.order_number || '—')}</td><td>${x.source === 'online' ? 'Online' : 'POS'}</td><td>${Utils.formatMoney(x.total, currency)}</td><td>${Utils.escHtml(x.cashier_name || '—')}</td><td>${Utils.escHtml(x.status || 'completed')}</td><td>${Utils.formatDateTime(x.created_at)}</td></tr>`).join('')}</table></div>`
           : '<p class="muted">No purchases yet</p>'}
         ${ledger.length ? `<h4 style="margin-top:16px">Credit Ledger</h4>
           <div class="table-wrap"><table style="width:100%"><tr><th>Date</th><th>Type</th><th>Amount</th><th>Notes</th></tr>
           ${ledger.map(l => `<tr><td>${Utils.formatDateTime(l.created_at)}</td><td>${Utils.escHtml(l.type || '—')}</td><td>${Utils.formatMoney(l.amount, currency)}</td><td>${Utils.escHtml(l.notes || '')}</td></tr>`).join('')}
           </table></div>` : ''}
-        ${loyalty.length ? `<h4 style="margin-top:16px">Loyalty Points History</h4>
-          <div class="table-wrap"><table style="width:100%"><tr><th>Date</th><th>Type</th><th>Points</th><th>Notes</th></tr>
-          ${loyalty.map(l => `<tr><td>${Utils.formatDateTime(l.created_at)}</td><td>${Utils.escHtml(l.type || '—')}</td><td>${l.points > 0 ? '+' : ''}${l.points}</td><td>${Utils.escHtml(l.notes || '')}</td></tr>`).join('')}
+        ${loyalty.length ? `<h4 style="margin-top:16px">Loyalty Points History (POS &amp; Online)</h4>
+          <div class="table-wrap"><table style="width:100%"><tr><th>Date</th><th>Source</th><th>Type</th><th>Points</th><th>Notes</th>${isOwner ? '<th></th>' : ''}</tr>
+          ${loyalty.map(l => `<tr>
+            <td>${Utils.formatDateTime(l.created_at)}</td>
+            <td>${Utils.escHtml(l.source || '—')}</td>
+            <td>${Utils.escHtml(l.type || '—')}</td>
+            <td>${l.points > 0 ? '+' : ''}${l.points}</td>
+            <td>${Utils.escHtml(l.notes || '')}</td>
+            ${isOwner ? `<td>${l.type === 'expire' && restorableIds.has(String(l.id))
+              ? `<button class="btn btn-sm btn-primary cu-restore-pts" data-txn="${l.id}" data-pts="${Math.abs(l.points)}">Restore</button>`
+              : ''}</td>` : ''}
+          </tr>`).join('')}
           </table></div>` : ''}`,
         '<button class="btn btn-ghost" id="close-hist">Close</button>');
       document.getElementById('close-hist')?.addEventListener('click', Utils.hideModal);
+      document.querySelectorAll('.cu-restore-pts').forEach((btn) => btn.addEventListener('click', async () => {
+        const pts = parseInt(btn.dataset.pts, 10) || 0;
+        if (!confirm(`Restore ${pts} expired points for ${customer?.name || 'this customer'}?`)) return;
+        btn.disabled = true;
+        try {
+          const r = await API.restoreExpiredLoyaltyPoints(parseInt(btn.dataset.txn, 10), this.app.user);
+          if (r?.success === false) throw new Error(r.error || 'Restore failed');
+          Utils.toast(`Restored ${pts} points`, 'success');
+          window.DataCache?.invalidate?.('customers');
+          Utils.hideModal();
+          CustomersPage.render(this._host || document.querySelector('.page-host[data-page="customers"]') || document.querySelector('.page-host-active'), this.app);
+        } catch (err) {
+          Utils.toast(err.message || 'Could not restore points', 'error');
+          btn.disabled = false;
+        }
+      }));
     } catch (err) {
       Utils.toast(err.message || 'Could not load customer history', 'error');
     }
@@ -202,7 +253,7 @@ const CustomersPage = {
           await API.payCustomerCredit(customerId, p.amount, `Payment via ${p.type}`, this.app.user);
         }
         Utils.hideModal();
-        CustomersPage.render(document.getElementById('page-content'), this.app);
+        CustomersPage.render(this._host || document.querySelector('.page-host[data-page="customers"]') || document.querySelector('.page-host-active'), this.app);
         Utils.toast('Payment recorded', 'success');
       }
     });
@@ -212,13 +263,17 @@ const CustomersPage = {
     try {
       const raw = this.app.settings?.loyalty_settings;
       const ls = typeof raw === 'string' ? JSON.parse(raw) : (raw || {});
+      const unit = ls.expiry_period_unit === 'months' ? 'months' : 'days';
+      const value = ls.expiry_period_value ?? ls.points_expiry_days ?? 30;
       return {
         point_value: Number(ls.point_value) > 0 ? Number(ls.point_value) : 1,
-        points_expiry_days: Math.max(0, Math.floor(Number(ls.points_expiry_days) ?? 30)),
+        expiry_period_value: Math.max(1, Math.floor(Number(value) || 30)),
+        expiry_period_unit: unit,
+        points_expiry_days: unit === 'months' ? Math.max(1, Math.floor(Number(value) || 30)) * 30 : Math.max(1, Math.floor(Number(value) || 30)),
         expiry_enabled: ls.expiry_enabled !== false
       };
     } catch (_) {
-      return { point_value: 1, points_expiry_days: 30, expiry_enabled: true };
+      return { point_value: 1, expiry_period_value: 30, expiry_period_unit: 'days', points_expiry_days: 30, expiry_enabled: true };
     }
   },
 
@@ -413,7 +468,7 @@ const CustomersPage = {
       }, this.app.user);
       if (!r.success) return Utils.toast(r.error || 'Could not save customer', 'error');
       Utils.hideModal();
-      CustomersPage.render(document.getElementById('page-content'), this.app);
+      CustomersPage.render(this._host || document.querySelector('.page-host[data-page="customers"]') || document.querySelector('.page-host-active'), this.app);
       Utils.toast('Customer saved', 'success');
     });
   }

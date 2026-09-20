@@ -24,6 +24,7 @@ const CategoriesPage = {
 
   async render(el, app) {
     this.app = app;
+    this._host = el;
     const cached = window.DataCache?.peek?.('categories', [{}]);
     this.categories = Array.isArray(cached?.data) ? cached.data : (this.categories || []);
 
@@ -111,7 +112,7 @@ const CategoriesPage = {
       const idx = this.categories.findIndex((c) => c.id === savedId);
       if (idx >= 0) this.categories[idx] = { ...this.categories[idx], ...row };
       else this.categories.push(row);
-      const host = document.getElementById('page-content');
+      const host = this._host || document.querySelector('.page-host[data-page="categories"]') || document.querySelector('.page-host-active');
       if (host) this.repaint(host, this.app);
       Utils.toast('Category saved', 'success');
     });

@@ -89,6 +89,10 @@ function fillContractTemplate(body, data) {
     break_minutes: d.break_minutes || '30',
     currency: d.currency || 'R',
     salary_amount: Number(d.basic_salary || d.salary_amount || 0).toFixed(2),
+    allowances: Number(d.allowances || 0).toFixed(2),
+    overtime_rate: Number(d.overtime_rate || 0).toFixed(2),
+    deductions: Number(d.deductions || 0).toFixed(2),
+    net_salary: Math.max(0, Number(d.basic_salary || d.salary_amount || 0) + Number(d.allowances || 0) - Number(d.deductions || 0)).toFixed(2),
     payment_date: d.payment_date || '—',
     employer_name: d.employer_name || '—',
     employer_position: d.employer_position || '—',
@@ -170,6 +174,9 @@ function populateContractFromEmployee(employeeId, templateId) {
     employment_type: emp.employment_type || 'Permanent',
     basic_salary: emp.basic_salary || 0,
     salary_amount: emp.basic_salary || 0,
+    allowances: emp.allowances || 0,
+    overtime_rate: emp.overtime_rate || 0,
+    deductions: emp.deductions || 0,
     salary_type: emp.salary_type || 'Monthly',
     address: emp.address || '',
     phone: emp.phone || '',
@@ -201,6 +208,9 @@ function populateContractFromEmployee(employeeId, templateId) {
       phone: emp.phone,
       email: emp.email,
       basic_salary: emp.basic_salary,
+      allowances: emp.allowances,
+      overtime_rate: emp.overtime_rate,
+      deductions: emp.deductions,
       employment_type: emp.employment_type,
       business_name: shop.shop_name,
       business_address: shop.address,
@@ -322,12 +332,12 @@ function saveContract(data, actorId, actorName) {
   try {
     r = db.prepare(`INSERT INTO employee_contracts (employee_id, template_id, contract_data_json, status, signature_data_json, created_by, expires_at, resign_opens_at, resign_closes_at, doc_paths_json, require_docs_on_resign, renewed_from_id)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(
-      data.employee_id, data.template_id || null, payload, data.status || 'draft', sigPayload, actorId,
+      data.employee_id, data.template_id || null, payload, data.status || 'pending_signatures', sigPayload, actorId,
       expiresAt, resignOpens, resignCloses, docsJson, requireDocs, data.renewed_from_id || null
     );
   } catch (_) {
     r = db.prepare(`INSERT INTO employee_contracts (employee_id, template_id, contract_data_json, status, signature_data_json, created_by)
-      VALUES (?,?,?,?,?,?)`).run(data.employee_id, data.template_id || null, payload, data.status || 'draft', sigPayload, actorId);
+      VALUES (?,?,?,?,?,?)`).run(data.employee_id, data.template_id || null, payload, data.status || 'pending_signatures', sigPayload, actorId);
   }
   audit(actorId, actorName, 'create_contract', 'employee_contract', r.lastInsertRowid, { employee_id: data.employee_id });
   return getContract(r.lastInsertRowid);
@@ -491,43 +501,136 @@ function buildContractPdf(contractId, shopSettings) {
   if (!c) throw new Error('Contract not found');
   const s = shopSettings || getShopSettings();
   const d = c.contract_data || {};
-  const doc = new jsPDF();
+  const currency = s.currency || d.currency || 'R';
+  const shopName = d.business_name || s.shop_name || 'Chisanyama Connection';
   const bodyTpl = d.body_template || CHISANYAMA_BODY;
-  const filled = d.filled_body || fillContractTemplate(bodyTpl, { ...d, currency: s.currency || 'R', business_name: d.business_name || s.shop_name });
-  doc.setFontSize(11);
-  const lines = filled.split('\n');
-  let y = 16;
-  lines.forEach(line => {
+  const filled = d.filled_body || fillContractTemplate(bodyTpl, { ...d, currency, business_name: shopName });
+  const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+  const pageW = doc.internal.pageSize.getWidth();
+  const pageH = doc.internal.pageSize.getHeight();
+  const drawHeader = (pageNo) => {
+    doc.setFillColor(20, 20, 20);
+    doc.rect(0, 0, pageW, 22, 'F');
+    doc.setTextColor(255, 255, 255);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(13);
+    doc.text(String(shopName).toUpperCase(), 14, 10);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8);
+    doc.text([s.address || d.business_address, s.phone || d.business_phone, s.email || d.business_email].filter(Boolean).join('  ·  ') || 'Employment Agreement', 14, 16);
+    doc.text(`Page ${pageNo}`, pageW - 14, 16, { align: 'right' });
+    doc.setTextColor(0, 0, 0);
+  };
+  drawHeader(1);
+  let y = 30;
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(16);
+  doc.text('EMPLOYMENT CONTRACT', pageW / 2, y, { align: 'center' });
+  y += 6;
+  doc.setDrawColor(180, 140, 40);
+  doc.setLineWidth(0.6);
+  doc.line(60, y, pageW - 60, y);
+  y += 8;
+  doc.setFontSize(9);
+  doc.setFont('helvetica', 'normal');
+  doc.setTextColor(80, 80, 80);
+  doc.text(`Contract ref: ${c.employee_code || c.id}   ·   Status: ${c.status || 'draft'}   ·   Issued: ${c.created_at ? String(c.created_at).slice(0, 10) : today()}`, pageW / 2, y, { align: 'center' });
+  doc.setTextColor(0, 0, 0);
+  y += 8;
+  const money = (n) => `${currency}${Number(n || 0).toFixed(2)}`;
+  if (doc.autoTable) {
+    doc.autoTable({
+      startY: y,
+      theme: 'plain',
+      styles: { fontSize: 9, cellPadding: 2 },
+      columnStyles: { 0: { fontStyle: 'bold', cellWidth: 42 }, 1: { cellWidth: 53 }, 2: { fontStyle: 'bold', cellWidth: 42 }, 3: { cellWidth: 53 } },
+      body: [
+        ['Employee', d.employee_name || c.employee_name || '—', 'Employee no.', d.employee_number || c.employee_code || '—'],
+        ['ID / Passport', d.id_number || '—', 'Position', d.position || c.emp_position || '—'],
+        ['Branch', d.branch || '—', 'Start date', d.start_date || '—'],
+        ['Basic salary', money(d.basic_salary || d.salary_amount), 'Allowances', money(d.allowances)],
+        ['Deductions', money(d.deductions), 'Indicative net', money(Math.max(0, Number(d.basic_salary || d.salary_amount || 0) + Number(d.allowances || 0) - Number(d.deductions || 0)))],
+        ['Hours', `${d.shift_start || '—'} – ${d.shift_end || '—'}`, 'Pay date', d.payment_date || '—'],
+        ['Employment type', d.employment_type || '—', 'Contract ends', d.end_date || c.expires_at || '—']
+      ]
+    });
+    y = doc.lastAutoTable.finalY + 8;
+  }
+  const ensureSpace = (need) => {
+    if (y + need > pageH - 22) {
+      doc.addPage();
+      drawHeader(doc.internal.getNumberOfPages());
+      y = 30;
+    }
+  };
+  filled.split('\n').forEach((line) => {
     const trimmed = line.trim();
-    if (trimmed.startsWith('# ')) {
-      doc.setFontSize(14);
-      doc.text(trimmed.replace(/^#\s*/, ''), 105, y, { align: 'center' });
-      y += 10;
-      doc.setFontSize(11);
+    if (!trimmed) { y += 3; return; }
+    if (trimmed === '---') {
+      ensureSpace(6);
+      doc.setDrawColor(220, 220, 220);
+      doc.line(14, y, pageW - 14, y);
+      y += 5;
       return;
     }
+    if (trimmed.startsWith('# ')) return;
     if (trimmed.startsWith('## ')) {
+      ensureSpace(12);
+      y += 3;
+      doc.setFont('helvetica', 'bold');
       doc.setFontSize(12);
       doc.text(trimmed.replace(/^##\s*/, ''), 14, y);
-      y += 8;
-      doc.setFontSize(11);
+      y += 7;
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(10);
       return;
     }
     if (trimmed.startsWith('### ')) {
-      doc.setFont(undefined, 'bold');
+      ensureSpace(10);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(10.5);
       doc.text(trimmed.replace(/^###\s*/, ''), 14, y);
-      doc.setFont(undefined, 'normal');
-      y += 7;
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(10);
+      y += 6;
       return;
     }
-    if (trimmed === '---') { y += 4; return; }
-    if (!trimmed) { y += 4; return; }
-    const wrapped = doc.splitTextToSize(trimmed.replace(/^\*\s*/, '• '), 180);
+    const text = trimmed.replace(/^\*\s*/, '• ');
+    const wrapped = doc.splitTextToSize(text, pageW - 28);
+    ensureSpace(wrapped.length * 5 + 2);
+    doc.setFontSize(10);
     doc.text(wrapped, 14, y);
-    y += wrapped.length * 5 + 2;
-    if (y > 280) { doc.addPage(); y = 16; }
+    y += wrapped.length * 5 + 1.5;
   });
-  return doc.output('arraybuffer');
+  ensureSpace(42);
+  y += 8;
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(11);
+  doc.text('Signatures', 14, y);
+  y += 8;
+  const sigs = c.signatures || {};
+  const boxes = [
+    ['Employee', d.employee_name || c.employee_name, sigs.employee, c.employee_signed_at],
+    ['Manager / Employer', d.employer_name || shopName, sigs.manager || sigs.admin, c.manager_signed_at || c.admin_signed_at]
+  ];
+  boxes.forEach((box, i) => {
+    const x = 14 + i * 95;
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8);
+    doc.setDrawColor(180, 180, 180);
+    doc.rect(x, y, 88, 28);
+    if (box[2] && String(box[2]).startsWith('data:image')) {
+      try { doc.addImage(box[2], 'PNG', x + 4, y + 2, 50, 16); } catch (_) { /* ignore */ }
+    }
+    doc.line(x + 6, y + 20, x + 82, y + 20);
+    doc.text(box[0], x + 6, y + 24);
+    if (box[1]) doc.text(String(box[1]), x + 6, y + 27);
+  });
+  y += 36;
+  doc.setFontSize(8);
+  doc.setTextColor(90, 90, 90);
+  doc.text('This agreement is confidential. Deductions and attendance penalties appearing on payslips form part of remuneration calculations.', 14, y, { maxWidth: pageW - 28 });
+  return require('./pdf-bytes').pdfBytes(doc);
 }
 
 function getProbations(filters = {}) {
@@ -539,7 +642,7 @@ function getProbations(filters = {}) {
   if (filters.status) { sql += ' AND p.status = ?'; params.push(filters.status); }
   if (filters.manager_id) { sql += ' AND p.manager_id = ?'; params.push(filters.manager_id); }
   sql += ' ORDER BY p.end_date ASC';
-  return getDb().prepare(sql).all(...params);
+  return getDb().prepare(sql).all(...params).map(p => ({ ...p, rules: parseJson(p.rules_json, {}) }));
 }
 
 function getProbation(id) {
@@ -771,7 +874,7 @@ function buildProbationPdf(probationId, shopSettings) {
   y += 4;
   doc.text(`Evaluations: ${rec.evaluation_count} · Avg score: ${rec.avg_overall_score}`, 14, y); y += 7;
   doc.text(`Attendance: ${rec.attendance.pct}% · Recommendation: ${rec.recommendation.toUpperCase()}`, 14, y);
-  return doc.output('arraybuffer');
+  return require('./pdf-bytes').pdfBytes(doc);
 }
 
 function buildEvaluationReportPdf(probationId, shopSettings) {
@@ -786,7 +889,7 @@ function buildEvaluationReportPdf(probationId, shopSettings) {
     head: [['Date', 'Overall', 'Comments']],
     body: evals.map(e => [e.eval_date, Number(e.overall_score).toFixed(2), (e.comments || '').slice(0, 60)])
   });
-  return doc.output('arraybuffer');
+  return require('./pdf-bytes').pdfBytes(doc);
 }
 
 function buildProbationLetterPdf(probationId, decision, shopSettings) {
@@ -808,7 +911,7 @@ function buildProbationLetterPdf(probationId, decision, shopSettings) {
   doc.text(doc.splitTextToSize(body, 180), 14, 44);
   doc.text(`Date: ${today()}`, 14, 100);
   doc.text('Authorised Signature: _________________________', 14, 120);
-  return doc.output('arraybuffer');
+  return require('./pdf-bytes').pdfBytes(doc);
 }
 
 function getEmployeePersonnelFile(employeeId) {
@@ -851,6 +954,176 @@ function ensureProbationNotifications() {
   }
 }
 
+function ensureLeaseSchema() {
+  getDb().exec(`CREATE TABLE IF NOT EXISTS lease_agreements (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    landlord_name TEXT,
+    tenant_name TEXT,
+    property_address TEXT,
+    start_date TEXT,
+    end_date TEXT,
+    monthly_rent REAL,
+    deposit REAL,
+    payment_day INTEGER,
+    terms TEXT,
+    form_json TEXT,
+    file_path TEXT,
+    file_data TEXT,
+    file_name TEXT,
+    status TEXT DEFAULT 'draft',
+    created_by INTEGER,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+  )`);
+}
+
+function parseLeaseForm(row) {
+  if (!row) return null;
+  return { ...row, form: parseJson(row.form_json, {}) };
+}
+
+function listLeaseAgreements(actor) {
+  const { assertUserActor } = require('./authz');
+  assertUserActor(actor, ['owner', 'manager', 'supervisor', 'assistant_manager']);
+  ensureLeaseSchema();
+  return getDb().prepare('SELECT * FROM lease_agreements ORDER BY created_at DESC').all().map(parseLeaseForm);
+}
+
+function getLeaseAgreement(id, actor) {
+  const { assertUserActor } = require('./authz');
+  assertUserActor(actor, ['owner', 'manager', 'supervisor', 'assistant_manager']);
+  ensureLeaseSchema();
+  return parseLeaseForm(getDb().prepare('SELECT * FROM lease_agreements WHERE id = ?').get(id));
+}
+
+function saveLeaseAgreement(data, actor) {
+  const { assertUserActor } = require('./authz');
+  const user = assertUserActor(actor, ['owner', 'manager']);
+  ensureLeaseSchema();
+  const form = data.form && typeof data.form === 'object' ? data.form : {};
+  const payload = {
+    title: (data.title || form.title || 'Lease agreement').trim(),
+    landlord_name: data.landlord_name || form.landlord_name || null,
+    tenant_name: data.tenant_name || form.tenant_name || null,
+    property_address: data.property_address || form.property_address || null,
+    start_date: data.start_date || form.start_date || null,
+    end_date: data.end_date || form.end_date || null,
+    monthly_rent: Number(data.monthly_rent ?? form.monthly_rent) || 0,
+    deposit: Number(data.deposit ?? form.deposit) || 0,
+    payment_day: Number(data.payment_day ?? form.payment_day) || 1,
+    terms: data.terms || form.terms || null,
+    form_json: JSON.stringify(form),
+    status: data.status || 'draft',
+    file_path: data.file_path || null,
+    file_data: data.file_data || null,
+    file_name: data.file_name || null
+  };
+  if (data.id) {
+    getDb().prepare(`UPDATE lease_agreements SET title=?, landlord_name=?, tenant_name=?, property_address=?,
+      start_date=?, end_date=?, monthly_rent=?, deposit=?, payment_day=?, terms=?, form_json=?,
+      status=?, file_path=COALESCE(?, file_path), file_data=COALESCE(?, file_data), file_name=COALESCE(?, file_name),
+      updated_at=datetime('now') WHERE id=?`)
+      .run(payload.title, payload.landlord_name, payload.tenant_name, payload.property_address,
+        payload.start_date, payload.end_date, payload.monthly_rent, payload.deposit, payload.payment_day,
+        payload.terms, payload.form_json, payload.status, payload.file_path, payload.file_data, payload.file_name, data.id);
+    return getLeaseAgreement(data.id, actor);
+  }
+  const r = getDb().prepare(`INSERT INTO lease_agreements
+    (title, landlord_name, tenant_name, property_address, start_date, end_date, monthly_rent, deposit, payment_day,
+     terms, form_json, file_path, file_data, file_name, status, created_by)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(payload.title, payload.landlord_name, payload.tenant_name, payload.property_address,
+      payload.start_date, payload.end_date, payload.monthly_rent, payload.deposit, payload.payment_day,
+      payload.terms, payload.form_json, payload.file_path, payload.file_data, payload.file_name,
+      payload.status, user.id);
+  return getLeaseAgreement(r.lastInsertRowid, actor);
+}
+
+function deleteLeaseAgreement(id, actor) {
+  const { assertUserActor } = require('./authz');
+  assertUserActor(actor, ['owner', 'manager']);
+  ensureLeaseSchema();
+  getDb().prepare('DELETE FROM lease_agreements WHERE id = ?').run(id);
+  return { ok: true };
+}
+
+function uploadLeaseFile(id, fileName, dataUrl, actor) {
+  const row = getLeaseAgreement(id, actor);
+  if (!row) throw new Error('Lease agreement not found');
+  return saveLeaseAgreement({
+    id,
+    file_name: fileName || 'lease.pdf',
+    file_data: dataUrl,
+    file_path: `db://lease/${id}`
+  }, actor);
+}
+
+function buildLeasePdf(id, actor) {
+  const row = getLeaseAgreement(id, actor);
+  if (!row) throw new Error('Lease agreement not found');
+  if (row.file_data && String(row.file_data).startsWith('data:application/pdf')) {
+    const m = String(row.file_data).match(/^data:[^;]+;base64,(.+)$/);
+    if (m) return require('./pdf-bytes').toUint8(Buffer.from(m[2] || m[1], 'base64'));
+  }
+  const shop = getDb().prepare('SELECT shop_name, address, phone, email, currency FROM shop_settings WHERE id = 1').get() || {};
+  const form = row.form || {};
+  const { jsPDF } = require('jspdf');
+  require('jspdf-autotable');
+  const doc = new jsPDF();
+  doc.setFillColor(30, 58, 95);
+  doc.rect(0, 0, 210, 28, 'F');
+  doc.setTextColor(255, 255, 255);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(16);
+  doc.text(shop.shop_name || 'Lease agreement', 105, 12, { align: 'center' });
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(10);
+  doc.text(row.title || 'Commercial / premises lease', 105, 20, { align: 'center' });
+  doc.setTextColor(0, 0, 0);
+  doc.autoTable({
+    startY: 36,
+    theme: 'grid',
+    styles: { fontSize: 10, cellPadding: 3 },
+    columnStyles: { 0: { fontStyle: 'bold', cellWidth: 50 }, 1: { cellWidth: 136 } },
+    body: [
+      ['Landlord', row.landlord_name || form.landlord_name || '—'],
+      ['Landlord ID / reg', form.landlord_id || '—'],
+      ['Landlord phone', form.landlord_phone || shop.phone || '—'],
+      ['Tenant', row.tenant_name || form.tenant_name || '—'],
+      ['Tenant ID / reg', form.tenant_id || '—'],
+      ['Tenant phone', form.tenant_phone || '—'],
+      ['Property', row.property_address || form.property_address || '—'],
+      ['Use of premises', form.premises_use || 'Business premises'],
+      ['Start date', row.start_date || '—'],
+      ['End date', row.end_date || '—'],
+      ['Monthly rent', `${shop.currency || 'R'} ${Number(row.monthly_rent || 0).toFixed(2)}`],
+      ['Deposit', `${shop.currency || 'R'} ${Number(row.deposit || 0).toFixed(2)}`],
+      ['Payment day', String(row.payment_day || 1)]
+    ]
+  });
+  let y = (doc.lastAutoTable?.finalY || 120) + 10;
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(12);
+  doc.text('Terms', 14, y);
+  y += 6;
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(10);
+  const terms = row.terms || form.terms || 'The tenant shall pay rent on or before the payment day each month. The premises shall be used only for the agreed purpose. Either party may keep a signed copy of this agreement.';
+  const lines = doc.splitTextToSize(String(terms), 182);
+  lines.forEach((line) => {
+    if (y > 270) { doc.addPage(); y = 20; }
+    doc.text(line, 14, y);
+    y += 5;
+  });
+  y += 16;
+  if (y > 250) { doc.addPage(); y = 30; }
+  doc.text('Landlord signature: ______________________     Date: ____________', 14, y);
+  y += 12;
+  doc.text('Tenant signature:   ______________________     Date: ____________', 14, y);
+  return require('./pdf-bytes').pdfBytes(doc);
+}
+
 module.exports = {
   EVAL_CATEGORIES,
   CHISANYAMA_BODY,
@@ -864,5 +1137,7 @@ module.exports = {
   getDecisionRules, saveDecisionRule,
   saveDailyEvaluation, getEvaluationHistory, getRecommendation, finalProbationDecision,
   getProbationDashboard, buildProbationPdf, buildEvaluationReportPdf, buildProbationLetterPdf,
-  getEmployeePersonnelFile, ensureProbationNotifications, ensureEmployeeNumber
+  getEmployeePersonnelFile, ensureProbationNotifications, ensureEmployeeNumber,
+  listLeaseAgreements, getLeaseAgreement, saveLeaseAgreement, deleteLeaseAgreement,
+  uploadLeaseFile, buildLeasePdf
 };

@@ -92,8 +92,8 @@ function upsertLedger(entry) {
 }
 
 function syncLedger(from, to) {
-  // Legacy bookkeeping ledger is disabled — acc_* journals are the single source of truth.
-  return { synced: 0, skipped: true, message: 'Legacy bookkeeping sync disabled. Use Accounting Command Centre.' };
+  _syncLedgerLegacy(from, to);
+  return { synced: true, message: 'Ledger synced from sales, expenses, payroll and more.' };
 }
 
 function _syncLedgerLegacy(from, to) {

@@ -1,29 +1,65 @@
-/** One-off: rebuild Recipe & Production only into Downloads/ShopPOS-Installers/Recipe-Production */
+/**
+ * Rebuild Recipe & Production Windows apps (live Railway shell)
+ * into Downloads/ShopPOS-Installers/Recipe-Production/
+ */
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
 const root = path.join(__dirname, '..');
-const mode = 'recipe';
-const name = 'Recipe & Production';
-const appId = 'com.shoppos.recipe';
-const artifact = 'ShopPOS-Recipe';
-const cloudUrl = 'https://chisafood.up.railway.app';
+const cloudUrl = process.env.SHOP_POS_CLOUD_URL || 'https://chisafood.up.railway.app';
+const installersRoot = path.join(
+  process.env.USERPROFILE || process.env.HOME || '',
+  'Downloads',
+  'ShopPOS-Installers'
+);
 
+const app = {
+  mode: 'recipe',
+  name: 'Recipe & Production',
+  executableName: 'ShopPOS-Recipe',
+  appId: 'com.shoppos.recipe',
+  artifact: 'ShopPOS-Recipe',
+  folder: 'Recipe-Production',
+  liveShell: 'electron/recipe-shell.js'
+};
+
+function safeCopy(src, dest) {
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  const tmp = `${dest}.new-${Date.now()}`;
+  fs.copyFileSync(src, tmp);
+  try {
+    fs.renameSync(tmp, dest);
+  } catch (_) {
+    try { fs.unlinkSync(dest); } catch (_) { /* ignore */ }
+    try {
+      fs.renameSync(tmp, dest);
+    } catch (e2) {
+      const alt = dest.replace(/\.exe$/i, '-NEW.exe');
+      fs.renameSync(tmp, alt);
+      console.log(`  ⚠ locked — wrote ${alt}`);
+      return;
+    }
+  }
+  console.log(`  → ${dest}`);
+}
+
+console.log(`\n=== Building ${app.name} ===`);
+const bake = path.join(root, 'electron', `cloud-shell-config-${app.mode}.js`);
 fs.writeFileSync(
-  path.join(root, 'electron', 'cloud-shell-config-recipe.js'),
-  `process.env.SHOP_POS_APP_MODE = ${JSON.stringify(mode)};\n` +
-    `process.env.SHOP_POS_LOCAL_INSTALLER = '1';\n` +
+  bake,
+  `process.env.SHOP_POS_APP_MODE = ${JSON.stringify(app.mode)};\n` +
     `process.env.SHOP_POS_SYNC_URL = ${JSON.stringify(cloudUrl)};\n` +
-    `require('./cloud-shell.js');\n`
+    `require(${JSON.stringify('./' + path.basename(app.liveShell))});\n`
 );
 
 const cfg = {
-  appId,
-  productName: name,
-  directories: { output: path.join('dist', 'cloud-apps', mode), buildResources: 'build' },
-  files: ['electron/**/*', 'src/**/*', 'mobile/**/*', 'lib/**/*', 'package.json'],
-  extraMetadata: { main: 'electron/cloud-shell-config-recipe.js', name: appId },
+  appId: app.appId,
+  productName: app.name,
+  executableName: app.executableName,
+  directories: { output: path.join('dist', 'cloud-apps', app.mode), buildResources: 'build' },
+  files: [app.liveShell, `electron/cloud-shell-config-${app.mode}.js`, 'package.json'],
+  extraMetadata: { main: `electron/cloud-shell-config-${app.mode}.js`, name: app.appId },
   win: {
     target: [
       { target: 'nsis', arch: ['x64'] },
@@ -33,12 +69,14 @@ const cfg = {
   nsis: {
     oneClick: false,
     allowToChangeInstallationDirectory: true,
+    allowElevation: true,
     createDesktopShortcut: true,
     createStartMenuShortcut: true,
-    artifactName: `${artifact}-Setup.\${ext}`,
-    shortcutName: name
+    runAfterFinish: false,
+    artifactName: `${app.artifact}-Setup.\${ext}`,
+    shortcutName: app.name
   },
-  portable: { artifactName: `${artifact}-Portable.\${ext}` }
+  portable: { artifactName: `${app.artifact}-Portable.\${ext}` }
 };
 fs.writeFileSync(path.join(root, 'electron-builder.cloud-recipe.json'), JSON.stringify(cfg, null, 2));
 
@@ -50,18 +88,14 @@ const r = spawnSync(process.execPath, [eb, '--config', 'electron-builder.cloud-r
 });
 if (r.status) process.exit(r.status || 1);
 
-const dest = path.join(process.env.USERPROFILE || '', 'Downloads', 'ShopPOS-Installers', 'Recipe-Production');
-fs.mkdirSync(dest, { recursive: true });
-for (const f of [`${artifact}-Setup.exe`, `${artifact}-Portable.exe`]) {
-  const src = path.join(root, 'dist', 'cloud-apps', mode, f);
-  if (!fs.existsSync(src)) continue;
-  const out = path.join(dest, f);
-  try {
-    fs.copyFileSync(src, out);
-    console.log('Updated', out);
-  } catch (e) {
-    const alt = out.replace(/\.exe$/i, '-NEW.exe');
-    fs.copyFileSync(src, alt);
-    console.log('Locked — wrote', alt);
+const destDir = path.join(installersRoot, app.folder);
+fs.mkdirSync(destDir, { recursive: true });
+for (const f of [`${app.artifact}-Setup.exe`, `${app.artifact}-Portable.exe`]) {
+  const src = path.join(root, 'dist', 'cloud-apps', app.mode, f);
+  if (!fs.existsSync(src)) {
+    console.warn('Missing', src);
+    continue;
   }
+  safeCopy(src, path.join(destDir, f));
 }
+console.log('\nDone. Installers in', destDir);

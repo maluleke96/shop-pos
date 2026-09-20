@@ -1,5 +1,5 @@
 /**
- * Phase 6: marketing schema, delivery department, audit fixes.
+ * Phase 6: delivery department, audit fixes.
  */
 const path = require('path');
 const os = require('os');
@@ -14,7 +14,6 @@ async function main() {
   await dbMod.initDatabase();
   const db = dbMod.getDb();
   const session = require('../electron/services/session');
-  const mkt = require('../electron/services/marketing-platform');
   const dp = require('../electron/services/delivery-platform');
   const { htmlToPdf } = require('../electron/services/html-pdf-server');
   const results = [];
@@ -27,26 +26,7 @@ async function main() {
     results.push({ test: name, pass: !!pass, ...extra });
   }
 
-  // 1. Marketing tables exist
-  try {
-    mkt.ensurePlatformReady();
-    const row = db.prepare('SELECT COUNT(*) AS c FROM sqlite_master WHERE name=?').get('mkt_referral_agents');
-    ok('mkt_referral_agents_table', row?.c > 0);
-  } catch (e) {
-    ok('mkt_referral_agents_table', false, { error: e.message });
-  }
-
-  // 2. Referral link
-  try {
-    process.env.RAILWAY_PUBLIC_DOMAIN = 'chisafood.up.railway.app';
-    const link = mkt.buildReferralLink('TEST');
-    ok('referral_link', /^https:\/\//.test(link), { link });
-    delete process.env.RAILWAY_PUBLIC_DOMAIN;
-  } catch (e) {
-    ok('referral_link', false, { error: e.message });
-  }
-
-  // 3. Delivery schema
+  // 1. Delivery schema
   try {
     dp.ensureSchema();
     const row = db.prepare("SELECT name FROM sqlite_master WHERE name='delivery_drivers'").get();
@@ -55,7 +35,7 @@ async function main() {
     ok('delivery_drivers_table', false, { error: e.message });
   }
 
-  // 4. Driver registration + approve
+  // 2. Driver registration + approve
   try {
     const reg = dp.registerDriver({
       full_name: 'Test Driver', phone: `07${Date.now() % 100000000}`, password: 'test1234', vehicle_info: 'Bike'
@@ -67,7 +47,7 @@ async function main() {
     ok('driver_register_approve', false, { error: e.message });
   }
 
-  // 5. Delivery from sale
+  // 3. Delivery from sale
   try {
     const sale = db.prepare("SELECT * FROM sales WHERE status='completed' ORDER BY id DESC LIMIT 1").get();
     if (sale) {
@@ -82,7 +62,7 @@ async function main() {
     ok('delivery_idempotent', false, { error: e.message });
   }
 
-  // 6. htmlToPdf server
+  // 4. htmlToPdf server
   try {
     const pdf = htmlToPdf('<h1>Test</h1><p>PDF</p>', { widthMm: 210, heightMm: 297 });
     ok('html_to_pdf_server', pdf && pdf.length > 100, { bytes: pdf?.length });
@@ -90,7 +70,7 @@ async function main() {
     ok('html_to_pdf_server', false, { error: e.message });
   }
 
-  // 7. Driver login + dashboard
+  // 5. Driver login + dashboard
   try {
     const drivers = dp.listDrivers({ status: 'active' });
     const d = drivers[0];
@@ -108,7 +88,7 @@ async function main() {
     ok('driver_login_dashboard', false, { error: e.message });
   }
 
-  // 8. Delivery dashboard
+  // 6. Delivery dashboard
   try {
     const dash = dp.deliveryDashboard({}, actor);
     ok('delivery_dashboard', typeof dash.stats === 'object', { pending: dash.stats?.pending });

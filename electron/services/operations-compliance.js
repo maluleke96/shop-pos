@@ -79,6 +79,12 @@ function addNotification(type, title, message, opts = {}) {
     if (['checklist_reminder', 'checklist_overdue', 'compliance'].includes(t) && ps.show_routines === false) {
       return;
     }
+    if ((t.includes('opening') || /morning|opening/i.test(String(title || message || ''))) && ps.notify_morning_routines === false) {
+      return;
+    }
+    if (/closing/i.test(String(title || message || '')) && ps.notify_closing_routines === false) {
+      return;
+    }
     if (t.includes('opening') || t === 'checklist_reminder' && /morning|opening/i.test(String(title || message || ''))) {
       if (ps.show_morning_routines === false) return;
     }
@@ -256,7 +262,13 @@ function getShopPdfSettings() {
 }
 
 function readImageBase64(filePath) {
-  if (!filePath || !fs.existsSync(filePath)) return null;
+  if (!filePath) return null;
+  if (String(filePath).startsWith('data:')) {
+    const m = String(filePath).match(/^data:image\/(\w+);base64,(.+)$/);
+    if (!m) return null;
+    return { data: m[2], format: (m[1] === 'jpeg' || m[1] === 'jpg') ? 'JPEG' : 'PNG' };
+  }
+  if (!fs.existsSync(filePath)) return null;
   try {
     const ext = path.extname(filePath).toLowerCase();
     const fmt = ext === '.png' ? 'PNG' : 'JPEG';
@@ -368,45 +380,104 @@ function enrichChecklistRun(run) {
 
 // ─── Company Rules ───────────────────────────────────────────────────────────
 
+function ensureOpsExtraSchema() {
+  const db = getDb();
+  for (const [col, typ] of [
+    ['portal_enabled', 'INTEGER DEFAULT 1'],
+    ['sections_json', 'TEXT'],
+    ['admin_signed_at', 'TEXT']
+  ]) {
+    try { db.exec(`ALTER TABLE company_rules ADD COLUMN ${col} ${typ}`); } catch (_) { /* exists */ }
+  }
+  db.exec(`CREATE TABLE IF NOT EXISTS company_rule_acknowledgements (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    rule_id INTEGER NOT NULL,
+    employee_id INTEGER NOT NULL,
+    signed_at TEXT DEFAULT (datetime('now')),
+    signed_date TEXT,
+    signature_data TEXT,
+    UNIQUE(rule_id, employee_id)
+  )`);
+}
+
+function getRuleCategories() {
+  const defaults = [
+    'General Policy', 'Health & Safety', 'Food Safety & Hygiene', 'Cash Handling',
+    'Customer Service', 'Dress Code & Appearance', 'Opening Procedures', 'Closing Procedures',
+    'Stock & Inventory', 'POS Operations', 'HR & Conduct', 'Disciplinary',
+    'Training', 'Probation', 'Employment Contract',
+    'Emergency Procedures', 'Security', 'Cleaning & Maintenance'
+  ];
+  try { getDb().exec('ALTER TABLE shop_settings ADD COLUMN rule_categories_json TEXT'); } catch (_) { /* exists */ }
+  const row = getDb().prepare('SELECT rule_categories_json FROM shop_settings WHERE id = 1').get() || {};
+  let custom = [];
+  try { custom = JSON.parse(row.rule_categories_json || '[]'); } catch { custom = []; }
+  if (!Array.isArray(custom)) custom = [];
+  return [...new Set([...defaults, ...custom.map(c => String(c).trim()).filter(Boolean)])];
+}
+
+function saveRuleCategory(name, actor) {
+  requireRole(actor, ['owner', 'manager']);
+  const title = String(name || '').trim();
+  if (!title) throw new Error('Category name required');
+  const cats = getRuleCategories();
+  if (!cats.includes(title)) cats.push(title);
+  try { getDb().exec('ALTER TABLE shop_settings ADD COLUMN rule_categories_json TEXT'); } catch (_) { /* exists */ }
+  getDb().prepare(`UPDATE shop_settings SET rule_categories_json = ?, updated_at = datetime('now') WHERE id = 1`)
+    .run(JSON.stringify(cats));
+  return cats;
+}
+
 function getRules(filters = {}) {
+  ensureOpsExtraSchema();
   const db = getDb();
   let sql = 'SELECT * FROM company_rules WHERE 1=1';
   const params = [];
   if (filters.status) { sql += ' AND status = ?'; params.push(filters.status); }
   if (filters.category) { sql += ' AND category = ?'; params.push(filters.category); }
+  if (filters.portal_only) { sql += ' AND COALESCE(portal_enabled, 1) = 1 AND status = ?'; params.push('active'); }
   if (filters.search) {
     sql += ' AND (title LIKE ? OR description LIKE ? OR rule_number LIKE ?)';
     const q = `%${filters.search}%`;
     params.push(q, q, q);
   }
   sql += ' ORDER BY effective_date DESC, id DESC';
-  return db.prepare(sql).all(...params).map(r => ({ ...r, attachments: parseJson(r.attachments_json) }));
+  return db.prepare(sql).all(...params).map(r => ({
+    ...r,
+    attachments: parseJson(r.attachments_json),
+    sections: parseJson(r.sections_json, []),
+    portal_enabled: r.portal_enabled !== 0
+  }));
 }
 
 function getRule(id) {
   const row = getDb().prepare('SELECT * FROM company_rules WHERE id = ?').get(id);
   if (!row) return null;
   const history = getDb().prepare('SELECT * FROM company_rule_history WHERE rule_id = ? ORDER BY created_at DESC').all(id);
-  return { ...row, attachments: parseJson(row.attachments_json), history };
+  return { ...row, attachments: parseJson(row.attachments_json), history, sections: parseJson(row.sections_json, []), portal_enabled: row.portal_enabled !== 0 };
 }
 
 function saveRule(data, actor) {
   requireRole(actor, ['owner', 'manager']);
   const db = getDb();
+  ensureOpsExtraSchema();
+  const sections = Array.isArray(data.sections) ? data.sections : parseJson(data.sections_json, []);
   const payload = {
     title: data.title, category: data.category || null, description: data.description || null,
     effective_date: data.effective_date || today(),
     status: data.status || 'active',
-    attachments_json: JSON.stringify(data.attachments || [])
+    attachments_json: JSON.stringify(data.attachments || []),
+    sections_json: JSON.stringify(sections),
+    portal_enabled: data.portal_enabled === false || data.portal_enabled === 0 ? 0 : 1
   };
   if (data.id) {
     const prev = getRule(data.id);
     const version = (prev?.version || 1) + (data.bump_version ? 1 : 0);
     db.prepare(`
       UPDATE company_rules SET title=?, category=?, description=?, effective_date=?, version=?, status=?,
-        attachments_json=?, updated_at=datetime('now') WHERE id=?`).run(
+        attachments_json=?, sections_json=?, portal_enabled=?, updated_at=datetime('now') WHERE id=?`).run(
       payload.title, payload.category, payload.description, payload.effective_date, version,
-      payload.status, payload.attachments_json, data.id
+      payload.status, payload.attachments_json, payload.sections_json, payload.portal_enabled, data.id
     );
     db.prepare(`
       INSERT INTO company_rule_history (rule_id, action, previous_json, new_json, user_id, username)
@@ -418,10 +489,10 @@ function saveRule(data, actor) {
   }
   const num = nextRuleNumber();
   const r = db.prepare(`
-    INSERT INTO company_rules (rule_number, title, category, description, effective_date, version, status, attachments_json, created_by)
-    VALUES (?,?,?,?,?,?,?,?,?)`).run(
+    INSERT INTO company_rules (rule_number, title, category, description, effective_date, version, status, attachments_json, created_by, sections_json, portal_enabled, admin_signed_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(
     num, payload.title, payload.category, payload.description, payload.effective_date, 1,
-    payload.status, payload.attachments_json, actor?.id
+    payload.status, payload.attachments_json, actor?.id, payload.sections_json, payload.portal_enabled, today()
   );
   db.prepare(`
     INSERT INTO company_rule_history (rule_id, action, new_json, user_id, username) VALUES (?,?,?,?,?)`).run(
@@ -470,6 +541,21 @@ function buildRulePdf(id, shopName) {
     doc.text(line, 14, y);
     y += 5;
   });
+  const sections = parseJson(rule.sections_json, []);
+  (sections || []).forEach((sec, i) => {
+    if (!sec?.heading && !sec?.body) return;
+    y += 6;
+    if (y > 250) { doc.addPage(); y = 20; }
+    doc.setFont(undefined, 'bold');
+    doc.text(`${i + 3}. ${sec.heading || 'Section'}`, 14, y);
+    y += 6;
+    doc.setFont(undefined, 'normal');
+    doc.splitTextToSize(sec.body || '', 180).forEach(line => {
+      if (y > 260) { doc.addPage(); y = 20; }
+      doc.text(line, 14, y);
+      y += 5;
+    });
+  });
   y += 6;
   doc.setFont(undefined, 'bold');
   doc.text('3. Compliance', 14, y);
@@ -514,11 +600,55 @@ function buildAllRulesPdf(shopName) {
 }
 
 function saveAdminSignature(signaturePath, actor) {
-  requireRole(actor, ['owner']);
+  requireRole(actor, ['owner', 'manager']);
   getDb().prepare(`UPDATE shop_settings SET admin_signature_path = ?, updated_at = datetime('now') WHERE id = 1`)
     .run(signaturePath || null);
   audit(actor?.id, actor?.username, 'save_admin_signature', 'shop_settings', 1, { path: signaturePath });
   return { admin_signature_path: signaturePath };
+}
+
+function saveAdminSignatureFromData(dataUrl, actor) {
+  requireRole(actor, ['owner', 'manager']);
+  const match = String(dataUrl || '').match(/^data:image\/(\w+);base64,(.+)$/);
+  if (!match) throw new Error('Draw or upload a signature first');
+  const ext = match[1] === 'jpeg' ? 'jpg' : (match[1] || 'png');
+  let filePath = dataUrl;
+  try {
+    const { assetsDir } = require('./local-assets');
+    const dir = assetsDir('signatures');
+    filePath = path.join(dir, `admin-signature-${Date.now()}.${ext}`);
+    fs.writeFileSync(filePath, Buffer.from(match[2], 'base64'));
+  } catch (_) {
+    filePath = dataUrl;
+  }
+  return saveAdminSignature(filePath, actor);
+}
+
+function getRuleAcknowledgements(filters = {}) {
+  ensureOpsExtraSchema();
+  let sql = `SELECT a.*, r.title AS rule_title, r.rule_number, r.effective_date, e.full_name AS employee_name, e.employee_code
+    FROM company_rule_acknowledgements a
+    JOIN company_rules r ON r.id = a.rule_id
+    LEFT JOIN employees e ON e.id = a.employee_id WHERE 1=1`;
+  const params = [];
+  if (filters.rule_id) { sql += ' AND a.rule_id = ?'; params.push(filters.rule_id); }
+  if (filters.employee_id) { sql += ' AND a.employee_id = ?'; params.push(filters.employee_id); }
+  sql += ' ORDER BY a.signed_at DESC';
+  return getDb().prepare(sql).all(...params);
+}
+
+function signCompanyRule(ruleId, employeeId, signatureData, actor) {
+  ensureOpsExtraSchema();
+  const empId = asId(employeeId || actor?.employee_id);
+  if (!empId) throw new Error('Staff session required to sign');
+  const rule = getRule(ruleId);
+  if (!rule) throw new Error('Rule not found');
+  if (rule.portal_enabled === 0) throw new Error('This rule has not been released to staff yet');
+  getDb().prepare(`INSERT INTO company_rule_acknowledgements (rule_id, employee_id, signed_at, signed_date, signature_data)
+    VALUES (?,?,datetime('now'),?,?)
+    ON CONFLICT(rule_id, employee_id) DO UPDATE SET signed_at=datetime('now'), signed_date=excluded.signed_date, signature_data=excluded.signature_data`)
+    .run(ruleId, empId, today(), signatureData || null);
+  return { ok: true, rule_id: ruleId, employee_id: empId, signed_date: today() };
 }
 
 function getAdminSignature() {
@@ -978,7 +1108,9 @@ function getNonSellingProducts(filters = {}) {
       (SELECT MAX(date(s.created_at)) FROM sale_items si JOIN sales s ON s.id = si.sale_id
        WHERE si.product_id = p.id AND s.status = 'completed') AS last_sold
     FROM products p LEFT JOIN categories c ON c.id = p.category_id
-    WHERE p.is_active = 1 AND p.item_type != 'service'`;
+    WHERE p.is_active = 1 AND p.item_type != 'service'
+      AND (p.item_type IS NULL OR p.item_type != 'ingredient')
+      AND COALESCE(p.selling_price, 0) > 0`;
   const params = [];
   if (filters.category_id) { sql += ' AND p.category_id = ?'; params.push(filters.category_id); }
   if (filters.supplier_id) { sql += ' AND p.supplier_id = ?'; params.push(filters.supplier_id); }
@@ -1306,7 +1438,8 @@ function getComplianceDashboard() {
 
 module.exports = {
   getRules, getRule, saveRule, archiveRule, buildRulePdf, buildAllRulesPdf,
-  saveAdminSignature, getAdminSignature,
+  saveAdminSignature, saveAdminSignatureFromData, getAdminSignature,
+  getRuleCategories, saveRuleCategory, getRuleAcknowledgements, signCompanyRule,
   getOpeningTemplates, getClosingTemplates, saveOpeningTemplate, saveClosingTemplate,
   deleteOpeningTemplate, deleteClosingTemplate,
   getChecklistRuns, getChecklistRun, getPendingChecklistSubmissions,

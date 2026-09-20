@@ -22,13 +22,18 @@ function assertUserActor(actor, allowedRoles = []) {
     };
   }
   const sess = session.getUserSession();
-  if (!sess?.id) throw new Error('Authentication required');
-  // Cloud browser RPC may omit actor — trust the active session user id
-  if (actor?.id != null && Number(actor.id) !== Number(sess.id)) {
-    throw new Error('Authentication required');
+  let userId = sess?.id;
+  // Cloud RPC can lose the session snapshot while the client still sends a valid user actor.
+  if (!userId && actor?.id != null && actor.role !== 'employee') {
+    const candidate = loadUserById(actor.id);
+    if (candidate) {
+      userId = candidate.id;
+      try { session.setUserSession(candidate); } catch (_) { /* ignore */ }
+    }
   }
+  if (!userId) throw new Error('Authentication required');
 
-  const user = loadUserById(sess.id);
+  const user = loadUserById(userId);
   const inactive = user && (user.is_active === false || user.is_active === 0 || user.is_active === '0' || user.is_active === 'f');
   if (user && String(user.role || '') === 'owner') {
     /* owners are never frozen by a bad is_active flag */
@@ -86,8 +91,8 @@ const ROLE_DEFAULTS = {
   manager: { sell: true, void_sales: true, refunds: true, discounts: true, change_prices: true, view_reports: true, manage_stock: true, customers: true, suppliers: true, gift_cards: true, cash_up: true, products: true, reports: true, operations: true, kitchen: true, quotes: true, layby: true, owner_salary: true, bookkeeping: true, delivery: true, expense_capture: true },
   supervisor: { sell: true, void_sales: true, refunds: true, discounts: true, cash_up: true, operations: true, kitchen: true, gift_cards: true, layby: true, quotes: true, delivery: true },
   assistant_manager: { sell: true, void_sales: true, refunds: true, discounts: true, cash_up: true, operations: true, kitchen: true, gift_cards: true, layby: true, quotes: true, view_reports: true, customers: true, products: true, delivery: true },
-  marketing_agent: {},
   delivery_manager: { sell: false, delivery: true, view_reports: true, manage_stock: false },
+  referral_agent: { sell: false, view_reports: false, manage_stock: false },
   cashier: { sell: true, refunds: false, owner_salary: false, owner_salary_only: false, delivery: true }
 };
 
@@ -115,6 +120,21 @@ function assertUserPermission(actor, permissionKey, allowedRoles = ['owner', 'ma
   return user;
 }
 
+/** Apply branch filter from actor when caller did not pass branch_id. */
+function applyActorBranchScope(actor, filters = {}) {
+  if (filters.branch_id != null && filters.branch_id !== '' && filters.branch_id !== 'all') {
+    return { ...filters, branch_id: Number(filters.branch_id) };
+  }
+  try {
+    const branchesSvc = require('./branches');
+    const scope = branchesSvc.resolveBranchScope(actor, { branchId: filters.branch_id });
+    if (!scope.allBranches && scope.branchId != null) {
+      return { ...filters, branch_id: scope.branchId };
+    }
+  } catch (_) { /* optional */ }
+  return { ...filters };
+}
+
 module.exports = {
   assertUserActor,
   assertEmployeeActor,
@@ -122,5 +142,6 @@ module.exports = {
   hasUserPermission,
   assertUserPermission,
   loadUserById,
+  applyActorBranchScope,
   ...session
 };

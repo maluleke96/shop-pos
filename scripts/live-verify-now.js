@@ -36,49 +36,6 @@ async function rpc(method, args = [], token = null) {
   const token = login.token || login.json.sessionToken;
   step('login', true, { username: actor?.username, role: actor?.role });
 
-  const apps = await rpc('mktp:agents', [{ status: 'pending' }, actor], token);
-  const pending = apps.json?.data?.rows || apps.json?.data || [];
-  step('list_pending_agents', apps.json?.success !== false, { count: pending.length });
-
-  let agent = pending[0];
-  if (agent?.id) {
-    const approved = await rpc('mktp:approveAgent', [agent.id, {}, actor], token);
-    step('approve_agent', approved.json?.success !== false, {
-      agent_id: agent.id,
-      error: approved.json?.error,
-      referral_code: approved.json?.data?.referral_code || approved.json?.data?.agent?.referral_code
-    });
-    agent = approved.json?.data?.agent || approved.json?.data || agent;
-  } else {
-    const agents = await rpc('mktp:agents', [{ status: 'active' }, actor], token);
-    const rows = agents.json?.data?.rows || agents.json?.data || [];
-    agent = rows.find((a) => a.status === 'active') || rows[0];
-    step('approve_agent', !!agent, { skipped: 'no pending', active_count: rows.length });
-  }
-
-  const refCode = agent?.referral_code;
-  const agentCode = agent?.agent_code;
-  if (refCode) {
-    const pub = await rpc('mktp:publicAgent', [refCode]);
-    step('referral_by_code', pub.json?.success === true, {
-      code: refCode,
-      name: pub.json?.data?.full_name,
-      error: pub.json?.error
-    });
-    const page = await fetch(`${BASE}/r/${encodeURIComponent(refCode)}`);
-    step('referral_page_http', page.ok, { status: page.status, url: `${BASE}/r/${refCode}` });
-  } else {
-    step('referral_by_code', false, { error: 'no referral_code on agent' });
-  }
-
-  if (agentCode && agentCode !== refCode) {
-    const pub2 = await rpc('mktp:publicAgent', [agentCode]);
-    step('referral_by_agent_code', pub2.json?.success === true, {
-      code: agentCode,
-      error: pub2.json?.error
-    });
-  }
-
   const products = await rpc('products:get', [{}], token);
   const list = products.json?.data || [];
   const product = list[0];

@@ -9,7 +9,24 @@ function today() {
   return new Date().toLocaleDateString('en-CA');
 }
 
+function ensureSelfieEventTypeColumn() {
+  try {
+    getDb().prepare(`ALTER TABLE staff_login_selfies ADD COLUMN event_type TEXT DEFAULT 'login'`).run();
+  } catch (_) { /* already exists */ }
+}
+
+function selfieEventType(row) {
+  if (row?.event_type) return row.event_type;
+  try {
+    const parsed = JSON.parse(row?.device_info || '');
+    if (parsed && typeof parsed === 'object' && parsed.event_type) return parsed.event_type;
+  } catch (_) { /* plain string */ }
+  const m = String(row?.device_info || '').match(/^event:([^|]+)/);
+  return m ? m[1] : 'login';
+}
+
 function getStaffSelfies(filters = {}) {
+  ensureSelfieEventTypeColumn();
   let sql = `SELECT s.*, e.full_name as employee_name, e.employee_code, e.branch, e.position
     FROM staff_login_selfies s
     JOIN employees e ON e.id = s.employee_id WHERE 1=1`;
@@ -19,31 +36,55 @@ function getStaffSelfies(filters = {}) {
   if (filters.from) { sql += ' AND s.login_date >= ?'; params.push(filters.from); }
   if (filters.to) { sql += ' AND s.login_date <= ?'; params.push(filters.to); }
   if (filters.branch) { sql += ' AND e.branch = ?'; params.push(filters.branch); }
+  if (filters.event_type) { sql += ' AND COALESCE(s.event_type, \'login\') = ?'; params.push(filters.event_type); }
   sql += ' ORDER BY s.login_at DESC';
   if (filters.limit) { sql += ' LIMIT ?'; params.push(filters.limit); }
-  return getDb().prepare(sql).all(...params);
+  return getDb().prepare(sql).all(...params).map((row) => ({ ...row, event_type: selfieEventType(row) }));
 }
 
 function getStaffSelfie(id) {
-  return getDb().prepare(`
+  const row = getDb().prepare(`
     SELECT s.*, e.full_name as employee_name, e.employee_code, e.branch, e.position
     FROM staff_login_selfies s JOIN employees e ON e.id = s.employee_id WHERE s.id = ?`).get(id);
+  return row ? { ...row, event_type: selfieEventType(row) } : null;
 }
 
 function saveStaffSelfie(data) {
   const db = getDb();
+  ensureSelfieEventTypeColumn();
   const loginDate = data.login_date || today();
   if (!data.employee_id || !data.photo_data) throw new Error('Employee and photo required');
-  const existing = db.prepare(
-    'SELECT id FROM staff_login_selfies WHERE employee_id = ? AND login_date = ? AND is_edited = 0 ORDER BY login_at DESC LIMIT 1'
-  ).get(data.employee_id, loginDate);
-  const r = db.prepare(`
-    INSERT INTO staff_login_selfies (employee_id, photo_data, login_date, device_info)
-    VALUES (?,?,?,?)`).run(data.employee_id, data.photo_data, loginDate, data.device_info || null);
-  audit(null, data.employee_name || 'staff', 'staff_selfie_login', 'staff_login_selfie', r.lastInsertRowid, {
-    employee_id: data.employee_id, login_date: loginDate
+  const eventType = data.event_type || 'login';
+  let deviceInfo = data.device_info || null;
+  if (deviceInfo && typeof deviceInfo === 'object') deviceInfo = JSON.stringify(deviceInfo);
+  if (!deviceInfo) deviceInfo = JSON.stringify({ event_type: eventType });
+  else if (typeof deviceInfo === 'string' && !deviceInfo.includes(eventType)) {
+    try {
+      const parsed = JSON.parse(deviceInfo);
+      if (parsed && typeof parsed === 'object') {
+        parsed.event_type = eventType;
+        deviceInfo = JSON.stringify(parsed);
+      }
+    } catch {
+      deviceInfo = `event:${eventType}|${deviceInfo}`;
+    }
+  }
+  let insertId;
+  try {
+    const r = db.prepare(`
+      INSERT INTO staff_login_selfies (employee_id, photo_data, login_date, device_info, event_type)
+      VALUES (?,?,?,?,?)`).run(data.employee_id, data.photo_data, loginDate, deviceInfo, eventType);
+    insertId = r.lastInsertRowid;
+  } catch (_) {
+    const r = db.prepare(`
+      INSERT INTO staff_login_selfies (employee_id, photo_data, login_date, device_info)
+      VALUES (?,?,?,?)`).run(data.employee_id, data.photo_data, loginDate, deviceInfo);
+    insertId = r.lastInsertRowid;
+  }
+  audit(null, data.employee_name || 'staff', `staff_selfie_${eventType}`, 'staff_login_selfie', insertId, {
+    employee_id: data.employee_id, login_date: loginDate, event_type: eventType
   });
-  return getStaffSelfie(r.lastInsertRowid);
+  return getStaffSelfie(insertId);
 }
 
 function updateStaffSelfie(id, photoData, actorId, actorName, notes) {

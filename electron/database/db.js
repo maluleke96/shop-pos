@@ -51,7 +51,6 @@ function legacyAppDataCandidates(app) {
     'Shop POS',
     'shop-pos',
     'Recipe & Production',
-    'Marketing Agent',
     'Staff Portal',
     'com.shoppos.admin',
     'com.shoppos.pos',
@@ -451,6 +450,28 @@ function getDbPathForBackup() {
   return dbPath || getDbPath();
 }
 
+function getDbDir() {
+  if (process.env.SHOP_POS_DATA) {
+    const d = path.resolve(process.env.SHOP_POS_DATA);
+    if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true });
+    return d;
+  }
+  if (process.env.SHOP_POS_DATA_DIR) {
+    const d = path.resolve(process.env.SHOP_POS_DATA_DIR);
+    if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true });
+    return d;
+  }
+  const backup = getDbPathForBackup();
+  if (backup) return path.dirname(backup);
+  try {
+    const p = getDbPath();
+    if (p) return path.dirname(p);
+  } catch (_) { /* ignore */ }
+  const fallback = path.join(require('os').homedir(), '.shop-pos');
+  if (!fs.existsSync(fallback)) fs.mkdirSync(fallback, { recursive: true });
+  return fallback;
+}
+
 function persistNow() {
   if (usingPg) return pgDb.persistNow();
   persist();
@@ -461,6 +482,7 @@ module.exports = {
   getDb,
   closeDatabase,
   getDbPathForBackup,
+  getDbDir,
   getDbPath,
   resetDatabaseFile,
   validateDatabaseFile,

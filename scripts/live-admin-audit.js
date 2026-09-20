@@ -122,7 +122,6 @@ async function checkAsset(path, mustContain = []) {
     ['po:get', []],
     ['returns:get', [{}]],
     ['settings:getPendingRequests', []],
-    ['mktp:agents', [{ status: 'active' }, actor]],
     ['delivery:drivers', [{}, actor]],
     ['delivery:list', [{}, actor]],
     ['hr:people', [{}, actor]],

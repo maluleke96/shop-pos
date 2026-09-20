@@ -12,9 +12,17 @@
   <script src="js/api.js"></script>
   <script>
     (async () => {
-      const token = (location.pathname.split('/').pop() || '').trim();
+      const token = (() => {
+        try {
+          const q = new URLSearchParams(location.search || '');
+          if (q.get('token')) return q.get('token').trim();
+        } catch (_) { /* */ }
+        const pathTok = (location.pathname.split('/').pop() || '').trim();
+        if (pathTok && pathTok !== 'track.html' && pathTok !== 'track') return pathTok;
+        return '';
+      })();
       const el = document.getElementById('track-app');
-      if (!token || token === 'track') { el.innerHTML = '<p>Invalid tracking link.</p>'; return; }
+      if (!token) { el.innerHTML = '<p>Invalid tracking link.</p>'; return; }
       const esc = (s) => { const d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; };
       try {
         const t = await DriverAPI.tracking(token);

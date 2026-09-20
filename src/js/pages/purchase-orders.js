@@ -1,6 +1,7 @@
 const PurchaseOrdersPage = {
   async render(el, app) {
     this.app = app;
+    this._host = el;
     const currency = app.settings?.currency || 'R';
     const isOwner = app.user?.role === 'owner';
     el.innerHTML = `
@@ -72,7 +73,7 @@ const PurchaseOrdersPage = {
       const res = await API.receivePurchaseOrderPartial(poId, receiveItems, this.app.user);
       if (!res.success) return Utils.toast(res.error || 'Partial receive failed', 'error');
       Utils.hideModal();
-      PurchaseOrdersPage.render(document.getElementById('page-content'), this.app);
+      PurchaseOrdersPage.render(this._host || document.querySelector('.page-host[data-page="purchase-orders"]') || document.querySelector('.page-host-active'), this.app);
       Utils.toast('Partial receive recorded', 'success');
     });
   },
@@ -114,7 +115,7 @@ const PurchaseOrdersPage = {
       }, this.app.user);
       if (!res.success) return Utils.toast(res.error || 'Save failed', 'error');
       Utils.hideModal();
-      PurchaseOrdersPage.render(document.getElementById('page-content'), this.app);
+      PurchaseOrdersPage.render(this._host || document.querySelector('.page-host[data-page="purchase-orders"]') || document.querySelector('.page-host-active'), this.app);
       const taxMsg = taxOn && res.data?.tax_amount
         ? ` (incl. ${Utils.formatMoney(res.data.tax_amount, currency)} VAT)`
         : '';
@@ -138,7 +139,7 @@ const PurchaseOrdersPage = {
       }, this.app.user);
       if (!r.success) return Utils.toast(r.error || 'Update failed', 'error');
       Utils.hideModal();
-      PurchaseOrdersPage.render(document.getElementById('page-content'), this.app);
+      PurchaseOrdersPage.render(this._host || document.querySelector('.page-host[data-page="purchase-orders"]') || document.querySelector('.page-host-active'), this.app);
       Utils.toast('Purchase order updated', 'success');
     });
   }

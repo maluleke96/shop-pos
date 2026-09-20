@@ -204,9 +204,16 @@ const KioskApp = {
 
   renderCheckout(app) {
     const methods = this.catalog?.settings?.payment_methods || ['card', 'cash'];
+    const disc = Number(this.voucherDiscount) || 0;
+    const total = Math.max(0, this.cartTotal() - disc);
     app.innerHTML = `<div class="kiosk-header"><h1>Payment</h1></div>
       <div style="flex:1;padding:40px;max-width:500px;margin:0 auto;width:100%">
-        <p style="font-size:32px;margin-bottom:24px">Total: <strong>${this.money(this.cartTotal())}</strong></p>
+        <p style="font-size:32px;margin-bottom:12px">Total: <strong>${this.money(total)}</strong></p>
+        ${disc > 0 ? `<p class="muted" style="margin-bottom:16px">Voucher ${this.esc(this.voucherCode || '')}: −${this.money(disc)}</p>` : ''}
+        <div style="display:flex;gap:8px;margin-bottom:20px">
+          <input id="kiosk-voucher" value="${this.esc(this.voucherCode || '')}" placeholder="Voucher code" style="flex:1;padding:14px;font-size:18px;text-transform:uppercase">
+          <button class="btn-secondary" data-act="apply-voucher" style="padding:14px 18px">Apply</button>
+        </div>
         <p class="muted" style="margin-bottom:12px">Select payment method</p>
         ${methods.map((m) => `<button class="pay-btn ${this.paymentMethod === m ? 'selected' : ''}" data-pay="${m}">${this.esc(m.toUpperCase())}</button>`).join('')}
         <button class="btn-primary" style="width:100%;padding:20px;margin-top:24px;font-size:22px" data-act="confirm">Confirm Order</button>
@@ -215,16 +222,38 @@ const KioskApp = {
     app.onclick = async (e) => {
       if (e.target.closest('[data-pay]')) { this.paymentMethod = e.target.closest('[data-pay]').dataset.pay; this.render(); }
       if (e.target.closest('[data-act="back"]')) { this.view = 'cart'; this.render(); }
+      if (e.target.closest('[data-act="apply-voucher"]')) {
+        const code = document.getElementById('kiosk-voucher')?.value.trim();
+        const err = document.getElementById('checkout-err');
+        if (!code) { if (err) err.textContent = 'Enter a voucher code'; return; }
+        try {
+          const r = await KioskAPI.validateVoucher(this.deviceToken, code, {
+            subtotal: this.cartTotal(),
+            items: this.cart.map((c) => ({ product_id: c.product_id, quantity: c.quantity, price: c.price || c.unit_price }))
+          });
+          if (r?.error || !r?.ok) {
+            this.voucherCode = ''; this.voucherDiscount = 0;
+            if (err) err.textContent = r?.error || 'Invalid voucher';
+            return;
+          }
+          this.voucherCode = r.code;
+          this.voucherDiscount = Number(r.discount) || 0;
+          if (err) err.textContent = '';
+          this.render();
+        } catch (ex) { if (err) err.textContent = ex.message; }
+      }
       if (e.target.closest('[data-act="confirm"]')) {
         const err = document.getElementById('checkout-err');
         try {
           const r = await KioskAPI.placeOrder(this.deviceToken, {
             items: this.cart.map((c) => ({ product_id: c.product_id, quantity: c.quantity, modifiers: c.modifiers })),
             payment_method: this.paymentMethod,
+            voucher_code: this.voucherCode || undefined,
             client_request_id: `kiosk-${Date.now()}-${Math.random().toString(36).slice(2)}`
           });
           this.lastOrderNumber = r.order_number;
-          this.cart = []; this.view = 'confirm'; this.render();
+          this.cart = []; this.voucherCode = ''; this.voucherDiscount = 0;
+          this.view = 'confirm'; this.render();
         } catch (ex) { if (err) err.textContent = ex.message; }
       }
     };

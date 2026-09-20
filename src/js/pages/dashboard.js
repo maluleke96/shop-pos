@@ -20,8 +20,7 @@ const DashboardPage = {
   async activate(el, app) {
     this.app = app;
     this._host = el;
-    // Keep shell; refresh KPIs in background
-    return this.load(el, Utils.monthStart(), Utils.today());
+    this.load(el, Utils.monthStart(), Utils.today());
   },
 
   paintStats(el, s, from, to) {
@@ -43,7 +42,6 @@ const DashboardPage = {
         <div class="stat-card warning"><div class="label">Low Stock Items</div><div class="value">${s.lowStockCount ?? 0}</div></div>
         <div class="stat-card"><div class="label">Best Seller</div><div class="value" style="font-size:16px">${Utils.escHtml(s.bestSeller || '—')}</div><div class="sub">${s.bestSellerQty ?? 0} sold</div></div>
       </div>
-      <div id="dash-promos"></div>
       <div class="card" id="dash-chart-card"><div class="card-header"><h3>Sales Chart</h3></div>
         <div class="card-body"><div class="chart-bars">${bars || '<p class="muted">No sales in this period</p>'}</div></div></div>`;
   },
@@ -54,7 +52,6 @@ const DashboardPage = {
     if (content && !content.querySelector('#dash-stats')) {
       content.innerHTML = `
         <div class="stats-grid" id="dash-stats"><div class="stat-card"><div class="label">Loading…</div><div class="value">…</div></div></div>
-        <div id="dash-promos"></div>
         <div class="card" id="dash-chart-card"><div class="card-header"><h3>Sales Chart</h3></div>
           <div class="card-body"><p class="muted">Loading chart…</p></div></div>`;
     }
@@ -83,37 +80,6 @@ const DashboardPage = {
     } else {
       this.paintStats(el || this._host, res.data || {}, from, to);
       window.DataCache?.clearStaleBanner?.(this._host || el);
-    }
-
-    // Live promotions widget — isolated; failure must not blank the dashboard
-    const promoHost = document.getElementById('dash-promos');
-    if (promoHost && ['owner', 'manager', 'marketing_agent'].includes(this.app.user?.role)) {
-      try {
-        const liveRes = await API.getActiveCampaigns(this.app.user?.branch_id).catch(() => ({ success: false }));
-        if (gen !== this._loadGen) return;
-        const liveCampaigns = liveRes.success ? (liveRes.data || []) : [];
-        if (!liveCampaigns.length) {
-          promoHost.innerHTML = '';
-        } else {
-          const analytics = await Promise.all(liveCampaigns.map(c =>
-            API.getFlyerAnalytics(c.id).catch(() => ({ success: false }))
-          ));
-          if (gen !== this._loadGen) return;
-          promoHost.innerHTML = `<div class="card campaign-live-promos-card"><div class="card-header"><h3>Live Promotions</h3></div><div class="card-body">
-            ${liveCampaigns.map((c, i) => {
-              const rev = analytics[i]?.success ? analytics[i].data?.promo_revenue : null;
-              return `<div class="campaign-live-promo-row">
-                <div><strong>${Utils.escHtml(c.title)}</strong>${c.promotion_name ? `<br><small class="muted">${Utils.escHtml(c.promotion_name)}</small>` : ''}</div>
-                <div style="text-align:right"><small class="muted">Ends ${c.end_date || '—'}</small>${rev != null ? `<br><strong>${fmt(rev)}</strong>` : ''}</div>
-              </div>`;
-            }).join('')}
-          </div></div>`;
-        }
-      } catch (err) {
-        if (promoHost) {
-          promoHost.innerHTML = `<div class="card"><div class="card-body"><p class="muted" style="color:var(--danger)">Live promotions unavailable: ${Utils.escHtml(err.message || 'error')}</p></div></div>`;
-        }
-      }
     }
   }
 };

@@ -65,6 +65,19 @@ const ExpenseAPI = {
     return this._callDirect(method, args);
   },
 
+  origin() {
+    if (typeof location !== 'undefined' && location.origin && !String(location.origin).startsWith('file:')) {
+      return location.origin.replace(/\/$/, '');
+    }
+    const c = window.__EXPENSE_CONFIG__ || {};
+    return String(c.apiBase || 'https://chisafood.up.railway.app').replace(/\/$/, '');
+  },
+
+  invoiceUrl(id) {
+    if (!id) return '';
+    return `${this.origin()}/api/expense-invoice/${id}`;
+  },
+
   login: (u, p, d) => ExpenseAPI.call('expenseApp:login', [u, p, d || {}]),
   logout: () => ExpenseAPI.call('expenseApp:logout', []),
   profile: () => ExpenseAPI.call('expenseApp:profile', []),
@@ -73,7 +86,10 @@ const ExpenseAPI = {
   save: (d) => ExpenseAPI.call('expenseApp:save', [d || {}]),
   categories: () => ExpenseAPI.call('expenseApp:categories', []),
   settings: () => ExpenseAPI.call('expenseApp:settings', []),
-  grantAccess: (d) => ExpenseAPI.call('expenseApp:grantAccess', [d || {}])
+  grantAccess: (d) => ExpenseAPI.call('expenseApp:grantAccess', [d || {}]),
+  wasteProducts: () => ExpenseAPI.call('expenseApp:wasteProducts', []),
+  wasteList: (f) => ExpenseAPI.call('expenseApp:wasteList', [f || {}]),
+  wasteRecord: (d) => ExpenseAPI.call('expenseApp:wasteRecord', [d || {}])
 };
 
 window.ExpenseAPI = ExpenseAPI;

@@ -100,6 +100,8 @@ function rewriteSqliteSql(sql) {
   if (/^\s*PRAGMA\b/i.test(s)) return 'SELECT 1 AS ok';
 
   // Shared SQLite → Postgres date/time helpers (order matters: multi-arg / nested before single-arg).
+  const shopTz = String(process.env.SHOP_TIMEZONE || 'Africa/Johannesburg').replace(/'/g, "''");
+  const shopToday = `(NOW() AT TIME ZONE '${shopTz}')::date`;
   const rewriteDates = (input) =>
     input
       // printf('%.2f', expr) → to_char / round text (SQLite-only)
@@ -119,31 +121,31 @@ function rewriteSqliteSql(sql) {
       // date('now', 'localtime', '-30 days')
       .replace(
         /date\s*\(\s*'now'\s*,\s*'localtime'\s*,\s*'([+-]?\d+)\s+days?'\s*\)/gi,
-        (_, n) => `(CURRENT_DATE + INTERVAL '${Number(n)} days')`
+        (_, n) => `(${shopToday} + INTERVAL '${Number(n)} days')`
       )
       // date('now', '-30 days') / date('now', '+7 day')
       .replace(
         /date\s*\(\s*'now'\s*,\s*'([+-]?\d+)\s+days?'\s*\)/gi,
-        (_, n) => `(CURRENT_DATE + INTERVAL '${Number(n)} days')`
+        (_, n) => `(${shopToday} + INTERVAL '${Number(n)} days')`
       )
       // date('now', '-' || ? || ' days') / date('now', '+' || ? || ' days') — bound day counts
       .replace(
         /date\s*\(\s*'now'\s*,\s*'-'\s*\|\|\s*\?\s*\|\|\s*' days?'\s*\)/gi,
-        `(CURRENT_DATE - ((?)::int) * INTERVAL '1 day')`
+        `(${shopToday} - ((?)::int) * INTERVAL '1 day')`
       )
       .replace(
         /date\s*\(\s*'now'\s*,\s*'\+'\s*\|\|\s*\?\s*\|\|\s*' days?'\s*\)/gi,
-        `(CURRENT_DATE + ((?)::int) * INTERVAL '1 day')`
+        `(${shopToday} + ((?)::int) * INTERVAL '1 day')`
       )
       // date('now', ?)  — bound interval like '-30 day'
       .replace(
         /date\s*\(\s*'now'\s*,\s*\?\s*\)/gi,
-        '(CURRENT_DATE + (?::text)::interval)'
+        `(${shopToday} + (?::text)::interval)`
       )
       // date(expr, 'localtime')
       .replace(
         /date\s*\(\s*([^,()]+?)\s*,\s*'localtime'\s*\)/gi,
-        '(($1)::timestamptz)::date'
+        `(($1)::timestamptz AT TIME ZONE '${shopTz}')::date`
       )
       // date(expr, '-30 days') / date(?, '+7 days')
       .replace(
@@ -151,24 +153,24 @@ function rewriteSqliteSql(sql) {
         (_, expr, n) => `((${expr})::date + INTERVAL '${Number(n)} days')`
       )
       // date('now', 'start of year') / fiscal year helpers
-      .replace(/date\s*\(\s*'now'\s*,\s*'start of year'\s*\)/gi, "date_trunc('year', CURRENT_DATE)::date")
+      .replace(/date\s*\(\s*'now'\s*,\s*'start of year'\s*\)/gi, `date_trunc('year', ${shopToday})::date`)
       .replace(
         /date\s*\(\s*'now'\s*,\s*'start of year'\s*,\s*'\+1 year'\s*,\s*'-1 day'\s*\)/gi,
-        "(date_trunc('year', CURRENT_DATE) + INTERVAL '1 year' - INTERVAL '1 day')::date"
+        `(date_trunc('year', ${shopToday}) + INTERVAL '1 year' - INTERVAL '1 day')::date`
       )
-      .replace(/date\s*\(\s*'now'\s*,\s*'start of month'\s*\)/gi, "date_trunc('month', CURRENT_DATE)::date")
+      .replace(/date\s*\(\s*'now'\s*,\s*'start of month'\s*\)/gi, `date_trunc('month', ${shopToday})::date`)
       // datetime('now', …) / datetime('now')
       .replace(/datetime\s*\(\s*'now'\s*(?:,\s*'[^']*')?\s*\)/gi, 'NOW()')
       // date('now')
-      .replace(/date\s*\(\s*'now'\s*\)/gi, 'CURRENT_DATE')
+      .replace(/date\s*\(\s*'now'\s*\)/gi, shopToday)
       // strftime('%H', col, 'localtime') before 2-arg forms
       .replace(
         /strftime\s*\(\s*'%H'\s*,\s*([^,]+?)\s*,\s*'localtime'\s*\)/gi,
-        "TO_CHAR(($1)::timestamptz, 'HH24')"
+        `TO_CHAR(($1)::timestamptz AT TIME ZONE '${shopTz}', 'HH24')`
       )
       .replace(
         /strftime\s*\(\s*'%Y-%m-%d'\s*,\s*([^,]+?)\s*,\s*'localtime'\s*\)/gi,
-        "TO_CHAR(($1)::timestamptz, 'YYYY-MM-DD')"
+        `TO_CHAR(($1)::timestamptz AT TIME ZONE '${shopTz}', 'YYYY-MM-DD')`
       )
       // strftime('%Y-%m', col) — leave month filters (before '%Y')
       .replace(
@@ -186,7 +188,7 @@ function rewriteSqliteSql(sql) {
       )
       .replace(
         /strftime\s*\(\s*'%Y-%m-%d'\s*,\s*'now'\s*\)/gi,
-        "TO_CHAR(NOW(), 'YYYY-MM-DD')"
+        `TO_CHAR(NOW() AT TIME ZONE '${shopTz}', 'YYYY-MM-DD')`
       )
       .replace(
         /strftime\s*\(\s*'%Y-%m-%d'\s*,\s*([^)]+?)\s*\)/gi,
@@ -208,7 +210,9 @@ function rewriteSqliteSql(sql) {
       // SQLite case-insensitive order — strip (Postgres has no COLLATE NOCASE)
       .replace(/\bCOLLATE\s+NOCASE\b/gi, '')
       // SQLite char(10) newline → Postgres chr(10)
-      .replace(/\bchar\s*\(\s*(\d+)\s*\)/gi, 'chr($1)');
+      .replace(/\bchar\s*\(\s*(\d+)\s*\)/gi, 'chr($1)')
+      // SQLite autoincrement PK → Postgres serial (CREATE TABLE IF NOT EXISTS …)
+      .replace(/\bINTEGER\s+PRIMARY\s+KEY\s+AUTOINCREMENT\b/gi, 'SERIAL PRIMARY KEY');
 
   if (/INSERT\s+OR\s+IGNORE\s+INTO/i.test(s)) {
     s = rewriteDates(s.replace(/INSERT\s+OR\s+IGNORE\s+INTO/gi, 'INSERT INTO'));

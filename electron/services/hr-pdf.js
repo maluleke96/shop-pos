@@ -1,6 +1,6 @@
 const fs = require('fs');
 const path = require('path');
-const { getDb, getDbPathForBackup } = require('../database/db');
+const { getDb, getDbDir } = require('../database/db');
 const { jsPDF } = require('jspdf');
 require('jspdf-autotable');
 
@@ -11,7 +11,13 @@ function getShopPdfSettings() {
 }
 
 function readImageBase64(filePath) {
-  if (!filePath || !fs.existsSync(filePath)) return null;
+  if (!filePath) return null;
+  if (String(filePath).startsWith('data:')) {
+    const m = String(filePath).match(/^data:image\/(\w+);base64,(.+)$/);
+    if (!m) return null;
+    return { data: m[2], format: (m[1] === 'jpeg' || m[1] === 'jpg') ? 'JPEG' : 'PNG' };
+  }
+  if (!fs.existsSync(filePath)) return null;
   try {
     const ext = path.extname(filePath).toLowerCase();
     const fmt = ext === '.png' ? 'PNG' : 'JPEG';
@@ -83,7 +89,8 @@ function addPdfSignatureBlock(doc, startY, shop, label = 'Administrator') {
 }
 
 function hrAssetsDir(sub = 'hr') {
-  const dir = path.join(path.dirname(getDbPathForBackup()), 'assets', sub);
+  // getDbDir() works for both SQLite and Postgres (Railway); never use null db paths
+  const dir = path.join(getDbDir(), 'assets', sub);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   return dir;
 }
@@ -128,7 +135,7 @@ function buildLeaveApprovalPdf(leave, shop, approverName) {
   y = doc.lastAutoTable.finalY + 8;
   doc.text('This document confirms approved leave as requested above.', 14, y, { maxWidth: 180 });
   addPdfSignatureBlock(doc, y + 8, shop);
-  return doc.output('arraybuffer');
+  return require('./pdf-bytes').pdfBytes(doc);
 }
 
 function buildDisciplinaryPdf(record, shop, copyType = 'staff') {
@@ -185,7 +192,7 @@ function buildDisciplinaryPdf(record, shop, copyType = 'staff') {
     doc.setFontSize(9);
     doc.text('Employee acknowledgement signature', 14, y + 6);
   }
-  return doc.output('arraybuffer');
+  return require('./pdf-bytes').pdfBytes(doc);
 }
 
 function getCustomerPhoneReport(filters = {}) {
@@ -227,7 +234,7 @@ function buildCustomerPhoneReportPdf(rows, shop, from, to, currency) {
       String(r.loyalty_points || 0)
     ])
   });
-  return doc.output('arraybuffer');
+  return require('./pdf-bytes').pdfBytes(doc);
 }
 
 module.exports = {

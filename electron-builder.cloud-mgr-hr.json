@@ -1,0 +1,49 @@
+{
+  "appId": "com.shoppos.mgrhr",
+  "productName": "ManagerSupervisorPortal",
+  "executableName": "ManagerSupervisorPortal",
+  "directories": {
+    "output": "dist\\cloud-apps\\mgr-hr",
+    "buildResources": "build"
+  },
+  "files": [
+    "electron/mgr-hr-shell.js",
+    "electron/cloud-shell-config-mgr-hr.js",
+    "package.json"
+  ],
+  "extraMetadata": {
+    "main": "electron/cloud-shell-config-mgr-hr.js",
+    "name": "com.shoppos.mgrhr"
+  },
+  "win": {
+    "target": [
+      {
+        "target": "nsis",
+        "arch": [
+          "x64"
+        ]
+      },
+      {
+        "target": "portable",
+        "arch": [
+          "x64"
+        ]
+      }
+    ]
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "allowElevation": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "runAfterFinish": false,
+    "deleteAppDataOnUninstall": false,
+    "include": "nsis-close-mgr-hr.nsh",
+    "artifactName": "ShopPOS-ManagerSupervisorPortal-Setup.${ext}",
+    "shortcutName": "Manager Supervisor Portal"
+  },
+  "portable": {
+    "artifactName": "ShopPOS-ManagerSupervisorPortal-Portable.${ext}"
+  }
+}

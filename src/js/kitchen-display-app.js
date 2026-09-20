@@ -100,10 +100,11 @@ const KDS = {
         <ul class="order-items">${(o.items || []).map(i =>
           `<li><span class="qty">${i.quantity}×</span> ${i.product_name}${i.modifiers ? ` <em>(${i.modifiers})</em>` : ''}${i.notes ? ` <small class="allergen">${i.notes}</small>` : ''}</li>`).join('')}</ul>
         <footer class="order-actions">
-          ${o.status === 'pending' ? `<button class="btn btn-start" data-id="${o.id}" data-action="preparing">Start</button>` : ''}
-          ${o.status === 'preparing' ? `<button class="btn btn-ready" data-id="${o.id}" data-action="ready">Ready</button>` : ''}
-          ${o.status === 'ready' ? `<button class="btn btn-ready" data-id="${o.id}" data-action="collection">Collection</button>` : ''}
-          <button class="btn btn-done" data-id="${o.id}" data-action="completed">Done ✓</button>
+          ${o.status === 'pending' ? `<button class="btn btn-start" data-id="${o.id}" data-action="preparing">Start cooking</button>` : ''}
+          ${o.status === 'preparing' ? `<button class="btn btn-ready" data-id="${o.id}" data-action="ready">Mark ready</button>` : ''}
+          ${o.status === 'ready' ? `<button class="btn btn-ready" data-id="${o.id}" data-action="collection">To collection</button>` : ''}
+          ${o.status === 'collection' ? `<button class="btn btn-done" data-id="${o.id}" data-action="completed">Collected ✓</button>` : ''}
+          ${o.status !== 'collection' ? `<button class="btn btn-done" data-id="${o.id}" data-action="completed" style="opacity:0.75">Done</button>` : ''}
         </footer>
       </article>`).join('');
 

@@ -16,11 +16,17 @@ types.setTypeParser(types.builtins.INT8, (val) => {
   return n;
 });
 
+const SHOP_TZ = String(process.env.SHOP_TIMEZONE || 'Africa/Johannesburg').replace(/'/g, "''");
+
 const pool = new Pool({
   connectionString: workerData.connectionString,
   ssl: workerData.sslDisable ? false : { rejectUnauthorized: false },
   max: 4,
   idleTimeoutMillis: 30000
+});
+
+pool.on('connect', (client) => {
+  client.query(`SET TIME ZONE '${SHOP_TZ}'`).catch(() => {});
 });
 
 let txClient = null;

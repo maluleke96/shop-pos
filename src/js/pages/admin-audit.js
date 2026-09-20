@@ -16,53 +16,22 @@
     { id: 'discount-report', label: '💸 Discount Report' }
   ];
 
-  // Put audit sections first (idempotent on extender reload)
+  // Put audit sections first (idempotent — admin.js already lists them; keep labels in sync)
   if (!AdminPage.sections.some((s) => s.id === 'salesmgmt')) {
     AdminPage.sections = auditSections.concat(AdminPage.sections.filter(s => s.id !== 'overview'));
-  }
-
-  const origRenderSectionCore = AdminPage._renderSectionCore?.bind(AdminPage)
-    || AdminPage.renderSection.bind(AdminPage);
-  AdminPage.renderSection = async function (el) {
-    const gen = this._beginSectionRender(el);
-    const auditRenderers = {
-      overview: async () => {
-        const dashResult = await this.renderBusinessDashboard(el);
-        if (gen !== this._sectionGen) return;
-        let host = el.querySelector('#admin-overview-quick-panel');
-        if (!host) {
-          host = document.createElement('div');
-          host.id = 'admin-overview-quick-panel';
-          host.style.marginTop = '16px';
-          el.appendChild(host);
-        }
-        if (typeof this.renderOverviewQuickPanel === 'function') {
-          await this.renderOverviewQuickPanel(host, { dashboardRes: dashResult });
-        }
-      },
-      salesmgmt: () => this.renderSalesManagement(el),
-      saleexplorer: () => this.renderSalesExplorer(el),
-      soldproducts: () => this.renderSoldProducts(el),
-      returnsmgmt: () => this.renderReturnsMgmt(el),
-      activity: () => this.renderActivityLog(el),
-      exceptions: () => this.renderExceptions(el),
-      alerts: () => this.renderAlertsCenter(el),
-      dailyclose: () => this.renderDailyClosing(el),
-      'discount-report': () => this.renderDiscountReport(el),
-      'pos-menu': () => this.renderPosMenuPromos(el)
-    };
-    if (auditRenderers[this.section]) {
-      await auditRenderers[this.section]();
-      if (gen !== this._sectionGen) return;
-      return;
+  } else {
+    // Ensure labels stay the Business Dashboard naming even if core admin.js listed them
+    for (const a of auditSections) {
+      const hit = AdminPage.sections.find((s) => s.id === a.id);
+      if (hit) hit.label = a.label;
     }
-    return origRenderSectionCore(el, gen);
-  };
+  }
+  try { AdminPage.refreshAdminNav?.(); } catch (_) { /* nav may not be painted yet */ }
 
   AdminPage._liveTimer = null;
 
   AdminPage.renderBusinessDashboard = async function (el, from, to) {
-    const rangeFrom = from || Utils.today();
+    const rangeFrom = from || Utils.monthStart();
     const rangeTo = to || Utils.today();
     const isToday = rangeFrom === Utils.today() && rangeTo === Utils.today();
     const periodLabel = isToday ? 'Today' : `${Utils.formatDate(rangeFrom)} – ${Utils.formatDate(rangeTo)}`;
@@ -75,7 +44,7 @@
       ${(d.alerts || []).map((a) => `<div class="alert-banner alert-${a.level} dash-alert" data-action="${a.action || ''}" style="padding:10px 14px;margin-bottom:8px;border-radius:8px;cursor:${a.action ? 'pointer' : 'default'};background:${a.level==='red'?'#fef2f2':'#fffbeb'};border:1px solid ${a.level==='red'?'#fecaca':'#fde68a'}">${a.level==='red'?'🔴':'🟡'} ${a.message}</div>`).join('')}
       ${d.pendingLeave > 0 ? `<div class="alert-banner dash-alert" data-action="leave" style="padding:10px 14px;margin-bottom:8px;border-radius:8px;cursor:pointer;background:#eff6ff;border:1px solid #bfdbfe">📋 ${d.pendingLeave} leave request(s) pending approval</div>` : ''}
       <div class="stats-grid" style="margin-top:12px">
-        <div class="stat-card primary"><div class="label">${isToday ? "Today's Sales" : 'Period Sales'}</div><div class="value">${Utils.formatMoney(d.today?.sales||0,currency)}</div><small>${d.today?.orders||0} orders · ${periodLabel}</small></div>
+        <div class="stat-card primary"><div class="label">${isToday ? "Today's Sales" : 'Period Sales'}</div><div class="value">${Utils.formatMoney(d.today?.sales||0,currency)}</div><small>${d.today?.orders||0} orders · ${periodLabel}<br>POS ${d.channels?.pos?.orders||0} + Online ${d.channels?.online?.orders||0} + Pending ${d.channels?.online_pending?.orders||0}</small></div>
         <div class="stat-card"><div class="label">Yesterday</div><div class="value">${Utils.formatMoney(d.yesterday?.sales||0,currency)}</div></div>
         <div class="stat-card"><div class="label">This Month</div><div class="value">${Utils.formatMoney(d.month?.sales||0,currency)}</div></div>
         <div class="stat-card success"><div class="label">${isToday ? 'Gross Profit Today' : 'Gross Profit'}</div><div class="value">${Utils.formatMoney(d.today?.grossProfit||0,currency)}</div></div>
@@ -88,6 +57,7 @@
         <div class="stat-card"><div class="label">Open Shifts</div><div class="value">${d.openShifts||0}</div></div>
         <div class="stat-card"><div class="label">Closed Today</div><div class="value">${d.closedShifts||0}</div></div>
         <div class="stat-card warning"><div class="label">Pending Leave</div><div class="value">${d.pendingLeave||0}</div></div>
+        ${d.ownerFundingMonth != null ? `<div class="stat-card"><div class="label">Owner funding (month)</div><div class="value">${Utils.formatMoney(d.ownerFundingMonth||0,currency)}</div><small>Personal money into business</small></div>` : ''}
       </div>
       <div class="stats-grid" style="margin-top:8px">
         <div class="stat-card"><div class="label">POS Sales</div><div class="value">${Utils.formatMoney(d.channels?.pos?.sales||0,currency)}</div><small>${d.channels?.pos?.orders||0} orders</small></div>
@@ -169,7 +139,7 @@
           if (document.hidden || this.section !== 'overview' || liveGen !== this._sectionGen) return;
           const feed = document.getElementById('live-sales-feed');
           if (!feed) { clearInterval(this._liveTimer); this._liveTimer = null; return; }
-          const r = await API.getSalesList({ from: rangeFrom, to: rangeTo, limit: 15 });
+          const r = await API.getSalesList({ from: rangeFrom, to: rangeTo, limit: 15, lite: true });
           if (liveGen !== this._sectionGen) return;
           feed.innerHTML = this.renderLiveFeed(r.data || [], currency, isToday);
         }, 15000);
@@ -229,12 +199,17 @@
   };
 
   AdminPage.renderSalesManagement = async function (el) {
-    const from = Utils.today(); const to = Utils.today();
+    const from = Utils.monthStart();
+    const to = Utils.today();
     el.innerHTML = `<div class="admin-section"><h3>Sales Management</h3>
       ${Utils.dateFilterHTML('sales-mgmt-filter', from, to)}
-      <div style="margin:12px 0;display:flex;gap:8px;flex-wrap:wrap">
+      <div style="margin:12px 0;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
         <button class="btn btn-primary" id="sales-mgmt-pdf">📄 Save PDF Report</button>
         <button class="btn btn-ghost" id="sales-mgmt-print">🖨️ Print</button>
+        <span id="sales-bulk-toolbar" class="hidden" style="margin-left:auto;display:flex;gap:8px;align-items:center">
+          <span class="muted" id="sales-selected-count">0 selected</span>
+          <button type="button" class="btn btn-danger btn-sm" id="sales-bulk-delete">Delete selected</button>
+        </span>
       </div>
       <div id="sales-mgmt-table" style="margin-top:16px"><p class="muted">Loading…</p></div></div>`;
 
@@ -244,45 +219,83 @@
 
     const load = async (f, t) => {
       lastFrom = f; lastTo = t;
-      const filters = { from: f, to: t, limit: 500 };
+      const filters = { from: f, to: t, limit: 200, lite: true };
       const cached = window.DataCache?.peek?.('salesList', [filters]);
       if (cached?.data?.length) {
         lastSales = cached.data;
         paintSalesTable(cached.data);
       }
       const res = await API.getSalesList(filters);
+      if (res?.success === false) {
+        Utils.toast(res.error || 'Could not load sales', 'error');
+        if (!cached?.data?.length) {
+          lastSales = [];
+          paintSalesTable([], res.error || 'Could not load sales');
+        }
+        return;
+      }
       const sales = res.data || [];
       lastSales = sales;
       paintSalesTable(sales);
     };
 
-    const paintSalesTable = (sales) => {
+    const getSelectedSaleIds = () => Array.from(document.querySelectorAll('.sale-select:checked'))
+      .map((cb) => parseInt(cb.value, 10)).filter(Boolean);
+
+    const syncBulkToolbar = () => {
+      const canDelete = AdminPage._salesCanDelete;
+      const toolbar = document.getElementById('sales-bulk-toolbar');
+      const countEl = document.getElementById('sales-selected-count');
+      const ids = getSelectedSaleIds();
+      if (!toolbar || !canDelete) return;
+      toolbar.classList.toggle('hidden', ids.length === 0);
+      toolbar.style.display = ids.length ? 'flex' : 'none';
+      if (countEl) countEl.textContent = `${ids.length} selected`;
+    };
+
+    const paintSalesTable = (sales, loadError = '') => {
       const currency = this.settings.currency || 'R';
+      const isOwner = this.app.user?.role === 'owner';
+      let userPerms = {};
+      try {
+        userPerms = typeof this.app.user?.permissions === 'string'
+          ? JSON.parse(this.app.user.permissions || '{}')
+          : (this.app.user?.permissions || {});
+      } catch (_) { /* ignore */ }
+      const canDelete = isOwner || !!userPerms.delete_sales;
+      AdminPage._salesCanDelete = canDelete;
       const host = document.getElementById('sales-mgmt-table');
       if (!host) return;
       host.innerHTML = `<div class="card"><div class="table-wrap"><table>
-        <thead><tr><th>Order #</th><th>Receipt</th><th>Date</th><th>Time</th><th>Cashier</th><th>Customer</th><th>Type</th><th>Payment</th><th>Gift Card</th><th>Loyalty Pts</th><th>Total</th><th>Discount</th><th>Tax</th><th>Status</th><th></th></tr></thead>
+        <thead><tr>${canDelete ? '<th><input type="checkbox" id="sales-select-all" title="Select all deletable sales"></th>' : ''}<th>Order #</th><th>Receipt</th><th>Date</th><th>Time</th><th>Cashier</th><th>Customer</th><th>Type</th><th>Payment</th><th>Gift Card</th><th>Loyalty Pts</th><th>Total</th><th>Discount</th><th>Tax</th><th>Status</th><th></th></tr></thead>
         <tbody>${sales.map(s => {
           const dt = s.created_at ? new Date(s.created_at) : null;
           const gc = Number(s.gift_card_amount) || 0;
           const lp = Number(s.loyalty_points_redeemed) || 0;
           const otype = s.is_online_pending ? 'Online (pending)' : (s.order_type ? ({ delivery: 'Delivery', takeaway: 'Takeaway', sit_in: 'Sit-in', online: 'Online Order' }[s.order_type] || s.order_type) : 'Walk-in');
+          const fee = Number(s.delivery_fee) || 0;
+          const placeBit = s.delivery_place ? ` · ${s.delivery_place}` : '';
+          const feeBit = s.order_type === 'delivery'
+            ? (fee > 0 ? ` · fee ${Utils.formatMoney(fee, currency)}` : ' · fee free')
+            : '';
           const typeExtra = s.order_type === 'delivery' && s.delivery_address
-            ? ` · ${s.delivery_address}`
-            : (s.table_name ? ` · ${s.table_name}` : '');
+            ? `${placeBit}${feeBit} · ${s.delivery_address}`
+            : (s.table_name ? ` · ${s.table_name}` : (placeBit || feeBit));
           const rowClass = s.status==='void'||s.status==='voided'?'row-void':(s.is_online_pending?'row-online-pending':'');
+          const selectable = canDelete && !s.is_online_pending && Number.isFinite(Number(s.id));
           return `<tr class="${rowClass}">
+          ${canDelete ? `<td>${selectable ? `<input type="checkbox" class="sale-select" value="${s.id}">` : ''}</td>` : ''}
           <td><strong>${s.order_number || '—'}</strong></td>
-          <td>${s.receipt_number || '—'}</td>
+          <td>${(s.receipt_number && s.receipt_number !== '—') ? s.receipt_number : (s.order_number || '—')}</td>
           <td>${dt ? Utils.formatDate(s.created_at) : '—'}</td>
           <td>${dt ? dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'}</td>
           <td>${s.cashier_name||'—'}</td>
           <td>${s.customer_name||'Walk-in'}</td>
-          <td title="${(s.delivery_address || s.table_name || '').replace(/"/g, '&quot;')}">${otype}${typeExtra}</td>
+          <td title="${(s.delivery_address || s.table_name || s.delivery_place || '').replace(/"/g, '&quot;')}">${otype}${typeExtra}</td>
           <td>${s.primary_payment||s.payment_methods||'—'}</td>
           <td>${gc ? Utils.formatMoney(gc,currency) : '—'}</td>
           <td>${lp ? lp + ' pts' : '—'}</td>
-          <td>${Utils.formatMoney(s.total,currency)}</td>
+          <td>${Utils.formatMoney(s.total,currency)}${fee > 0 && s.order_type === 'delivery' ? `<div class="muted" style="font-size:11px">incl. delivery ${Utils.formatMoney(fee, currency)}</div>` : ''}</td>
           <td>${Utils.formatMoney(s.discount||0,currency)}</td>
           <td>${Utils.formatMoney(s.tax_amount||0,currency)}</td>
           <td><span class="tag ${s.is_online_pending?'tag-warn':s.status==='void'||s.status==='voided'?'tag-danger':s.status==='completed'?'tag-ok':''}">${s.is_online_pending?'pending':(s.status||'completed')}</span></td>
@@ -290,13 +303,15 @@
             <button class="btn btn-sm btn-ghost reprint-sale" data-id="${s.id}">Print</button>
             <button class="btn btn-sm btn-ghost invoice-sale" data-id="${s.id}">Invoice</button>
             <button class="btn btn-sm btn-ghost download-sale" data-id="${s.id}">PDF</button>
-            ${s.status==='completed' && this.app.user?.role === 'owner' ? `<button class="btn btn-sm btn-ghost refund-sale" data-id="${s.id}">Refund</button>
-            <button class="btn btn-sm btn-ghost void-sale" data-id="${s.id}">Void</button>`:''}`}
+            ${isOwner ? `<button class="btn btn-sm btn-ghost edit-sale" data-id="${s.id}">Edit</button>` : ''}
+            ${s.status==='completed' && isOwner ? `<button class="btn btn-sm btn-ghost refund-sale" data-id="${s.id}">Refund</button>
+            <button class="btn btn-sm btn-ghost void-sale" data-id="${s.id}">Void</button>`:''}
+            ${canDelete ? `<button class="btn btn-sm btn-danger delete-sale" data-id="${s.id}">Delete</button>`:''}`}
           </td></tr>`;
-        }).join('')||'<tr><td colspan="15" class="muted">No sales found</td></tr>'}
+        }).join('')||`<tr><td colspan="${canDelete ? 16 : 15}" class="muted">${loadError ? Utils.escHtml(loadError) : 'No sales in this date range — try <strong>This Month</strong> or widen the dates above.'}</td></tr>`}
         </tbody>
         <tfoot><tr style="font-weight:700;background:var(--bg-alt, #f5f5f5)">
-          <td colspan="10">Totals (${sales.length} sale${sales.length === 1 ? '' : 's'})</td>
+          <td colspan="${canDelete ? 11 : 10}">Totals (${sales.length} sale${sales.length === 1 ? '' : 's'})</td>
           <td>${Utils.formatMoney(sales.reduce((n,s)=>n+Number(s.total||0),0),currency)}</td>
           <td>${Utils.formatMoney(sales.reduce((n,s)=>n+Number(s.discount||0),0),currency)}</td>
           <td>${Utils.formatMoney(sales.reduce((n,s)=>n+Number(s.tax_amount||0),0),currency)}</td>
@@ -332,10 +347,79 @@
           if (!reason) return Utils.toast('Reason required', 'error');
           const r = await API.voidSale(parseInt(b.dataset.id), reason, this.app.user);
           if (!r.success) return Utils.toast(r.error, 'error');
-          Utils.hideModal(); Utils.toast('Sale voided', 'success'); load(lastFrom, lastTo);
+          Utils.hideModal(); Utils.toast('Sale voided', 'success');
+          window.DataCache?.invalidate?.('salesList', 'adminDashboard');
+          load(lastFrom, lastTo);
         });
       }));
+      el.querySelectorAll('.edit-sale').forEach(b => b.addEventListener('click', async () => {
+        const saleId = parseInt(b.dataset.id, 10);
+        const row = lastSales.find((s) => Number(s.id) === saleId);
+        Utils.showModal('Edit Sale', `
+          <div class="field"><label>Receipt number</label><input id="edit-receipt" value="${Utils.escHtml(row?.receipt_number || '')}"></div>
+          <div class="field"><label>Notes</label><textarea id="edit-notes" rows="3">${Utils.escHtml(row?.notes || '')}</textarea></div>
+          <div class="field"><label>Table name</label><input id="edit-table" value="${Utils.escHtml(row?.table_name || '')}"></div>
+          <div class="field"><label>Delivery address</label><input id="edit-delivery" value="${Utils.escHtml(row?.delivery_address || '')}"></div>`,
+          '<button class="btn btn-primary" id="confirm-edit-sale">Save changes</button>');
+        document.getElementById('confirm-edit-sale').addEventListener('click', async () => {
+          const patch = {
+            receipt_number: document.getElementById('edit-receipt').value.trim(),
+            notes: document.getElementById('edit-notes').value.trim(),
+            table_name: document.getElementById('edit-table').value.trim(),
+            delivery_address: document.getElementById('edit-delivery').value.trim()
+          };
+          const r = await API.updateSale(saleId, patch, this.app.user);
+          if (!r.success) return Utils.toast(r.error, 'error');
+          Utils.hideModal(); Utils.toast('Sale updated', 'success');
+          window.DataCache?.invalidate?.('salesList', 'adminDashboard');
+          load(lastFrom, lastTo);
+        });
+      }));
+      el.querySelectorAll('.delete-sale').forEach(b => b.addEventListener('click', () => {
+        const saleId = parseInt(b.dataset.id, 10);
+        Utils.showModal('Delete Sale', '<p>This permanently removes the sale record. Stock is restored if the sale was still completed.</p><div class="field"><label>Reason (required)</label><textarea id="delete-reason" rows="3"></textarea></div>',
+          '<button class="btn btn-danger" id="confirm-delete-sale">Delete permanently</button>');
+        document.getElementById('confirm-delete-sale').addEventListener('click', async () => {
+          const reason = document.getElementById('delete-reason').value.trim();
+          if (!reason) return Utils.toast('Reason required', 'error');
+          const r = await API.deleteSale(saleId, reason, this.app.user);
+          if (!r.success) return Utils.toast(r.error, 'error');
+          Utils.hideModal(); Utils.toast('Sale deleted', 'success');
+          window.DataCache?.invalidate?.('salesList', 'adminDashboard');
+          load(lastFrom, lastTo);
+        });
+      }));
+
+      document.getElementById('sales-select-all')?.addEventListener('change', (e) => {
+        const checked = e.target.checked;
+        document.querySelectorAll('.sale-select').forEach((cb) => { cb.checked = checked; });
+        syncBulkToolbar();
+      });
+      document.querySelectorAll('.sale-select').forEach((cb) => {
+        cb.addEventListener('change', syncBulkToolbar);
+      });
+      syncBulkToolbar();
     };
+
+    document.getElementById('sales-bulk-delete')?.addEventListener('click', () => {
+      const ids = getSelectedSaleIds();
+      if (!ids.length) return Utils.toast('Select sales to delete', 'error');
+      Utils.showModal(`Delete ${ids.length} sale(s)`, `<p>This permanently removes ${ids.length} sale record(s). Stock is restored for completed sales.</p><div class="field"><label>Reason (required)</label><textarea id="bulk-delete-reason" rows="3"></textarea></div>`,
+        '<button class="btn btn-danger" id="confirm-bulk-delete">Delete selected</button>');
+      document.getElementById('confirm-bulk-delete')?.addEventListener('click', async () => {
+        const reason = document.getElementById('bulk-delete-reason')?.value.trim();
+        if (!reason) return Utils.toast('Reason required', 'error');
+        const r = await API.deleteSalesBulk?.(ids, reason, this.app.user);
+        if (r?.success === false && !r?.deleted_count) return Utils.toast(r?.error || r?.failed?.[0]?.error || 'Delete failed', 'error');
+        Utils.hideModal();
+        const msg = r?.failed_count
+          ? `Deleted ${r.deleted_count}, failed ${r.failed_count}`
+          : `Deleted ${r?.deleted_count ?? ids.length} sale(s)`;
+        Utils.toast(msg, r?.failed_count ? 'warning' : 'success');
+        window.DataCache?.invalidate?.('salesList', 'adminDashboard');
+        load(lastFrom, lastTo);
+      });
+    });
     Utils.bindDateFilter('sales-mgmt-filter', load);
     document.getElementById('sales-mgmt-pdf')?.addEventListener('click', async () => {
       const currency = this.settings.currency || 'R';
@@ -905,18 +989,26 @@
       <div id="pm-flags-wrap"><p class="muted">Loading product flags…</p></div>
       <hr style="margin:28px 0">
       <h3>Create sale pricing</h3>
-      <p class="muted">Set a promo price — shown in red on POS and online. As admin, your promo goes live immediately.</p>
+      <p class="muted">Set a promo price — shown in red where you choose. As owner, your promo goes live immediately.</p>
       <div class="promo-create-grid" style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr auto;gap:10px;align-items:end;margin-top:12px">
         <div class="field"><label>Product</label><select id="pm-promo-product"><option value="">Loading products…</option></select></div>
         <div class="field"><label>Current price</label><input type="text" id="pm-current-price" readonly style="background:var(--bg-secondary)"></div>
         <div class="field"><label>Sale price *</label><input type="number" id="pm-promo-price" step="0.01" min="0"></div>
         <div class="field"><label>Start date</label><input type="date" id="pm-promo-start" value="${Utils.today()}"></div>
         <div class="field"><label>End date</label><input type="date" id="pm-promo-end" value="${Utils.today()}"></div>
-        <button class="btn btn-primary" id="pm-propose-promo" style="margin-top:0">Propose promo</button>
+        <button class="btn btn-primary" id="pm-propose-promo" style="margin-top:0">Create promo</button>
+      </div>
+      <div class="field" style="margin-top:10px;max-width:640px">
+        <label>Show this promo on</label>
+        <div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:6px">
+          <label style="display:flex;align-items:center;gap:6px;font-weight:400"><input type="radio" name="pm-promo-channel" value="both" checked> Both POS &amp; Order Online</label>
+          <label style="display:flex;align-items:center;gap:6px;font-weight:400"><input type="radio" name="pm-promo-channel" value="pos"> POS only</label>
+          <label style="display:flex;align-items:center;gap:6px;font-weight:400"><input type="radio" name="pm-promo-channel" value="online"> Order Online only</label>
+        </div>
       </div>
       <div id="pm-price-preview" class="muted" style="margin-top:8px;font-size:13px"></div>
       <h4 style="margin-top:24px">Active promos</h4>
-      <p class="muted" style="font-size:13px">View flyer, edit dates/prices, delete, or share to your business WhatsApp group.</p>
+      <p class="muted" style="font-size:13px">View flyer, edit placement/dates/prices, delete, or share to your business WhatsApp group.</p>
       <div id="pm-wa-hint"></div>
       <div id="pm-promos-wrap"><p class="muted">Loading promos…</p></div></div>`;
 
@@ -1040,20 +1132,36 @@
     const renderPromoTable = () => {
       const wrap = document.getElementById('pm-promos-wrap');
       if (!wrap) return;
-      wrap.innerHTML = `<div class="table-wrap" style="margin-top:10px"><table><thead><tr><th>Product</th><th>Was</th><th>Sale</th><th>Period</th><th>Status</th><th></th></tr></thead>
+      wrap.innerHTML = `<div class="table-wrap" style="margin-top:10px"><table><thead><tr><th>Product</th><th>Was</th><th>Sale</th><th>Shows on</th><th>Period</th><th>Status</th><th></th></tr></thead>
       <tbody>${allPromos.length ? allPromos.map((pr) => `<tr data-promo-id="${pr.id}">
         <td>${Utils.escHtml(pr.product_name || 'Product')}</td>
         <td>${Utils.formatMoney(pr.original_price, currency)}</td>
         <td><strong style="color:var(--danger)">${Utils.formatMoney(pr.proposed_price, currency)}</strong></td>
+        <td><span class="tag">${Utils.escHtml(pr.channel_label || 'POS + Online')}</span></td>
         <td>${pr.start_date} → ${pr.end_date}</td>
         <td><span class="tag tag-ok">${Utils.escHtml(pr.display_status || pr.status)}</span></td>
         <td style="white-space:nowrap">
           <button class="btn btn-sm btn-ghost pm-view-promo" data-id="${pr.id}">View</button>
           ${isOwner ? `<button class="btn btn-sm btn-ghost pm-edit-promo" data-id="${pr.id}">Edit</button>
           <button class="btn btn-sm btn-ghost pm-del-promo" data-id="${pr.id}">Delete</button>` : ''}
-        </td></tr>`).join('') : '<tr><td colspan="6" class="muted">No active promos — create one above.</td></tr>'}
+        </td></tr>`).join('') : '<tr><td colspan="7" class="muted">No active promos — create one above.</td></tr>'}
       </tbody></table></div>`;
       bindPromoActions();
+    };
+
+    const refreshActivePromos = async () => {
+      const wrap = document.getElementById('pm-promos-wrap');
+      if (wrap) wrap.innerHTML = '<p class="muted">Refreshing promos…</p>';
+      try {
+        window.DataCache?.invalidate?.('promoHistory');
+        const promoRes = await API.getPromoRequestHistory?.({ status: 'live', force_sync: true });
+        allPromos = (promoRes?.data || promoRes || []).filter((p) =>
+          ['active', 'approved'].includes(p.status) || ['active', 'approved'].includes(p.display_status)
+        );
+      } catch (_) {
+        allPromos = [];
+      }
+      renderPromoTable();
     };
 
     const bindPromoActions = () => {
@@ -1067,10 +1175,19 @@
         btn.addEventListener('click', () => {
           const pr = allPromos.find((p) => Number(p.id) === Number(btn.dataset.id));
           if (!pr) return;
+          const ch = pr.channels || (Number(pr.show_on_pos) && Number(pr.show_on_online) ? 'both'
+            : Number(pr.show_on_pos) ? 'pos' : Number(pr.show_on_online) ? 'online' : 'both');
           Utils.showModal(`Edit promo — ${pr.product_name}`, `
           <div class="field"><label>Sale price</label><input type="number" id="pm-edit-price" step="0.01" value="${pr.proposed_price}"></div>
           <div class="field"><label>Start date</label><input type="date" id="pm-edit-start" value="${pr.start_date}"></div>
           <div class="field"><label>End date</label><input type="date" id="pm-edit-end" value="${pr.end_date}"></div>
+          <div class="field"><label>Show on</label>
+            <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:6px">
+              <label style="font-weight:400"><input type="radio" name="pm-edit-channel" value="both" ${ch === 'both' ? 'checked' : ''}> Both POS &amp; Online</label>
+              <label style="font-weight:400"><input type="radio" name="pm-edit-channel" value="pos" ${ch === 'pos' ? 'checked' : ''}> POS only</label>
+              <label style="font-weight:400"><input type="radio" name="pm-edit-channel" value="online" ${ch === 'online' ? 'checked' : ''}> Order Online only</label>
+            </div>
+          </div>
           <div class="field"><label>Notes</label><textarea id="pm-edit-notes" rows="2">${Utils.escHtml(pr.notes || '')}</textarea></div>`,
           '<button class="btn btn-ghost" id="pm-edit-cancel">Cancel</button><button class="btn btn-primary" id="pm-edit-save">Save</button>');
           document.getElementById('pm-edit-cancel')?.addEventListener('click', () => Utils.hideModal());
@@ -1079,12 +1196,13 @@
               proposed_price: Number(document.getElementById('pm-edit-price')?.value),
               start_date: document.getElementById('pm-edit-start')?.value,
               end_date: document.getElementById('pm-edit-end')?.value,
-              notes: document.getElementById('pm-edit-notes')?.value
+              notes: document.getElementById('pm-edit-notes')?.value,
+              channels: document.querySelector('input[name="pm-edit-channel"]:checked')?.value || 'both'
             }, this.app.user);
             if (r?.success === false || r?.error) return Utils.toast(r.error || 'Update failed', 'error');
             Utils.hideModal();
             Utils.toast('Promo updated', 'success');
-            this.renderPosMenuPromos(el);
+            await refreshActivePromos();
           });
         });
       });
@@ -1094,7 +1212,7 @@
           const r = await API.deletePromoRequest(Number(btn.dataset.id), this.app.user);
           if (r?.success === false) return Utils.toast(r.error || 'Delete failed', 'error');
           Utils.toast('Promo deleted', 'success');
-          this.renderPosMenuPromos(el);
+          await refreshActivePromos();
         });
       });
     };
@@ -1192,24 +1310,34 @@
       const data = {
         proposed_price: Number(document.getElementById('pm-promo-price')?.value),
         start_date: document.getElementById('pm-promo-start')?.value,
-        end_date: document.getElementById('pm-promo-end')?.value
+        end_date: document.getElementById('pm-promo-end')?.value,
+        channels: document.querySelector('input[name="pm-promo-channel"]:checked')?.value || 'both'
       };
       if (!productId || !data.proposed_price || !data.start_date || !data.end_date) return Utils.toast('Fill product, sale price and dates', 'error');
-      let r = await API.proposeProductPromo(productId, data, this.app.user);
-      if (r?.needs_confirm) {
-        if (!confirm(r.error + '\n\nApply anyway?')) return;
-        r = await API.proposeProductPromo(productId, { ...data, force_below_profit: true }, this.app.user);
+      const btn = document.getElementById('pm-propose-promo');
+      if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+      try {
+        let r = await API.proposeProductPromo(productId, data, this.app.user);
+        if (r?.needs_confirm) {
+          if (!confirm(r.error + '\n\nApply anyway?')) return;
+          r = await API.proposeProductPromo(productId, { ...data, force_below_profit: true }, this.app.user);
+        }
+        if (r?.success === false || r?.error) return Utils.toast(r.error || 'Could not create promo', 'error');
+        Utils.toast(isOwner ? 'Promo is now active' : 'Promo proposed', 'success');
+        document.getElementById('pm-promo-price').value = '';
+        await refreshActivePromos();
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = 'Create promo'; }
       }
-      if (r?.success === false || r?.error) return Utils.toast(r.error || 'Could not create promo', 'error');
-      Utils.toast(isOwner ? 'Promo is now active' : 'Promo proposed', 'success');
-      this.renderPosMenuPromos(el);
     });
 
     Promise.all([
-      API.getPromoRequestHistory?.({ status: 'active' }).catch(() => ({ data: [] })),
+      API.getPromoRequestHistory?.({ status: 'live', force_sync: true }).catch(() => ({ data: [] })),
       API.getWhatsAppSettings?.().catch(() => ({ data: {} }))
     ]).then(([promoRes, waRes]) => {
-      allPromos = (promoRes?.data || []).filter((p) => ['active', 'approved'].includes(p.status));
+      allPromos = (promoRes?.data || []).filter((p) =>
+        ['active', 'approved'].includes(p.status) || ['active', 'approved'].includes(p.display_status)
+      );
       groupLink = waRes?.data?.business_group_link || waRes?.data?.whatsapp_business_group_link || '';
       const hint = document.getElementById('pm-wa-hint');
       if (hint) {

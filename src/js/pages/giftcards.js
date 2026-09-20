@@ -4,7 +4,7 @@ const GiftCardsPage = {
   to: null,
 
   canManage(user, createdBy) {
-    return user?.role === 'manager' || user?.role === 'owner' || AdminOverride.canModify(user, createdBy);
+    return user?.role === 'manager' || user?.role === 'owner' || window.AdminOverride?.canModify?.(user, createdBy);
   },
 
   canApprove(user) {
@@ -24,17 +24,33 @@ const GiftCardsPage = {
     return `<span class="tag ${cls}">${label}</span>`;
   },
 
+  async activate(el, app) {
+    this.app = app;
+    this._host = el;
+    if (el?.querySelector?.('#new-gc') && (this._cards || []).length) {
+      return this.render(el, app);
+    }
+    return this.render(el, app);
+  },
+
   async render(el, app) {
     this.app = app;
+    this._host = el;
     this.from = this.from || Utils.daysAgo(90);
     this.to = this.to || Utils.today();
     const currency = app.settings?.currency || 'R';
+    if (!el.querySelector('#new-gc')) {
+      el.innerHTML = `<div class="page-toolbar"><h3>Gift Cards</h3>
+        <button class="btn btn-primary" id="new-gc">+ Sell Gift Card</button></div>
+        <div class="card">${Utils.pageSkeleton ? Utils.pageSkeleton(4) : '<p class="muted">Opening…</p>'}</div>`;
+    }
     const [res, custRes, settingsRes] = await Promise.all([
       API.getGiftCards({ from: this.from, to: this.to, limit: 500 }),
       API.getCustomers({}),
       API.getGiftCardSettings(app.user).catch(() => ({ success: true, data: { auto_approve: true } }))
     ]);
     const cards = res.data || [];
+    this._cards = cards;
     this.customers = custRes.data || [];
     const settings = settingsRes.data || { auto_approve: true };
     const canApprove = this.canApprove(app.user);
@@ -138,10 +154,10 @@ const GiftCardsPage = {
       const card = cards.find(c => c.id == b.dataset.id);
       if (!card) return;
       let actor = app.user;
-      if (AdminOverride.needsOverrideReason(app.user, card.created_by)) {
-        const guard = await AdminOverride.guardAction(app.user, 'Delete Gift Card', card.created_by, card.created_by_name);
+      if (window.AdminOverride?.needsOverrideReason?.(app.user, card.created_by)) {
+        const guard = await window.AdminOverride.guardAction(app.user, 'Delete Gift Card', card.created_by, card.created_by_name);
         if (!guard.ok) return;
-        actor = AdminOverride.actorWithOverride(app.user, guard.override_reason);
+        actor = window.AdminOverride.actorWithOverride(app.user, guard.override_reason);
       }
       if (!confirm(`Delete gift card ${card.code}?`)) return;
       const r = await API.deleteGiftCard(parseInt(b.dataset.id, 10), actor);
@@ -177,7 +193,17 @@ const GiftCardsPage = {
     const currency = app.settings?.currency || 'R';
     Utils.showModal('Sell Gift Card', `
       <div class="field"><label>Amount *</label><input type="number" id="gc-amount" step="0.01" min="1"></div>
-      <div class="field"><label>Expiry date (optional)</label><input type="date" id="gc-expiry"></div>
+      <div class="field"><label>Expiry</label>
+        <select id="gc-exp-mode">
+          <option value="none">No expiry</option>
+          <option value="date">On a date</option>
+          <option value="hours">After hours</option>
+          <option value="days">After days</option>
+        </select>
+      </div>
+      <div class="field hidden" id="gc-exp-date-wrap"><label>Expiry date</label><input type="date" id="gc-expiry"></div>
+      <div class="field hidden" id="gc-exp-hours-wrap"><label>Hours until expiry</label><input type="number" id="gc-exp-hours" min="1" step="1" placeholder="e.g. 48"></div>
+      <div class="field hidden" id="gc-exp-days-wrap"><label>Days until expiry</label><input type="number" id="gc-exp-days" min="1" step="1" placeholder="e.g. 30"></div>
       ${Utils.customerPickerHTML('gc')}
       <div class="field"><label><input type="checkbox" id="gc-send-wa" checked> Send via WhatsApp to recipient</label></div>
       <p class="muted" style="margin:0">${settings?.auto_approve === false
@@ -185,16 +211,42 @@ const GiftCardsPage = {
         : 'Gift cards are auto-approved (change in Gift Cards settings).'}</p>`,
       '<button class="btn btn-primary" id="save-gc">Create Gift Card</button>');
 
+    const syncExp = () => {
+      const mode = document.getElementById('gc-exp-mode')?.value || 'none';
+      document.getElementById('gc-exp-date-wrap')?.classList.toggle('hidden', mode !== 'date');
+      document.getElementById('gc-exp-hours-wrap')?.classList.toggle('hidden', mode !== 'hours');
+      document.getElementById('gc-exp-days-wrap')?.classList.toggle('hidden', mode !== 'days');
+    };
+    document.getElementById('gc-exp-mode')?.addEventListener('change', syncExp);
+    syncExp();
+
+    const resolveExpiry = () => {
+      const mode = document.getElementById('gc-exp-mode')?.value || 'none';
+      if (mode === 'date') return document.getElementById('gc-expiry')?.value || null;
+      if (mode === 'hours') {
+        const h = parseInt(document.getElementById('gc-exp-hours')?.value, 10);
+        if (!h || h < 1) return null;
+        return new Date(Date.now() + h * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ');
+      }
+      if (mode === 'days') {
+        const d = parseInt(document.getElementById('gc-exp-days')?.value, 10);
+        if (!d || d < 1) return null;
+        return new Date(Date.now() + d * 86400 * 1000).toISOString().slice(0, 19).replace('T', ' ');
+      }
+      return null;
+    };
+
     const picker = Utils.bindCustomerPicker('gc', this.customers);
     document.getElementById('save-gc').addEventListener('click', async () => {
       const amount = parseFloat(document.getElementById('gc-amount').value);
       const customer = picker.getSelected();
       if (!amount || amount <= 0) return Utils.toast('Enter a valid amount', 'error');
+      const expiresAt = resolveExpiry();
       const r = await API.createGiftCard({
         amount,
         customer_id: customer?.id || null,
         customer_phone: customer?.phone || null,
-        expires_at: document.getElementById('gc-expiry')?.value || null,
+        expires_at: expiresAt,
         notes: customer ? `Sold to ${customer.name}` : null
       }, app.user);
       if (!r.success) return Utils.toast(r.error, 'error');
@@ -206,7 +258,7 @@ const GiftCardsPage = {
           customer_name: customer?.name,
           customer_phone: customer?.phone || r.data.customer_phone,
           balance: amount,
-          expires_at: document.getElementById('gc-expiry')?.value || null
+          expires_at: expiresAt
         }, currency, app);
       }
       Utils.toast(
@@ -227,20 +279,27 @@ const GiftCardsPage = {
         <select id="gc-status">${['active', 'cancelled', 'redeemed', 'expired'].map(s =>
           `<option value="${s}" ${card.status === s ? 'selected' : ''}>${s}</option>`).join('')}</select></div>
       <div class="field"><label>Phone</label><input id="gc-phone" value="${Utils.escHtml(card.customer_phone || '')}"></div>
-      <div class="field"><label>Expires</label><input type="date" id="gc-exp" value="${(card.expires_at || '').slice(0, 10)}"></div>`,
+      <div class="field"><label>Expires (date or date+time)</label>
+        <input type="datetime-local" id="gc-exp" value="${card.expires_at
+          ? String(card.expires_at).replace(' ', 'T').slice(0, 16)
+          : ''}">
+        <p class="muted" style="margin:4px 0 0;font-size:12px">Leave blank for no expiry. After this time the card disappears from Order Online.</p>
+      </div>`,
       '<button class="btn btn-primary" id="gc-save-edit">Save</button>');
     document.getElementById('gc-save-edit').addEventListener('click', async () => {
       let actor = app.user;
-      if (AdminOverride.needsOverrideReason(app.user, card.created_by)) {
-        const guard = await AdminOverride.guardAction(app.user, 'Edit Gift Card', card.created_by, card.created_by_name);
+      if (window.AdminOverride?.needsOverrideReason?.(app.user, card.created_by)) {
+        const guard = await window.AdminOverride.guardAction(app.user, 'Edit Gift Card', card.created_by, card.created_by_name);
         if (!guard.ok) return;
-        actor = AdminOverride.actorWithOverride(app.user, guard.override_reason);
+        actor = window.AdminOverride.actorWithOverride(app.user, guard.override_reason);
       }
+      const rawExp = document.getElementById('gc-exp').value;
+      const expiresAt = rawExp ? rawExp.replace('T', ' ') + (rawExp.length === 16 ? ':00' : '') : null;
       const r = await API.updateGiftCard(card.id, {
         balance: parseFloat(document.getElementById('gc-bal').value),
         status: document.getElementById('gc-status').value,
         customer_phone: document.getElementById('gc-phone').value.trim() || null,
-        expires_at: document.getElementById('gc-exp').value || null
+        expires_at: expiresAt
       }, actor);
       if (!r.success) return Utils.toast(r.error, 'error');
       Utils.hideModal();

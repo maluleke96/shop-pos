@@ -9,6 +9,7 @@ function getSalesList(filters = {}) {
   let sql = `
     SELECT s.id, s.receipt_number, s.order_number, s.created_at, s.subtotal, s.discount, s.tax_amount, s.total,
       s.amount_paid, s.change_amount, s.status, s.void_reason, ${branchSelect}, s.notes, s.order_type, s.table_name, s.delivery_address,
+      s.delivery_fee, s.delivery_place,
       u.full_name as cashier_name, c.name as customer_name,
       (SELECT GROUP_CONCAT(payment_type || ' ' || amount) FROM sale_payments WHERE sale_id = s.id) as payment_methods,
       (SELECT payment_type FROM sale_payments WHERE sale_id = s.id LIMIT 1) as primary_payment,
@@ -106,12 +107,52 @@ function mapOnlineOrderAsSaleRow(order) {
   };
 }
 
+function getSalesListLite(filters = {}) {
+  const db = getDb();
+  const flags = branchesSvc.ensureBranchSchema();
+  const branchSelect = flags.sales ? 's.branch_id' : 'NULL as branch_id';
+  let sql = `
+    SELECT s.id, s.receipt_number, s.order_number, s.created_at, s.subtotal, s.discount, s.tax_amount, s.total,
+      s.status, ${branchSelect}, s.notes, s.order_type, s.order_source, s.table_name, s.delivery_address,
+      s.delivery_fee, s.delivery_place,
+      u.full_name as cashier_name, c.name as customer_name,
+      (SELECT payment_type FROM sale_payments WHERE sale_id = s.id LIMIT 1) as primary_payment,
+      (SELECT GROUP_CONCAT(product_name || ' x' || quantity, ', ') FROM sale_items WHERE sale_id = s.id LIMIT 3) as item_summary
+    FROM sales s
+    LEFT JOIN users u ON s.user_id = u.id
+    LEFT JOIN customers c ON s.customer_id = c.id
+    WHERE 1=1
+  `;
+  const params = [];
+  if (filters.from) { sql += " AND date(s.created_at, 'localtime') >= date(?)"; params.push(filters.from); }
+  if (filters.to) { sql += " AND date(s.created_at, 'localtime') <= date(?)"; params.push(filters.to); }
+  if (filters.status) { sql += ' AND s.status = ?'; params.push(filters.status); }
+  if (filters.branch_id != null && filters.branch_id !== '' && filters.branch_id !== 'all' && flags.sales) {
+    sql += ' AND s.branch_id = ?';
+    params.push(Number(filters.branch_id));
+  }
+  if (filters.pos_only) {
+    sql += " AND (COALESCE(s.order_type, '') != 'online' AND COALESCE(s.order_source, '') NOT IN ('ONLINE','WEB'))";
+  }
+  sql += ' ORDER BY s.created_at DESC';
+  if (filters.limit) { sql += ' LIMIT ?'; params.push(filters.limit); }
+  return db.prepare(sql).all(...params);
+}
+
 function getUnifiedSalesList(filters = {}) {
-  const limit = filters.limit || 500;
-  const sales = getSalesList({ ...filters, limit });
+  const limit = filters.limit || 200;
+  const useLite = filters.lite !== false;
+  const sales = useLite
+    ? getSalesListLite({ ...filters, limit })
+    : getSalesList({ ...filters, limit });
   if (filters.pos_only) return sales;
-  const pendingOnline = getPendingOnlineOrdersForSales({ ...filters, limit: Math.min(limit, 200) })
-    .map(mapOnlineOrderAsSaleRow);
+  let pendingOnline = [];
+  try {
+    pendingOnline = getPendingOnlineOrdersForSales({ ...filters, limit: Math.min(limit, 100) })
+      .map(mapOnlineOrderAsSaleRow);
+  } catch (err) {
+    console.warn('[getUnifiedSalesList] pending online orders skipped:', err.message || err);
+  }
   return [...sales, ...pendingOnline]
     .sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0))
     .slice(0, limit);
@@ -170,10 +211,10 @@ function voidSale(saleId, reason, actorId, actorName) {
       }
     }
     features.reverseSaleBenefits(saleId, actorId, 1);
-    try {
-      require('./marketing-platform').reverseCommissionsForSale(saleId, { id: actorId, full_name: actorName, role: 'owner' }, 'Sale voided');
-    } catch (_) { /* best effort */ }
   })();
+  try {
+    require('./referral-commission').reverseCommissionForSale(saleId, 1, reason || 'void', { id: actorId, full_name: actorName });
+  } catch (_) { /* optional */ }
   try {
     require('./accounting-platform').reverseSaleAccounting(saleId, reason || 'Sale voided');
   } catch (err) {
@@ -182,6 +223,89 @@ function voidSale(saleId, reason, actorId, actorName) {
   db.prepare(`INSERT INTO audit_log (user_id, username, action, entity_type, entity_id, details) VALUES (?,?,?,?,?,?)`)
     .run(actorId, actorName, 'void_sale', 'sale', saleId, JSON.stringify({ receipt_number: sale.receipt_number, reason, total: sale.total }));
   return { success: true };
+}
+
+function updateSaleRecord(saleId, patch, actorId, actorName) {
+  const db = getDb();
+  const sale = db.prepare('SELECT * FROM sales WHERE id = ?').get(saleId);
+  if (!sale) throw new Error('Sale not found');
+  const allowed = ['notes', 'customer_id', 'table_name', 'delivery_address', 'receipt_number'];
+  const updates = {};
+  for (const key of allowed) {
+    if (patch[key] !== undefined) updates[key] = patch[key];
+  }
+  if (!Object.keys(updates).length) throw new Error('Nothing to update');
+  if (updates.receipt_number != null) {
+    const dup = db.prepare('SELECT id FROM sales WHERE receipt_number = ? AND id != ?').get(updates.receipt_number, saleId);
+    if (dup) throw new Error('Receipt number already in use');
+  }
+  const cols = Object.keys(updates).map((k) => `${k} = ?`).join(', ');
+  db.prepare(`UPDATE sales SET ${cols} WHERE id = ?`).run(...Object.values(updates), saleId);
+  db.prepare(`INSERT INTO audit_log (user_id, username, action, entity_type, entity_id, details) VALUES (?,?,?,?,?,?)`)
+    .run(actorId, actorName, 'update_sale', 'sale', saleId, JSON.stringify({ before: sale, updates }));
+  return { success: true, sale_id: saleId };
+}
+
+function deleteSaleRecord(saleId, reason, actorId, actorName) {
+  const db = getDb();
+  const sale = db.prepare('SELECT * FROM sales WHERE id = ?').get(saleId);
+  if (!sale) throw new Error('Sale not found');
+  const returnsCount = db.prepare(`
+    SELECT COUNT(*) as c FROM returns WHERE sale_id = ? AND status IN ('completed', 'reopened')
+  `).get(saleId);
+  if ((Number(returnsCount?.c) || 0) > 0) {
+    throw new Error('Cannot delete a sale that has returns — remove returns first');
+  }
+  if (sale.status === 'completed') {
+    voidSale(saleId, reason || 'Deleted by admin', actorId, actorName);
+  }
+  db.transaction(() => {
+    try {
+      require('./loyalty-points').purgeLotsForSale(saleId);
+    } catch (_) { /* optional */ }
+    db.prepare('DELETE FROM loyalty_transactions WHERE sale_id = ?').run(saleId);
+    db.prepare('DELETE FROM sale_payments WHERE sale_id = ?').run(saleId);
+    db.prepare('DELETE FROM sale_items WHERE sale_id = ?').run(saleId);
+    db.prepare('UPDATE online_orders_local SET sale_id = NULL WHERE sale_id = ?').run(saleId);
+    db.prepare('DELETE FROM sales WHERE id = ?').run(saleId);
+  })();
+  try {
+    const mobileMgr = require('./mobile-manager');
+    mobileMgr.purgeAlertsForSale(saleId);
+  } catch (_) { /* optional */ }
+  try {
+    const store = require('./store');
+    store.purgeNotificationsForEntity?.('sale', saleId);
+  } catch (_) { /* optional */ }
+  db.prepare(`INSERT INTO audit_log (user_id, username, action, entity_type, entity_id, details) VALUES (?,?,?,?,?,?)`)
+    .run(actorId, actorName, 'delete_sale', 'sale', saleId, JSON.stringify({
+      receipt_number: sale.receipt_number, order_number: sale.order_number, total: sale.total, reason: reason || null
+    }));
+  return { success: true };
+}
+
+function deleteSalesBulk(saleIds, reason, actorId, actorName) {
+  const ids = [...new Set((Array.isArray(saleIds) ? saleIds : []).map((id) => Number(id)).filter(Boolean))];
+  if (!ids.length) throw new Error('No sales selected');
+  const trimmedReason = String(reason || '').trim();
+  if (!trimmedReason) throw new Error('Reason required');
+  const deleted = [];
+  const failed = [];
+  for (const id of ids) {
+    try {
+      deleteSaleRecord(id, trimmedReason, actorId, actorName);
+      deleted.push(id);
+    } catch (err) {
+      failed.push({ id, error: err.message || String(err) });
+    }
+  }
+  return {
+    success: failed.length === 0,
+    deleted,
+    failed,
+    deleted_count: deleted.length,
+    failed_count: failed.length
+  };
 }
 
 function getSoldProductsReport(from, to) {
@@ -364,7 +488,9 @@ function getAdminDashboardFull(from, to, branchId) {
   const today = new Date().toLocaleDateString('en-CA');
   const rangeFrom = from || today;
   const rangeTo = to || today;
-  const yesterday = new Date(Date.now() - 86400000).toLocaleDateString('en-CA');
+  const rangeAnchor = new Date(`${rangeFrom}T12:00:00`);
+  const yesterday = new Date(rangeAnchor.getFullYear(), rangeAnchor.getMonth(), rangeAnchor.getDate() - 1)
+    .toLocaleDateString('en-CA');
   const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toLocaleDateString('en-CA');
   const saleDate = "date(created_at, 'localtime')";
   const saleItemDate = "date(s.created_at, 'localtime')";
@@ -426,20 +552,6 @@ function getAdminDashboardFull(from, to, branchId) {
   const grossProfit = (periodSales?.total || 0) - (periodCost?.cost || 0);
   const netProfit = grossProfit - (periodExpenses?.total || 0) - (periodRefunds?.total || 0);
 
-  const mostReturned = soft('mostReturned', () => db.prepare(`
-    SELECT ri.product_name, SUM(ri.quantity) as qty, SUM(ri.total) as refund_total
-    FROM return_items ri JOIN returns r ON ri.return_id=r.id
-    WHERE date(r.created_at, 'localtime') >= date('now', 'localtime', '-30 days')
-    GROUP BY ri.product_name ORDER BY qty DESC LIMIT 10
-  `).all(), []);
-
-  const onlinePendingStats = soft('onlinePendingStats', () => db.prepare(`
-    SELECT COALESCE(SUM(total),0) AS total, COUNT(*) AS count FROM online_orders_local
-    WHERE date(created_at, 'localtime') BETWEEN date(?) AND date(?)
-      AND status NOT IN ('cancelled','rejected') AND (sale_id IS NULL OR sale_id = 0)
-      ${canScopeSales ? 'AND branch_id = ?' : ''}
-  `).get(...(canScopeSales ? [rangeFrom, rangeTo, branchId] : [rangeFrom, rangeTo])), { total: 0, count: 0 });
-
   const posChannelStats = soft('posChannelStats', () => db.prepare(`
     SELECT COALESCE(SUM(total),0) AS total, COUNT(*) AS count FROM sales
     WHERE ${saleDate} BETWEEN date(?) AND date(?) AND status='completed'${saleBranch}
@@ -451,6 +563,20 @@ function getAdminDashboardFull(from, to, branchId) {
     WHERE ${saleDate} BETWEEN date(?) AND date(?) AND status='completed'${saleBranch}
       AND (COALESCE(order_type,'') = 'online' OR COALESCE(order_source,'') IN ('ONLINE','WEB'))
   `).get(rangeFrom, rangeTo, ...saleBranchParams), { total: 0, count: 0 });
+
+  const onlinePendingStats = soft('onlinePendingStats', () => db.prepare(`
+    SELECT COALESCE(SUM(total),0) AS total, COUNT(*) AS count FROM online_orders_local
+    WHERE date(created_at, 'localtime') BETWEEN date(?) AND date(?)
+      AND status NOT IN ('cancelled','rejected') AND (sale_id IS NULL OR sale_id = 0)
+      ${canScopeSales ? 'AND branch_id = ?' : ''}
+  `).get(...(canScopeSales ? [rangeFrom, rangeTo, branchId] : [rangeFrom, rangeTo])), { total: 0, count: 0 });
+
+  const mostReturned = soft('mostReturned', () => db.prepare(`
+    SELECT ri.product_name, SUM(ri.quantity) as qty, SUM(ri.total) as refund_total
+    FROM return_items ri JOIN returns r ON ri.return_id=r.id
+    WHERE date(r.created_at, 'localtime') >= date('now', 'localtime', '-30 days')
+    GROUP BY ri.product_name ORDER BY qty DESC LIMIT 10
+  `).all(), []);
 
   const recentSales = soft('recentSales', () => getUnifiedSalesList({
     from: rangeFrom,
@@ -467,18 +593,27 @@ function getAdminDashboardFull(from, to, branchId) {
   const recentActivity = soft('activity', () => getActivityTimeline(rangeFrom, rangeTo).slice(0, 15), []);
   const alerts = soft('alerts', () => getAdminAlerts(), []);
 
+  const posOrders = Number(posChannelStats?.count) || 0;
+  const onlineAcceptedOrders = Number(onlineChannelStats?.count) || 0;
+  const onlinePendingOrders = Number(onlinePendingStats?.count) || 0;
+  const posSales = Number(posChannelStats?.total) || 0;
+  const onlineAcceptedSales = Number(onlineChannelStats?.total) || 0;
+  const onlinePendingSales = Number(onlinePendingStats?.total) || 0;
+  const periodOrderCount = posOrders + onlineAcceptedOrders + onlinePendingOrders;
+  const periodSalesTotal = posSales + onlineAcceptedSales + onlinePendingSales;
+
   return {
     from: rangeFrom, to: rangeTo,
     today: {
-      sales: periodSales?.total || 0,
-      orders: periodSales?.count || 0,
+      sales: periodSalesTotal,
+      orders: periodOrderCount,
       items: periodItems?.qty || 0,
       grossProfit,
       netProfit,
       expenses: periodExpenses?.total || 0,
       refunds: periodRefunds?.total || 0,
       discounts: periodDiscounts?.total || 0,
-      avgOrder: periodSales?.count ? periodSales.total / periodSales.count : 0
+      avgOrder: periodOrderCount ? periodSalesTotal / periodOrderCount : 0
     },
     yesterday: { sales: yesterdaySales?.total || 0, orders: yesterdaySales?.count || 0 },
     month: { sales: monthSales?.total || 0, orders: monthSales?.count || 0 },
@@ -498,10 +633,21 @@ function getAdminDashboardFull(from, to, branchId) {
     recentActivity,
     alerts,
     pendingLeave: pendingLeaveRow?.c || 0,
+    ownerFundingMonth: soft('ownerFundingMonth', () => {
+      try {
+        const extras = require('./expense-extras');
+        extras.ensureExpenseExtrasSchema();
+        const mk = extras.monthKey();
+        const rows = extras.listOwnerFundings({ from: `${mk}-01`, to: rangeTo, limit: 500 });
+        return (rows || []).reduce((s, r) => s + (Number(r.amount) || 0), 0);
+      } catch (_) {
+        return 0;
+      }
+    }, 0),
     channels: {
-      pos: { sales: posChannelStats?.total || 0, orders: posChannelStats?.count || 0 },
-      online: { sales: onlineChannelStats?.total || 0, orders: onlineChannelStats?.count || 0 },
-      online_pending: { sales: onlinePendingStats?.total || 0, orders: onlinePendingStats?.count || 0 }
+      pos: { sales: posSales, orders: posOrders },
+      online: { sales: onlineAcceptedSales, orders: onlineAcceptedOrders },
+      online_pending: { sales: onlinePendingSales, orders: onlinePendingOrders }
     },
     widgetErrors: []
   };
@@ -573,17 +719,48 @@ function getCustomerPurchaseSummary(customerId) {
     LEFT JOIN users u ON s.user_id=u.id
     WHERE s.customer_id=? AND s.status='completed' ORDER BY s.created_at DESC
   `).all(customerId);
-  const totalSpent = sales.reduce((s, x) => s + x.total, 0);
+  let onlineRows = [];
+  try {
+    onlineRows = db.prepare(`
+      SELECT o.* FROM online_orders_local o
+      WHERE o.customer_id = ? AND o.status NOT IN ('cancelled')
+      ORDER BY o.created_at DESC LIMIT 50
+    `).all(customerId);
+  } catch (_) { /* optional */ }
+  const onlineAsHistory = onlineRows.map((o) => ({
+    id: `online-${o.id}`,
+    online_order_id: o.id,
+    receipt_number: o.order_number,
+    order_number: o.order_number,
+    total: Number(o.total) || 0,
+    created_at: o.created_at,
+    cashier_name: 'Online',
+    status: o.status,
+    order_source: 'ONLINE',
+    source: 'online'
+  }));
+  const posHistory = sales.map((s) => ({ ...s, source: 'pos' }));
+  const merged = [...posHistory, ...onlineAsHistory]
+    .sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
+  const onlineSpent = onlineRows
+    .filter((o) => !['rejected', 'cancelled'].includes(String(o.status).toLowerCase()))
+    .reduce((n, o) => n + (Number(o.total) || 0), 0);
+  const totalSpent = sales.reduce((s, x) => s + (Number(x.total) || 0), 0) + onlineSpent;
+  const orderCount = sales.length + onlineRows.filter((o) => !['rejected', 'cancelled'].includes(String(o.status).toLowerCase())).length;
   const fav = db.prepare(`
     SELECT si.product_name, SUM(si.quantity) as qty FROM sale_items si
     JOIN sales s ON si.sale_id=s.id WHERE s.customer_id=? AND s.status='completed'
     GROUP BY si.product_name ORDER BY qty DESC LIMIT 1
   `).get(customerId);
   return {
-    sales, totalSpent, orderCount: sales.length,
-    avgPurchase: sales.length ? totalSpent / sales.length : 0,
+    sales: merged,
+    posSales: sales,
+    onlineOrders: onlineRows,
+    totalSpent,
+    orderCount,
+    avgPurchase: orderCount ? totalSpent / orderCount : 0,
     favouriteProduct: fav?.product_name || '—',
-    lastVisit: sales[0]?.created_at || null
+    lastVisit: merged[0]?.created_at || null
   };
 }
 
@@ -675,30 +852,25 @@ function getTopCustomers(from, to, limit = 50) {
   const rangeTo = to || new Date().toLocaleDateString('en-CA');
   const lim = Math.min(Number(limit) || 50, 200);
   const rows = db.prepare(`
-    SELECT id, name, phone, email,
+    SELECT MAX(id) AS id, name, phone, email,
+      MAX(loyalty_points) AS loyalty_points,
+      MAX(balance) AS balance,
       SUM(pos_spent) AS pos_spent,
       SUM(online_spent) AS online_spent,
       SUM(total_spent) AS total_spent,
       SUM(visits) AS visits
     FROM (
-      SELECT c.id, c.name, c.phone, c.email,
-        COALESCE(SUM(CASE WHEN COALESCE(s.order_type,'') = 'online' OR UPPER(COALESCE(s.order_source,'')) IN ('ONLINE','WEB') THEN 0 ELSE s.total END), 0) AS pos_spent,
-        COALESCE(SUM(CASE WHEN COALESCE(s.order_type,'') = 'online' OR UPPER(COALESCE(s.order_source,'')) IN ('ONLINE','WEB') THEN s.total ELSE 0 END), 0) AS online_spent,
+      SELECT c.id, c.name, c.phone, c.email, c.loyalty_points, c.balance,
+        COALESCE(SUM(CASE WHEN LOWER(COALESCE(s.order_type, '')) IN ('online', 'delivery') THEN 0 ELSE s.total END), 0) AS pos_spent,
+        COALESCE(SUM(CASE WHEN LOWER(COALESCE(s.order_type, '')) IN ('online', 'delivery') THEN s.total ELSE 0 END), 0) AS online_spent,
         COALESCE(SUM(s.total), 0) AS total_spent, COUNT(s.id) AS visits
       FROM customers c
       INNER JOIN sales s ON s.customer_id = c.id AND s.status = 'completed'
         AND date(s.created_at, 'localtime') BETWEEN date(?) AND date(?)
-      GROUP BY c.id
-      UNION ALL
-      SELECT NULL AS id, COALESCE(s.customer_name, 'Walk-in') AS name, s.customer_phone AS phone, NULL AS email,
-        COALESCE(SUM(s.total), 0) AS pos_spent, 0 AS online_spent,
-        COALESCE(SUM(s.total), 0) AS total_spent, COUNT(s.id) AS visits
-      FROM sales s
-      WHERE s.status = 'completed' AND s.customer_id IS NULL AND s.customer_phone IS NOT NULL AND TRIM(s.customer_phone) != ''
-        AND date(s.created_at, 'localtime') BETWEEN date(?) AND date(?)
-      GROUP BY s.customer_phone, s.customer_name
+      GROUP BY c.id, c.name, c.phone, c.email, c.loyalty_points, c.balance
       UNION ALL
       SELECT NULL AS id, COALESCE(o.customer_name, 'Online customer') AS name, o.customer_phone AS phone, o.customer_email AS email,
+        NULL AS loyalty_points, NULL AS balance,
         0 AS pos_spent, COALESCE(SUM(o.total), 0) AS online_spent,
         COALESCE(SUM(o.total), 0) AS total_spent, COUNT(o.id) AS visits
       FROM online_orders_local o
@@ -708,14 +880,28 @@ function getTopCustomers(from, to, limit = 50) {
         AND o.customer_phone IS NOT NULL AND TRIM(o.customer_phone) != ''
       GROUP BY o.customer_phone, o.customer_name, o.customer_email
     ) combined
-    GROUP BY COALESCE(id, phone), name, phone, email
-    HAVING total_spent > 0
-    ORDER BY total_spent DESC
+    GROUP BY COALESCE(CAST(id AS TEXT), phone), name, phone, email
+    HAVING SUM(total_spent) > 0
+    ORDER BY SUM(total_spent) DESC
     LIMIT ?
-  `).all(rangeFrom, rangeTo, rangeFrom, rangeTo, rangeFrom, rangeTo, lim);
+  `).all(rangeFrom, rangeTo, rangeFrom, rangeTo, lim);
+  const ids = rows.map((r) => r.id).filter(Boolean);
+  const loyaltyByCustomer = {};
+  if (ids.length) {
+    const ph = ids.map(() => '?').join(',');
+    getDb().prepare(`
+      SELECT customer_id, COALESCE(SUM(points), 0) AS balance
+      FROM loyalty_transactions WHERE customer_id IN (${ph}) GROUP BY customer_id
+    `).all(...ids).forEach((r) => {
+      loyaltyByCustomer[r.customer_id] = Math.max(0, Math.floor(Number(r.balance) || 0));
+    });
+  }
   return rows.map((r, i) => ({
     ...r,
     rank: i + 1,
+    loyalty_points: r.id && loyaltyByCustomer[r.id] != null
+      ? loyaltyByCustomer[r.id]
+      : Math.max(0, Math.floor(Number(r.loyalty_points) || 0)),
     pos_spent: Math.round((Number(r.pos_spent) || 0) * 100) / 100,
     online_spent: Math.round((Number(r.online_spent) || 0) * 100) / 100,
     total_spent: Math.round((Number(r.total_spent) || 0) * 100) / 100
@@ -723,7 +909,8 @@ function getTopCustomers(from, to, limit = 50) {
 }
 
 module.exports = {
-  getSalesList, getUnifiedSalesList, getPendingOnlineOrdersForSales, searchSalesExplorer, voidSale,
+  getSalesList, getSalesListLite, getUnifiedSalesList, getPendingOnlineOrdersForSales, searchSalesExplorer,
+  voidSale, updateSaleRecord, deleteSaleRecord, deleteSalesBulk,
   getSoldProductsReport, getLowPerformanceProducts,
   getReturnDetail, getReturnsList, getReturnReasonsReport, reopenReturn, verifyManagerPin,
   getPriceChangeHistory, logPriceChange,

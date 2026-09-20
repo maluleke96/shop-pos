@@ -124,6 +124,18 @@ Salary Amount:
 
 {{currency}}{{salary_amount}}
 
+Allowances:
+
+{{currency}}{{allowances}}
+
+Deductions applied to this employee (including standard / attendance penalties when issued):
+
+{{currency}}{{deductions}}
+
+Net indicative pay (before statutory tax, UIF and period penalties):
+
+{{currency}}{{net_salary}}
+
 Payment Method:
 
 {{pay_bank}} Bank Transfer

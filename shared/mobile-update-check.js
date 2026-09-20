@@ -357,7 +357,11 @@
     }
   }
 
-  async function check(force) {
+  async function check() {
+    return false;
+  }
+
+  async function _legacyCheck(force) {
     if (!isNative()) return false;
     if (navigator.onLine === false) return false;
     if (window.MobileUpdateCheck._checking) return false;
@@ -392,7 +396,7 @@
     check,
     openDownload,
     async maybeShowOpenAfterUpdate() {
-      if (!isNative()) return;
+      return;
       try {
         const pending = localStorage.getItem('shoppos_pending_update_version');
         if (!pending) return;
@@ -422,26 +426,7 @@
     },
 
     init() {
-      if (!isNative()) return;
-      injectStyles();
-      bindNativeDownloadEvents();
-      this.maybeShowOpenAfterUpdate();
-      document.addEventListener('visibilitychange', () => {
-        if (document.visibilityState === 'visible') this.maybeShowOpenAfterUpdate();
-      });
-      const run = () => check(false);
-      if (navigator.onLine !== false) {
-        setTimeout(run, 800);
-        setTimeout(run, 3500);
-      }
-      window.addEventListener('online', () => check(true));
-      document.addEventListener('visibilitychange', () => {
-        if (document.visibilityState === 'visible' && navigator.onLine !== false) check(true);
-      });
-      if (window.MobileUpdateCheck._interval) clearInterval(window.MobileUpdateCheck._interval);
-      window.MobileUpdateCheck._interval = setInterval(() => {
-        if (navigator.onLine !== false) check(false);
-      }, CHECK_INTERVAL_MS);
+      return;
     }
   };
 

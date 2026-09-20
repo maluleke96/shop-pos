@@ -20,8 +20,7 @@ const App = {
     { id: 'returns', label: '↩️ Returns', roles: ['owner', 'manager', 'cashier', 'assistant_manager', 'supervisor'] },
     { id: 'layby', label: '📋 Lay-Bye', roles: ['owner', 'manager', 'supervisor'] },
     { id: 'giftcards', label: '🎁 Gift Cards', roles: ['owner', 'manager', 'supervisor'] },
-    { id: 'marketing', label: '📣 Marketing', roles: ['owner', 'manager', 'marketing_agent'] },
-    { id: 'document-hub', label: '📁 Document Hub', roles: ['owner', 'manager', 'assistant_manager', 'marketing_agent'] },
+    { id: 'document-hub', label: '📁 Document Hub', roles: ['owner', 'manager', 'assistant_manager'] },
     { id: 'whatsapp', label: '💬 WhatsApp', roles: ['owner', 'manager', 'assistant_manager'] },
     { id: 'operations', label: '💰 Cash-Up & Ops', roles: ['owner', 'manager', 'assistant_manager', 'supervisor'] },
     { id: 'restaurant', label: '🍽️ Restaurant', roles: ['owner', 'manager'] },
@@ -38,7 +37,7 @@ const App = {
   _pageBundles: {
     dashboard: ['js/pages/dashboard.js'],
     pos: ['js/pages/pos.js'],
-    staff: ['js/pages/staff.js', 'js/pages/staff-owner-salary.js'],
+    staff: ['js/pages/staff.js', 'js/pages/staff-owner-salary.js', 'js/pages/admin-recruitment.js'],
     products: ['js/pages/products.js'],
     categories: ['js/pages/categories.js'],
     stock: ['js/pages/stock.js'],
@@ -49,7 +48,6 @@ const App = {
     quotes: ['js/pages/quotes.js'],
     layby: ['js/pages/layby.js'],
     giftcards: ['js/pages/giftcards.js'],
-    marketing: ['js/pages/marketing-flyers.js', 'js/pages/marketing-flyers-studio.js'],
     'document-hub': ['js/pages/document-hub.js'],
     whatsapp: ['js/pages/whatsapp.js'],
     operations: ['js/pages/operations.js'],
@@ -62,27 +60,76 @@ const App = {
     audit: ['js/pages/audit.js'],
     settings: ['js/pages/settings.js'],
     admin: [
-      'js/promo-poster.js',
-      'js/pages/staff.js',
-      'js/pages/staff-owner-salary.js',
-      'js/pages/admin.js',
-      'js/pages/admin-pro.js',
-      'js/pages/admin-audit.js',
-      'js/pages/admin-staff.js',
-      'js/pages/admin-hr.js',
-      'js/pages/admin-operations.js',
-      'js/pages/admin-combos.js',
-      'js/pages/admin-menu-builder.js',
-      'js/pages/admin-quotes.js',
-      'js/pages/admin-payroll.js',
-      'js/pages/admin-employee-month.js',
-      'js/pages/admin-recruitment.js',
-      'js/pages/admin-marketing.js',
-      'js/pages/admin-delivery.js',
-      'js/pages/admin-business-modules.js',
-      'js/pages/users.js'
+      'js/pages/admin.js'
     ]
   },
+  _adminSectionScripts: {
+    staffhr: ['js/pages/admin-staff.js', 'js/pages/staff.js', 'js/pages/staff-owner-salary.js'],
+    staffportal: ['js/pages/staff.js', 'js/pages/staff-owner-salary.js'],
+    'hr-workspace': ['js/pages/admin-hr.js', 'js/pages/admin-staff.js'],
+    'hr-approvals': ['js/pages/admin-hr.js', 'js/pages/admin-staff.js'],
+    hrcontracts: ['js/pages/admin-hr.js'],
+    recruitment: ['js/pages/admin-recruitment.js'],
+    'employee-of-month': ['js/pages/admin-employee-month.js'],
+    payroll: ['js/pages/admin-payroll.js'],
+    opscompliance: ['js/pages/admin-operations.js'],
+    combos: ['js/pages/admin-combos.js'],
+    quotes: ['js/pages/admin-quotes.js'],
+    'menu-builder': ['js/pages/admin-menu-builder.js', 'js/promo-poster.js'],
+    'promo-video-builder': ['js/pages/admin-promo-video-builder.js', 'js/pages/admin-promo-video-advanced.js'],
+    radio: ['js/pages/admin-radio.js'],
+    'communication-center': ['js/pages/admin-communication-center.js'],
+    'delivery-dept': ['js/pages/admin-delivery.js'],
+    'referral-dept': ['js/pages/admin-referral.js'],
+    'business-modules': ['js/pages/admin-business-modules.js'],
+    salesmgmt: ['js/pages/admin-audit.js'],
+    saleexplorer: ['js/pages/admin-audit.js'],
+    soldproducts: ['js/pages/admin-audit.js'],
+    returnsmgmt: ['js/pages/admin-audit.js'],
+    activity: ['js/pages/admin-audit.js'],
+    exceptions: ['js/pages/admin-audit.js'],
+    alerts: ['js/pages/admin-audit.js'],
+    dailyclose: ['js/pages/admin-audit.js'],
+    'discount-report': ['js/pages/admin-audit.js'],
+    'pos-menu': ['js/pages/admin-audit.js'],
+    overview: ['js/pages/admin-audit.js'],
+    'taken-orders': ['js/pages/admin-pro.js'],
+    onaccount: ['js/pages/admin-pro.js'],
+    developer: ['js/pages/admin-pro.js'],
+    formats: ['js/pages/admin-pro.js'],
+    automation: ['js/pages/admin-pro.js'],
+    customfields: ['js/pages/admin-pro.js'],
+    database: ['js/pages/admin-pro.js'],
+    'system-health': ['js/pages/admin-pro.js'],
+    analytics: ['js/pages/admin-web-analytics.js'],
+    users: ['js/pages/users.js'],
+    permissions: ['js/pages/users.js']
+  },
+  _adminExtenderAll: [
+    'js/promo-poster.js',
+    'js/pages/staff.js',
+    'js/pages/staff-owner-salary.js',
+    'js/pages/admin-pro.js',
+    'js/pages/admin-audit.js',
+    'js/pages/admin-staff.js',
+    'js/pages/admin-hr.js',
+    'js/pages/admin-operations.js',
+    'js/pages/admin-combos.js',
+    'js/pages/admin-menu-builder.js',
+    'js/pages/admin-promo-video-builder.js',
+    'js/pages/admin-promo-video-advanced.js',
+    'js/pages/admin-radio.js',
+    'js/pages/admin-communication-center.js',
+    'js/pages/admin-quotes.js',
+    'js/pages/admin-payroll.js',
+    'js/pages/admin-employee-month.js',
+    'js/pages/admin-recruitment.js',
+    'js/pages/admin-web-analytics.js',
+    'js/pages/admin-delivery.js',
+    'js/pages/admin-referral.js',
+    'js/pages/admin-business-modules.js',
+    'js/pages/users.js'
+  ],
   _pageGlobals: {
     dashboard: 'DashboardPage',
     admin: 'AdminPage',
@@ -98,7 +145,6 @@ const App = {
     quotes: 'QuotesPage',
     layby: 'LaybyPage',
     giftcards: 'GiftCardsPage',
-    marketing: 'MarketingFlyersPage',
     'document-hub': 'DocumentHubPage',
     whatsapp: 'WhatsAppPage',
     operations: 'OperationsPage',
@@ -110,9 +156,7 @@ const App = {
     audit: 'AuditPage',
     settings: 'SettingsPage'
   },
-  _lazyScripts: {
-    marketing: ['js/pages/marketing-flyers-studio.js', 'js/pages/admin-marketing.js']
-  },
+  _lazyScripts: {},
   _scheduledDocInterval: null,
 
   appMode() {
@@ -143,6 +187,13 @@ const App = {
     } catch (_) { return false; }
   },
 
+  _isStudioHandoff() {
+    try {
+      return new URLSearchParams(location.search).get('studio') === '1'
+        || !!sessionStorage.getItem('shoppos_studio_lock');
+    } catch (_) { return false; }
+  },
+
   _clearPortalEntry() {
     try {
       const u = new URL(location.href);
@@ -151,7 +202,9 @@ const App = {
     } catch (_) { /* ignore */ }
   },
 
+  /** Portal entry=1 skips restore (fresh login). Studio handoff must NOT skip. */
   _shouldSkipSessionRestore() {
+    if (this._isStudioHandoff()) return false;
     return this._isPortalEntry();
   },
 
@@ -222,22 +275,20 @@ const App = {
   async tryRestoreSession() {
     let token = '';
     try {
-      const store = this.appMode?.() === 'admin' ? sessionStorage : localStorage;
+      const store = (this.appMode?.() === 'admin' || this.appMode?.() === 'studio-builder')
+        ? sessionStorage
+        : localStorage;
       token = store.getItem('shoppos_rpc_session') || '';
+      if (!token && this.appMode?.() === 'studio-builder') {
+        token = localStorage.getItem('shoppos_rpc_session') || '';
+      }
     } catch (_) { /* ignore */ }
     if (!token) return false;
-    try {
-      const res = await API.getSession();
-      const user = res?.data || res?.user;
-      if (!res?.success || !user?.id) {
-        try { localStorage.removeItem('shoppos_rpc_session'); } catch (_) { /* ignore */ }
-        try { sessionStorage.removeItem('shoppos_rpc_session'); } catch (_) { /* ignore */ }
-        return false;
-      }
-      this.user = user;
-      this.user.is_active = 1;
+
+    const enterRestored = async (offlineMode = false) => {
       this.applyPosKioskChrome();
       this._restoredNav = this._loadNavState();
+      const opts = { restored: true, skipPosWelcome: true, offline: offlineMode };
       if (this.appMode() === 'delivery') {
         await this.openDeliveryDepartment();
         return true;
@@ -247,14 +298,64 @@ const App = {
         return true;
       }
       if (this.isPosKiosk()) {
-        await this.enterApp({ restored: true, skipPosWelcome: true });
+        await this.enterApp(opts);
         return true;
       }
-      await this.enterApp({ restored: true });
+      await this.enterApp({ restored: true, offline: offlineMode });
       return true;
+    };
+
+    try {
+      const cachedP = window.OfflineStore?.loadSession?.() || Promise.resolve(null);
+      const res = await Promise.race([
+        API.getSession(),
+        new Promise((resolve) => setTimeout(() => resolve({ __timeout: true }), 2500))
+      ]);
+      if (res?.__timeout) {
+        const cached = await cachedP;
+        const user = cached?.user;
+        if (user?.id) {
+          this.user = user;
+          this.user.is_active = 1;
+          if (cached.settings) this.settings = cached.settings;
+          API.getSession().then((live) => {
+            const liveUser = live?.data || live?.user;
+            if (live?.success && liveUser?.id) this.user = liveUser;
+          }).catch(() => {});
+          return enterRestored(false);
+        }
+      }
+      const user = res?.data || res?.user;
+      if (!res?.success || !user?.id) {
+        try { localStorage.removeItem('shoppos_rpc_session'); } catch (_) { /* ignore */ }
+        try { sessionStorage.removeItem('shoppos_rpc_session'); } catch (_) { /* ignore */ }
+        return false;
+      }
+      this.user = user;
+      this.user.is_active = 1;
+      try {
+        window.OfflineStore?.saveSession?.(user, this.settings || null);
+      } catch (_) { /* ignore */ }
+      return enterRestored(false);
     } catch (_) {
-      try { localStorage.removeItem('shoppos_rpc_session'); } catch (_) { /* ignore */ }
-      try { sessionStorage.removeItem('shoppos_rpc_session'); } catch (_) { /* ignore */ }
+      const offline = typeof navigator !== 'undefined' && navigator.onLine === false;
+      if (offline && window.OfflineStore?.loadSession) {
+        try {
+          const cached = await window.OfflineStore.loadSession();
+          const user = cached?.user;
+          if (user?.id) {
+            this.user = user;
+            this.user.is_active = 1;
+            if (cached.settings) this.settings = cached.settings;
+            try { window.ShopPosConnection?.set?.('offline', 'Offline — local till'); } catch (_) { /* ignore */ }
+            return enterRestored(true);
+          }
+        } catch (_) { /* ignore */ }
+      }
+      if (!offline) {
+        try { localStorage.removeItem('shoppos_rpc_session'); } catch (_) { /* ignore */ }
+        try { sessionStorage.removeItem('shoppos_rpc_session'); } catch (_) { /* ignore */ }
+      }
       return false;
     }
   },
@@ -279,18 +380,26 @@ const App = {
     if (this._loginPrefetchStarted) return;
     this._loginPrefetchStarted = true;
     const mode = this.appMode();
+    if (mode === 'referral-commission') {
+      const run = () => {
+        this.ensureFeatureCss?.('css/referral-dept.css');
+        this.ensureFeatureScript?.('js/pages/admin-referral.js').catch(() => {});
+      };
+      if (typeof requestIdleCallback === 'function') requestIdleCallback(run, { timeout: 400 });
+      else setTimeout(run, 100);
+      return;
+    }
     const pages = mode === 'pos'
-      ? ['pos']
+      ? ['pos', 'returns']
       : mode === 'delivery'
         ? []
-        : mode === 'admin'
-          ? ['pos', 'dashboard']
-          : [];
+        : ['pos', 'dashboard', 'admin', 'products', 'stock', 'customers', 'suppliers', 'expenses', 'quotes', 'returns', 'layby', 'giftcards', 'whatsapp'];
     const run = () => {
-      pages.forEach((p, i) => setTimeout(() => this.ensurePageScripts(p).catch(() => {}), i * 80));
+      pages.forEach((p, i) => setTimeout(() => this.ensurePageScripts(p).catch(() => {}), i * 50));
     };
-    if (typeof requestIdleCallback === 'function') requestIdleCallback(run, { timeout: 1200 });
-    else setTimeout(run, 200);
+    if (mode === 'pos') run();
+    else if (typeof requestIdleCallback === 'function') requestIdleCallback(run, { timeout: 400 });
+    else setTimeout(run, 100);
   },
 
   async ensureSettingsLoaded() {
@@ -301,8 +410,21 @@ const App = {
         this.settings = res.data;
         this.applyTheme?.();
         this.updateBranding?.();
+        if (this.user?.id) {
+          try { window.OfflineStore?.saveSession?.(this.user, this.settings); } catch (_) { /* ignore */ }
+        }
       }
     } catch (_) { /* ignore */ }
+    if (!this.settings && window.OfflineStore?.loadSession) {
+      try {
+        const cached = await window.OfflineStore.loadSession();
+        if (cached?.settings) {
+          this.settings = cached.settings;
+          this.applyTheme?.();
+          this.updateBranding?.();
+        }
+      } catch (_) { /* ignore */ }
+    }
     return this.settings;
   },
 
@@ -317,16 +439,15 @@ const App = {
       const mode = this.appMode();
 
       // Dedicated apps: skip admin welcome/setup ? go straight to that app's login
+      if (mode === 'apply') {
+        this.hideMobileLoading();
+        await this.openJobApply();
+        return;
+      }
       if (mode === 'staff') {
         this.hideMobileLoading();
         this.ensureSettingsLoaded().catch(() => {});
         await this.openStaffPortal();
-        return;
-      }
-      if (mode === 'marketing') {
-        this.hideMobileLoading();
-        this.ensureSettingsLoaded().catch(() => {});
-        await this.openMarketingAgentLogin();
         return;
       }
       if (mode === 'recipe') {
@@ -367,14 +488,60 @@ const App = {
         }).catch(() => {});
         return;
       }
+      if (mode === 'referral') {
+        this.hideMobileLoading();
+        this.ensureSettingsLoaded().catch(() => {});
+        if (!this._shouldSkipSessionRestore() && await this.tryRestoreSession()) return;
+        await this.openReferralAgent({ fromLogin: true, view: 'gate' });
+        return;
+      }
+      if (mode === 'referral-commission') {
+        this.applyLoginChrome();
+        this.hideMobileLoading();
+        // Prefetch only the Referral module (not the full Admin bundle — that crashes Android)
+        this.ensureFeatureCss?.('css/referral-dept.css');
+        this.ensureFeatureScript?.('js/pages/admin-referral.js');
+        if (!this._shouldSkipSessionRestore() && await this.tryRestoreSession()) {
+          if (['owner', 'manager', 'assistant_manager', 'supervisor', 'admin'].includes(this.user?.role)) {
+            await this.openReferralCommission({ fromLogin: true });
+            return;
+          }
+        }
+        this.showScreen('login');
+        const loginSub = document.getElementById('login-sub');
+        if (loginSub) {
+          loginSub.textContent = 'Referral & Commission — sign in with owner, manager or supervisor credentials. This is not the full Admin app.';
+        }
+        this.startLoginOperatingTimer?.();
+        return;
+      }
+      if (mode === 'mgr-hr') {
+        this.applyLoginChrome();
+        this.hideMobileLoading();
+        // Prefetch portal assets while user types credentials
+        this.ensureFeatureCss?.('css/mgr-hr-portal.css');
+        this.ensureFeatureScript?.('js/pages/mgr-hr-portal.js');
+        if (!this._shouldSkipSessionRestore() && await this.tryRestoreSession()) {
+          await this.openMgrHrPortal({ fromLogin: true });
+          return;
+        }
+        this.showScreen('login');
+        const loginSub = document.getElementById('login-sub');
+        if (loginSub) {
+          loginSub.textContent = 'Manager & Supervisor Portal — sign in with your assigned manager/supervisor account (or Admin credentials).';
+        }
+        this.startLoginOperatingTimer?.();
+        return;
+      }
 
       // POS-only installer: show login immediately (no setup / welcome delay)
       if (mode === 'pos') {
+        Utils.purgeLegacyPosMenuSnapshots?.();
         this.applyPosKioskChrome();
         this.hideMobileLoading();
         if (!this._shouldSkipSessionRestore() && await this.tryRestoreSession()) return;
-        await this.populateLoginBranchPicker();
         this.showScreen('login');
+        this.populateLoginBranchPicker().catch(() => {});
         this.startLoginOperatingTimer?.();
         this.prefetchLoginScripts();
         this.ensureSettingsLoaded().then(() => {
@@ -384,8 +551,32 @@ const App = {
         return;
       }
 
+      // Menu & Promo Studio builders — fully standalone (no Admin chrome)
+      if (mode === 'studio-builder') {
+        this.hideMobileLoading();
+        document.documentElement.classList.add('studio-builder-mode');
+        document.body?.classList?.add('studio-builder-mode');
+        if (!this._shouldSkipSessionRestore() && await this.tryRestoreSession()) return;
+        // No session → send back to Studio login (never show Admin login)
+        const back = sessionStorage.getItem('shoppos_studio_return') || '/studio/';
+        location.replace(back);
+        return;
+      }
+
       // Admin portal: restore session on refresh (stay signed in + same page)
       if (mode === 'admin') {
+        // Legacy Studio handoff URLs used app=admin&studio=1 — send to standalone builders
+        try {
+          const q = new URLSearchParams(location.search || '');
+          if (q.get('studio') === '1') {
+            const section = sessionStorage.getItem('shoppos_studio_section')
+              || new URLSearchParams(String(location.hash || '').replace(/^#/, '')).get('section')
+              || 'menu-builder';
+            const moduleQ = /video|promo/.test(section) ? 'video' : 'menu';
+            location.replace(`index.html?app=studio-builder&module=${moduleQ}&studio=1`);
+            return;
+          }
+        } catch (_) { /* */ }
         this.applyLoginChrome();
         this.hideMobileLoading();
         if (!this._shouldSkipSessionRestore() && await this.tryRestoreSession()) return;
@@ -596,11 +787,7 @@ const App = {
       this.showWelcome({ needsSetup: !Number(this.settings?.setup_complete) });
     });
     document.getElementById('login-forgot')?.addEventListener('click', () => {
-      if (this.appMode() === 'marketing') this.showMarketingRecoveryModal();
-      else this.showRecoveryModal();
-    });
-    document.getElementById('login-register-agent')?.addEventListener('click', () => {
-      this.openMarketingAgentLogin({ fromLogin: true, view: 'apply' });
+      this.showRecoveryModal();
     });
     document.getElementById('login-open-accounting')?.addEventListener('click', () => {
       this.openAccountingLogin({ fromLogin: true });
@@ -683,34 +870,40 @@ const App = {
   },
 
   showScreen(name) {
-    ['welcome', 'login', 'setup', 'pos-welcome', 'app', 'staff-portal', 'recipe-production', 'marketing-agent', 'accounting', 'hr', 'display', 'delivery-dept'].forEach(s =>
+    ['welcome', 'login', 'setup', 'pos-welcome', 'app', 'staff-portal', 'recipe-production', 'accounting', 'hr', 'display', 'delivery-dept', 'referral-agent', 'referral-commission', 'mgr-hr'].forEach(s =>
       document.getElementById(`screen-${s}`)?.classList.toggle('hidden', s !== name));
     document.body.dataset.activeScreen = name;
     if (name === 'login' || name === 'welcome') this.applyLoginChrome();
+    if (name === 'referral-commission' || name === 'referral-agent' || name === 'delivery-dept' || name === 'mgr-hr') {
+      this.closeSidebar?.();
+      document.body.classList.remove('sidebar-open');
+      document.getElementById('sidebar')?.classList.remove('open');
+    }
     if (name === 'login' && this.isPosKiosk()) this.populateLoginBranchPicker().catch(() => {});
     const branchWrap = document.getElementById('login-branch-wrap');
     const branchSel = document.getElementById('login-branch');
-    if (branchWrap) branchWrap.classList.toggle('hidden', !this.isPosKiosk());
-    if (branchSel) branchSel.required = !!this.isPosKiosk();
+    if (branchWrap && !this.isPosKiosk()) branchWrap.classList.add('hidden');
+    if (branchSel && !this.isPosKiosk()) branchSel.required = false;
   },
 
   /** Hide cross-app links on dedicated installers (Admin, POS, HR, etc.) */
   applyLoginChrome() {
     const mode = this.appMode();
+    const dedicated = new Set(['pos', 'staff', 'recipe', 'accounting', 'hr', 'delivery', 'referral', 'referral-commission', 'mgr-hr', 'admin']);
     const crossIds = [
-      'login-register-agent',
       'login-open-accounting',
       'login-open-hr',
       'login-open-staff',
+      'login-register-agent',
       'welcome-accounting',
       'welcome-hr',
       'welcome-staff',
       'welcome-referral'
     ];
-    // Remove portal shortcuts from Admin (and other) login screens
     crossIds.forEach((id) => {
       const el = document.getElementById(id);
       if (!el) return;
+      // Always hide these portal shortcuts on Admin login; hide on other dedicated apps too
       el.classList.add('hidden');
       el.style.display = 'none';
     });
@@ -723,6 +916,24 @@ const App = {
     if (mode === 'delivery') {
       const loginName = document.getElementById('login-shop-name');
       if (loginName) loginName.textContent = this.settings?.shop_name ? `${this.settings.shop_name} — Delivery` : 'Delivery Department';
+    }
+    if (mode === 'referral-commission') {
+      const loginName = document.getElementById('login-shop-name');
+      if (loginName) loginName.textContent = this.settings?.shop_name ? `${this.settings.shop_name} — Referral & Commission` : 'Referral & Commission';
+      this.ensureFeatureCss?.('css/referral-dept.css');
+    }
+    if (mode === 'referral') {
+      this.ensureFeatureCss?.('css/referral-dept.css');
+    }
+    if (mode === 'mgr-hr') {
+      const loginName = document.getElementById('login-shop-name');
+      const shop = this.settings?.shop_name || 'Chisanyama Connection';
+      if (loginName) loginName.textContent = `${shop}`;
+      const loginSub = document.getElementById('login-sub');
+      if (loginSub) {
+        loginSub.textContent = 'Manager & Supervisor Portal — sign in with your assigned account (or Admin credentials). This portal is for Managers and Supervisors only.';
+      }
+      this.ensureFeatureCss?.('css/mgr-hr-portal.css');
     }
   },
 
@@ -754,6 +965,7 @@ const App = {
   },
 
   async closeDeliveryDepartment() {
+    document.body.classList.remove('delivery-dept-active');
     window.AdminDeliveryPage?.stopAutoRefresh?.();
     window.PanelNotifyHub?.stop('delivery');
     await this.doLogout();
@@ -765,6 +977,18 @@ const App = {
     if (mode === 'delivery' || mode === 'recipe') return;
     if (!window.PanelNotifyHub) return;
     PanelNotifyHub.initPanel('admin', () => !!this.user);
+    PanelNotify?.requestPermission?.();
+    if (!this._notifVisBound) {
+      this._notifVisBound = true;
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible' && this.user) {
+          this.pollNotifications(true).catch(() => {});
+        }
+      });
+      window.addEventListener('focus', () => {
+        if (this.user) this.pollNotifications(false).catch(() => {});
+      });
+    }
   },
 
   bindGlobalCatalogSync() {
@@ -800,20 +1024,192 @@ const App = {
   },
 
   checkPosCatalogStamp() {
-    if (!window.PosPage?.reloadCatalog) return;
+    if (!window.POSPage?.reloadCatalog) return;
     let stamp = '';
     try { stamp = localStorage.getItem('shop-pos-catalog-ts') || ''; } catch (_) { /* ignore */ }
-    if (!stamp || stamp === PosPage._lastCatalogStamp) return;
+    if (!stamp || stamp === POSPage._lastCatalogStamp) return;
     if (document.getElementById('pos-grid') || document.querySelector('.pos-layout')) {
-      PosPage._lastCatalogStamp = stamp;
-      PosPage.reloadCatalog(true).catch(() => {});
+      POSPage._lastCatalogStamp = stamp;
+      POSPage.reloadCatalog(true).catch(() => {});
+    }
+  },
+
+  async openReferralAgent(opts = {}) {
+    this.stopLoginOperatingTimer();
+    await this.ensureFeatureCss('css/referral-dept.css');
+    await this.ensureFeatureScript('js/referral-agent-app.js');
+    const appMod = window.ReferralAgentApp;
+    if (!appMod?.render) {
+      Utils.toast('Referral Agent portal failed to load', 'error');
+      return;
+    }
+    this._referralFromLogin = !!opts.fromLogin || !opts.fromApp;
+    this.showScreen('referral-agent');
+    // Ask for phone notification permission as soon as the app opens
+    try {
+      if (window.PanelNotify) {
+        PanelNotify.init({ panel: 'referral', loggedIn: () => !!this.user, requestPermission: true });
+        await PanelNotify.requestPermission();
+      }
+    } catch (_) { /* ignore */ }
+    const root = document.getElementById('referral-agent-root');
+    appMod.view = opts.view || (this.user ? 'home' : 'gate');
+    await appMod.render(root, this);
+  },
+
+  closeReferralAgent() {
+    window.ReferralNotify?.stop();
+    const mode = this.appMode();
+    const stayOnReferralPortal = mode === 'referral' || this._referralFromLogin || this.user?.role === 'referral_agent';
+    this._referralFromLogin = false;
+    try { API.logout?.(); } catch (_) { /* ignore */ }
+    this.user = null;
+    if (stayOnReferralPortal) {
+      this.openReferralAgent({ fromLogin: true, view: 'gate' }).catch(() => {
+        this.showScreen('referral-agent');
+      });
+      return;
+    }
+    this.showScreen('login');
+  },
+
+  /** Standalone Referral & Commission module (installer / ?app=referral-commission) — not full Admin. */
+  async openReferralCommission(opts = {}) {
+    this.stopLoginOperatingTimer();
+    this.closeSidebar?.();
+    document.body.classList.remove('sidebar-open');
+    if (!this.user) {
+      this.showScreen('login');
+      return;
+    }
+    const allowed = ['owner', 'manager', 'assistant_manager', 'supervisor', 'admin'];
+    if (!allowed.includes(this.user.role)) {
+      Utils.toast('Referral & Commission access only for owner, manager, supervisor or admin', 'error');
+      await this.doLogout();
+      return;
+    }
+    this._referralCommissionFromLogin = !!opts.fromLogin || this.appMode() === 'referral-commission';
+    // Paint shell first so Android / slow networks don't look like a glitch
+    this.showScreen('referral-commission');
+    try {
+      if (window.PanelNotify) {
+        PanelNotify.init({ panel: 'referral-commission', loggedIn: () => !!this.user, requestPermission: true });
+        // Don't await permission — it hangs/crashes some Android WebViews
+        try { PanelNotify.requestPermission?.(); } catch (_) { /* ignore */ }
+      }
+    } catch (_) { /* ignore */ }
+    const root = document.getElementById('referral-commission-root');
+    if (!root) return;
+    root.innerHTML = '<p class="muted" style="padding:24px;text-align:center">Loading Referral &amp; Commission…</p>';
+    try {
+      await Promise.all([
+        this.ensureFeatureCss('css/referral-dept.css'),
+        this.ensureFeatureScript('js/pages/admin-referral.js')
+      ]);
+      if (!window.AdminReferralPage?.render) {
+        throw new Error('Referral & Commission module failed to load');
+      }
+      if (!this.settings) await this.ensureSettingsLoaded().catch(() => { this.settings = this.settings || {}; });
+      const admin = {
+        app: this,
+        settings: this.settings,
+        user: this.user,
+        standalone: true,
+        renderSection: async () => {}
+      };
+      await AdminReferralPage.render(root, admin);
+      if (window.ReferralNotify) {
+        ReferralNotify.init({ panel: 'referral-commission', audience: 'admin', actor: this.user });
+        ReferralNotify.start(this.user);
+      }
+    } catch (err) {
+      console.error('[ReferralCommission]', err);
+      root.innerHTML = `<div class="login-card" style="max-width:420px;margin:40px auto;text-align:center">
+        <p class="error-msg">${Utils.escHtml(err.message || 'Could not load Referral & Commission')}</p>
+        <button type="button" class="btn btn-primary" id="rc-retry">Retry</button></div>`;
+      document.getElementById('rc-retry')?.addEventListener('click', () => this.openReferralCommission(opts));
+    }
+  },
+
+  closeReferralCommission() {
+    window.ReferralNotify?.stop();
+    const stay = this.appMode() === 'referral-commission' || this._referralCommissionFromLogin;
+    this._referralCommissionFromLogin = false;
+    try { API.logout?.(); } catch (_) { /* ignore */ }
+    this.user = null;
+    if (stay) {
+      this.showScreen('login');
+      const loginSub = document.getElementById('login-sub');
+      if (loginSub) {
+        loginSub.textContent = 'Referral & Commission — sign in with owner, manager or supervisor credentials. This is not the full Admin app.';
+      }
+      this.startLoginOperatingTimer?.();
+      return;
+    }
+    this.showScreen('login');
+  },
+
+  async openMgrHrPortal(opts = {}) {
+    this.stopLoginOperatingTimer();
+    this.closeSidebar?.();
+    document.body.classList.remove('sidebar-open');
+    if (!this.user) {
+      this.showScreen('login');
+      return;
+    }
+    this._mgrHrFromLogin = !!opts.fromLogin || this.appMode() === 'mgr-hr';
+    this.showScreen('mgr-hr');
+    const root = document.getElementById('mgr-hr-root');
+    if (!root) return;
+    root.innerHTML = '<p class="muted" style="padding:24px;text-align:center">Loading Manager &amp; Supervisor Portal…</p>';
+    try {
+      await Promise.all([
+        this.ensureFeatureCss('css/mgr-hr-portal.css'),
+        this.ensureFeatureScript('js/pages/mgr-hr-portal.js')
+      ]);
+      if (!window.MgrHrPortal?.open) throw new Error('Portal module failed to load');
+      await MgrHrPortal.open(this, { container: root, fromAdmin: !!opts.fromAdmin });
+    } catch (err) {
+      console.error('[MgrHrPortal]', err);
+      root.innerHTML = `<div class="login-card" style="max-width:420px;margin:40px auto;text-align:center">
+        <p class="error-msg">${Utils.escHtml(err.message || 'Could not open portal')}</p>
+        <button type="button" class="btn btn-primary" id="mgrhr-retry">Retry</button></div>`;
+      document.getElementById('mgrhr-retry')?.addEventListener('click', () => this.openMgrHrPortal(opts));
+    }
+  },
+
+  closeMgrHrPortal() {
+    const stay = this.appMode() === 'mgr-hr' || this._mgrHrFromLogin;
+    this._mgrHrFromLogin = false;
+    if (stay) {
+      try { API.logout?.(); } catch (_) { /* ignore */ }
+      this.user = null;
+      this.showScreen('login');
+      const loginSub = document.getElementById('login-sub');
+      if (loginSub) {
+        loginSub.textContent = 'Manager & Supervisor Portal — sign in with your assigned account.';
+      }
+      this.startLoginOperatingTimer?.();
+      return;
+    }
+    this.showScreen('app');
+    if (typeof AdminPage !== 'undefined' && AdminPage.render) {
+      /* return to admin */
     }
   },
 
   async openDeliveryDepartment() {
     this.stopLoginOperatingTimer();
-    await this.ensureFeatureCss('css/delivery-dept.css');
+    document.body.classList.add('delivery-dept-active');
     document.body.classList.remove('sidebar-open');
+    // Paint shell immediately so login feels instant
+    this.showScreen('delivery-dept');
+    const root = document.getElementById('delivery-dept-root');
+    const userEl = document.getElementById('delivery-dept-user');
+    const titleEl = document.getElementById('delivery-dept-title');
+    if (userEl && this.user) userEl.textContent = `${this.user.full_name || this.user.username} · ${this.user.role}`;
+    if (titleEl) titleEl.textContent = this.settings?.shop_name ? `${this.settings.shop_name} — Delivery` : 'Delivery Department';
+    document.getElementById('delivery-dept-logout')?.addEventListener('click', () => this.closeDeliveryDepartment(), { once: true });
     if (!this.user) {
       this.showScreen('login');
       return;
@@ -824,23 +1220,23 @@ const App = {
       await this.doLogout();
       return;
     }
-    this.showScreen('delivery-dept');
-    const root = document.getElementById('delivery-dept-root');
-    const userEl = document.getElementById('delivery-dept-user');
-    const titleEl = document.getElementById('delivery-dept-title');
-    if (userEl) userEl.textContent = `${this.user.full_name || this.user.username} · ${this.user.role}`;
-    if (titleEl) titleEl.textContent = this.settings?.shop_name ? `${this.settings.shop_name} — Delivery` : 'Delivery Department';
-    document.getElementById('delivery-dept-logout')?.addEventListener('click', () => this.closeDeliveryDepartment(), { once: true });
     if (!root) return;
-    root.innerHTML = '<p class="muted" style="padding:24px">Loading delivery department…</p>';
+    if (!root.querySelector('.dd-layout, .dd-root, .admin-delivery')) {
+      root.innerHTML = '<p class="muted" style="padding:24px">Loading delivery department…</p>';
+    }
     try {
-      if (!this.settings) await this.ensureSettingsLoaded().catch(() => { this.settings = this.settings || {}; });
-      await this.ensureFeatureScript('js/pages/admin-delivery.js');
+      await Promise.all([
+        this.ensureFeatureCss('css/delivery-dept.css'),
+        this.settings ? Promise.resolve() : this.ensureSettingsLoaded().catch(() => { this.settings = this.settings || {}; }),
+        this.ensureFeatureScript('js/pages/admin-delivery.js')
+      ]);
       if (!window.AdminDeliveryPage) throw new Error('Delivery module failed to load');
+      if (titleEl) titleEl.textContent = this.settings?.shop_name ? `${this.settings.shop_name} — Delivery` : 'Delivery Department';
       const admin = {
         app: this,
         settings: this.settings,
         user: this.user,
+        standalone: true,
         renderSection: async (section, el) => {
           if (section === 'delivery-dept' && window.AdminDeliveryPage) {
             AdminDeliveryPage.standalone = true;
@@ -852,7 +1248,7 @@ const App = {
       await AdminDeliveryPage.render(root, admin);
       if (window.PanelNotifyHub) {
         PanelNotifyHub.initPanel('delivery', () => !!this.user);
-        PanelNotifyHub.startPoll('delivery', () => PanelNotifyHub.pollDelivery(this.user), 18000);
+        PanelNotifyHub.startPoll('delivery', () => PanelNotifyHub.pollDelivery(this.user), 12000);
       }
     } catch (err) {
       console.error('[DeliveryDepartment]', err);
@@ -860,6 +1256,154 @@ const App = {
         <p class="error-msg">${Utils.escHtml(err.message || 'Could not load Delivery Department')}</p>
         <button type="button" class="btn btn-primary" id="dd-retry">Retry</button></div>`;
       document.getElementById('dd-retry')?.addEventListener('click', () => this.openDeliveryDepartment());
+    }
+  },
+
+  async openJobApply() {
+    this.stopLoginOperatingTimer?.();
+    document.body.classList.remove('sidebar-open');
+    const app = document.getElementById('app');
+    if (app) app.style.display = 'none';
+    document.getElementById('nav')?.style && (document.getElementById('nav').style.display = 'none');
+    document.getElementById('mobile-loading')?.style && (document.getElementById('mobile-loading').style.display = 'none');
+    try {
+      await Utils.loadScript('js/pages/apply-job.js');
+    } catch (err) {
+      document.body.innerHTML = `<div style="max-width:480px;margin:48px auto;padding:24px;font-family:system-ui">Could not load the application form. Refresh and try again.</div>`;
+      return;
+    }
+    window.ApplyJobPage?.render?.();
+  },
+
+  /**
+   * Standalone Menu Builder / Promo Video Builder — no Admin sidebar or panels.
+   */
+  async openStudioBuilder(opts = {}) {
+    document.documentElement.classList.add('studio-builder-mode');
+    document.body?.classList?.add('studio-builder-mode');
+    this.hideMobileLoading?.();
+
+    // Hide all normal POS/Admin screens
+    ['screen-welcome', 'screen-login', 'screen-setup', 'screen-app'].forEach((id) => {
+      document.getElementById(id)?.classList.add('hidden');
+    });
+
+    let moduleKey = opts.module
+      || (() => { try { return new URLSearchParams(location.search).get('module'); } catch (_) { return null; } })()
+      || sessionStorage.getItem('shoppos_studio_section')
+      || 'menu-builder';
+    if (moduleKey === 'menu' || moduleKey === 'menu-builder') moduleKey = 'menu-builder';
+    else if (/video|promo/.test(String(moduleKey))) moduleKey = 'promo-video-builder';
+    else moduleKey = 'menu-builder';
+
+    const canMenu = this.user?.role === 'owner'
+      || Utils.hasPermission(this.user, 'studio_menu_builder');
+    const canVideo = this.user?.role === 'owner'
+      || Utils.hasPermission(this.user, 'studio_promo_video');
+    if (moduleKey === 'menu-builder' && !canMenu && canVideo) moduleKey = 'promo-video-builder';
+    if (moduleKey === 'promo-video-builder' && !canVideo && canMenu) moduleKey = 'menu-builder';
+    if (!canMenu && !canVideo) {
+      Utils.toast('Studio Access not granted', 'error');
+      location.replace(sessionStorage.getItem('shoppos_studio_return') || '/studio/');
+      return;
+    }
+
+    sessionStorage.setItem('shoppos_studio_section', moduleKey);
+    sessionStorage.setItem('shoppos_studio_lock', [
+      canMenu ? 'menu-builder' : '',
+      canVideo ? 'promo-video-builder' : ''
+    ].filter(Boolean).join(','));
+
+    let shell = document.getElementById('studio-builder-shell');
+    if (!shell) {
+      shell = document.createElement('div');
+      shell.id = 'studio-builder-shell';
+      document.body.appendChild(shell);
+    }
+
+    const shop = this.settings?.shop_name || 'Studio';
+    const name = this.user?.full_name || this.user?.username || '';
+    const isMenu = moduleKey === 'menu-builder';
+    const studioHome = sessionStorage.getItem('shoppos_studio_return') || '/studio/';
+
+    shell.innerHTML = `
+      <div class="sb-topbar">
+        <div class="sb-brand">
+          <span class="sb-mark">MP</span>
+          <div>
+            <strong>Menu &amp; Promo Studio</strong>
+            <small>${Utils.escHtml(shop)}${name ? ` · ${Utils.escHtml(name)}` : ''}</small>
+          </div>
+        </div>
+        <div class="sb-switch">
+          ${canMenu ? `<button type="button" class="sb-tab ${isMenu ? 'active' : ''}" data-sb="menu-builder">📋 Menu Builder</button>` : ''}
+          ${canVideo ? `<button type="button" class="sb-tab ${!isMenu ? 'active' : ''}" data-sb="promo-video-builder">🎬 Promo Video Builder</button>` : ''}
+        </div>
+        <div class="sb-actions">
+          <a class="btn btn-ghost btn-sm" href="${Utils.escHtml(studioHome)}">← Studio home</a>
+          <button type="button" class="btn btn-ghost btn-sm" id="sb-logout">Sign out</button>
+        </div>
+      </div>
+      <div class="sb-host" id="studio-builder-host">
+        <p class="muted" style="padding:24px;text-align:center">Loading…</p>
+      </div>
+    `;
+
+    shell.querySelectorAll('[data-sb]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        if (btn.dataset.sb === moduleKey) return;
+        const u = new URL(location.href);
+        u.searchParams.set('app', 'studio-builder');
+        u.searchParams.set('module', btn.dataset.sb === 'menu-builder' ? 'menu' : 'video');
+        u.searchParams.set('studio', '1');
+        u.hash = '';
+        location.href = u.toString();
+      });
+    });
+    document.getElementById('sb-logout')?.addEventListener('click', async () => {
+      try { await API.logout?.(this.user); } catch (_) { /* */ }
+      try {
+        sessionStorage.removeItem('shoppos_rpc_session');
+        localStorage.removeItem('shoppos_rpc_session');
+        sessionStorage.removeItem('shoppos_studio_lock');
+        sessionStorage.removeItem('shoppos_studio_section');
+        localStorage.removeItem('studio_token');
+        sessionStorage.removeItem('studio_token');
+      } catch (_) { /* */ }
+      location.replace(studioHome);
+    });
+
+    const host = document.getElementById('studio-builder-host');
+    await this.ensureSettingsLoaded().catch(() => {});
+    const ctx = { app: this };
+
+    try {
+      const load = async (src) => {
+        if (typeof Utils.reloadScript === 'function') {
+          try { await Utils.reloadScript(src); return; } catch (_) { /* */ }
+        }
+        await Utils.loadScript(src);
+      };
+      if (isMenu) {
+        if (!window.PromoPoster) await this.ensureFeatureScript('js/promo-poster.js');
+        await load('js/pages/admin-menu-builder.js');
+        if (!window.AdminMenuBuilderPage?.render) throw new Error('Menu Builder failed to load');
+        await window.AdminMenuBuilderPage.render(host, ctx);
+      } else {
+        if (!window.PromoPoster) await this.ensureFeatureScript('js/promo-poster.js');
+        await load('js/pages/admin-promo-video-builder.js');
+        await load('js/pages/admin-promo-video-advanced.js');
+        if (!window.AdminPromoVideoBuilderPage?.render) throw new Error('Promo Video Builder failed to load');
+        await window.AdminPromoVideoBuilderPage.render(host, ctx);
+      }
+    } catch (err) {
+      console.error('[StudioBuilder]', err);
+      host.innerHTML = `<div style="padding:24px;text-align:center">
+        <p class="error-msg">${Utils.escHtml(err.message || 'Could not open builder')}</p>
+        <button type="button" class="btn btn-primary" id="sb-retry">Retry</button>
+        <a class="btn btn-ghost" href="${Utils.escHtml(studioHome)}" style="margin-left:8px">Studio home</a>
+      </div>`;
+      document.getElementById('sb-retry')?.addEventListener('click', () => this.openStudioBuilder({ module: moduleKey }));
     }
   },
 
@@ -901,72 +1445,34 @@ const App = {
       return;
     }
     window.StaffPortalStandalone = portal;
-    portal.step = 'login';
-    portal.employee = null;
-    portal.employeePin = null;
+    // Restore session after camera/page background — do not force login if still signed in
+    const restored = portal.restoreSession?.() || null;
+    if (restored?.id) {
+      portal.employee = restored;
+      portal.step = 'portal';
+    } else if (!portal.employee?.id) {
+      portal.step = 'login';
+      portal.employee = null;
+      portal.employeePin = null;
+    }
     portal.render(root, this);
   },
 
   async closeStaffPortal() {
     window.PanelNotifyHub?.stop('staff');
     try { await API.staffLogout?.(); } catch (_) { /* ignore */ }
+    try { sessionStorage.removeItem('shoppos_staff_session'); } catch (_) { /* ignore */ }
     StaffSelfieCapture?.stopCamera?.();
     if (window.StaffPortalStandalone) {
       StaffPortalStandalone.employee = null;
       StaffPortalStandalone.employeePin = null;
       StaffPortalStandalone.step = 'login';
+      try { StaffPortalStandalone.clearSession?.(); } catch (_) { /* ignore */ }
     }
     if (window.StaffPage) {
       StaffPage.employee = null;
       StaffPage.employeePin = null;
       StaffPage._standalone = false;
-    }
-    this.showScreen('login');
-    this.startLoginOperatingTimer();
-  },
-
-  /** Open standalone Marketing Agent System (own login, like Recipe & Staff Portal) */
-  async openMarketingAgentLogin(opts = {}) {
-    await this.openMarketingAgent({ fromLogin: true, ...opts });
-  },
-
-  async openMarketingAgent(opts = {}) {
-    this.stopLoginOperatingTimer();
-    await this.ensureFeatureCss('css/marketing-agent.css');
-    await this.ensureFeatureCss('css/marketing-command.css');
-    await this.ensureFeatureCss('css/flyer-studio.css');
-    await this.ensureFeatureScript('js/marketing-agent-app.js');
-    await this.ensureFeatureScript('js/pages/marketing-flyers.js');
-    await this.ensureFeatureScript('js/pages/marketing-flyers-studio.js');
-    const appMod = window.MarketingAgentApp;
-    if (!appMod?.render) {
-      Utils.toast('Marketing Agent System failed to load', 'error');
-      return;
-    }
-    this._marketingFromLogin = !!opts.fromLogin || !opts.fromApp;
-    this.showScreen('marketing-agent');
-    const root = document.getElementById('marketing-agent-root');
-    if (opts.view === 'apply') {
-      appMod.session = null;
-      appMod.view = 'apply';
-    } else {
-      appMod.view = 'dashboard';
-    }
-    await appMod.render(root, this);
-  },
-
-  closeMarketingAgent() {
-    if (this._marketingFromLogin || this.user?.role === 'marketing_agent') {
-      this._marketingFromLogin = false;
-      try { API.logout?.(); } catch (_) { /* ignore */ }
-      this.user = null;
-      this.showScreen('login');
-      this.startLoginOperatingTimer();
-      return;
-    }
-    if (this.user) {
-      this.showScreen('app');
-      return;
     }
     this.showScreen('login');
     this.startLoginOperatingTimer();
@@ -1130,13 +1636,20 @@ const App = {
   async openRecipeProduction(opts = {}) {
     this._recipeReturnToApp = !!(opts.fromApp && this.user);
     this.stopLoginOperatingTimer();
-    await this.ensureFeatureCss('css/recipe-production.css');
-    await this.ensureFeatureScript('js/recipe-production/app.js');
+    // Paint the screen immediately so the click feels instant; scripts load in parallel.
+    this.showScreen('recipe-production');
+    const root = document.getElementById('recipe-production-root');
+    if (root && !root.querySelector('.rp-shell, .rp-login-wrap') && !window.RecipeProductionApp) {
+      root.innerHTML = '<div class="rp-login-wrap"><p class="rp-muted" style="padding:24px;text-align:center">Opening Recipe &amp; Production…</p></div>';
+    }
+    await Promise.all([
+      this.ensureFeatureCss('css/recipe-production.css'),
+      this.ensureFeatureScript('js/recipe-production/app.js')
+    ]);
     if (!window.RecipeProductionApp) {
       Utils.toast('Recipe & Production failed to load', 'error');
       return;
     }
-    this.showScreen('recipe-production');
     RecipeProductionApp.open(this, { fromApp: this._recipeReturnToApp, posUser: this.user });
   },
 
@@ -1260,12 +1773,6 @@ const App = {
       this.closeRecipeProduction();
       return;
     }
-    // Referral Agent overlay
-    if (typeof MarketingAgentApp !== 'undefined' && MarketingAgentApp?.isOpen?.()) {
-      if (typeof MarketingAgentApp.goBackInApp === 'function' && MarketingAgentApp.goBackInApp()) return;
-      this.closeMarketingAgent();
-      return;
-    }
     // Admin nested sections
     if (this.currentPage === 'admin' && typeof AdminPage !== 'undefined' && AdminPage.section && AdminPage.section !== 'overview') {
       const prev = AdminPage._sectionHistory?.pop();
@@ -1323,7 +1830,7 @@ const App = {
         await new Promise((resolve) => {
           if (window.posAPI) return resolve();
           window.addEventListener('posAPIReady', resolve, { once: true });
-          setTimeout(resolve, 8000);
+          setTimeout(resolve, 1200);
         });
       }
       if (!window.posAPI) {
@@ -1359,10 +1866,30 @@ const App = {
         }
         try { sessionStorage.setItem('delivery_portal_session', '1'); } catch (_) { /* ignore */ }
       }
+      if (mode === 'referral') {
+        if (user.role !== 'referral_agent') {
+          try { await API.logout(); } catch (_) { /* ignore */ }
+          errEl.textContent = 'This portal is for Referral Agents only. Use your referral agent username and password.';
+          errEl.classList.remove('hidden');
+          this.user = null;
+          return;
+        }
+      }
+      if (mode === 'referral-commission') {
+        const allowed = ['owner', 'manager', 'assistant_manager', 'supervisor'];
+        if (!allowed.includes(user.role)) {
+          try { await API.logout(); } catch (_) { /* ignore */ }
+          errEl.textContent = 'Referral & Commission is for owner, manager or supervisor only.';
+          errEl.classList.remove('hidden');
+          this.user = null;
+          return;
+        }
+      }
 
       errEl.classList.add('hidden');
       this.user = user;
       this.user.is_active = 1;
+      try { window.OfflineStore?.saveSession?.(user, this.settings || null); } catch (_) { /* ignore */ }
       if (mode === 'admin') {
         try { sessionStorage.setItem('admin_portal_session', '1'); } catch (_) { /* ignore */ }
       }
@@ -1371,49 +1898,26 @@ const App = {
       if (this.isPosKiosk()) {
         const branchSel = document.getElementById('login-branch');
         const branchId = Number(branchSel?.value || 0);
-        if (branchId && ['owner', 'manager'].includes(user.role)) {
-          try { await API.setActiveBranch(branchId, this.user); } catch (_) { /* optional */ }
-        }
         const restricted = ['cashier', 'supervisor', 'assistant_manager'].includes(user.role);
         const userBranch = user.branch_id != null ? Number(user.branch_id) : null;
         if (restricted && branchId && userBranch && userBranch !== branchId) {
-          let branchName = 'this branch';
-          try {
-            const brRes = await API.getBranches();
-            const branches = brRes?.data || brRes || [];
-            branchName = branches.find((b) => Number(b.id) === branchId)?.name || branchName;
-          } catch (_) { /* ignore */ }
           try { await API.logout(); } catch (_) { /* ignore */ }
           this.user = null;
           await this.showPosBranchErrorModal(
-            `Oops — you chose ${branchName}, but your account is not assigned to that branch. Select the branch you work at, or ask admin to update your user profile.`
+            'That branch is not assigned to your account. Select the branch you work at, or ask admin to update your user profile.'
           );
           return;
         }
-        if (restricted && userBranch) {
-          const tillRes = await API.getActiveBranch().catch(() => null);
-          const tillId = Number(tillRes?.data?.id || tillRes?.id || 0);
-          if (tillId && userBranch !== tillId) {
-            try { await API.logout(); } catch (_) { /* ignore */ }
-            this.user = null;
-            await this.showPosBranchErrorModal(result.error || 'This till is connected to a different branch than your account. Ask admin to connect this computer to your branch.');
-            return;
-          }
+        if (branchId && ['owner', 'manager'].includes(user.role)) {
+          API.setActiveBranch(branchId, this.user).catch(() => {});
         }
-        let branchLabel = 'your branch';
-        try {
-          const brRes = await API.getBranches();
-          const branches = brRes?.data || brRes || [];
-          const pickId = branchId || userBranch;
-          branchLabel = branches.find((b) => Number(b.id) === Number(pickId))?.name || branchLabel;
-        } catch (_) { /* ignore */ }
-        await this.showPosWelcomeSuccessModal(user, branchLabel);
         try { sessionStorage.setItem('pos_welcome_done', '1'); } catch (_) { /* ignore */ }
       }
       // Keep POS catalog cache warm — only drop session-specific reads
       try {
         window.DataCache?.invalidate?.('openShift', 'notifications', 'dashboard', 'salesReport', 'salesList', 'kitchen');
       } catch (_) { /* ignore */ }
+      this.warmPosCatalogCache(user);
       this.prefetchPosCatalog(user);
       this.applyPosKioskChrome();
       this._clearPortalEntry();
@@ -1422,6 +1926,8 @@ const App = {
           await this.openDeliveryDepartment();
         } else if (mode === 'recipe') {
           await this.openRecipeProduction({ fromApp: true });
+        } else if (mode === 'referral-commission') {
+          await this.openReferralCommission({ fromLogin: true });
         } else {
           await this.enterApp({ skipPosWelcome: this.isPosKiosk() });
         }
@@ -1436,54 +1942,85 @@ const App = {
     }
   },
 
-  async showMarketingRecoveryModal() {
-    Utils.showModal('Referral Agent ? Password Recovery', `
-      <p class="muted">Enter your username or mobile number. A temporary password will be sent to your WhatsApp.</p>
-      <div class="field"><label>Username or mobile</label><input id="mkt-rec-id" autocomplete="username"></div>
-      <p id="mkt-rec-err" class="error-msg hidden"></p>`,
-      '<button class="btn btn-primary" id="mkt-rec-send">Send via WhatsApp</button><button class="btn btn-ghost" id="mkt-rec-cancel">Cancel</button>');
-    document.getElementById('mkt-rec-cancel')?.addEventListener('click', Utils.hideModal);
-    document.getElementById('mkt-rec-send')?.addEventListener('click', async () => {
-      const id = document.getElementById('mkt-rec-id')?.value?.trim();
-      const err = document.getElementById('mkt-rec-err');
-      err?.classList.add('hidden');
-      if (!id) { err.textContent = 'Enter username or mobile'; err.classList.remove('hidden'); return; }
-      try {
-        const r = await API.recoverMarketingPassword(id);
-        if (r?.whatsapp_url) window.open(r.whatsapp_url, '_blank');
-        Utils.hideModal();
-        Utils.toast(r?.message || 'Check WhatsApp for your temporary password', 'success');
-      } catch (e) {
-        err.textContent = e.message || 'Recovery failed';
-        err.classList.remove('hidden');
-      }
-    });
-  },
-
   async showRecoveryModal() {
     const hasRes = await API.hasRecoverySecret();
     const hasLocalOrCloud = !!(hasRes && hasRes.success !== false && (hasRes.data === true || hasRes.data?.data === true || hasRes.fromCloud));
-    if (!hasLocalOrCloud) {
+
+    const showChooser = () => {
       Utils.showModal('Account Recovery', `
-        <p>Private recovery has not been set up on this shop yet.</p>
-        <p class="muted">Sign in on the online shop (or after first successful login here), then go to <strong>Admin → Security → Account Recovery</strong> and create a Private Recovery Phrase. That phrase is stored in your Supabase shop database and works on the browser URL and on installers when you are online.</p>`,
-        '<button class="btn btn-primary" id="recovery-close">OK</button>');
-      document.getElementById('recovery-close')?.addEventListener('click', Utils.hideModal);
-      return;
-    }
+        <p class="muted">Recover access with the WhatsApp number on your admin account, or with your Private Recovery Phrase.</p>
+        <div class="field" style="margin-top:12px">
+          <button type="button" class="btn btn-primary btn-block" id="recovery-wa">Recover via WhatsApp</button>
+        </div>
+        <div class="field">
+          <button type="button" class="btn btn-ghost btn-block" id="recovery-phrase" ${hasLocalOrCloud ? '' : 'disabled'}>
+            ${hasLocalOrCloud ? 'Use Private Recovery Phrase' : 'Private Recovery Phrase not set up yet'}
+          </button>
+        </div>
+        <p class="muted" style="font-size:12px;margin-top:10px">WhatsApp recovery works for owner, manager, and assistant manager accounts that have a phone number saved in Users.</p>`,
+        '<button class="btn btn-ghost" id="recovery-cancel">Cancel</button>');
+      document.getElementById('recovery-cancel')?.addEventListener('click', Utils.hideModal);
+      document.getElementById('recovery-wa')?.addEventListener('click', showWhatsAppStep);
+      document.getElementById('recovery-phrase')?.addEventListener('click', () => {
+        if (!hasLocalOrCloud) return;
+        showPhraseStep1();
+      });
+    };
+
+    const showWhatsAppStep = () => {
+      Utils.showModal('WhatsApp Recovery', `
+        <p class="muted">Enter your admin username, phone, or email. A temporary password is sent to the WhatsApp number on your account.</p>
+        <div class="field"><label>Username, phone or email</label>
+          <input id="recovery-wa-id" autocomplete="username" placeholder="e.g. your username or 27…"></div>
+        <p id="recovery-wa-msg" class="muted hidden" style="margin-top:8px"></p>
+        <p id="recovery-wa-err" class="error-msg hidden"></p>`,
+        '<button class="btn btn-primary" id="recovery-wa-send">Send temporary password</button><button class="btn btn-ghost" id="recovery-wa-back">Back</button>');
+      document.getElementById('recovery-wa-back')?.addEventListener('click', showChooser);
+      document.getElementById('recovery-wa-send')?.addEventListener('click', async () => {
+        const id = document.getElementById('recovery-wa-id')?.value?.trim() || '';
+        const errEl = document.getElementById('recovery-wa-err');
+        const msgEl = document.getElementById('recovery-wa-msg');
+        errEl?.classList.add('hidden');
+        msgEl?.classList.add('hidden');
+        if (!id) {
+          if (errEl) { errEl.textContent = 'Enter your username, phone, or email'; errEl.classList.remove('hidden'); }
+          return;
+        }
+        const btn = document.getElementById('recovery-wa-send');
+        if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
+        try {
+          const res = await API.recoverAdminPassword(id);
+          if (btn) { btn.disabled = false; btn.textContent = 'Send temporary password'; }
+          if (!res || res.success === false) {
+            if (errEl) { errEl.textContent = res?.error || 'Recovery failed'; errEl.classList.remove('hidden'); }
+            return;
+          }
+          if (msgEl) {
+            msgEl.textContent = res.message || res.data?.message || 'If we find your account, a temporary password will be sent to your WhatsApp.';
+            msgEl.classList.remove('hidden');
+          }
+          const wa = res.whatsapp_url || res.data?.whatsapp_url;
+          if (wa) { try { window.open(wa, '_blank'); } catch (_) { /* ignore */ } }
+          Utils.toast('Check WhatsApp for your temporary password', 'success');
+        } catch (e) {
+          if (btn) { btn.disabled = false; btn.textContent = 'Send temporary password'; }
+          if (errEl) { errEl.textContent = e?.message || 'Recovery failed'; errEl.classList.remove('hidden'); }
+        }
+      });
+    };
 
     let verifiedSecret = '';
     let ownerAccount = null;
 
-    const showStep1 = () => {
+    const showPhraseStep1 = () => {
       Utils.showModal('Account Recovery', `
         <p class="muted">Enter your <strong>Private Recovery Phrase</strong> (saved in your Supabase shop database) to reset the owner password. This does not delete shop data.</p>
         <div class="field"><label>Private Recovery Phrase</label>
           <input type="password" id="recovery-secret" autocomplete="off" placeholder="Your secret phrase"></div>
         <p id="recovery-error" class="error-msg hidden"></p>`,
-        '<button class="btn btn-primary" id="recovery-verify">Continue</button><button class="btn btn-ghost" id="recovery-cancel">Cancel</button>');
+        '<button class="btn btn-primary" id="recovery-verify">Continue</button><button class="btn btn-ghost" id="recovery-cancel">Back</button>');
 
-      document.getElementById('recovery-cancel')?.addEventListener('click', Utils.hideModal);
+      document.getElementById('recovery-cancel')?.addEventListener('click', showChooser);
       document.getElementById('recovery-verify')?.addEventListener('click', async () => {
         const secret = document.getElementById('recovery-secret').value;
         const errEl = document.getElementById('recovery-error');
@@ -1496,11 +2033,11 @@ const App = {
         }
         verifiedSecret = secret;
         ownerAccount = Array.isArray(res.data) ? res.data[0] : res.data;
-        showStep2();
+        showPhraseStep2();
       });
     };
 
-    const showStep2 = () => {
+    const showPhraseStep2 = () => {
       const uname = ownerAccount?.username || '';
       Utils.showModal('Reset Owner Password', `
         <p class="muted">Identity verified. Set a new password for the owner account <strong>${Utils.escHtml(uname)}</strong>. Shop data is not changed.</p>
@@ -1513,7 +2050,7 @@ const App = {
         <p id="recovery-error2" class="error-msg hidden"></p>`,
         '<button class="btn btn-success" id="recovery-reset">Save New Password</button><button class="btn btn-ghost" id="recovery-back">Back</button>');
 
-      document.getElementById('recovery-back')?.addEventListener('click', showStep1);
+      document.getElementById('recovery-back')?.addEventListener('click', showPhraseStep1);
       document.getElementById('recovery-reset')?.addEventListener('click', async () => {
         const username = document.getElementById('recovery-username').value;
         const pass = document.getElementById('recovery-new-pass').value;
@@ -1543,7 +2080,7 @@ const App = {
       });
     };
 
-    showStep1();
+    showChooser();
   },
 
   async showFactoryResetModal(fromAdmin = false) {
@@ -1644,6 +2181,17 @@ const App = {
     }
   },
 
+  async ensureAdminSectionScripts(sectionId) {
+    const map = this._adminSectionScripts || {};
+    const scripts = map[sectionId] || [];
+    if (!scripts.length) return;
+    await Promise.all(scripts.map(async (src) => {
+      try { await Utils.loadScript(src); } catch (err) {
+        console.warn('Admin section script failed:', src, err?.message || err);
+      }
+    }));
+  },
+
   async ensurePageScripts(page) {
     const isMobile = !!(window.__SHOP_POS_MOBILE__ || Utils.isNative?.());
     const scripts = [
@@ -1651,51 +2199,20 @@ const App = {
       ...(this._lazyScripts[page] || [])
     ];
     const failures = [];
-    const adminExtenderRe = /\/admin-(pro|audit|staff|hr|operations|combos|quotes|payroll|employee-month|recruitment|marketing|delivery|business-modules)\.js$/i;
-    // Admin core must register AdminPage before any extender runs
+    const loadOne = async (src) => {
+      try { await Utils.loadScript(src); }
+      catch (err) {
+        failures.push(src);
+        console.warn('Lazy script load failed:', src, err?.message || err);
+      }
+    };
+    // Admin: load core only here; section extenders load on demand (much faster first paint)
     if (page === 'admin') {
-      const core = scripts.find((s) => /\/admin\.js$/i.test(s));
-      const rest = scripts.filter((s) => s !== core);
-      if (core) {
-        try { await Utils.loadScript(core); } catch (err) {
-          failures.push(core);
-          console.warn('Admin core load failed:', err?.message || err);
-        }
-      }
-      for (let i = 0; i < 40 && !window.AdminPage; i++) {
-        await new Promise((r) => setTimeout(r, 25));
-      }
-      for (const src of rest) {
-        try { await Utils.loadScript(src); } catch (err) {
-          failures.push(src);
-          console.warn('Lazy script load failed:', src, err?.message || err);
-        }
-      }
+      const core = scripts.find((s) => /\/admin\.js$/i.test(s)) || 'js/pages/admin.js';
+      if (!window.AdminPage) await loadOne(core);
+      else loadOne(core);
     } else {
-      for (const src of scripts) {
-        try {
-          await Utils.loadScript(src);
-        } catch (err) {
-          failures.push(src);
-          console.warn('Lazy script load failed:', src, err?.message || err);
-        }
-      }
-    }
-
-    // If Admin extenders ran too early on a previous visit, force-reload them once
-    if (page === 'admin' && window.AdminPage && !AdminPage.sections?.some((s) => s.id === 'salesmgmt')) {
-      const extenders = scripts.filter((s) => adminExtenderRe.test(s));
-      for (const src of extenders) {
-        try {
-          Utils._loadedScripts?.delete?.(src);
-          document.querySelector(`script[src="${src}"]`)?.remove();
-          document.querySelector(`script[src$="/${src}"]`)?.remove();
-          await Utils.loadScript(src);
-        } catch (err) {
-          failures.push(src);
-          console.warn('Admin extender reload failed:', src, err?.message || err);
-        }
-      }
+      await Promise.all(scripts.map(loadOne));
     }
 
     this.bindPageModule(page);
@@ -1732,29 +2249,32 @@ const App = {
     this.stopLoginOperatingTimer();
     this.applyPosKioskChrome();
 
-    // Settings: don't block POS/admin entry if we already have them
-    if (!this.settings) {
-      const settingsP = this.ensureSettingsLoaded();
-      // Cap wait so a slow RPC never freezes the till
-      await Promise.race([
-        settingsP,
-        new Promise((r) => setTimeout(r, this.isPosKiosk() ? 400 : 900))
-      ]);
-    } else {
-      this.ensureSettingsLoaded().catch(() => {});
-    }
+    if (!this.settings) this.ensureSettingsLoaded().catch(() => {});
     this.updateBranding();
     this.applyTheme();
 
-    
-// Marketing agents work in the standalone Marketing Agent System
-    if (this.user?.role === 'marketing_agent') {
-      await this.openMarketingAgent({ fromLogin: true });
+    if (this.appMode() === 'studio-builder') {
+      await this.openStudioBuilder(opts);
       return;
     }
 
     if (this.appMode() === 'delivery') {
       await this.openDeliveryDepartment();
+      return;
+    }
+
+    if (this.user?.role === 'referral_agent' || this.appMode() === 'referral') {
+      await this.openReferralAgent({ fromLogin: true });
+      return;
+    }
+
+    if (this.appMode() === 'referral-commission') {
+      await this.openReferralCommission({ fromLogin: true });
+      return;
+    }
+
+    if (this.appMode() === 'mgr-hr') {
+      await this.openMgrHrPortal({ fromLogin: true });
       return;
     }
 
@@ -1779,10 +2299,15 @@ const App = {
       this.stopScheduledDocMonitor();
       document.getElementById('notif-badge')?.classList.add('hidden');
       try { window.ShopPosConnection?.set?.('hidden'); } catch (_) { /* ignore */ }
+      this.warmPosCatalogCache(this.user);
       this.prefetchPosCatalog(this.user);
+      if (!window.POSPage?.render) await this.ensurePageScripts('pos');
+      else this.ensurePageScripts('pos').catch(() => {});
       await this.navigate('pos');
       const bgPos = async () => {
         try { await API.logOperatingEvent('open', this.user); } catch { /* ignore */ }
+        this.startOperatingTimer();
+        this.startOperatingHoursWatch();
         this.startAutoLogoutTimer();
         this.startSyncMonitor();
         this.startSessionMonitor();
@@ -1810,7 +2335,21 @@ const App = {
         : (preferredCustom
           || (['cashier', 'supervisor', 'assistant_manager'].includes(this.user.role) ? 'pos' : 'dashboard')));
     let startPage = preferred;
-    if (this.appMode() === 'admin') {
+    // Studio handoff: always land on Admin builders (menu / promo video)
+    const studioHandoff = this._isStudioHandoff();
+    if (studioHandoff) {
+      startPage = 'admin';
+      try {
+        const preferredSection = sessionStorage.getItem('shoppos_studio_section')
+          || savedNav?.adminSection
+          || 'menu-builder';
+        if (typeof AdminPage !== 'undefined') {
+          AdminPage.section = preferredSection === 'deliveries' ? 'delivery-dept' : preferredSection;
+        } else {
+          this._pendingAdminSection = preferredSection;
+        }
+      } catch (_) { /* */ }
+    } else if (this.appMode() === 'admin') {
       if (savedNav?.page && Utils.canAccess(this.user, savedNav.page)) {
         startPage = savedNav.page;
       } else {
@@ -1823,7 +2362,7 @@ const App = {
         ? preferred
         : (this.navItems.map(n => n.id).find(id => Utils.canAccess(this.user, id)) || 'pos');
     }
-    if (startPage === 'admin' && savedNav?.adminSection && typeof AdminPage !== 'undefined') {
+    if (!studioHandoff && startPage === 'admin' && savedNav?.adminSection && typeof AdminPage !== 'undefined') {
       AdminPage.section = savedNav.adminSection === 'deliveries' ? 'delivery-dept' : savedNav.adminSection;
       if (savedNav.adminLoyaltyTab) AdminPage._loyaltyTab = savedNav.adminLoyaltyTab;
       if (savedNav.adminComboTab && typeof AdminCombosPage !== 'undefined') AdminCombosPage.tab = savedNav.adminComboTab;
@@ -1839,6 +2378,9 @@ const App = {
     const bg = async () => {
       if (this.appMode() === 'admin' && Utils.canAccessAdmin?.(this.user)) {
         this.ensurePageScripts('admin').catch(() => {});
+        this.ensurePageScripts('products').catch(() => {});
+        API.getProducts({ admin_list: true }).catch(() => {});
+        API.getCategories({}).catch(() => {});
       }
       if (!this.isPosKiosk()) {
         try {
@@ -1855,6 +2397,7 @@ const App = {
         try { await API.ensureDemoNotificationSound(); } catch { /* ignore */ }
         this.initPanelNotify();
         this.startOperatingTimer();
+        this.startOperatingHoursWatch();
         this.startNotificationSoundMonitor();
         this.startNotificationRefresh();
         this.startScheduledDocMonitor();
@@ -1940,10 +2483,6 @@ const App = {
     if (page === 'recipe') {
       return this.openRecipeProduction({ fromApp: true });
     }
-    if (page === 'bookkeeping') {
-      Utils.toast('Opening Accounting Command Centre', 'info');
-      return this.openAccounting({ fromApp: true, skipLogin: true });
-    }
     const navT0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
     // Immediate UI feedback ? never block navigation on session/network
     this.closeSidebar();
@@ -1967,7 +2506,7 @@ const App = {
     const titles = {
       dashboard: 'Dashboard', admin: 'Admin Panel', pos: 'Point of Sale', staff: 'Staff Portal', products: 'Products', categories: 'Categories',
       stock: 'Stock Management', customers: 'Customers', suppliers: 'Suppliers', expenses: 'Expenses',
-      returns: 'Returns', quotes: 'Quotations', layby: 'Lay-Bye', giftcards: 'Gift Cards', marketing: 'Marketing & Flyers',
+      returns: 'Returns', quotes: 'Quotations', layby: 'Lay-Bye', giftcards: 'Gift Cards',
       'document-hub': 'Document Hub', whatsapp: 'WhatsApp',
       operations: 'Cash-Up & Operations', restaurant: 'Restaurant', recipe: 'Recipe & Production',
       'purchase-orders': 'Purchase Orders', reports: 'Reports', bookkeeping: 'Bookkeeping & Finance', users: 'User Management',
@@ -2007,7 +2546,7 @@ const App = {
     host.classList.add('page-host-active');
 
     if (page === 'pos' && !host.querySelector('.pos-layout')) {
-      host.innerHTML = '<p class="muted" style="padding:24px">Loading POS…</p>';
+      host.innerHTML = '';
     }
 
     // Session check always in background ? never await on click
@@ -2054,8 +2593,19 @@ const App = {
       return;
     }
 
-    // First visit: skeleton shell immediately, then load (POS paints its own shell ? skip skeleton)
-    if (page !== 'pos') host.innerHTML = Utils.pageSkeleton();
+    // First visit: skip skeleton when we can paint from cache (POS/admin/sidebar)
+    const instantPages = new Set([
+      'pos', 'admin', 'stock', 'customers', 'suppliers', 'expenses', 'quotes',
+      'returns', 'layby', 'giftcards', 'whatsapp', 'categories'
+    ]);
+    const canPaintNow = instantPages.has(page)
+      || (page === 'products' && !!(
+        window.DataCache?.peek?.('products', [{ admin_list: true }])?.data?.length
+        || Utils.sessionCacheGet?.('products_page')?.products?.length
+        || window.__POS_WARM_CATALOG__?.products?.length
+      ))
+      || (page === 'dashboard' && !!(window.DataCache?.peek?.('dashboard', [Utils.monthStart?.(), Utils.today?.()])?.data));
+    if (!canPaintNow) host.innerHTML = Utils.pageSkeleton();
     markVisible(false);
     content.dataset.loading = '1';
 
@@ -2095,16 +2645,45 @@ const App = {
     this._saveNavState();
   },
 
+  /** Load last menu from session/IndexedDB into memory — sync, before POS opens. */
+  warmPosCatalogCache(user = this.user) {
+    if (!user || !window.Utils) return false;
+    const branchId = user.branch_id != null ? Number(user.branch_id) : 0;
+    const warm = window.__POS_WARM_CATALOG__;
+    if (warm?.products?.length && Number(warm.branchId || 0) === branchId) return true;
+    const snap = Utils.loadPosMenuSnapshot(user.branch_id);
+    if (!snap?.products?.length) return false;
+    window.__POS_WARM_CATALOG__ = {
+      branchId,
+      categories: snap.categories || [],
+      products: snap.products,
+      combos: snap.combos || [],
+      at: Date.now()
+    };
+    return true;
+  },
+
   /** Warm POS categories/products/combos so the till menu paints instantly. */
   prefetchPosCatalog(user = this.user) {
     if (!window.API || !user) return;
+    this.warmPosCatalogCache(user);
     const filters = { for_pos: true, actor: user };
     const branchId = user.branch_id != null ? Number(user.branch_id) : undefined;
     const comboArgs = branchId ? { branch_id: branchId, for_pos: true } : { for_pos: true };
     try {
-      API.getCategories(filters)?.catch?.(() => {});
-      API.getProducts(filters)?.catch?.(() => {});
-      API.getActiveCombos(comboArgs)?.catch?.(() => {});
+      this.ensurePageScripts('pos').catch(() => {});
+      Promise.all([
+        API.getCategories(filters),
+        API.getProducts(filters),
+        API.getActiveCombos(comboArgs).catch(() => ({ success: false, data: [] }))
+      ]).then(([catRes, prodRes, comboRes]) => {
+        window.POSPage?.persistMenuSnapshot?.(branchId, catRes, prodRes, comboRes);
+      }).catch(async () => {
+        const snap = await window.OfflineStore?.loadCatalog?.(branchId);
+        if (snap?.products?.length) {
+          window.POSPage?.persistMenuSnapshot?.(branchId, { data: snap.categories }, { data: snap.products }, { data: snap.combos });
+        }
+      });
     } catch (_) { /* ignore */ }
   },
 
@@ -2117,11 +2696,9 @@ const App = {
       const from = Utils.monthStart?.() || new Date().toISOString().slice(0, 10);
       const to = Utils.today?.() || new Date().toISOString().slice(0, 10);
       const tasks = [];
-      if (page === 'dashboard' || page === 'pos') {
+      if (page === 'dashboard') {
         tasks.push(() => API.getCategories({ for_pos: true }));
         tasks.push(() => API.getProducts({ for_pos: true }));
-      }
-      if (page === 'dashboard') {
         tasks.push(() => API.getSalesReport(from, to));
         this.ensurePageScripts('pos').catch(() => {});
         this.ensurePageScripts('products').catch(() => {});
@@ -2131,11 +2708,6 @@ const App = {
         tasks.push(() => API.getCategories({}));
         tasks.push(() => API.getSuppliers());
       }
-      if (page === 'pos') {
-        tasks.push(() => API.getProducts({ for_pos: true }));
-        tasks.push(() => API.getActiveCombos({ for_pos: true }));
-        this.ensurePageScripts('products').catch(() => {});
-      }
       if (page === 'stock') {
         tasks.push(() => API.getStockReport());
       }
@@ -2143,8 +2715,23 @@ const App = {
         tasks.push(() => API.getAdminDashboard(from, to));
         tasks.push(() => API.getCategories({}));
         tasks.push(() => API.getProducts({ admin_list: true }));
+        ['stock', 'customers', 'suppliers', 'expenses', 'quotes', 'returns', 'layby', 'giftcards', 'whatsapp']
+          .forEach((p) => this.ensurePageScripts(p).catch(() => {}));
       }
-      const maxTasks = page === 'admin' ? 3 : 3;
+      if (page === 'dashboard' || page === 'stock' || page === 'customers') {
+        tasks.push(() => API.getSuppliers());
+        tasks.push(() => API.getCustomers(''));
+        tasks.push(() => API.getQuotes({ limit: 200 }));
+        ['suppliers', 'expenses', 'quotes', 'returns', 'layby', 'giftcards', 'whatsapp']
+          .forEach((p) => this.ensurePageScripts(p).catch(() => {}));
+      }
+      if (page === 'suppliers') tasks.push(() => API.getSuppliers());
+      if (page === 'quotes') tasks.push(() => API.getQuotes({ limit: 200 }));
+      if (page === 'layby') tasks.push(() => API.getLaybyes({ from: Utils.daysAgo?.(90), to }));
+      if (page === 'giftcards') tasks.push(() => API.getGiftCards({ from: Utils.daysAgo?.(90), to, limit: 500 }));
+      if (page === 'expenses') tasks.push(() => API.getExpenseCategories());
+      if (page === 'whatsapp') tasks.push(() => API.getWhatsAppTemplates({}));
+      const maxTasks = page === 'admin' ? 4 : 4;
       tasks.slice(0, maxTasks).forEach((fn, i) => {
         setTimeout(() => {
           try { fn()?.catch?.(() => {}); } catch { /* ignore */ }
@@ -2264,19 +2851,37 @@ const App = {
   async populateLoginBranchPicker() {
     const wrap = document.getElementById('login-branch-wrap');
     const sel = document.getElementById('login-branch');
-    if (!wrap || !sel) return;
-    sel.required = true;
-    wrap.classList.remove('hidden');
+    if (!wrap || !sel || !this.isPosKiosk()) return;
+
+    let branches = [];
     try {
       const res = await API.getBranches();
-      const branches = res?.data || res || [];
-      sel.innerHTML = branches.map((b) => `<option value="${b.id}">${Utils.escHtml(b.name)}</option>`).join('');
-      const active = await API.getActiveBranch().catch(() => null);
-      const activeId = active?.data?.id || active?.id;
-      if (activeId) sel.value = String(activeId);
-    } catch (_) {
-      sel.innerHTML = '<option value="">Main branch</option>';
+      if (Array.isArray(res?.data)) branches = res.data;
+      else if (Array.isArray(res)) branches = res;
+    } catch (_) { /* offline — use fallback below */ }
+
+    if (!branches.length) {
+      branches = [{ id: 1, name: 'Main Branch' }];
     }
+
+    sel.innerHTML = branches.map((b) => {
+      const id = Number(b.id);
+      return `<option value="${id}">${Utils.escHtml(b.name || 'Branch')}</option>`;
+    }).join('');
+
+    let picked = '';
+    try {
+      const active = await API.getActiveBranch().catch(() => null);
+      const activeId = active?.data?.id ?? active?.id;
+      if (activeId != null && activeId !== '') picked = String(activeId);
+    } catch (_) { /* ignore */ }
+
+    if (picked && [...sel.options].some((o) => o.value === picked)) sel.value = picked;
+    else if (sel.options.length) sel.selectedIndex = 0;
+
+    const multi = branches.length > 1;
+    sel.required = multi;
+    wrap.classList.toggle('hidden', !multi);
   },
 
   async doLogout() {
@@ -2290,6 +2895,7 @@ const App = {
       }
     } catch { /* ignore */ }
     this.stopOperatingTimer();
+    this.stopOperatingHoursWatch();
     this.stopAutoLogoutTimer();
     this.stopNotificationSoundMonitor();
     this.stopSyncMonitor();
@@ -2315,7 +2921,17 @@ const App = {
     document.getElementById('login-pin').value = '';
     document.getElementById('login-error')?.classList.add('hidden');
     document.getElementById('operating-banner')?.classList.add('hidden');
+    if (this.appMode() === 'referral') {
+      this.openReferralAgent({ fromLogin: true, view: 'gate' }).catch(() => this.showScreen('login'));
+      return;
+    }
     this.showScreen('login');
+    if (this.appMode() === 'referral-commission') {
+      const loginSub = document.getElementById('login-sub');
+      if (loginSub) {
+        loginSub.textContent = 'Referral & Commission — sign in with owner, manager or supervisor credentials. This is not the full Admin app.';
+      }
+    }
     this.startLoginOperatingTimer();
     requestAnimationFrame(() => {
       const userEl = document.getElementById('login-username');
@@ -2324,11 +2940,30 @@ const App = {
     });
   },
 
+  getShopTimezone() {
+    return String(this.settings?.shop_timezone || this.settings?.timezone || 'Africa/Johannesburg').trim() || 'Africa/Johannesburg';
+  },
+
+  shopNowUtcMs() {
+    const tz = this.getShopTimezone();
+    const parts = new Intl.DateTimeFormat('en-GB', {
+      timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+    }).formatToParts(new Date());
+    const v = (t) => Number(parts.find((p) => p.type === t)?.value || 0);
+    return Date.UTC(v('year'), v('month') - 1, v('day'), v('hour'), v('minute'), v('second'));
+  },
+
+  shopDayOfWeek() {
+    return new Date(this.shopNowUtcMs()).getUTCDay();
+  },
+
   getTodayOperatingHours() {
     const oh = this.getOperatingSettings();
     const weekly = oh.weekly;
     if (weekly?.length) {
-      const day = weekly.find(d => d.day === new Date().getDay()) || weekly[new Date().getDay()];
+      const dayNum = this.shopDayOfWeek();
+      const day = weekly.find(d => Number(d.day) === dayNum) || weekly[dayNum];
       if (day?.closed) return { ...oh, closed_today: true, open_time: day.open, close_time: day.close };
       return { ...oh, open_time: day?.open || oh.open_time, close_time: day?.close || oh.close_time };
     }
@@ -2342,10 +2977,15 @@ const App = {
   },
 
   parseTimeToday(timeStr) {
+    const tz = this.getShopTimezone();
+    const parts = new Intl.DateTimeFormat('en-GB', {
+      timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', hour12: false
+    }).formatToParts(new Date());
+    const v = (t) => Number(parts.find((p) => p.type === t)?.value || 0);
     const [h, m] = (timeStr || '18:00').split(':').map(Number);
-    const d = new Date();
-    d.setHours(h, m || 0, 0, 0);
-    return d;
+    const shopLocalMs = Date.UTC(v('year'), v('month') - 1, v('day'), h, m || 0, 0);
+    const offset = Date.now() - this.shopNowUtcMs();
+    return new Date(shopLocalMs + offset);
   },
 
   formatCountdown(ms) {
@@ -2362,11 +3002,10 @@ const App = {
     const banner = document.getElementById('operating-banner');
     if (!banner) return;
     const oh = this.getOperatingSettings();
-    if (!oh.enabled) {
-      banner.classList.add('hidden');
-      return;
-    }
     banner.classList.remove('hidden');
+    if (!oh.enabled && oh.force_pos !== 'closed' && oh.force_pos !== 'open') {
+      /* still tick so after-hours / force alerts can show */
+    }
     this._closeAlertShown = false;
     this._operatingTick = () => this.updateOperatingBanner();
     this._operatingTick();
@@ -2378,18 +3017,70 @@ const App = {
     this._operatingInterval = null;
   },
 
+  applyOperatingHours(oh) {
+    if (!oh || typeof oh !== 'object') return;
+    this.settings = { ...(this.settings || {}), operating_hours_settings: { ...(this.settings?.operating_hours_settings || {}), ...oh } };
+    this.updateOperatingBanner();
+  },
+
+  startOperatingHoursWatch() {
+    if (this._hoursWatch) return;
+    this.bindHoursBroadcast();
+    const tick = async () => {
+      try {
+        const res = await API.getOperatingHours();
+        const oh = res?.success === false ? null : (res?.data || res);
+        if (oh) this.applyOperatingHours(oh);
+      } catch (_) { /* keep last hours */ }
+    };
+    this._hoursWatch = setInterval(tick, 2000);
+    tick();
+  },
+
+  stopOperatingHoursWatch() {
+    if (this._hoursWatch) clearInterval(this._hoursWatch);
+    this._hoursWatch = null;
+    try { this._hoursBc?.close(); } catch (_) { /* */ }
+    this._hoursBc = null;
+  },
+
+  bindHoursBroadcast() {
+    if (this._hoursBc) return;
+    try {
+      this._hoursBc = new BroadcastChannel('shop-pos-hours');
+      this._hoursBc.onmessage = (ev) => {
+        if (ev.data) this.applyOperatingHours(ev.data);
+      };
+    } catch (_) { /* */ }
+  },
+
   startLoginOperatingTimer() {
     this.stopLoginOperatingTimer();
     const el = document.getElementById('login-operating-timer');
     if (!el) return;
-    if (this.appMode() === 'admin') {
+    const mode = this.appMode();
+    // Dedicated portals / admin must always allow typing & sign-in regardless of shop hours
+    if (mode === 'admin' || mode === 'staff' || mode === 'mgr-hr' || mode === 'referral' || mode === 'referral-commission' || mode === 'accounting' || mode === 'hr') {
       el.classList.add('hidden');
+      this._ensureLoginFieldsEditable();
       return;
     }
     el.classList.remove('hidden');
     this._loginOperatingTick = () => this.updateLoginOperatingTimer();
     this._loginOperatingTick();
     this._loginOperatingInterval = setInterval(this._loginOperatingTick, 1000);
+    this._ensureLoginFieldsEditable();
+  },
+
+  /** Shop hours must never block typing on the login form. */
+  _ensureLoginFieldsEditable() {
+    ['login-username', 'login-password', 'login-pin'].forEach((id) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.removeAttribute('readonly');
+      el.removeAttribute('disabled');
+      el.style.pointerEvents = 'auto';
+    });
   },
 
   stopLoginOperatingTimer() {
@@ -2401,16 +3092,23 @@ const App = {
     const el = document.getElementById('login-operating-timer');
     const label = document.getElementById('login-operating-text');
     if (!el || !label) return;
+    this._ensureLoginFieldsEditable();
     const oh = this.getTodayOperatingHours();
+    // Admin override: keep all panel logins available outside hours
+    if (oh.force_login === 'open' || oh.force_pos === 'open') {
+      label.textContent = 'Admin override — logins stay open (shop hours do not block sign-in).';
+      el.classList.remove('hidden');
+      return;
+    }
     const hasSchedule = oh.open_time && oh.close_time;
     if (!oh.enabled && !hasSchedule) {
-      label.textContent = 'Operating hours not configured ? set in Admin ? Operating Hours';
+      label.textContent = 'Operating hours not configured — set in Admin → Operating Hours';
       el.classList.remove('hidden');
       return;
     }
     el.classList.remove('hidden');
     if (oh.closed_today) {
-      label.textContent = 'Shop is closed today per weekly schedule.';
+      label.textContent = 'Shop is closed today per weekly schedule. You can still type and sign in.';
       return;
     }
     const openTime = oh.open_time || '08:00';
@@ -2419,11 +3117,11 @@ const App = {
     const openAt = this.parseTimeToday(openTime);
     const closeAt = this.parseTimeToday(closeTime);
     if (now < openAt) {
-      label.textContent = `Opens at ${openTime} ? ${this.formatCountdown(openAt - now)} until open`;
+      label.textContent = `Opens at ${openTime} · ${this.formatCountdown(openAt - now)} until open — you can still type and sign in`;
     } else if (now >= closeAt) {
-      label.textContent = `Closed ? was open until ${closeTime}`;
+      label.textContent = `Closed · was open until ${closeTime} — you can still type and sign in`;
     } else {
-      label.textContent = `Open until ${closeTime} ? ${this.formatCountdown(closeAt - now)} remaining`;
+      label.textContent = `Open until ${closeTime} · ${this.formatCountdown(closeAt - now)} remaining`;
     }
   },
 
@@ -2458,13 +3156,21 @@ const App = {
     const label = document.getElementById('operating-banner-text');
     if (!banner || !label) return;
     const oh = this.getTodayOperatingHours();
-    if (!oh.enabled || !this.user) {
+    if (!this.user) {
       banner.classList.add('hidden');
       return;
     }
+    if (oh.force_pos === 'open') {
+      banner.classList.remove('hidden');
+      banner.className = 'operating-banner';
+      label.textContent = 'POS is forced open — tills can sell now.';
+      this._closeAlertShown = false;
+      return;
+    }
     if (oh.closed_today) {
+      banner.classList.remove('hidden');
       banner.className = 'operating-banner operating-banner--closed';
-      label.textContent = 'Shop is closed today per weekly schedule.';
+      label.textContent = 'The shop is scheduled closed today. POS stays open so you can still sell — please wrap up when you can.';
       return;
     }
     banner.classList.remove('hidden');
@@ -2472,16 +3178,19 @@ const App = {
     const diff = closeAt - new Date();
     const warnMins = oh.warn_minutes || 15;
 
-    if (diff <= 0) {
+    if (oh.force_pos === 'closed' || diff <= 0) {
       banner.className = 'operating-banner operating-banner--closed';
-      label.textContent = `Closing time reached (${oh.close_time}). Please finish sales and logout when done.`;
+      const closeLabel = oh.close_time || 'closing time';
+      label.textContent = oh.force_pos === 'closed'
+        ? `Admin closing alert is on. Scheduled close is ${closeLabel}. You can still sell — please wrap up when you can.`
+        : `You are supposed to be closed by ${closeLabel}. POS remains open so you can finish sales. Please wrap up and log out when ready.`;
       if (oh.alert_at_close && !this._closeAlertShown) {
         this._closeAlertShown = true;
-        Utils.toast('Closing time reached! Please wrap up and logout.', 'error');
+        Utils.toast(`You are supposed to be closed by ${closeLabel}. You can still sell — please wrap up when ready.`, 'error');
         SoundService?.startAlert(this.settings);
         if (this.user.role === 'cashier') {
-          Utils.showModal('Closing Time',
-            '<p>The scheduled shop closing time has been reached. Please complete any open sales and use <strong>Logout</strong> when finished.</p>',
+          Utils.showModal('Closing time reminder',
+            `<p>Trading hours ended at <strong>${closeLabel}</strong>. The till stays open so you can finish customers. Please complete open sales and log out when you are done.</p>`,
             '<button class="btn btn-primary" id="close-time-ok">OK</button>');
           document.getElementById('close-time-ok')?.addEventListener('click', () => {
             Utils.hideModal();
@@ -2492,6 +3201,10 @@ const App = {
       return;
     }
 
+    if (!oh.enabled) {
+      banner.classList.add('hidden');
+      return;
+    }
     banner.className = 'operating-banner' + (diff / 60000 <= warnMins ? ' operating-banner--warn' : '');
     label.textContent = `Closes at ${oh.close_time} ? ${this.formatCountdown(diff)} remaining`;
   },
@@ -2546,11 +3259,51 @@ const App = {
     }
   },
 
+  _dismissAdminAlertFlash() {
+    document.getElementById('admin-alert-flash')?.remove();
+  },
+
+  _flashAdminAlert(n) {
+    if (!n) return;
+    let bar = document.getElementById('admin-alert-flash');
+    if (!bar) {
+      bar = document.createElement('div');
+      bar.id = 'admin-alert-flash';
+      bar.style.cssText = 'position:fixed;top:12px;right:12px;z-index:10050;max-width:min(420px,calc(100vw - 24px));background:#111827;color:#fff;border-radius:12px;padding:14px 16px;box-shadow:0 12px 32px rgba(0,0,0,.35);';
+      document.body.appendChild(bar);
+    }
+    const title = Utils.escHtml(n.title || 'New notification');
+    const msg = Utils.escHtml(n.message || n.body || '');
+    bar.innerHTML = `<div style="font-weight:700;margin-bottom:4px">${title}</div>
+      ${msg ? `<div style="font-size:13px;opacity:.9">${msg}</div>` : ''}
+      <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+        <button type="button" class="btn btn-sm btn-primary" id="admin-alert-open">Open</button>
+        <button type="button" class="btn btn-sm btn-ghost" id="admin-alert-dismiss" style="color:#fff">Dismiss</button>
+      </div>`;
+    bar.hidden = false;
+    bar.querySelector('#admin-alert-dismiss')?.addEventListener('click', () => this._dismissAdminAlertFlash());
+    bar.querySelector('#admin-alert-open')?.addEventListener('click', () => {
+      this._dismissAdminAlertFlash();
+      this.showNotifications?.('alerts');
+    });
+  },
+
   async pollNotifications(force = false) {
     if (this.isPosKiosk()) return;
     if (!this.user) return;
     try {
+      this._seenAdminAlertIds = this._seenAdminAlertIds || new Set();
+      const hadSeen = this._seenAdminAlertIds.size > 0;
       const buckets = await this.fetchNotificationBuckets(force);
+      const fresh = (buckets.alerts || []).filter((n) => !this._seenAdminAlertIds.has(String(n.id)));
+      (buckets.alerts || []).forEach((n) => this._seenAdminAlertIds.add(String(n.id)));
+      if (hadSeen && fresh.length) {
+        const first = fresh[0];
+        this._flashAdminAlert(first);
+        if (document.hidden) {
+          PanelNotify?.notifyBrowser(first.title || 'New notification', first.message || first.body, `admin-${first.id}`);
+        }
+      }
       const count = (buckets.alerts?.length || 0) + (buckets.pending?.length || 0);
       const badge = document.getElementById('notif-badge');
       if (badge) {
@@ -2588,6 +3341,10 @@ const App = {
       }
       if (window.ShopPosCloudBridge?.heartbeat) {
         await window.ShopPosCloudBridge.heartbeat(this.user);
+      } else if (API.posHeartbeat) {
+        const branchId = await API.getTillBranchId?.().catch(() => null) || 1;
+        const ds = Utils.mergeDeviceSettings?.(this.settings) || {};
+        await API.posHeartbeat(branchId, Utils.getDeviceId?.() || 'pos', ds.device_name || 'POS Till');
       }
     } catch (_) { /* offline or sync paused */ }
   },
@@ -2596,7 +3353,7 @@ const App = {
     this.stopNotificationRefresh();
     if (!this.user) return;
     this.pollNotifications(true);
-    this._notifRefreshInterval = setInterval(() => this.pollNotifications(false), 30000);
+    this._notifRefreshInterval = setInterval(() => this.pollNotifications(false), 4000);
   },
 
   stopNotificationRefresh() {
@@ -2683,6 +3440,9 @@ const App = {
     if (sectionId === 'staffhr' && tabId && window.AdminPage) {
       AdminPage.staffTab = tabId;
     }
+    if (sectionId === 'hrcontracts' && tabId && window.AdminHrPage) {
+      AdminHrPage.tab = tabId;
+    }
     if (sectionId === 'loyalty' && tabId && window.AdminPage) {
       AdminPage._loyaltyTab = tabId;
     }
@@ -2695,12 +3455,12 @@ const App = {
         AdminPage.section = sectionId;
         AdminPage.renderSection(document.getElementById('admin-content'));
       }
-    }, 300);
+    }, 50);
   },
 
   navigateToBookkeepingTab(tabId) {
-    const sectionMap = { donations: 'other-income', income: 'other-income', expenses: 'expenses', ledger: 'general-ledger' };
-    this.openAccounting({ fromApp: true, skipLogin: true, section: sectionMap[tabId] || 'dashboard' });
+    if (window.BookkeepingPage) BookkeepingPage.tab = tabId || 'dashboard';
+    this.navigate('bookkeeping');
   },
 
   navigateToStaffTab(tabId) {
@@ -2757,6 +3517,45 @@ const App = {
     }
     if (t.startsWith('recruitment') && !['owner', 'manager', 'supervisor', 'assistant_manager'].includes(role)) return false;
     return true;
+  },
+
+  notificationDestinationLabel(n) {
+    const page = String(n?.action_page || '').toLowerCase();
+    const t = String(n?.type || '').toLowerCase();
+    const kind = String(n?.kind || '').toLowerCase();
+    if (page.startsWith('loyalty:whatsapp:')) return 'Loyalty WhatsApp reminder';
+    if (page === 'admin:loyalty' || t.startsWith('loyalty')) return 'Admin → Loyalty';
+    if (page.startsWith('document-hub:share:')) return 'Document Hub → Share';
+    if (page.startsWith('operations:cashup') || ['cashout', 'cashup', 'target_met', 'target_missed', 'cash_drop', 'cashout_penalty'].includes(t)) {
+      return 'Operations → Cash-Up';
+    }
+    if (page.startsWith('operations:stockcount') || t === 'stock_count') return 'Operations → Stock Count';
+    if (page === 'operations:non-selling' || page === 'stock:nonselling') return 'Stock → Non-selling';
+    if (page.startsWith('stock:inventory') || ['low_stock', 'out_of_stock', 'reorder'].includes(t)) return 'Admin → Inventory';
+    if (page === 'admin:taken-orders' || t.includes('taken')) return 'Admin → Taken / Unpaid Orders';
+    if (page === 'admin:delivery-dept' || t.includes('delivery')) return 'Admin → Deliveries';
+    if (page === 'admin:referral-dept' || t === 'referral') return 'Admin → Referral & Commission';
+    if (page === 'admin:hr-approvals' || t === 'hr_approval') return 'Admin → HR Approvals';
+    if (page === 'admin:online-orders' || t === 'online_order') return 'POS → Online orders';
+    if (page === 'admin:payroll' || page === 'staffhr:payroll' || ['payroll_due', 'uif', 'paye', 'sdl', 'coida', 'salary_claim', 'salary_advice'].includes(t)) {
+      return 'Admin → Payroll';
+    }
+    if (page === 'staffhr:attendance' || t.startsWith('attendance')) return 'Admin → Staff & HR → Attendance';
+    if (page.includes('recruitment') || t.startsWith('recruitment')) return 'Admin → Recruitment';
+    if (page.startsWith('admin:combos') || t.includes('promo') || t.includes('combo')) return 'Admin → Combos & Promos';
+    if (page === 'admin:approvals' || kind === 'pending') return 'Admin → Settings Approvals';
+    if (page === 'admin:opscompliance' || ['compliance', 'checklist_reminder', 'checklist_overdue'].includes(t)) {
+      return 'Admin → Operations & Compliance';
+    }
+    if (page === 'pos' || t === 'online_order' || t === 'held_order' || t === 'kitchen' || t === 'order_ready') return 'Point of Sale';
+    if (page === 'staff') return 'Staff Portal';
+    if (page.startsWith('bookkeeping') || ['low_cash', 'ar', 'ap', 'budget', 'donation'].includes(t)) return 'Bookkeeping';
+    if (page.startsWith('admin:')) {
+      const section = page.split(':')[1] || '';
+      return section ? `Admin → ${section.replace(/-/g, ' ')}` : 'Admin';
+    }
+    if (kind === 'pending') return 'Admin → Approvals';
+    return 'Open related screen';
   },
 
   navigateToNotificationTarget(type, kind, actionPage) {
@@ -2879,14 +3678,64 @@ const App = {
       this.navigateToAdminSection('opscompliance');
       return;
     }
+    if (page === 'admin:taken-orders') {
+      if (!canAdmin()) return refuse();
+      this.navigateToAdminSection('taken-orders');
+      return;
+    }
+    if (page === 'admin:delivery-dept') {
+      if (!canAdmin()) return refuse();
+      this.navigateToAdminSection('delivery-dept');
+      return;
+    }
+    if (page === 'admin:referral-dept' || t === 'referral') {
+      if (!canAdmin()) return refuse();
+      this.navigateToAdminSection('referral-dept');
+      return;
+    }
+    if (page === 'admin:hr-approvals' || t === 'hr_approval') {
+      if (!canAdmin()) return refuse();
+      this.navigateToAdminSection('hr-approvals');
+      return;
+    }
+    if (page === 'admin:online-orders') {
+      if (!canAdmin()) return refuse();
+      this.navigateToAdminSection('online-orders');
+      return;
+    }
+    if (page === 'staffhr:payroll') {
+      if (!canAdmin()) return refuse();
+      this.navigateToAdminSection('payroll');
+      return;
+    }
+    if (page.startsWith('stock:inventory') || page === 'stock:inventory') {
+      if (canAdmin()) {
+        this.navigateToAdminSection('inventory');
+        return;
+      }
+      if (!canPage('stock')) return refuse();
+      this.navigateToStockTab('inventory');
+      return;
+    }
     if (page === 'operations:non-selling' || page === 'stock:nonselling') {
       if (!canPage('stock')) return refuse();
       this.navigateToStockTab('nonselling');
       return;
     }
-    if (page === 'pos') {
+    if (page === 'pos' || t === 'online_order') {
       this.navigate('pos');
       return;
+    }
+    // Any other admin:section[:tab] deep link
+    if (page.startsWith('admin:') && page.split(':').length >= 2) {
+      if (!canAdmin()) return refuse();
+      const parts = page.split(':');
+      const section = parts[1];
+      const tab = parts[2] || null;
+      if (section) {
+        this.navigateToAdminSection(section, tab);
+        return;
+      }
     }
     if (kind === 'pending') {
       if (!canAdmin()) return refuse();
@@ -2894,7 +3743,7 @@ const App = {
       return;
     }
     const inventory = ['low_stock', 'out_of_stock', 'reorder'];
-    const payroll = ['payroll_due', 'uif', 'paye', 'sdl', 'coida', 'cert', 'salary', 'salary_claim'];
+    const payroll = ['payroll_due', 'uif', 'paye', 'sdl', 'coida', 'cert', 'salary', 'salary_claim', 'salary_advice'];
     const ownerSalary = ['owner_salary_due', 'owner_salary_overdue', 'owner_salary'];
     const bookkeeping = ['low_cash', 'ar', 'ap', 'budget'];
     if (inventory.includes(t)) {
@@ -3170,7 +4019,7 @@ const App = {
   async fetchNotificationBuckets(force = false, opts = {}) {
     const now = Date.now();
     const fastOnly = !!opts.fastOnly;
-    if (!force && this._notifCache && now - this._notifCache.at < 8000) {
+    if (!force && this._notifCache && now - this._notifCache.at < 2000) {
       return this._notifCache.data;
     }
     const res = await API.getNotifications(this.user);
@@ -3226,15 +4075,17 @@ const App = {
   _renderNotifRow(n) {
     const isNew = this._isNotifToday(n.created_at);
     const newBadge = isNew ? ' <span class="notif-new-badge">New</span>' : '';
+    const dest = this.notificationDestinationLabel(n);
     const rowCls = `notif-row notif-row--clickable${isNew ? ' notif-row--new' : ''}`;
     const actions = n.kind === 'alert'
       ? `<button class="btn btn-sm btn-ghost notif-mark-read" data-id="${n.id}">Mark read</button>`
       : n.kind === 'pending'
         ? `<button class="btn btn-sm btn-ghost notif-dismiss-pending" data-id="${n.id}">Dismiss</button>`
         : `<button class="btn btn-sm btn-ghost notif-dismiss-reminder" data-id="${n.id}">Dismiss</button>`;
-    return `<div class="${rowCls}" data-kind="${n.kind}" data-type="${n.type || ''}" data-action-page="${n.action_page || ''}" data-id="${n.id}">
+    return `<div class="${rowCls}" data-kind="${n.kind}" data-type="${n.type || ''}" data-action-page="${n.action_page || ''}" data-id="${n.id}" title="Go to: ${String(dest).replace(/"/g, '&quot;')}">
       <div class="notif-row-body">
         <strong>${n.title}</strong>${newBadge}<br><small>${n.message}</small>
+        <br><small class="notif-dest">→ ${dest}</small>
         ${n.created_at ? `<br><small class="muted">${Utils.formatDateTime(n.created_at)}</small>` : ''}
       </div>
       <div class="notif-row-actions">${actions}</div>
@@ -3311,23 +4162,23 @@ const App = {
       }
     });
 
-    document.getElementById('mark-all-read')?.addEventListener('click', async () => {
-      const btn = document.getElementById('mark-all-read');
-      if (btn) btn.disabled = true;
-      try {
-        const r = await API.markAllNotificationsRead(this.user);
-        if (r && r.success === false) throw new Error(r.error || 'Could not mark all read');
-        (alerts || []).forEach((n) => window.PanelNotifyHub?.ackAdminAlert(n.id));
-        this._notifCache = null;
-        Utils.hideModal();
-        this.stopAllNotificationSounds();
-        await this.loadNotifications();
-        await this.checkNotificationSounds();
-        Utils.toast('Your alerts marked as read', 'success');
-      } catch (err) {
-        if (btn) btn.disabled = false;
-        Utils.toast(err.message || 'Could not mark alerts as read', 'error');
+    document.getElementById('mark-all-read')?.addEventListener('click', () => {
+      (alerts || []).forEach((n) => window.PanelNotifyHub?.ackAdminAlert(n.id));
+      if (this._notifCache?.data) this._notifCache.data.alerts = [];
+      document.querySelectorAll('.notif-row[data-kind="alert"]').forEach((row) => row.remove());
+      const badge = document.getElementById('notif-badge');
+      if (badge) {
+        const pending = this._notifCache?.data?.pending?.length || 0;
+        if (pending) badge.textContent = pending > 99 ? '99+' : pending;
+        else badge.classList.add('hidden');
       }
+      Utils.hideModal();
+      this.stopAllNotificationSounds();
+      this._dismissAdminAlertFlash();
+      Utils.toast('Your alerts marked as read', 'success');
+      API.markAllNotificationsRead(this.user).then(() => {
+        this.pollNotifications(true).catch(() => {});
+      }).catch((err) => Utils.toast(err?.message || 'Could not mark all read', 'error'));
     });
 
     document.querySelectorAll('.notif-row--clickable').forEach(row => {

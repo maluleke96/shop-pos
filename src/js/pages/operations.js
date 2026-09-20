@@ -3,6 +3,7 @@ const OperationsPage = {
 
   async render(el, app) {
     this.app = app;
+    this._host = el;
     if (this.tab === 'opening' || this.tab === 'closing') this.tab = 'cashup';
     el.innerHTML = `<div class="page-toolbar"><h3>Operations</h3></div>
       <div class="admin-tabs">
@@ -559,7 +560,7 @@ const OperationsPage = {
       if (!r.success) return Utils.toast(r.error, 'error');
       this._wastePhotos = [];
       Utils.toast('Submitted for admin approval', 'success');
-      this.render(document.getElementById('page-content'), this.app);
+      this.render(this._host || document.querySelector('.page-host[data-page="operations"]') || document.querySelector('.page-host-active'), this.app);
     });
     el.querySelectorAll('.w-view-photo').forEach(b => b.addEventListener('click', async () => {
       const w = records[parseInt(b.dataset.idx, 10)];
@@ -664,7 +665,7 @@ const OperationsPage = {
       if (!r2.success) return Utils.toast(r2.error, 'error');
       Utils.hideModal();
       Utils.toast(`Count complete. ${r2.data.adjusted} products adjusted.`, 'success');
-      this.render(document.getElementById('page-content'), this.app);
+      this.render(this._host || document.querySelector('.page-host[data-page="operations"]') || document.querySelector('.page-host-active'), this.app);
     });
   }
 };

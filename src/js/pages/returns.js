@@ -3,8 +3,19 @@ const ReturnsPage = {
   from: null,
   to: null,
 
+  async activate(el, app) {
+    this.app = app;
+    this._host = el;
+    if (el?.querySelector?.('#ret-table-host')) {
+      this.loadTable();
+      return;
+    }
+    return this.render(el, app);
+  },
+
   async render(el, app) {
     this.app = app;
+    this._host = el;
     this.from = this.from || Utils.daysAgo(30);
     this.to = this.to || Utils.today();
     const currency = app.settings?.currency || 'R';
@@ -303,7 +314,7 @@ const ReturnsPage = {
       Utils.hideModal();
       Utils.toast('Refund processed — see Refunds tab', 'success');
       this.tab = 'refunds';
-      const page = document.getElementById('page-content');
+      const page = this._host || document.querySelector('.page-host[data-page="returns"]') || document.querySelector('.page-host-active');
       if (page && this.app) this.render(page, this.app);
     });
   }

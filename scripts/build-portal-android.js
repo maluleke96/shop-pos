@@ -25,6 +25,20 @@ const PORTALS = {
     },
     copyShared: true
   },
+  studio: {
+    srcDir: 'studio-web',
+    config: 'capacitor.studio.json',
+    apkName: 'ShopPOS-Studio.apk',
+    appId: 'com.shoppos.studio',
+    appName: 'Menu & Promo Studio',
+    configGlobal: '__STUDIO_CONFIG__',
+    configBody: {
+      rpcUrl: `${cloudUrl}/rpc`,
+      apiBase: cloudUrl,
+      studioPath: '/studio/'
+    },
+    copyShared: false
+  },
   driver: {
     srcDir: 'driver-web',
     config: 'capacitor.driver.json',
@@ -44,7 +58,7 @@ const PORTALS = {
 const mode = (process.argv[2] || '').trim();
 const portal = PORTALS[mode];
 if (!portal) {
-  console.error('Usage: node scripts/build-portal-android.js expense|driver');
+  console.error('Usage: node scripts/build-portal-android.js expense|studio|driver');
   process.exit(1);
 }
 

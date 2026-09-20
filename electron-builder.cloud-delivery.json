@@ -1,0 +1,43 @@
+{
+  "appId": "com.shoppos.delivery",
+  "productName": "Delivery Department",
+  "directories": {
+    "output": "dist\\cloud-apps\\delivery",
+    "buildResources": "build"
+  },
+  "files": [
+    "electron/delivery-shell.js",
+    "package.json"
+  ],
+  "extraMetadata": {
+    "main": "electron/delivery-shell.js",
+    "name": "com.shoppos.delivery"
+  },
+  "win": {
+    "target": [
+      {
+        "target": "nsis",
+        "arch": [
+          "x64"
+        ]
+      },
+      {
+        "target": "portable",
+        "arch": [
+          "x64"
+        ]
+      }
+    ]
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "artifactName": "ShopPOS-Delivery-Setup.${ext}",
+    "shortcutName": "Delivery Department"
+  },
+  "portable": {
+    "artifactName": "ShopPOS-Delivery-Portable.${ext}"
+  }
+}

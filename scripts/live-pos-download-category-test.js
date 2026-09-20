@@ -13,8 +13,12 @@ async function rpc(method, args, token) {
   return { json, token: res.headers.get('X-Session-Token') || json.sessionToken || token, ms };
 }
 
-function productsForCategory(products, catKey) {
-  if (!catKey || catKey === '__all') return products;
+function productsForCategory(products, catKey, categories = []) {
+  if (!catKey || catKey === '__all') {
+    const firstId = categories[0]?.id;
+    if (firstId != null) return products.filter((p) => String(p.category_id) === String(firstId));
+    return products;
+  }
   return products.filter((p) => String(p.category_id) === String(catKey));
 }
 

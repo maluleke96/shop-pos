@@ -1,0 +1,8 @@
+{
+  "appId": "com.shoppos.referralcommission",
+  "appName": "Referral Commission",
+  "webDir": "www",
+  "android": {
+    "allowMixedContent": true
+  }
+}

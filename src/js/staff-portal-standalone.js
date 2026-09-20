@@ -2,10 +2,56 @@
 const StaffPortalStandalone = {
   employee: null,
   step: 'login',
+  SESSION_KEY: 'shoppos_staff_session',
+
+  saveSession(emp) {
+    try {
+      if (!emp?.id) return;
+      sessionStorage.setItem(this.SESSION_KEY, JSON.stringify({
+        id: emp.id,
+        employee_id: emp.id,
+        employee_code: emp.employee_code || null,
+        full_name: emp.full_name || null,
+        user_id: emp.user_id ?? null,
+        photo_path: emp.photo_path || null,
+        position: emp.position || null,
+        branch_id: emp.branch_id ?? null,
+        saved_at: Date.now()
+      }));
+    } catch (_) { /* ignore */ }
+  },
+
+  restoreSession() {
+    try {
+      const raw = sessionStorage.getItem(this.SESSION_KEY);
+      if (!raw) return null;
+      const emp = JSON.parse(raw);
+      if (!emp?.id) return null;
+      // Expire after 12 hours
+      if (emp.saved_at && Date.now() - Number(emp.saved_at) > 12 * 60 * 60 * 1000) {
+        sessionStorage.removeItem(this.SESSION_KEY);
+        return null;
+      }
+      return emp;
+    } catch (_) {
+      return null;
+    }
+  },
+
+  clearSession() {
+    try { sessionStorage.removeItem(this.SESSION_KEY); } catch (_) { /* ignore */ }
+  },
 
   async render(container, app) {
     this.container = container;
     this.app = app;
+    if (!this.employee?.id) {
+      const restored = this.restoreSession();
+      if (restored?.id) {
+        this.employee = restored;
+        this.step = 'portal';
+      }
+    }
     if (this.step === 'login') return this.renderLogin();
     if (this.step === 'selfie') return this.renderSelfie();
     return this.renderPortal();
@@ -60,7 +106,15 @@ const StaffPortalStandalone = {
     }
     this.employee = r.data;
     this.employeePin = pin;
-    this.step = window.StaffSelfieCapture?.selfieRequired?.() ? 'selfie' : 'portal';
+    this.saveSession(r.data);
+    let needSelfie = !!window.StaffSelfieCapture?.selfieRequired?.();
+    if (needSelfie && this.employee?.id) {
+      try {
+        const attRes = await API.getStaffTodayAttendance(this.employee.id);
+        if (attRes?.data?.clock_in) needSelfie = false;
+      } catch (_) { /* keep selfie */ }
+    }
+    this.step = needSelfie ? 'selfie' : 'portal';
     this.render(this.container, this.app);
   },
 
@@ -96,6 +150,7 @@ const StaffPortalStandalone = {
   async goLogin() {
     window.PanelNotifyHub?.stop('staff');
     try { await API.staffLogout?.(); } catch (_) { /* ignore */ }
+    this.clearSession();
     this.employee = null;
     this.employeePin = null;
     this.step = 'login';
@@ -132,6 +187,7 @@ const StaffPortalStandalone = {
     document.getElementById('sp-exit')?.addEventListener('click', async () => {
       StaffSelfieCapture?.stopCamera?.();
       try { await API.staffLogout?.(); } catch (_) { /* ignore */ }
+      this.clearSession();
       this.employee = null;
       this.employeePin = null;
       this.step = 'login';

@@ -2,12 +2,6 @@
 (function () {
   if (!window.AdminPage) return;
 
-  const origRenderSection = AdminPage.renderSection.bind(AdminPage);
-  AdminPage.renderSection = async function (el) {
-    if (this.section === 'combos') return AdminCombosPage.render(el, this);
-    return origRenderSection(el);
-  };
-
   const AdminCombosPage = {
     async render(el, admin) {
       this.admin = admin;
@@ -283,7 +277,25 @@
           groupLink,
           orderUrl,
           shareMessage,
-          whatsappMessage: shareMessage
+          whatsappMessage: shareMessage,
+          onSharePublish: async (dataUrl) => {
+            if (!window.CCSharePublish?.open) {
+              try {
+                if (typeof Utils?.loadScript === 'function') await Utils.loadScript('js/pages/admin-communication-center.js');
+              } catch (_) { /* */ }
+            }
+            if (!window.CCSharePublish?.open) {
+              return Utils.toast('Open Communication Center once, then retry', 'error');
+            }
+            window.CCSharePublish.open({
+              title: combo.name,
+              body: shareMessage,
+              mediaUrl: dataUrl || null,
+              sourceModule: 'combo-builder',
+              sourceRef: String(combo.id),
+              app: this.admin?.app || window.App
+            });
+          }
         });
       } catch (err) {
         Utils.hideModal();

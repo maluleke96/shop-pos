@@ -1,5 +1,5 @@
 /**
- * Phase 5 verification: stock POS sync, referral landing, manager mobile.
+ * Phase 5 verification: stock POS sync, manager mobile.
  */
 const path = require('path');
 const os = require('os');
@@ -15,7 +15,6 @@ async function main() {
   const db = dbMod.getDb();
   const session = require('../electron/services/session');
   const store = require('../electron/services/store');
-  const mkt = require('../electron/services/marketing-platform');
   const mm = require('../electron/services/mobile-manager');
   const results = [];
 
@@ -69,44 +68,7 @@ async function main() {
     ok('product_save_stock', false, { error: e.message });
   }
 
-  // 5. Referral link builds full URL on cloud env
-  try {
-    process.env.RAILWAY_PUBLIC_DOMAIN = 'chisafood.up.railway.app';
-    const link = mkt.buildReferralLink('TESTCODE');
-    ok('referral_link_full_url', /^https:\/\//.test(link) && link.includes('/r/TESTCODE'), { link });
-    delete process.env.RAILWAY_PUBLIC_DOMAIN;
-  } catch (e) {
-    delete process.env.RAILWAY_PUBLIC_DOMAIN;
-    ok('referral_link_full_url', false, { error: e.message });
-  }
-
-  // 6. Public agent profile
-  try {
-    const agent = db.prepare("SELECT referral_code FROM mkt_referral_agents WHERE status='active' AND referral_code IS NOT NULL LIMIT 1").get();
-    if (agent) {
-      const profile = mkt.getAgentPublicProfile(agent.referral_code);
-      ok('referral_public_profile', !!profile.full_name && !!profile.referral_code, { code: agent.referral_code });
-    } else {
-      ok('referral_public_profile', true, { skipped: 'no active agents' });
-    }
-  } catch (e) {
-    ok('referral_public_profile', false, { error: e.message });
-  }
-
-  // 7. Referral click tracking
-  try {
-    const agent = db.prepare("SELECT referral_code FROM mkt_referral_agents WHERE referral_code IS NOT NULL LIMIT 1").get();
-    if (agent) {
-      const click = mkt.recordReferralClick(agent.referral_code, { source: 'phase5-test' });
-      ok('referral_click', click.recognised === true, { code: agent.referral_code });
-    } else {
-      ok('referral_click', true, { skipped: 'no agents' });
-    }
-  } catch (e) {
-    ok('referral_click', false, { error: e.message });
-  }
-
-  // 8. Manager mobile bootstrap + dashboard
+  // 5. Manager mobile bootstrap + dashboard
   try {
     const boot = mm.bootstrapFromAdmin(actor, { platform: 'test', device_name: 'phase5' });
     const dash = mm.getDashboard(boot.token, { period: 'today' });

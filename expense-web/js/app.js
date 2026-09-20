@@ -74,6 +74,92 @@ const ExpenseApp = {
     return String(cat || 'other').replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
   },
 
+  /** Searchable product / ingredient picker overlay for the expense app */
+  openProductPicker(opts = {}) {
+    const items = Array.isArray(opts.items) ? opts.items : (this.wasteProducts || this.catalog || []);
+    const title = opts.title || 'Search product / ingredient';
+    const onPick = typeof opts.onPick === 'function' ? opts.onPick : () => {};
+    if (!items.length) {
+      this.toast(opts.emptyText || 'No products loaded yet', 'error');
+      return;
+    }
+    let overlay = document.getElementById('exp-prod-pick');
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'exp-prod-pick';
+      overlay.className = 'prod-pick-overlay';
+      document.body.appendChild(overlay);
+    }
+    const close = () => {
+      overlay.classList.add('hidden');
+      overlay.innerHTML = '';
+    };
+    const paint = (q = '') => {
+      const list = overlay.querySelector('#exp-prod-pick-list');
+      const count = overlay.querySelector('#exp-prod-pick-count');
+      if (!list) return;
+      const needle = String(q || '').trim().toLowerCase();
+      const rows = items.filter((p) => {
+        if (!needle) return true;
+        const name = String(p.name || '').toLowerCase();
+        const sku = String(p.sku || p.barcode || '').toLowerCase();
+        return name.includes(needle) || sku.includes(needle);
+      }).slice(0, 80);
+      if (count) count.textContent = `${rows.length}`;
+      list.innerHTML = rows.length
+        ? rows.map((p) => {
+          const stock = p.stock_quantity != null ? ` · ${p.stock_quantity} ${p.unit || ''}` : '';
+          const type = p.item_type === 'ingredient' ? 'Ingredient' : (p.category_name || 'Product');
+          return `<button type="button" class="prod-pick-row" data-id="${p.id}">
+            <span><strong>${this.esc(p.name)}</strong><br><small class="muted">${this.esc(type)}${this.esc(stock)}</small></span>
+            <span class="muted">Select</span>
+          </button>`;
+        }).join('')
+        : '<p class="muted" style="padding:12px;margin:0">No matches</p>';
+      list.querySelectorAll('.prod-pick-row').forEach((btn) => {
+        btn.onclick = () => {
+          const row = items.find((x) => String(x.id) === String(btn.dataset.id));
+          if (!row) return;
+          close();
+          onPick(row);
+        };
+      });
+    };
+    overlay.classList.remove('hidden');
+    overlay.innerHTML = `
+      <div class="prod-pick-sheet">
+        <div class="prod-pick-head">
+          <strong>${this.esc(title)}</strong>
+          <button type="button" class="btn btn-ghost" id="exp-prod-pick-x">×</button>
+        </div>
+        <p class="muted" style="margin:0 0 10px;font-size:0.85rem">Type to search, then tap an item.</p>
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
+          <input type="search" id="exp-prod-pick-q" placeholder="Search name…" style="flex:1" autocomplete="off">
+          <span class="tag" id="exp-prod-pick-count">0</span>
+        </div>
+        <div id="exp-prod-pick-list" class="prod-pick-list"></div>
+        <button type="button" class="btn btn-ghost" id="exp-prod-pick-cancel" style="margin-top:10px">Cancel</button>
+      </div>`;
+    paint('');
+    overlay.querySelector('#exp-prod-pick-q')?.addEventListener('input', (e) => paint(e.target.value));
+    overlay.querySelector('#exp-prod-pick-q')?.focus();
+    overlay.querySelector('#exp-prod-pick-x')?.addEventListener('click', close);
+    overlay.querySelector('#exp-prod-pick-cancel')?.addEventListener('click', close);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  },
+
+  async ensureCatalog() {
+    if (this.catalog?.length) return this.catalog;
+    try {
+      const products = await ExpenseAPI.wasteProducts().catch(() => []);
+      this.catalog = Array.isArray(products) ? products.filter((p) => p.name !== '__Property Damage__') : [];
+      this.wasteProducts = this.catalog;
+    } catch (_) {
+      this.catalog = this.catalog || [];
+    }
+    return this.catalog;
+  },
+
   parsePrice(v) {
     const n = parseFloat(String(v || '').replace(',', '.'));
     return Number.isFinite(n) ? n : 0;
@@ -118,6 +204,32 @@ const ExpenseApp = {
     if (this._lineActionsBound) return;
     this._lineActionsBound = true;
     document.getElementById('app')?.addEventListener('click', (e) => {
+      const searchBtn = e.target.closest('.line-item-search');
+      if (searchBtn && searchBtn.dataset.searchId != null) {
+        e.preventDefault();
+        e.stopPropagation();
+        this.syncLineItemsFromDom();
+        const lineId = searchBtn.dataset.searchId;
+        this.ensureCatalog().then((catalog) => {
+          this.openProductPicker({
+            items: catalog,
+            title: 'Search product / ingredient',
+            onPick: (row) => {
+              const item = (this.form.lineItems || []).find((r) => String(r._id) === String(lineId));
+              if (!item) return;
+              item.name = row.name || '';
+              item.product_id = row.id;
+              const cost = Number(row.buying_price ?? row.cost_price ?? row.unit_cost ?? row.price);
+              if (Number.isFinite(cost) && cost > 0 && !this.parsePrice(item.price)) {
+                item.price = String(cost);
+              }
+              if (!item.qty) item.qty = '1';
+              this.paintBody();
+            }
+          });
+        });
+        return;
+      }
       const btn = e.target.closest('.line-item-remove');
       if (!btn || btn.dataset.removeId == null) return;
       e.preventDefault();
@@ -225,6 +337,8 @@ const ExpenseApp = {
         b.classList.toggle('active', b.dataset.tab === this.tab);
       });
       if (this.tab === 'history') await this.loadHistory(true);
+      if (this.tab === 'waste') await this.loadWaste(true);
+      if (this.tab === 'new') this.ensureCatalog().catch(() => {});
       this.paintBody();
     });
     window.addEventListener('portal-offline-flushed', () => {
@@ -271,7 +385,10 @@ const ExpenseApp = {
     const hdr = document.querySelector('.hdr-title h2');
     if (hdr) {
       if (this.historyDetail) hdr.textContent = 'Expense details';
-      else hdr.textContent = this.tab === 'new' ? 'New expense' : this.tab === 'history' ? 'Recent expenses' : 'Your profile';
+      else if (this.tab === 'new') hdr.textContent = 'New expense';
+      else if (this.tab === 'waste') hdr.textContent = 'Waste / Damage';
+      else if (this.tab === 'history') hdr.textContent = 'Recent expenses';
+      else hdr.textContent = 'Your profile';
     }
     if (body) {
       body.innerHTML = this.renderBody();
@@ -393,7 +510,7 @@ const ExpenseApp = {
     return `
       <header class="hdr">
         <div class="hdr-title">
-          <h2>${this.tab === 'new' ? 'New expense' : this.tab === 'history' ? 'Recent expenses' : 'Your profile'}</h2>
+          <h2>${this.tab === 'new' ? 'New expense' : this.tab === 'waste' ? 'Waste / Damage' : this.tab === 'history' ? 'Recent expenses' : 'Your profile'}</h2>
           <p>${this.esc(this.settings.shop_name || 'Shop POS')}</p>
         </div>
         ${this.settings.logo_path ? `<div class="shop-badge"><img src="${this.esc(this.settings.logo_path)}" alt="" onerror="this.style.display='none'"><span>${this.esc(this.settings.shop_name)}</span></div>` : ''}
@@ -405,7 +522,99 @@ const ExpenseApp = {
     if (this.tab === 'history' && this.historyDetail) return this.renderDetail(this.historyDetail);
     if (this.tab === 'history') return this.renderHistory();
     if (this.tab === 'profile') return this.renderProfile();
+    if (this.tab === 'waste') return this.renderWaste();
     return this.renderForm();
+  },
+
+  async loadWaste(force = false) {
+    if (this._loadingWaste && !force) return;
+    this._loadingWaste = true;
+    try {
+      const [products, pending] = await Promise.all([
+        ExpenseAPI.wasteProducts().catch(() => []),
+        ExpenseAPI.wasteList({ status: 'pending' }).catch(() => [])
+      ]);
+      this.wasteProducts = Array.isArray(products) ? products : [];
+      this.wastePending = Array.isArray(pending) ? pending : [];
+    } catch (err) {
+      this.toast(err.message || 'Could not load waste', 'error');
+      this.wasteProducts = this.wasteProducts || [];
+      this.wastePending = this.wastePending || [];
+    } finally {
+      this._loadingWaste = false;
+    }
+  },
+
+  renderWaste() {
+    if (this._loadingWaste && !this.wasteProducts) {
+      return `<div class="empty"><div class="ico">⏳</div><p>Loading…</p></div>`;
+    }
+    const products = this.wasteProducts || [];
+    const pending = this.wastePending || [];
+    const kind = this.wasteForm?.kind || 'ingredient';
+    const pendingHtml = pending.length
+      ? pending.map((w) => `
+        <div class="form-card" style="padding:12px;margin-bottom:8px">
+          <strong>${this.esc(w.product_name || w.property_name || 'Item')}</strong>
+          <div class="muted" style="font-size:0.85rem">${this.esc(w.reason || '')} · qty ${w.quantity}</div>
+          <span class="tag" style="background:#78350f;color:#fde68a">Pending approval</span>
+        </div>`).join('')
+      : `<div class="empty" style="padding:16px"><p class="muted">No pending waste reports</p></div>`;
+
+    return `
+      <div class="form-card">
+        <p class="muted" style="margin:0 0 12px;font-size:0.85rem">Report damaged stock or company property with a photo. Admin must approve before stock is deducted.</p>
+        <div class="field"><label>Type</label>
+          <select id="w-kind">
+            <option value="ingredient" ${kind === 'ingredient' ? 'selected' : ''}>Product / Ingredient</option>
+            <option value="property" ${kind === 'property' ? 'selected' : ''}>Company property</option>
+          </select>
+        </div>
+        <div class="field" id="w-prod-wrap" style="${kind === 'property' ? 'display:none' : ''}">
+          <label>Product / Ingredient</label>
+          <input type="hidden" id="w-prod" value="${this.esc(this.wasteForm?.product_id || '')}">
+          <button type="button" class="btn btn-ghost" id="w-prod-pick" style="width:100%;justify-content:space-between;text-align:left">
+            <span id="w-prod-lbl">${this.wasteForm?.product_name
+              ? this.esc(this.wasteForm.product_name)
+              : 'Search &amp; select product / ingredient…'}</span>
+            <span>🔍</span>
+          </button>
+          <p class="muted" style="margin:6px 0 0;font-size:0.8rem">${products.length} items — tap to search</p>
+        </div>
+        <div class="field" id="w-prop-wrap" style="${kind === 'property' ? '' : 'display:none'}">
+          <label>What was damaged?</label>
+          <input id="w-prop" placeholder="e.g. Broken fridge door" value="${this.esc(this.wasteForm?.property_name || '')}">
+        </div>
+        <div class="field"><label>Quantity</label>
+          <input id="w-qty" type="number" step="0.001" min="0" value="${this.esc(this.wasteForm?.quantity || '1')}"></div>
+        <div class="field"><label>Reason</label>
+          <select id="w-reason">
+            ${['Damaged', 'Spoiled', 'Expired', 'Broken', 'Lost', 'Other'].map((r) =>
+              `<option ${this.wasteForm?.reason === r ? 'selected' : ''}>${r}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field"><label>Notes</label>
+          <input id="w-notes" value="${this.esc(this.wasteForm?.notes || '')}" placeholder="Optional"></div>
+        <p class="section-label">Photo (required)</p>
+        ${this.wasteForm?.photoPreview ? `
+          <div class="invoice-preview-wrap">
+            <img src="${this.wasteForm.photoPreview}" alt="Damage" class="invoice-preview">
+            <button type="button" class="btn btn-ghost" id="w-photo-clear">Remove</button>
+          </div>` : `
+          <div class="invoice-actions">
+            <label class="invoice-btn">
+              <span class="invoice-btn-ico">📷</span><span>Take photo</span>
+              <input type="file" id="w-photo-cam" accept="image/*" capture="environment" hidden>
+            </label>
+            <label class="invoice-btn secondary">
+              <span class="invoice-btn-ico">🖼</span><span>Upload</span>
+              <input type="file" id="w-photo-file" accept="image/*" hidden>
+            </label>
+          </div>`}
+        <button type="button" class="btn btn-primary" id="w-save" style="margin-top:14px">${this._savingWaste ? 'Submitting…' : 'Submit for approval'}</button>
+      </div>
+      <p class="section-label" style="margin-top:20px">Your pending reports</p>
+      ${pendingHtml}`;
   },
 
   renderLineItems() {
@@ -413,7 +622,10 @@ const ExpenseApp = {
       <div class="line-item-row" data-id="${row._id}">
         <div class="line-item-num">${idx + 1}</div>
         <div class="line-item-fields">
-          <input type="text" class="line-item-name" placeholder="Item name" value="${this.esc(row.name)}" autocomplete="off">
+          <div class="line-item-name-wrap">
+            <input type="text" class="line-item-name" placeholder="Item / ingredient" value="${this.esc(row.name)}" autocomplete="off">
+            <button type="button" class="line-item-search" data-search-id="${row._id}" aria-label="Search product">🔍</button>
+          </div>
           <input type="number" class="line-item-qty" placeholder="Qty" inputmode="decimal" step="any" min="0.001" value="${this.esc(row.qty != null ? row.qty : '1')}">
           <input type="number" class="line-item-price" placeholder="Price" inputmode="decimal" step="0.01" min="0" value="${this.esc(row.price)}">
         </div>
@@ -434,7 +646,7 @@ const ExpenseApp = {
           <p class="section-label" style="margin:0">Invoice line items</p>
           <span class="muted" id="exp-line-count">${validCount ? `${validCount} item${validCount === 1 ? '' : 's'}` : 'Add items below'}</span>
         </div>
-        <p class="muted line-items-hint">Enter item name, quantity, and unit price. Line total = qty × price.</p>
+        <p class="muted line-items-hint">Type a name or tap 🔍 to search products / ingredients, then set qty and price.</p>
         <div class="line-items-columns"><span>Item</span><span>Qty</span><span>Price</span></div>
         <div id="exp-line-list">${this.renderLineItems()}</div>
         <button type="button" class="btn btn-add-line" id="exp-add-line">+ Add another item</button>
@@ -457,6 +669,13 @@ const ExpenseApp = {
         <div class="field" style="margin-bottom:0">
           <label for="exp-notes">Supplier / note <span class="muted">(optional)</span></label>
           <input id="exp-notes" placeholder="e.g. Makro, Shell, landlord…" value="${this.esc(this.form.notes)}">
+          <label for="exp-payment">Payment method</label>
+          <select id="exp-payment">
+            <option value="cash" ${this.form.payment_method === 'cash' ? 'selected' : ''}>Cash</option>
+            <option value="card" ${this.form.payment_method === 'card' ? 'selected' : ''}>Card</option>
+            <option value="eft" ${this.form.payment_method === 'eft' ? 'selected' : ''}>EFT / Bank transfer</option>
+            <option value="other" ${this.form.payment_method === 'other' ? 'selected' : ''}>Other</option>
+          </select>
         </div>
       </div>
 
@@ -515,13 +734,32 @@ const ExpenseApp = {
         ${lines}
         <div class="detail-line detail-total"><span>Total</span><strong>${this.fmt(Number(e.amount) || items.reduce((s, r) => s + (Number(r.amount) || 0), 0))}</strong></div>
       </div>
-      ${e.invoice_url ? `
+      ${this.invoiceSrc(e) ? `
       <div class="form-card invoice-card">
         <p class="section-label" style="margin-top:0">Invoice photo</p>
-        <a href="${this.esc(e.invoice_url)}" target="_blank" rel="noopener">
-          <img src="${this.esc(e.invoice_url)}" alt="Invoice" class="invoice-preview">
+        <a href="${this.esc(this.invoiceSrc(e))}" target="_blank" rel="noopener">
+          <img src="${this.esc(this.invoiceSrc(e))}" alt="Invoice" class="invoice-preview">
         </a>
       </div>` : '<p class="muted" style="text-align:center">No invoice photo</p>'}`;
+  },
+
+  invoiceSrc(e) {
+    if (!e) return '';
+    const raw = e.invoice_url || e.invoice_data || '';
+    if (raw && String(raw).startsWith('data:')) return raw;
+    if (raw && /^https?:\/\//i.test(raw)) return raw;
+    const id = e.id;
+    if (id && !String(id).startsWith('local-') && (raw || e.invoice_path || e.has_invoice)) {
+      if (raw && String(raw).startsWith('/')) return `${ExpenseAPI.origin()}${raw}`;
+      return ExpenseAPI.invoiceUrl(id);
+    }
+    return '';
+  },
+
+  invoiceThumbHtml(e) {
+    const src = this.invoiceSrc(e);
+    if (!src) return `<span class="exp-item-icon">${this.catIcon(e.category)}</span>`;
+    return `<span class="exp-item-thumb"><img src="${this.esc(src)}" alt="Invoice"></span>`;
   },
 
   expenseTitle(e) {
@@ -549,9 +787,7 @@ const ExpenseApp = {
       const pending = e.pending ? '<span class="tag" style="background:#78350f;color:#fde68a;margin-left:6px">Pending sync</span>' : '';
       return `
       <button type="button" class="exp-item exp-item-btn" data-exp-id="${this.esc(String(e.id))}" data-exp-pending="${e.pending ? '1' : '0'}">
-        ${e.invoice_url
-          ? `<span class="exp-item-thumb"><img src="${this.esc(e.invoice_url)}" alt="Invoice"></span>`
-          : `<span class="exp-item-icon">${this.catIcon(e.category)}</span>`}
+        ${this.invoiceThumbHtml(e)}
         <span class="exp-item-body">
           <span class="exp-item-top">
             <strong>${this.esc(title)}</strong>
@@ -666,6 +902,92 @@ const ExpenseApp = {
       this.paintBody();
     });
 
+    document.getElementById('w-kind')?.addEventListener('change', (e) => {
+      this.wasteForm = this.wasteForm || {};
+      this.wasteForm.kind = e.target.value;
+      const prop = e.target.value === 'property';
+      const pw = document.getElementById('w-prod-wrap');
+      const rw = document.getElementById('w-prop-wrap');
+      if (pw) pw.style.display = prop ? 'none' : '';
+      if (rw) rw.style.display = prop ? '' : 'none';
+    });
+    document.getElementById('w-prod-pick')?.addEventListener('click', async () => {
+      await this.ensureCatalog();
+      this.openProductPicker({
+        items: this.wasteProducts || this.catalog || [],
+        title: 'Select product / ingredient',
+        onPick: (row) => {
+          this.wasteForm = this.wasteForm || {};
+          this.wasteForm.product_id = row.id;
+          this.wasteForm.product_name = row.name;
+          const hid = document.getElementById('w-prod');
+          const lbl = document.getElementById('w-prod-lbl');
+          if (hid) hid.value = row.id;
+          if (lbl) lbl.textContent = `${row.name} (${row.stock_quantity ?? 0} ${row.unit || ''})`;
+        }
+      });
+    });
+    const pickWastePhoto = async (input) => {
+      const file = input?.files?.[0];
+      if (input) input.value = '';
+      if (!file) return;
+      try {
+        const dataUrl = await this.fileToDataUrl(file);
+        this.wasteForm = this.wasteForm || {};
+        this.wasteForm.photoPreview = dataUrl;
+        this.wasteForm.photo_image = dataUrl;
+        this.paintBody();
+        this.toast('Photo attached');
+      } catch (err) {
+        this.toast(err.message || 'Could not attach photo', 'error');
+      }
+    };
+    document.getElementById('w-photo-cam')?.addEventListener('change', (e) => pickWastePhoto(e.target));
+    document.getElementById('w-photo-file')?.addEventListener('change', (e) => pickWastePhoto(e.target));
+    document.getElementById('w-photo-clear')?.addEventListener('click', () => {
+      this.wasteForm = this.wasteForm || {};
+      this.wasteForm.photoPreview = '';
+      this.wasteForm.photo_image = '';
+      this.paintBody();
+    });
+    document.getElementById('w-save')?.addEventListener('click', async () => {
+      if (this._savingWaste) return;
+      this.wasteForm = this.wasteForm || {};
+      const kind = document.getElementById('w-kind')?.value || 'ingredient';
+      const photo = this.wasteForm.photo_image;
+      if (!photo) return this.toast('Add a photo first', 'error');
+      const payload = {
+        damage_kind: kind,
+        reason: document.getElementById('w-reason')?.value || 'Damaged',
+        notes: document.getElementById('w-notes')?.value || '',
+        quantity: parseFloat(document.getElementById('w-qty')?.value) || 0,
+        photo_image: photo
+      };
+      if (kind === 'property') {
+        payload.property_name = document.getElementById('w-prop')?.value?.trim();
+        if (!payload.property_name) return this.toast('Describe the property', 'error');
+        payload.quantity = payload.quantity > 0 ? payload.quantity : 1;
+      } else {
+        payload.product_id = parseInt(document.getElementById('w-prod')?.value || this.wasteForm?.product_id, 10);
+        if (!payload.product_id || !(payload.quantity > 0)) return this.toast('Select product and quantity', 'error');
+      }
+      this._savingWaste = true;
+      this.paintBody();
+      try {
+        await ExpenseAPI.wasteRecord(payload);
+        this.wasteForm = { kind: 'ingredient', quantity: '1' };
+        this.toast('Submitted for admin approval');
+        await this.loadWaste(true);
+        this.paintBody();
+      } catch (err) {
+        this.toast(err.message || 'Submit failed', 'error');
+        this._savingWaste = false;
+        this.paintBody();
+      } finally {
+        this._savingWaste = false;
+      }
+    });
+
     document.querySelectorAll('.exp-item-btn').forEach((btn) => {
       btn.addEventListener('click', async () => {
         const idRaw = btn.dataset.expId;
@@ -717,6 +1039,7 @@ const ExpenseApp = {
     if (btn) { btn.disabled = true; btn.textContent = 'Submitting…'; }
 
     try {
+      const payment_method = document.getElementById('exp-payment')?.value || this.form.payment_method || 'cash';
       const saved = await ExpenseAPI.save({
         category,
         amount,
@@ -724,6 +1047,7 @@ const ExpenseApp = {
         notes,
         description: notes,
         line_items,
+        payment_method,
         invoice_image: this.form.invoiceDataUrl || null
       });
       if (saved?.__offlineQueued) {
@@ -733,7 +1057,9 @@ const ExpenseApp = {
           expense_date,
           description: notes,
           notes,
-          line_items
+          line_items,
+          invoice_url: this.form.invoiceDataUrl || '',
+          has_invoice: !!this.form.invoiceDataUrl
         });
         this.toast('Saved offline — will sync when online');
       } else {
@@ -745,6 +1071,16 @@ const ExpenseApp = {
         b.classList.toggle('active', b.dataset.tab === 'history');
       });
       await this.loadHistory(true);
+      if (saved && !saved.__offlineQueued && saved.id) {
+        const idx = this.expenses.findIndex((e) => Number(e.id) === Number(saved.id));
+        const merged = {
+          ...(idx >= 0 ? this.expenses[idx] : {}),
+          ...saved,
+          invoice_url: saved.invoice_url || this.invoiceSrc(saved) || (idx >= 0 ? this.expenses[idx].invoice_url : '')
+        };
+        if (idx >= 0) this.expenses[idx] = merged;
+        else this.expenses.unshift(merged);
+      }
       this.paintBody();
     } catch (err) {
       this.toast(err.message || 'Could not submit expense', 'error');

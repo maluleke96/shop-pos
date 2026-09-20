@@ -1,5 +1,5 @@
 const { getDb } = require('../database/db');
-const { buildWaUrl } = require('./flyers');
+const { buildWaUrl } = require('./whatsapp');
 
 const STAFF_ROLES = ['owner', 'manager', 'assistant_manager'];
 

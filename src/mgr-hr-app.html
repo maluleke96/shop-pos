@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <title>Manager & Supervisor Portal</title>
+  <script>
+    window.__SHOP_POS_APP_MODE__ = 'mgr-hr';
+    try {
+      sessionStorage.setItem('SHOP_POS_APP_MODE', 'mgr-hr');
+      localStorage.setItem('SHOP_POS_APP_MODE', 'mgr-hr');
+    } catch (e) {}
+  </script>
+  <style>
+    html, body { margin: 0; min-height: 100%; }
+    body {
+      font-family: system-ui, -apple-system, Segoe UI, sans-serif;
+      background: #14213d; color: #e2e8f0;
+      display: flex; align-items: center; justify-content: center;
+      text-align: center; padding: 28px 20px; box-sizing: border-box;
+    }
+    a { display: inline-block; margin-top: 14px; background: #c41e3a; color: #fff; border-radius: 10px; padding: 12px 18px; font-weight: 700; text-decoration: none; }
+  </style>
+</head>
+<body>
+  <div>
+    <h1 style="color:#fff">Manager &amp; Supervisor Portal</h1>
+    <p id="status" style="color:#cbd5e1">Opening…</p>
+    <p><a id="open-btn" href="/index.html" style="background:#c41e3a">Open login</a></p>
+  </div>
+  <script>
+    (function () {
+      var target = '/index.html';
+      try {
+        if (location.protocol.indexOf('http') === 0 && location.origin) {
+          target = location.origin + '/index.html';
+        }
+      } catch (e) {}
+      document.getElementById('open-btn').href = target;
+      try { location.replace(target); } catch (e) { location.href = target; }
+      setTimeout(function () {
+        document.getElementById('status').textContent = 'Tap below if nothing opened.';
+      }, 4000);
+    })();
+  </script>
+</body>
+</html>

@@ -7,12 +7,32 @@
   }
 
   const AdminHrPage = {
+    groupOpsRules(rows) {
+      const all = rows || [];
+      return {
+        training: all.filter(x => /train|hr|conduct/i.test(x.category || '')),
+        probation: all.filter(x => /probat|hr|conduct/i.test(x.category || '')),
+        contract: all.filter(x => /contract|employment|hr|conduct/i.test(x.category || ''))
+      };
+    },
+    opsRulesHtml(list, selected) {
+      const ids = (selected || []).map(Number);
+      if (!list?.length) return '';
+      return `<div class="field full"><label>Company rules from Operations (will be signed with this record)</label>
+        ${list.map(r => `<label style="display:block;margin:4px 0"><input type="checkbox" class="hr-ops-rule" value="${r.id}" ${ids.includes(Number(r.id)) ? 'checked' : ''}>
+          <strong>${Utils.escHtml(r.title)}</strong> <span class="muted">${Utils.escHtml(r.category || '')}</span></label>`).join('')}
+      </div>`;
+    },
+    collectOpsRuleIds() {
+      return [...document.querySelectorAll('.hr-ops-rule:checked')].map(x => parseInt(x.value, 10));
+    },
     async render(el, admin) {
       this.admin = admin;
       this.app = admin.app;
       this.tab = this.tab || 'training';
       const tabs = [
         ['training', 'Training'], ['probation', 'Probation'], ['contracts', 'Employment Contracts'],
+        ['leases', 'Lease Agreements'],
         ['templates', 'Training & Probation Forms'], ['contract-templates', 'Contract Templates'],
         ['evaluations', 'Probation Evaluations'], ['submissions', 'Staff Submissions']
       ];
@@ -21,22 +41,25 @@
         <div class="form-tabs" id="hr-main-tabs">${tabs.map(([id, label]) =>
           `<button type="button" class="form-tab ${this.tab === id ? 'active' : ''}" data-tab="${id}">${label}</button>`).join('')}</div>
         <div id="hr-main-content"><p class="muted">Loading…</p></div></div>`;
-      el.querySelector('#hr-main-tabs').addEventListener('click', (e) => {
-        const btn = e.target.closest('[data-tab]');
-        if (!btn) return;
-        this.tab = btn.dataset.tab;
-        this.render(el, admin);
-      });
       const content = document.getElementById('hr-main-content');
       const renderers = {
         training: () => this.renderTraining(content),
         contracts: () => this.renderContracts(content),
+        leases: () => this.renderLeases(content),
         templates: () => this.renderHrTemplates(content),
         'contract-templates': () => this.renderTemplates(content),
         probation: () => this.renderProbation(content),
         evaluations: () => this.renderEvaluations(content),
         submissions: () => this.renderSubmissions(content)
       };
+      el.querySelector('#hr-main-tabs').addEventListener('click', async (e) => {
+        const btn = e.target.closest('[data-tab]');
+        if (!btn || this.tab === btn.dataset.tab) return;
+        this.tab = btn.dataset.tab;
+        el.querySelectorAll('#hr-main-tabs .form-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === this.tab));
+        content.innerHTML = '<p class="muted">Loading…</p>';
+        await (renderers[this.tab] || renderers.training)();
+      });
       await (renderers[this.tab] || renderers.training)();
       if (this.tab === 'probation' && this._probationEmployeeId) {
         const empsRes = await API.getEmployees({ status: 'Active' });
@@ -47,20 +70,26 @@
 
     async renderContracts(el) {
       try { await API.getHrContracts({}, this.app.user); } catch (_) { /* trigger expiry via other calls */ }
-      const [contractsRes, empsRes, tplRes] = await Promise.all([
+      const [contractsRes, empsRes, tplRes, rulesRes] = await Promise.all([
         API.getHrContracts({}, this.app.user),
         API.getEmployees({ status: 'Active' }),
-        API.getContractTemplates(this.app.user)
+        API.getContractTemplates(this.app.user),
+        API.getCompanyRules({ status: 'active' })
       ]);
+      this._opsRules = this.groupOpsRules(rulesRes.data || []);
       const contracts = contractsRes.data || [];
       const emps = empsRes.data || [];
       const templates = tplRes.data || [];
       el.innerHTML = `<div style="display:flex;gap:8px;margin:12px 0;flex-wrap:wrap">
         <button class="btn btn-primary" id="hr-new-contract">+ New Contract</button></div>
         <p class="muted">Set an <strong>expiry</strong> on contracts (incl. after probation). When expired, open a <strong>re-sign window</strong> (date/time). Staff re-sign in Staff Portal and must upload documents.</p>
-        <div class="table-wrap"><table><thead><tr><th>Employee</th><th>Position</th><th>Status</th><th>Expires</th><th>Re-sign window</th><th>Created</th><th></th></tr></thead>
-        <tbody>${contracts.map(c => `<tr>
+        <div class="table-wrap"><table><thead><tr><th>Employee</th><th>Type</th><th>Position</th><th>Status</th><th>Expires</th><th>Re-sign window</th><th>Created</th><th></th></tr></thead>
+        <tbody>${contracts.map(c => {
+          let etype = '—';
+          try { etype = (typeof c.contract_data === 'object' ? c.contract_data : JSON.parse(c.contract_data_json || '{}')).employment_type || '—'; } catch { /* ignore */ }
+          return `<tr>
           <td><strong>${c.employee_name}</strong><br><small>${c.employee_code || ''}</small></td>
+          <td><span class="tag">${Utils.escHtml(etype)}</span></td>
           <td>${c.emp_position || '—'}</td>
           <td><span class="tag">${c.status}</span></td>
           <td>${c.expires_at ? Utils.formatDateTime(c.expires_at) : '—'}</td>
@@ -68,10 +97,12 @@
           <td>${Utils.formatDateTime(c.created_at)}</td>
           <td style="white-space:nowrap">
             <button class="btn btn-sm btn-ghost hr-edit-contract" data-id="${c.id}">Edit</button>
-            <button class="btn btn-sm btn-ghost hr-pdf-contract" data-id="${c.id}">PDF</button>
+            <button class="btn btn-sm btn-ghost hr-pdf-contract" data-id="${c.id}">Download contract</button>
+            ${['expired','active','pending_signatures','terminated'].includes(c.status) ? `<button class="btn btn-sm btn-primary hr-renew-contract" data-id="${c.id}">Renew</button>` : ''}
             ${['expired','active','pending_signatures'].includes(c.status) ? `<button class="btn btn-sm btn-warning hr-resign-contract" data-id="${c.id}">Open re-sign</button>` : ''}
           </td>
-        </tr>`).join('') || '<tr><td colspan="7" class="muted">No contracts yet</td></tr>'}
+        </tr>`;
+        }).join('') || '<tr><td colspan="8" class="muted">No contracts yet</td></tr>'}
         </tbody></table></div>`;
       document.getElementById('hr-new-contract').addEventListener('click', () => this.showContractBuilder(null, emps, templates));
       el.querySelectorAll('.hr-edit-contract').forEach(b => b.addEventListener('click', async () => {
@@ -104,14 +135,61 @@
           this.renderContracts(el);
         });
       }));
+      el.querySelectorAll('.hr-renew-contract').forEach(b => b.addEventListener('click', async () => {
+        const full = await API.getHrContract(parseInt(b.dataset.id, 10), this.app.user);
+        const c = full.data;
+        if (!c) return Utils.toast('Contract not found', 'error');
+        const data = c.contract_data || {};
+        Utils.showModal(`Renew contract — ${c.employee_name}`, `
+          <p class="muted">Creates a new contract from this one. Staff will sign again on the portal. Attach extra documents if needed after save.</p>
+          <div class="form-grid">
+            <div class="field"><label>Employment type</label>
+              <select id="rn-etype">${['Permanent', 'Fixed-Term', 'Temporary', 'Casual', 'Part-Time'].map(t =>
+                `<option ${data.employment_type === t ? 'selected' : ''}>${t}</option>`).join('')}</select></div>
+            <div class="field"><label>New start date</label><input type="date" id="rn-start" value="${Utils.today()}"></div>
+            <div class="field"><label>New end date</label><input type="date" id="rn-end" value=""></div>
+            <div class="field"><label>Salary (${this.admin.settings?.currency || 'R'})</label><input type="number" id="rn-salary" step="0.01" value="${data.basic_salary || data.salary_amount || 0}"></div>
+            <div class="field full"><label><input type="checkbox" id="rn-docs" checked> Require documents on re-sign</label></div>
+          </div>`,
+          '<button class="btn btn-primary" id="rn-go">Create renewal</button>');
+        document.getElementById('rn-go')?.addEventListener('click', async () => {
+          const start = document.getElementById('rn-start').value;
+          const end = document.getElementById('rn-end').value;
+          const etype = document.getElementById('rn-etype').value;
+          const salary = parseFloat(document.getElementById('rn-salary').value) || 0;
+          const contractData = {
+            ...data,
+            employment_type: etype,
+            start_date: start,
+            end_date: end,
+            basic_salary: salary,
+            salary_amount: salary
+          };
+          const r = await API.saveHrContract({
+            employee_id: c.employee_id,
+            template_id: c.template_id,
+            contract_data: contractData,
+            status: 'pending_signatures',
+            expires_at: end || null,
+            renewed_from_id: c.id,
+            require_docs_on_resign: !!document.getElementById('rn-docs')?.checked
+          }, this.app.user);
+          if (!r.success) return Utils.toast(r.error || 'Could not renew', 'error');
+          Utils.hideModal();
+          Utils.toast('Renewal created — staff can sign in the portal', 'success');
+          this.renderContracts(el);
+        });
+      }));
     },
 
     async renderTraining(el) {
-      const [recRes, empRes, tplRes] = await Promise.all([
+      const [recRes, empRes, tplRes, rulesRes] = await Promise.all([
         API.getHrTrainingRecords({}, this.app.user),
         API.getEmployees({ status: 'Active' }),
-        API.getHrTrainingTemplates('training', this.app.user)
+        API.getHrTrainingTemplates('training', this.app.user),
+        API.getCompanyRules({ status: 'active' })
       ]);
+      this._opsRules = this.groupOpsRules(rulesRes.data || []);
       const records = recRes.data || [];
       const emps = empRes.data || [];
       const templates = tplRes.data || [];
@@ -127,7 +205,7 @@
           <td>${(r.evaluations || []).length}</td>
           <td style="white-space:nowrap">
             <button class="btn btn-sm btn-ghost hr-eval-training" data-id="${r.id}">Add Evaluation</button>
-            <button class="btn btn-sm btn-ghost hr-eval-pdf" data-id="${r.id}">Eval PDF</button>
+            <button class="btn btn-sm btn-ghost hr-eval-pdf" data-id="${r.id}">Download training</button>
             <button class="btn btn-sm btn-ghost hr-eval-print" data-id="${r.id}">Print</button>
             <button class="btn btn-sm btn-ghost hr-eval-wa" data-id="${r.id}" data-eid="${r.employee_id}">WhatsApp</button>
             ${isAdmin ? `<button class="btn btn-sm btn-ghost hr-edit-training" data-id="${r.id}">Edit</button>
@@ -139,15 +217,38 @@
         </tr>`).join('') || '<tr><td colspan="6" class="muted">No training records</td></tr>'}
         </tbody></table></div>`;
       const openTrainingForm = (rec) => {
-        Utils.showModal(rec ? 'Edit Training Record' : 'New Training Record', `
+        const f = rec?.form || {};
+        Utils.showModal(rec ? 'Edit Training Record' : 'Professional Training Record', `
+          <p class="muted" style="font-size:13px">Protects the business (safety, confidentiality, equipment) and the trainee (hours, supervisor, right to raise concerns).</p>
+          <h4>1. Trainee &amp; course</h4>
           <div class="form-grid">
-            <div class="field"><label>Employee</label><select id="tr-emp">${emps.map(e => `<option value="${e.id}" ${rec?.employee_id == e.id ? 'selected' : ''}>${e.full_name}</option>`).join('')}</select></div>
+            <div class="field"><label>Employee *</label><select id="tr-emp">${emps.map(e => `<option value="${e.id}" ${rec?.employee_id == e.id ? 'selected' : ''}>${e.full_name}</option>`).join('')}</select></div>
             <div class="field"><label>Template</label><select id="tr-tpl"><option value="">—</option>${templates.map(t => `<option value="${t.id}" ${rec?.template_id == t.id ? 'selected' : ''}>${t.title}</option>`).join('')}</select></div>
+            <div class="field"><label>Course / module title *</label><input id="tr-course" value="${Utils.escHtml(f.course_title || '')}"></div>
+            <div class="field"><label>Trainer / supervisor *</label><input id="tr-trainer" value="${Utils.escHtml(f.trainer || '')}"></div>
+            <div class="field"><label>Venue / site</label><input id="tr-venue" value="${Utils.escHtml(f.venue || '')}"></div>
+            <div class="field"><label>Training hours</label><input type="number" id="tr-hours" min="0" step="0.5" value="${f.hours || ''}"></div>
             <div class="field"><label>Start Date</label><input type="date" id="tr-start" value="${rec?.start_date || Utils.today()}"></div>
-            <div class="field"><label>Expiry Date</label><input type="date" id="tr-expiry" value="${rec?.expiry_date || ''}"></div>
+            <div class="field"><label>Expiry / end Date</label><input type="date" id="tr-expiry" value="${rec?.expiry_date || ''}"></div>
             <div class="field"><label>Status</label><select id="tr-status">
               ${['active', 'passed', 'terminated', 'extended'].map(s => `<option value="${s}" ${rec?.status === s ? 'selected' : ''}>${s}</option>`).join('')}
             </select></div>
+            <div class="field"><label>ID / passport</label><input id="tr-id" value="${Utils.escHtml(f.id_number || '')}"></div>
+            <div class="field"><label>Phone</label><input id="tr-phone" value="${Utils.escHtml(f.phone || '')}"></div>
+            <div class="field"><label>Emergency contact</label><input id="tr-emerg" value="${Utils.escHtml(f.emergency_contact || '')}"></div>
+            <div class="field"><label>Emergency phone</label><input id="tr-emerg-phone" value="${Utils.escHtml(f.emergency_phone || '')}"></div>
+          </div>
+          <h4 style="margin-top:14px">2. Business &amp; trainee protection</h4>
+          <div class="form-grid">
+            <div class="field full"><label><input type="checkbox" id="tr-safety" ${f.safety_briefed ? 'checked' : ''}> Safety briefing completed (knives, fire, oil, PPE)</label></div>
+            <div class="field full"><label><input type="checkbox" id="tr-ppe" ${f.ppe_issued ? 'checked' : ''}> PPE issued and explained</label></div>
+            <div class="field full"><label><input type="checkbox" id="tr-conf" ${f.confidentiality ? 'checked' : ''}> Confidentiality / no sharing of recipes, prices, or customer data</label></div>
+            <div class="field full"><label><input type="checkbox" id="tr-equip" ${f.equipment_return ? 'checked' : ''}> Company equipment must be returned</label></div>
+            <div class="field full"><label><input type="checkbox" id="tr-photo" ${f.photo_consent ? 'checked' : ''}> Photo / CCTV consent for training evidence</label></div>
+            <div class="field full"><label><input type="checkbox" id="tr-rights" ${f.trainee_rights ? 'checked' : ''}> Trainee told how to raise a safety or harassment concern</label></div>
+            <div class="field full"><label>Duties / skills to cover</label><textarea id="tr-duties" rows="3">${Utils.escHtml(f.duties || '')}</textarea></div>
+            <div class="field full"><label>Notes</label><textarea id="tr-notes" rows="2">${Utils.escHtml(f.notes || '')}</textarea></div>
+            ${this.opsRulesHtml(this._opsRules?.training, f.ops_rule_ids)}
           </div>`, '<button class="btn btn-primary" id="tr-save">Save</button>');
         document.getElementById('tr-save').addEventListener('click', async () => {
           const r = await API.saveHrTrainingRecord({
@@ -157,7 +258,26 @@
             start_date: document.getElementById('tr-start').value,
             expiry_date: document.getElementById('tr-expiry').value || null,
             status: document.getElementById('tr-status').value || 'active',
-            evaluations: rec?.evaluations || []
+            evaluations: rec?.evaluations || [],
+            form: {
+              course_title: document.getElementById('tr-course').value.trim(),
+              trainer: document.getElementById('tr-trainer').value.trim(),
+              venue: document.getElementById('tr-venue').value.trim(),
+              hours: document.getElementById('tr-hours').value,
+              id_number: document.getElementById('tr-id').value.trim(),
+              phone: document.getElementById('tr-phone').value.trim(),
+              emergency_contact: document.getElementById('tr-emerg').value.trim(),
+              emergency_phone: document.getElementById('tr-emerg-phone').value.trim(),
+              safety_briefed: !!document.getElementById('tr-safety')?.checked,
+              ppe_issued: !!document.getElementById('tr-ppe')?.checked,
+              confidentiality: !!document.getElementById('tr-conf')?.checked,
+              equipment_return: !!document.getElementById('tr-equip')?.checked,
+              photo_consent: !!document.getElementById('tr-photo')?.checked,
+              trainee_rights: !!document.getElementById('tr-rights')?.checked,
+              duties: document.getElementById('tr-duties').value.trim(),
+              notes: document.getElementById('tr-notes').value.trim(),
+              ops_rule_ids: this.collectOpsRuleIds()
+            }
           }, this.app.user);
           if (!r.success) return Utils.toast(r.error, 'error');
           Utils.hideModal();
@@ -222,7 +342,7 @@
         const r = await API.saveHrTrainingRecord({
           id: rec.id, employee_id: rec.employee_id, start_date: rec.start_date,
           expiry_date: extra.expiry_date || rec.expiry_date, template_id: rec.template_id,
-          status, evaluations: rec.evaluations || []
+          status, evaluations: rec.evaluations || [], form: rec.form || {}
         }, this.app.user);
         if (!r.success) return Utils.toast(r.error, 'error');
         const empRes = await API.getEmployee(rec.employee_id);
@@ -297,17 +417,26 @@
         return;
       }
       Utils.showModal(tpl ? 'Edit HR Template' : 'New HR Template', `
+        <p class="muted" style="font-size:13px">Create a template for training, probation, or employment (including contract type).</p>
         <div class="form-grid">
           <div class="field"><label>Type</label><select id="ht-type">
             ${['training', 'probation', 'employment'].map(t => `<option value="${t}" ${tpl?.type === t ? 'selected' : ''}>${t}</option>`).join('')}
           </select></div>
+          <div class="field"><label>Employment / contract type</label>
+            <select id="ht-ctype"><option value="">—</option>
+              ${['Permanent', 'Fixed-Term', 'Temporary', 'Casual', 'Part-Time'].map(t =>
+                `<option ${String(tpl?.title || '').includes(t) ? 'selected' : ''}>${t}</option>`).join('')}
+            </select></div>
           <div class="field full"><label>Title</label><input id="ht-title" value="${Utils.escHtml(tpl?.title || '')}"></div>
           <div class="field full"><label>Body</label><textarea id="ht-body" rows="16" style="font-family:monospace;font-size:12px">${tpl?.body || ''}</textarea></div>
         </div>`, '<button class="btn btn-primary" id="ht-save">Save</button>');
       document.getElementById('ht-save').addEventListener('click', async () => {
+        const ctype = document.getElementById('ht-ctype')?.value;
+        let title = document.getElementById('ht-title').value.trim();
+        if (ctype && title && !title.includes(ctype)) title = `${ctype} — ${title}`;
         const r = await API.saveHrTrainingTemplate({
           id: tpl?.id, type: document.getElementById('ht-type').value,
-          title: document.getElementById('ht-title').value.trim(),
+          title,
           body: document.getElementById('ht-body').value
         }, this.app.user);
         if (!r.success) return Utils.toast(r.error, 'error');
@@ -480,6 +609,15 @@
         <h4 style="margin:16px 0 4px">3. Agreement terms</h4>
         <div class="field full"><label>Full agreement text (edit placeholders with real details) *</label>
           <textarea id="ff-agreement" rows="12" style="font-family:Georgia,serif;font-size:12px;line-height:1.45">${filled.completed_form || filled.template_body || ''}</textarea></div>
+        <h4 style="margin:16px 0 4px">4. Manager protection checklist</h4>
+        <div class="form-grid">
+          <div class="field"><label>Next of kin</label><input id="ff-kin" value="${Utils.escHtml(filled.next_of_kin || '')}"></div>
+          <div class="field"><label>Next of kin phone</label><input id="ff-kin-phone" value="${Utils.escHtml(filled.next_of_kin_phone || '')}"></div>
+          <div class="field"><label>Stipend / pay discussed</label><input id="ff-stipend" value="${Utils.escHtml(filled.stipend || '')}"></div>
+          <div class="field full"><label><input type="checkbox" id="ff-safety" ${filled.safety_briefed ? 'checked' : ''}> Safety briefing done</label></div>
+          <div class="field full"><label><input type="checkbox" id="ff-conf" ${filled.confidentiality ? 'checked' : ''}> Confidentiality explained</label></div>
+          <div class="field full"><label><input type="checkbox" id="ff-rights" ${filled.trainee_rights ? 'checked' : ''}> Person knows how to raise a concern</label></div>
+        </div>
         <div class="field full"><label>Manager notes for admin</label><textarea id="ff-notes" rows="2">${Utils.escHtml(filled.manager_notes || '')}</textarea></div>
         <div class="field full"><label><input type="checkbox" id="ff-ack"> I confirm particulars are accurate and the employee has been briefed on these terms</label></div>
         <div style="margin-top:12px">
@@ -524,9 +662,15 @@
           end_date: document.getElementById('ff-end').value,
           trainer,
           witness: document.getElementById('ff-witness').value.trim(),
+          next_of_kin: document.getElementById('ff-kin')?.value.trim() || '',
+          next_of_kin_phone: document.getElementById('ff-kin-phone')?.value.trim() || '',
+          stipend: document.getElementById('ff-stipend')?.value.trim() || '',
+          safety_briefed: !!document.getElementById('ff-safety')?.checked,
+          confidentiality: !!document.getElementById('ff-conf')?.checked,
+          trainee_rights: !!document.getElementById('ff-rights')?.checked,
           manager_notes: document.getElementById('ff-notes').value.trim(),
           completed_form: agreement,
-          form_version: 'professional_v1'
+          form_version: 'professional_v2'
         };
         const r = adminEdit
           ? await API.updateHrStaffSubmission(sub.id, { filled_data }, this.app.user)
@@ -560,11 +704,133 @@
       }));
     },
 
+    async renderLeases(el) {
+      const res = await API.listLeaseAgreements(this.app.user);
+      const rows = res.data || [];
+      el.innerHTML = `<div style="display:flex;gap:8px;margin:12px 0;flex-wrap:wrap">
+        <button class="btn btn-primary" id="ls-new">+ Fill lease form</button>
+        <button class="btn btn-ghost" id="ls-upload">Upload existing lease</button></div>
+        <p class="muted">Fill a professional lease for the premises, print or save it here, or upload a lease you already have.</p>
+        <div class="table-wrap"><table><thead><tr><th>Title</th><th>Landlord</th><th>Tenant</th><th>Property</th><th>Period</th><th>Rent</th><th></th></tr></thead>
+        <tbody>${rows.map(l => `<tr>
+          <td><strong>${Utils.escHtml(l.title || 'Lease')}</strong></td>
+          <td>${Utils.escHtml(l.landlord_name || '—')}</td>
+          <td>${Utils.escHtml(l.tenant_name || '—')}</td>
+          <td>${Utils.escHtml(l.property_address || '—')}</td>
+          <td>${Utils.escHtml(l.start_date || '—')} → ${Utils.escHtml(l.end_date || '—')}</td>
+          <td>${Utils.formatMoney(l.monthly_rent || 0, this.admin.settings?.currency || 'R')}</td>
+          <td style="white-space:nowrap">
+            <button class="btn btn-sm btn-ghost ls-edit" data-id="${l.id}">Edit</button>
+            <button class="btn btn-sm btn-ghost ls-pdf" data-id="${l.id}">Download / print</button>
+            <button class="btn btn-sm btn-danger ls-del" data-id="${l.id}">Delete</button>
+          </td>
+        </tr>`).join('') || '<tr><td colspan="7" class="muted">No lease agreements saved yet</td></tr>'}
+        </tbody></table></div>`;
+      const openForm = (row) => {
+        const f = row?.form || {};
+        Utils.showModal(row ? 'Edit lease agreement' : 'Lease agreement', `
+          <p class="muted">Fill the lease, then download or print. You can also upload a signed copy after saving.</p>
+          <div class="form-grid">
+            <div class="field full"><label>Title</label><input id="ls-title" value="${Utils.escHtml(row?.title || 'Premises lease agreement')}"></div>
+            <div class="field"><label>Landlord / lessor</label><input id="ls-land" value="${Utils.escHtml(row?.landlord_name || f.landlord_name || this.admin.settings?.shop_name || '')}"></div>
+            <div class="field"><label>Landlord ID / company reg</label><input id="ls-land-id" value="${Utils.escHtml(f.landlord_id || '')}"></div>
+            <div class="field"><label>Landlord phone</label><input id="ls-land-ph" value="${Utils.escHtml(f.landlord_phone || this.admin.settings?.phone || '')}"></div>
+            <div class="field"><label>Tenant / lessee</label><input id="ls-ten" value="${Utils.escHtml(row?.tenant_name || f.tenant_name || '')}"></div>
+            <div class="field"><label>Tenant ID / company reg</label><input id="ls-ten-id" value="${Utils.escHtml(f.tenant_id || '')}"></div>
+            <div class="field"><label>Tenant phone</label><input id="ls-ten-ph" value="${Utils.escHtml(f.tenant_phone || '')}"></div>
+            <div class="field full"><label>Property address</label><input id="ls-addr" value="${Utils.escHtml(row?.property_address || f.property_address || '')}"></div>
+            <div class="field"><label>Use of premises</label><input id="ls-use" value="${Utils.escHtml(f.premises_use || 'Restaurant / takeaway')}"></div>
+            <div class="field"><label>Start date</label><input type="date" id="ls-start" value="${row?.start_date || Utils.today()}"></div>
+            <div class="field"><label>End date</label><input type="date" id="ls-end" value="${row?.end_date || ''}"></div>
+            <div class="field"><label>Monthly rent</label><input type="number" step="0.01" id="ls-rent" value="${row?.monthly_rent || 0}"></div>
+            <div class="field"><label>Deposit</label><input type="number" step="0.01" id="ls-dep" value="${row?.deposit || 0}"></div>
+            <div class="field"><label>Payment day</label><input type="number" min="1" max="28" id="ls-day" value="${row?.payment_day || 1}"></div>
+            <div class="field full"><label>Terms / special conditions</label><textarea id="ls-terms" rows="5">${Utils.escHtml(row?.terms || f.terms || 'The tenant shall pay rent on or before the payment day each month. The premises shall be used only for the agreed purpose. The tenant shall keep the premises in good order. Either party may keep a signed copy of this agreement.')}</textarea></div>
+          </div>`,
+          '<button class="btn btn-primary" id="ls-save">Save lease</button>');
+        document.getElementById('ls-save')?.addEventListener('click', async () => {
+          const form = {
+            landlord_name: document.getElementById('ls-land').value.trim(),
+            landlord_id: document.getElementById('ls-land-id').value.trim(),
+            landlord_phone: document.getElementById('ls-land-ph').value.trim(),
+            tenant_name: document.getElementById('ls-ten').value.trim(),
+            tenant_id: document.getElementById('ls-ten-id').value.trim(),
+            tenant_phone: document.getElementById('ls-ten-ph').value.trim(),
+            property_address: document.getElementById('ls-addr').value.trim(),
+            premises_use: document.getElementById('ls-use').value.trim(),
+            start_date: document.getElementById('ls-start').value,
+            end_date: document.getElementById('ls-end').value,
+            terms: document.getElementById('ls-terms').value.trim()
+          };
+          const r = await API.saveLeaseAgreement({
+            id: row?.id,
+            title: document.getElementById('ls-title').value.trim(),
+            landlord_name: form.landlord_name,
+            tenant_name: form.tenant_name,
+            property_address: form.property_address,
+            start_date: form.start_date,
+            end_date: form.end_date,
+            monthly_rent: parseFloat(document.getElementById('ls-rent').value) || 0,
+            deposit: parseFloat(document.getElementById('ls-dep').value) || 0,
+            payment_day: parseInt(document.getElementById('ls-day').value, 10) || 1,
+            terms: form.terms,
+            form,
+            status: 'active'
+          }, this.app.user);
+          if (!r.success) return Utils.toast(r.error || 'Could not save lease', 'error');
+          Utils.hideModal();
+          Utils.toast('Lease saved', 'success');
+          this.renderLeases(el);
+        });
+      };
+      document.getElementById('ls-new')?.addEventListener('click', () => openForm(null));
+      document.getElementById('ls-upload')?.addEventListener('click', () => {
+        Utils.showModal('Upload existing lease', `
+          <div class="field"><label>Title</label><input id="lsu-title" value="Uploaded lease agreement"></div>
+          <div class="field"><label>PDF or image</label><input type="file" id="lsu-file" accept=".pdf,image/*"></div>`,
+          '<button class="btn btn-primary" id="lsu-go">Upload</button>');
+        document.getElementById('lsu-go')?.addEventListener('click', async () => {
+          const file = document.getElementById('lsu-file')?.files?.[0];
+          if (!file) return Utils.toast('Choose a file', 'error');
+          const dataUrl = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result || ''));
+            reader.onerror = reject;
+            reader.readAsDataURL(file);
+          });
+          const created = await API.saveLeaseAgreement({
+            title: document.getElementById('lsu-title').value.trim() || file.name,
+            file_name: file.name,
+            file_data: dataUrl,
+            status: 'active'
+          }, this.app.user);
+          if (!created.success) return Utils.toast(created.error || 'Upload failed', 'error');
+          Utils.hideModal();
+          Utils.toast('Lease uploaded', 'success');
+          this.renderLeases(el);
+        });
+      });
+      el.querySelectorAll('.ls-edit').forEach(b => b.addEventListener('click', () => {
+        openForm(rows.find(x => Number(x.id) === Number(b.dataset.id)));
+      }));
+      el.querySelectorAll('.ls-pdf').forEach(b => b.addEventListener('click', async () => {
+        await Utils.savePdfBuffer(`lease-${b.dataset.id}.pdf`, await API.getLeasePdf(parseInt(b.dataset.id, 10), this.app.user));
+      }));
+      el.querySelectorAll('.ls-del').forEach(b => b.addEventListener('click', async () => {
+        if (!confirm('Delete this lease agreement?')) return;
+        const r = await API.deleteLeaseAgreement(parseInt(b.dataset.id, 10), this.app.user);
+        if (!r.success) return Utils.toast(r.error || 'Could not delete', 'error');
+        this.renderLeases(el);
+      }));
+    },
+
     async renderProbation(el) {
-      const [probRes, empsRes] = await Promise.all([
+      const [probRes, empsRes, rulesRes] = await Promise.all([
         API.getProbations({}, this.app.user),
-        API.getEmployees({ status: 'Active' })
+        API.getEmployees({ status: 'Active' }),
+        API.getCompanyRules({ status: 'active' })
       ]);
+      this._opsRules = this.groupOpsRules(rulesRes.data || []);
       const probations = probRes.data || [];
       const emps = empsRes.data || [];
       const isAdmin = ['owner', 'manager'].includes(this.app.user?.role);
@@ -577,7 +843,7 @@
           <td>${p.manager_name || '—'}</td>
           <td><span class="tag">${p.status}</span></td>
           <td style="white-space:nowrap"><button class="btn btn-sm btn-ghost hr-rec-prob" data-id="${p.id}">Recommendation</button>
-            <button class="btn btn-sm btn-ghost hr-pdf-prob" data-id="${p.id}">PDF</button>
+            <button class="btn btn-sm btn-ghost hr-pdf-prob" data-id="${p.id}">Download probation</button>
             <button class="btn btn-sm btn-ghost hr-print-prob" data-id="${p.id}">Print</button>
             <button class="btn btn-sm btn-primary hr-decide-prob" data-id="${p.id}">Decision</button>
             ${isAdmin ? `<button class="btn btn-sm btn-ghost hr-edit-prob" data-id="${p.id}">Edit</button>
@@ -641,8 +907,13 @@
         || '<tr><td colspan="4" class="muted">No evaluations yet</td></tr>'}</tbody></table></div>`;
       const scoresEl = document.getElementById('hr-eval-scores');
       const renderScores = () => {
-        scoresEl.innerHTML = `<div class="form-grid">${categories.map(cat =>
-          `<div class="field"><label>${cat} (1–5)</label><input type="number" class="hr-score" data-cat="${cat}" min="1" max="5" step="1" value="3"></div>`).join('')}</div>`;
+        scoresEl.innerHTML = `<p class="muted" style="font-size:13px">Score every area 1–5 and add a short comment. This evaluation is shown to admin and can be printed.</p>
+          <div class="form-grid">${categories.map(cat =>
+          `<div class="field"><label>${cat} (1–5)</label><input type="number" class="hr-score" data-cat="${cat}" min="1" max="5" step="1" value="3"></div>
+           <div class="field"><label>${cat} comment</label><input class="hr-score-note" data-cat="${cat}" placeholder="Evidence / comment"></div>`).join('')}
+           <div class="field"><label>Recommendation</label>
+             <select id="hr-eval-rec"><option value="continue">Continue probation</option><option value="confirm">Confirm employment</option><option value="extend">Extend</option><option value="terminate">Terminate</option></select></div>
+          </div>`;
       };
       renderScores();
       document.getElementById('hr-eval-prob')?.addEventListener('change', async () => {
@@ -654,10 +925,14 @@
         const prob = probations.find(p => p.id === pid);
         if (!prob) return Utils.toast('Select a probation', 'error');
         const scores = {};
+        const notes = {};
         document.querySelectorAll('.hr-score').forEach(inp => { scores[inp.dataset.cat] = parseInt(inp.value, 10) || 0; });
+        document.querySelectorAll('.hr-score-note').forEach(inp => { notes[inp.dataset.cat] = inp.value.trim(); });
+        const recLabel = document.getElementById('hr-eval-rec')?.value || 'continue';
+        const extra = Object.entries(notes).filter(([, v]) => v).map(([k, v]) => `${k}: ${v}`).join(' · ');
         const r = await API.saveProbationEvaluation({
           probation_id: pid, employee_id: prob.employee_id, eval_date: document.getElementById('hr-eval-date').value,
-          scores, comments: document.getElementById('hr-eval-comments').value.trim()
+          scores, comments: [document.getElementById('hr-eval-comments').value.trim(), extra && `Notes: ${extra}`, `Recommendation: ${recLabel}`].filter(Boolean).join('\n')
         }, this.app.user);
         if (!r.success) return Utils.toast(r.error || 'Could not save', 'error');
         Utils.toast('Evaluation saved', 'success');
@@ -802,10 +1077,19 @@
           <div class="field"><label>Payment Method</label>
             <select id="cb-paymeth"><option>Bank Transfer</option><option>Cash</option><option>Other</option></select></div>
           <div class="field"><label>Payment Date</label><input id="cb-paydate" value="${d.payment_date || '25th of each month'}"></div>
+          <div class="field"><label>Bank name</label><input id="cb-bank" value="${d.bank_name || ''}"></div>
+          <div class="field"><label>Account number</label><input id="cb-acc" value="${d.account_number || ''}"></div>
+          <div class="field"><label>Allowances (${this.admin.settings?.currency || 'R'})</label><input type="number" id="cb-allow" step="0.01" value="${d.allowances || 0}"></div>
+          <div class="field"><label>Deductions (${this.admin.settings?.currency || 'R'})</label><input type="number" id="cb-deduct" step="0.01" value="${d.deductions || 0}"></div>
+          <div class="field"><label>Emergency contact</label><input id="cb-emerg" value="${d.emergency_contact || ''}"></div>
+          <div class="field"><label>Emergency phone</label><input id="cb-emerg-phone" value="${d.emergency_phone || ''}"></div>
+          <div class="field full"><label>Extra fields you want filled (one per line)</label>
+            <textarea id="cb-extra" rows="3" placeholder="Medical aid number&#10;Next of kin address">${(d.extra_fields || []).join('\n')}</textarea></div>
           <div class="field full"><label>Additional Clauses</label>
             <textarea id="cb-clauses" rows="3" placeholder="One clause per line">${(d.clauses || []).map(x => typeof x === 'string' ? x : x.text || '').join('\n')}</textarea></div>
+          ${this.opsRulesHtml(this._opsRules?.contract, d.ops_rule_ids)}
         </div></div>
-        <div id="cb-preview-pane" class="hidden" style="margin-top:12px;max-height:420px;overflow:auto;border:1px solid var(--border);padding:12px;border-radius:8px;background:#fff;color:#111;font-size:13px;white-space:pre-wrap"></div>
+        <div id="cb-preview-pane" class="hidden" style="margin-top:12px;max-height:420px;overflow:auto;border:1px solid var(--border);padding:28px;border-radius:8px;background:#fff;color:#111;font-family:Georgia,serif;line-height:1.55"></div>
         ${contract ? `<div style="margin-top:12px"><strong>Signatures</strong>
           <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
             ${['employee', 'manager', 'admin', 'witness'].map(r => `<button type="button" class="btn btn-sm btn-ghost cb-sign" data-role="${r}">Sign: ${r}</button>`).join('')}
@@ -844,6 +1128,14 @@
           salary_amount: parseFloat(document.getElementById('cb-salary').value) || 0,
           payment_method: document.getElementById('cb-paymeth').value,
           payment_date: document.getElementById('cb-paydate').value.trim(),
+          bank_name: document.getElementById('cb-bank')?.value.trim() || '',
+          account_number: document.getElementById('cb-acc')?.value.trim() || '',
+          allowances: parseFloat(document.getElementById('cb-allow')?.value) || 0,
+          deductions: parseFloat(document.getElementById('cb-deduct')?.value) || 0,
+          emergency_contact: document.getElementById('cb-emerg')?.value.trim() || '',
+          emergency_phone: document.getElementById('cb-emerg-phone')?.value.trim() || '',
+          extra_fields: (document.getElementById('cb-extra')?.value || '').split('\n').map(s => s.trim()).filter(Boolean),
+          ops_rule_ids: this.collectOpsRuleIds(),
           clauses: clauseLines,
           custom_clauses: clauseLines.map((t, i) => `\n### Additional Clause ${i + 1}\n${t}`).join('\n'),
           currency: this.admin.settings?.currency || 'R',
@@ -856,7 +1148,14 @@
         const tpl = templates.find(t => t.id == tplId);
         cd.body_template = tpl?.body_template || cd.body_template;
         const r = await API.fillHrContractBody(cd, this.app.user);
-        document.getElementById('cb-preview-pane').textContent = r.success === false ? (r.error || 'Preview failed') : (r.data || '');
+        const pane = document.getElementById('cb-preview-pane');
+        if (r.success === false) pane.textContent = r.error || 'Preview failed';
+        else {
+          const html = Utils.escHtml(r.data || '').replace(/\n/g, '<br>');
+          pane.innerHTML = `<div style="text-align:center;letter-spacing:.08em;font-size:12px;color:#64748b;margin-bottom:8px">EMPLOYMENT CONTRACT</div>
+            <div style="font-size:20px;font-weight:700;text-align:center;margin-bottom:16px">${Utils.escHtml(cd.business_name || this.admin.settings?.shop_name || '')}</div>
+            <div style="font-size:14px">${html}</div>`;
+        }
       };
       document.querySelectorAll('#cb-tabs [data-cbt]').forEach(btn => btn.addEventListener('click', async () => {
         document.querySelectorAll('#cb-tabs .form-tab').forEach(t => t.classList.remove('active'));
@@ -976,29 +1275,56 @@
 
     showProbationForm(prob, emps, preSelectedEmployeeId) {
       const selEmp = prob?.employee_id || preSelectedEmployeeId;
-      Utils.showModal(prob ? 'Edit Probation' : 'Setup Probation', `
+      const rules = prob?.rules || {};
+      Utils.showModal(prob ? 'Edit Probation Contract' : 'Setup Probation Contract', `
+        <p class="muted" style="font-size:13px">Set probation on a person already added. This contract shows on the staff portal.</p>
         <div class="form-grid">
-          <div class="field"><label>Employee *</label>
+          <div class="field"><label>Employee already added *</label>
             <select id="pb-emp">${emps.map(e => `<option value="${e.id}" ${selEmp == e.id ? 'selected' : ''}>${e.full_name}</option>`).join('')}</select></div>
+          <div class="field"><label>Company name</label><input id="pb-company" value="${Utils.escHtml(rules.company_name || this.admin.settings?.shop_name || '')}"></div>
+          <div class="field"><label>Full name</label><input id="pb-name" value="${Utils.escHtml(rules.full_name || '')}"></div>
+          <div class="field"><label>ID / passport</label><input id="pb-id" value="${Utils.escHtml(rules.id_number || '')}"></div>
+          <div class="field"><label>Phone</label><input id="pb-phone" value="${Utils.escHtml(rules.phone || '')}"></div>
+          <div class="field"><label>Position</label><input id="pb-pos" value="${Utils.escHtml(rules.position || '')}"></div>
+          <div class="field full"><label>Residential address</label><input id="pb-address" value="${Utils.escHtml(rules.address || '')}"></div>
           <div class="field"><label>Manager</label>
             <select id="pb-mgr"><option value="">—</option>${emps.map(e => `<option value="${e.id}" ${prob?.manager_id == e.id ? 'selected' : ''}>${e.full_name}</option>`).join('')}</select></div>
           <div class="field"><label>Start Date</label><input type="date" id="pb-start" value="${prob?.start_date || Utils.today()}"></div>
           <div class="field"><label>Duration (days)</label><input type="number" id="pb-days" value="${prob?.duration_days || 90}" min="1"></div>
+          <div class="field"><label>Probation ends</label><input type="date" id="pb-end" value="${prob?.end_date || ''}"></div>
           ${prob ? `<div class="field"><label>Status</label><select id="pb-status">
             ${['active', 'confirmed', 'extended', 'terminated'].map(s => `<option value="${s}" ${prob.status === s ? 'selected' : ''}>${s}</option>`).join('')}
           </select></div>` : ''}
+          <div class="field full"><label>Duties during probation</label><textarea id="pb-duties" rows="3">${Utils.escHtml(rules.duties || '')}</textarea></div>
+          <div class="field full"><label>Review / support notes</label><textarea id="pb-notes" rows="2">${Utils.escHtml(rules.notes || '')}</textarea></div>
+          ${this.opsRulesHtml(this._opsRules?.probation, rules.ops_rule_ids)}
         </div>`,
         '<button type="button" class="btn btn-primary" id="pb-save">Save Probation</button>');
       document.getElementById('pb-save').addEventListener('click', async () => {
         const days = parseInt(document.getElementById('pb-days').value, 10) || 90;
         const start = document.getElementById('pb-start').value;
-        const end = new Date(start + 'T12:00:00'); end.setDate(end.getDate() + days);
+        let end = document.getElementById('pb-end').value;
+        if (!end) {
+          const d = new Date(start + 'T12:00:00'); d.setDate(d.getDate() + days);
+          end = d.toLocaleDateString('en-CA');
+        }
         const r = await API.saveProbation({
           id: prob?.id,
           employee_id: parseInt(document.getElementById('pb-emp').value, 10),
           manager_id: document.getElementById('pb-mgr').value ? parseInt(document.getElementById('pb-mgr').value, 10) : null,
-          start_date: start, duration_days: days, end_date: end.toLocaleDateString('en-CA'),
-          status: document.getElementById('pb-status')?.value || prob?.status || 'active'
+          start_date: start, duration_days: days, end_date: end,
+          status: document.getElementById('pb-status')?.value || prob?.status || 'active',
+          rules: {
+            company_name: document.getElementById('pb-company').value.trim(),
+            full_name: document.getElementById('pb-name').value.trim(),
+            id_number: document.getElementById('pb-id').value.trim(),
+            phone: document.getElementById('pb-phone').value.trim(),
+            position: document.getElementById('pb-pos').value.trim(),
+            address: document.getElementById('pb-address').value.trim(),
+            duties: document.getElementById('pb-duties').value.trim(),
+            notes: document.getElementById('pb-notes').value.trim(),
+            ops_rule_ids: this.collectOpsRuleIds()
+          }
         }, this.app.user);
         if (!r.success) return Utils.toast(r.error, 'error');
         Utils.hideModal();

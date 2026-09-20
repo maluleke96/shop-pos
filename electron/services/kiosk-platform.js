@@ -413,22 +413,48 @@ function placeKioskOrder(deviceToken, orderData) {
   ensureShiftForActor(actor);
   const clientRequestId = orderData.client_request_id || `kiosk-${dev.id}-${Date.now()}`;
 
+  let discount = 0;
+  let voucherCode = null;
+  if (orderData.voucher_code) {
+    const vouchers = require('./discount-vouchers');
+    const v = vouchers.validateVoucher(orderData.voucher_code, {
+      subtotal: cart.subtotal,
+      items: cart.saleItems || []
+    });
+    if (!v.ok) throw new Error(v.error || 'Invalid voucher');
+    discount = Number(v.discount) || 0;
+    voucherCode = v.code;
+  }
+  const payable = Math.max(0, Math.round((cart.total - discount) * 100) / 100);
+
   const saleData = {
     items: cart.saleItems,
     subtotal: cart.subtotal,
+    discount,
     tax_amount: cart.taxAmount,
-    total: cart.total,
-    amount_paid: cart.total,
+    total: payable,
+    amount_paid: payable,
     change_amount: 0,
-    payments: [{ type: paymentMethod, amount: cart.total }],
+    payments: [{ type: paymentMethod, amount: payable }],
     order_type: 'takeaway',
     order_source: 'KIOSK',
-    notes: `Kiosk order — ${dev.name}${dev.location ? ` (${dev.location})` : ''}`,
+    notes: `Kiosk order — ${dev.name}${dev.location ? ` (${dev.location})` : ''}${voucherCode ? ` · voucher ${voucherCode}` : ''}`,
     client_request_id: clientRequestId,
-    discount_authorized: false
+    discount_authorized: discount > 0
   };
 
   const sale = store.completeSale(saleData, actor.id, actor.full_name || actor.username, actor.role);
+  if (voucherCode) {
+    try {
+      require('./discount-vouchers').redeemVoucher(voucherCode, {
+        subtotal: cart.subtotal,
+        items: cart.saleItems || [],
+        channel: 'kiosk',
+        actorId: actor.id,
+        actorName: actor.full_name || actor.username
+      });
+    } catch (_) { /* already redeemed */ }
+  }
   const saleId = sale.saleId || sale.sale?.id;
   const orderNumber = sale.orderNumber || sale.sale?.order_number;
 

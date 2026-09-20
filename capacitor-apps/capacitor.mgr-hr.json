@@ -1,0 +1,9 @@
+  {
+    "appId": "com.shoppos.mgrhr",
+    "appName": "Mgr Supervisor Portal",
+    "webDir": "www",
+    "android": {
+      "allowMixedContent": true
+    }
+  }
+  

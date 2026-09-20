@@ -1,0 +1,264 @@
+/* Referral & Commission — Admin + Agent portal */
+:root {
+  --ref-navy: #0f2744;
+  --ref-navy-2: #16365c;
+  --ref-accent: #2563eb;
+  --ref-teal: #0d9488;
+  --ref-green: #16a34a;
+  --ref-orange: #ea580c;
+  --ref-red: #dc2626;
+  --ref-surface: #f5f7fb;
+  --ref-card: #ffffff;
+}
+
+.ref-root { font-family: system-ui, -apple-system, 'Segoe UI', sans-serif; color: #0f172a; }
+.ref-layout { display: flex; min-height: calc(100vh - 80px); background: var(--ref-surface); }
+.ref-sidebar {
+  width: 240px; flex: 0 0 240px; background: linear-gradient(180deg, var(--ref-navy), var(--ref-navy-2));
+  color: #e2e8f0; padding: 16px 12px; display: flex; flex-direction: column; gap: 4px;
+  min-height: 0; overflow: hidden;
+}
+.ref-brand { display: flex; gap: 10px; align-items: center; padding: 8px 10px 16px; border-bottom: 1px solid rgba(255,255,255,.08); margin-bottom: 10px; flex-shrink: 0; }
+.ref-brand-text-only { gap: 0; }
+.ref-brand-text { min-width: 0; }
+.ref-nav-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  padding-right: 2px;
+}
+.ref-nav-scroll::-webkit-scrollbar { width: 6px; }
+.ref-nav-scroll::-webkit-scrollbar-thumb { background: rgba(148,163,184,.45); border-radius: 999px; }
+.ref-brand-mark {
+  width: 32px; height: 32px; border-radius: 8px; background: #fff; color: #0f172a;
+  display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 11px;
+  overflow: hidden; position: relative; flex-shrink: 0; border: 1px solid rgba(255,255,255,.25);
+}
+.ref-brand-mark-sm { width: 28px; height: 28px; border-radius: 7px; }
+.ref-brand-mark img, .ref-shop-logo {
+  width: 100% !important; height: 100% !important; max-width: 100% !important; max-height: 100% !important;
+  object-fit: contain !important; object-position: center; display: block;
+  background: #fff; transform: none !important; image-orientation: from-image;
+}
+.ref-brand-mark .ref-brand-fallback { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; }
+.ref-brand-mark:has(img[src]:not([style*="display: none"])) .ref-brand-fallback { display: none; }
+.ref-brand-mark-logo { background: #fff; border: 1px solid #e2e8f0; }
+.ref-login-logo {
+  width: 28px !important; height: 28px !important; margin: 0 auto 8px !important;
+  border-radius: 8px;
+}
+.ref-login-logo img {
+  width: 100% !important; height: 100% !important; max-width: 28px !important; max-height: 28px !important;
+  object-fit: contain !important; transform: none !important;
+}
+.ref-gate-shell { max-width: 420px; margin: 28px auto; padding: 0 16px; }
+.ref-gate-brand { text-align: center; margin-bottom: 14px; }
+.ref-gate-brand h2 { margin: 0 0 4px; font-size: 20px; }
+.ref-gate-shop {
+  margin: 0 0 2px; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: #64748b;
+}
+.ref-gate-sub { margin: 0; font-size: 13px; }
+.ref-gate-tabs { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin-bottom: 12px; }
+.ref-brand strong { display: block; font-size: 13px; color: #fff; line-height: 1.25; }
+.ref-brand small { display: block; font-size: 11px; color: #94a3b8; }
+.ref-agent-detail-pro { display: grid; gap: 14px; }
+.ref-agent-detail-pro .ref-detail-hero {
+  display: flex; gap: 14px; align-items: flex-start; flex-wrap: wrap;
+  padding: 16px 18px; background: linear-gradient(135deg, #f8fafc 0%, #eef2ff 55%, #f0fdf4 100%);
+  border-radius: 14px; border: 1px solid #e2e8f0;
+}
+.ref-agent-detail-pro .ref-detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 16px; }
+.ref-agent-detail-pro .ref-detail-item label {
+  display: block; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: #64748b; margin-bottom: 2px;
+}
+.ref-agent-detail-pro .ref-detail-item strong { font-size: 14px; color: #0f172a; word-break: break-word; }
+.ref-agent-detail-pro .ref-detail-section {
+  padding: 12px 14px; border: 1px solid #e2e8f0; border-radius: 12px; background: #fff;
+}
+.ref-agent-detail-pro .ref-detail-section h4 {
+  margin: 0 0 10px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: #64748b;
+}
+@media (max-width: 640px) {
+  .ref-agent-detail-pro .ref-detail-grid { grid-template-columns: 1fr; }
+}
+.ref-agree-box {
+  max-height: 220px; overflow: auto; border: 1px solid #e2e8f0; border-radius: 10px;
+  padding: 12px 14px; background: #f8fafc; font-size: 12px; line-height: 1.45; color: #334155;
+  margin: 8px 0 12px;
+}
+.ref-agree-box h3 { margin: 12px 0 6px; font-size: 13px; color: #0f172a; }
+.ref-agree-box h3:first-child { margin-top: 0; }
+.ref-agree-box ul { margin: 4px 0 8px 18px; padding: 0; }
+.ref-agree-box p { margin: 0 0 8px; }
+.ref-shop-header {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  margin: 0 0 14px; padding: 10px 12px; background: #fff; border: 1px solid #e2e8f0; border-radius: 12px;
+}
+.ref-shop-header-brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.ref-shop-header-brand img,
+.ref-shop-header-brand .ref-shop-logo {
+  width: 28px !important; height: 28px !important; border-radius: 7px; object-fit: contain !important;
+  object-position: center; background: #fff; border: 1px solid #e2e8f0; padding: 2px;
+  transform: none !important; flex-shrink: 0;
+}
+.ref-shop-header-brand strong { display: block; font-size: 15px; line-height: 1.2; }
+.ref-shop-header-brand .muted, .ref-shop-header-brand span { display: block; font-size: 12px; color: #64748b; }
+.ref-agent-top {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  margin: 0 0 12px; padding: 10px 12px; background: #fff; border: 1px solid #e2e8f0; border-radius: 12px;
+}
+.ref-agent-top-brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.ref-agent-top-brand img,
+.ref-agent-top-brand .ref-shop-logo {
+  width: 28px !important; height: 28px !important; max-width: 28px !important; max-height: 28px !important;
+  border-radius: 7px; object-fit: contain !important; object-position: center;
+  background: #fff; border: 1px solid #e2e8f0; padding: 2px;
+  transform: none !important; flex-shrink: 0;
+}
+.ref-agent-top-brand strong { display: block; font-size: 15px; line-height: 1.2; }
+.ref-agent-top-brand .muted, .ref-agent-top-brand span { display: block; font-size: 12px; color: #64748b; }
+.ref-standalone .ref-layout { min-height: 100vh; height: 100vh; }
+.ref-standalone .ref-sidebar {
+  height: 100vh; min-height: 100vh; max-height: 100vh; display: flex; flex-direction: column;
+}
+.ref-embedded .ref-layout { min-height: calc(100vh - 160px); max-height: calc(100vh - 120px); }
+.ref-embedded .ref-sidebar { max-height: calc(100vh - 140px); }
+.ref-sidebar-foot { margin-top: auto; flex-shrink: 0; padding: 12px 8px 4px; border-top: 1px solid rgba(255,255,255,.08); }
+.ref-sidebar-logout { width: 100%; color: #e2e8f0 !important; border-color: rgba(255,255,255,.2) !important; }
+.ref-nav-group { font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: #64748b; padding: 12px 10px 4px; }
+.ref-nav-btn {
+  display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; border: 0; background: transparent;
+  color: #cbd5e1; padding: 8px 10px; border-radius: 8px; cursor: pointer; font-size: 13px;
+}
+.ref-nav-btn:hover { background: rgba(255,255,255,.06); color: #fff; }
+.ref-nav-btn.active { background: rgba(37,99,235,.35); color: #fff; font-weight: 600; }
+.ref-nav-count {
+  margin-left: auto; background: #ef4444; color: #fff; font-size: 11px; font-weight: 700;
+  min-width: 18px; height: 18px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; padding: 0 5px;
+}
+.ref-main { flex: 1; min-width: 0; padding: 18px 20px 40px; overflow: auto; }
+.ref-topbar h2 { margin: 0 0 4px; font-size: 22px; }
+.ref-topbar p { margin: 0 0 14px; color: #64748b; font-size: 13px; }
+.ref-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.ref-kpi {
+  background: var(--ref-card); border: 1px solid #e2e8f0; border-radius: 12px; padding: 14px 16px;
+  box-shadow: 0 1px 2px rgba(15,23,42,.04);
+}
+.ref-kpi-label { display: block; font-size: 12px; color: #64748b; margin-bottom: 4px; }
+.ref-kpi-value { display: block; font-size: 22px; font-weight: 750; letter-spacing: -.02em; }
+.ref-kpi-sub { display: block; font-size: 11px; color: var(--ref-green); margin-top: 4px; }
+.ref-kpi.warn .ref-kpi-value { color: var(--ref-orange); }
+.ref-kpi.accent .ref-kpi-value { color: var(--ref-accent); }
+.ref-grid-2 { display: grid; grid-template-columns: 1.4fr 1fr; gap: 14px; }
+.ref-grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
+@media (max-width: 980px) {
+  .ref-layout { flex-direction: column; height: auto !important; min-height: 100vh; }
+  .ref-standalone .ref-layout { height: auto !important; min-height: 100dvh; }
+  .ref-sidebar,
+  .ref-standalone .ref-sidebar {
+    width: 100%;
+    flex: none;
+    height: auto !important;
+    min-height: 0 !important;
+    max-height: none !important;
+  }
+  .ref-nav-scroll {
+    max-height: 38vh;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    overflow-y: auto;
+  }
+  .ref-nav-group { width: 100%; padding-top: 8px; }
+  .ref-nav-btn { width: auto; flex: 1 1 auto; min-width: 42%; }
+  .ref-main { padding: 12px 12px 32px; }
+  .ref-grid-2, .ref-grid-3 { grid-template-columns: 1fr; }
+}
+.ref-panel {
+  background: var(--ref-card); border: 1px solid #e2e8f0; border-radius: 12px; margin-bottom: 14px;
+  box-shadow: 0 1px 2px rgba(15,23,42,.04); overflow: hidden;
+}
+.ref-panel-h { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 12px 14px; border-bottom: 1px solid #f1f5f9; }
+.ref-panel-h h4 { margin: 0; font-size: 14px; }
+.ref-panel-b { padding: 12px 14px; }
+.ref-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.ref-table th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: #64748b; padding: 8px 6px; border-bottom: 1px solid #e2e8f0; }
+.ref-table td { padding: 10px 6px; border-bottom: 1px solid #f1f5f9; vertical-align: middle; }
+.ref-tag {
+  display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 650;
+}
+.ref-tag.ok { background: #dcfce7; color: #166534; }
+.ref-tag.warn { background: #ffedd5; color: #9a3412; }
+.ref-tag.info { background: #dbeafe; color: #1e40af; }
+.ref-tag.bad { background: #fee2e2; color: #991b1b; }
+.ref-tag.muted { background: #f1f5f9; color: #475569; }
+.ref-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-weight: 700; letter-spacing: .04em; background: #f1f5f9; padding: 4px 8px; border-radius: 6px;
+}
+.ref-note { background: #eff6ff; border: 1px solid #bfdbfe; color: #1e3a8a; border-radius: 10px; padding: 10px 12px; font-size: 13px; margin-bottom: 12px; }
+.ref-empty { color: #64748b; padding: 18px 8px; text-align: center; font-size: 13px; }
+.ref-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.ref-copy-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.ref-earn {
+  background: linear-gradient(135deg, #ecfdf5, #d1fae5); border: 1px solid #a7f3d0; border-radius: 12px; padding: 14px;
+}
+.ref-earn h4 { margin: 0 0 6px; color: #065f46; }
+.ref-earn p { margin: 0; color: #047857; font-size: 13px; line-height: 1.45; }
+.ref-chart-bars { display: flex; align-items: flex-end; gap: 6px; height: 120px; padding-top: 8px; }
+.ref-chart-bars span {
+  flex: 1; background: linear-gradient(180deg, #60a5fa, #2563eb); border-radius: 6px 6px 2px 2px; min-width: 8px;
+}
+.ref-agent-shell { max-width: 1100px; margin: 0 auto; padding: 16px; }
+.ref-agent-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+.ref-agent-nav { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 10px; margin-bottom: 8px; scroll-behavior: auto; -webkit-overflow-scrolling: touch; }
+.ref-agent-nav .btn { flex: 0 0 auto; border-radius: 999px; }
+.ref-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.ref-form-grid .full { grid-column: 1 / -1; }
+@media (max-width: 640px) { .ref-form-grid { grid-template-columns: 1fr; } }
+
+/* Compact login logos on dedicated referral desktop installers */
+body[data-app-mode="referral"] #login-logo,
+body[data-app-mode="referral-commission"] #login-logo,
+html[data-app-mode="referral"] #login-logo,
+html[data-app-mode="referral-commission"] #login-logo {
+  width: 40px; height: 40px; margin: 0 auto 10px;
+}
+body[data-app-mode="referral"] #login-logo .brand-logo-img,
+body[data-app-mode="referral-commission"] #login-logo .brand-logo-img,
+html[data-app-mode="referral"] #login-logo .brand-logo-img,
+html[data-app-mode="referral-commission"] #login-logo .brand-logo-img,
+body[data-app-mode="referral"] .login-logo .brand-logo-img,
+body[data-app-mode="referral-commission"] .login-logo .brand-logo-img {
+  width: 40px !important; height: 40px !important; max-width: 40px !important; max-height: 40px !important;
+  border-radius: 10px !important; object-fit: contain !important;
+}
+
+/* Hide main POS shells so their logos never bleed over Referral Agent / R&C */
+html[data-app-mode="referral"] #screen-welcome,
+html[data-app-mode="referral"] #screen-login,
+html[data-app-mode="referral"] #screen-setup,
+html[data-app-mode="referral"] #screen-pos-welcome,
+html[data-app-mode="referral"] #screen-app,
+html[data-app-mode="referral-commission"] #screen-welcome,
+html[data-app-mode="referral-commission"] #screen-login,
+html[data-app-mode="referral-commission"] #screen-setup,
+html[data-app-mode="referral-commission"] #screen-pos-welcome,
+html[data-app-mode="referral-commission"] #screen-app,
+body[data-app-mode="referral"] #screen-welcome,
+body[data-app-mode="referral"] #screen-login,
+body[data-app-mode="referral"] #screen-setup,
+body[data-app-mode="referral"] #screen-pos-welcome,
+body[data-app-mode="referral"] #screen-app,
+body[data-app-mode="referral-commission"] #screen-welcome,
+body[data-app-mode="referral-commission"] #screen-login,
+body[data-app-mode="referral-commission"] #screen-setup,
+body[data-app-mode="referral-commission"] #screen-pos-welcome,
+body[data-app-mode="referral-commission"] #screen-app {
+  display: none !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+}

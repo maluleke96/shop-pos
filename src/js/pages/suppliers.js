@@ -1,27 +1,60 @@
 const SuppliersPage = {
+  async activate(el, app) {
+    this.app = app;
+    this._host = el;
+    if (el?.querySelector?.('#add-sup') && (this.suppliers || []).length) {
+      API.getSuppliers().then((res) => {
+        this.suppliers = res.data || [];
+        this.paint(el);
+      }).catch(() => {});
+      return;
+    }
+    return this.render(el, app);
+  },
+
   async render(el, app) {
     this.app = app;
-    const res = await API.getSuppliers();
-    this.suppliers = res.data || [];
-    const currency = app.settings?.currency || 'R';
+    this._host = el;
+    const peek = window.DataCache?.peek?.('suppliers', ['']);
+    if (peek?.data?.length) {
+      this.suppliers = peek.data;
+      this.paint(el);
+    } else {
+      el.innerHTML = `<div class="page-toolbar"><h3>Suppliers</h3><button class="btn btn-primary" id="add-sup">+ Add Supplier</button></div>
+        <div class="card">${Utils.pageSkeleton ? Utils.pageSkeleton(4) : '<p class="muted">Opening…</p>'}</div>`;
+      document.getElementById('add-sup')?.addEventListener('click', () => this.showForm());
+    }
+    try {
+      const res = await API.getSuppliers();
+      this.suppliers = res.data || [];
+      this.paint(el);
+    } catch (err) {
+      if (!this.suppliers?.length) throw err;
+    }
+  },
 
+  paint(el) {
+    const app = this.app;
+    const currency = app.settings?.currency || 'R';
     el.innerHTML = `
       <div class="page-toolbar"><h3>Suppliers</h3><button class="btn btn-primary" id="add-sup">+ Add Supplier</button></div>
       <div class="card"><div class="table-wrap"><table>
-        <thead><tr><th>Name</th><th>Phone (WhatsApp)</th><th>Bank account</th><th>Address</th><th>Balance Owed</th><th></th></tr></thead>
+        <thead><tr><th>Name</th><th>Phone (WhatsApp)</th><th>Stock brought</th><th>Pay by</th><th>Bank account</th><th>Balance Owed</th><th></th></tr></thead>
         <tbody>${this.suppliers.map(s => `<tr>
-          <td><strong>${s.name}</strong></td>
+          <td><strong>${s.name}</strong>${s.address ? `<div class="muted" style="font-size:11px">${this.esc(s.address)}</div>` : ''}</td>
           <td>${s.phone || '—'}</td>
+          <td>${s.stock_date ? Utils.formatDate?.(s.stock_date) || String(s.stock_date).slice(0, 10) : '—'}</td>
+          <td>${s.pay_by_date ? Utils.formatDate?.(s.pay_by_date) || String(s.pay_by_date).slice(0, 10) : '—'}</td>
           <td class="muted" style="font-size:12px">${s.bank_name || s.bank_account_number
             ? `${s.bank_name || ''}${s.bank_account_number ? ` · ${s.bank_account_number}` : ''}`
             : '—'}</td>
-          <td>${s.address || '—'}</td>
           <td>${Utils.formatMoney(s.balance_owed, currency)}</td>
-          <td class="actions">
+          <td class="actions" style="white-space:nowrap">
             <button class="btn btn-sm btn-success pay-sup" data-id="${s.id}" ${!(s.balance_owed > 0) ? 'disabled' : ''}>Pay</button>
             <button class="btn btn-sm btn-ghost hist-sup" data-id="${s.id}">History</button>
             <button class="btn btn-sm btn-ghost edit-sup" data-id="${s.id}">Edit</button>
-          </td></tr>`).join('') || '<tr><td colspan="6" class="muted">No suppliers</td></tr>'}
+            <button class="btn btn-sm btn-danger del-sup" data-id="${s.id}">Delete</button>
+          </td></tr>`).join('') || '<tr><td colspan="7" class="muted">No suppliers</td></tr>'}
         </tbody></table></div></div>`;
 
     document.getElementById('add-sup').addEventListener('click', () => this.showForm());
@@ -31,6 +64,15 @@ const SuppliersPage = {
       this.showPayForm(this.suppliers.find(s => s.id == b.dataset.id))));
     document.querySelectorAll('.hist-sup').forEach(b => b.addEventListener('click', () =>
       this.showPaymentHistory(parseInt(b.dataset.id, 10))));
+    document.querySelectorAll('.del-sup').forEach(b => b.addEventListener('click', async () => {
+      const s = this.suppliers.find(x => x.id == b.dataset.id);
+      if (!s) return;
+      if (!confirm(`Delete supplier “${s.name}”?`)) return;
+      const r = await API.deleteSupplier(s.id, this.app.user);
+      if (!r || r.success === false) return Utils.toast(r?.error || 'Could not delete', 'error');
+      Utils.toast('Supplier deleted', 'success');
+      SuppliersPage.render(this._host || document.querySelector('.page-host-active'), this.app);
+    }));
   },
 
   esc(v) {
@@ -47,6 +89,8 @@ const SuppliersPage = {
         <div class="field"><label>Phone / WhatsApp *</label><input id="su-phone" value="${this.esc(s?.phone)}" placeholder="e.g. 0821234567"></div>
         <div class="field"><label>Email</label><input id="su-email" value="${this.esc(s?.email)}"></div>
         <div class="field"><label>Balance Owed</label><input type="number" id="su-balance" step="0.01" value="${s?.balance_owed || 0}"></div>
+        <div class="field"><label>Date stock brought</label><input type="date" id="su-stock-date" value="${this.esc((s?.stock_date || '').toString().slice(0, 10))}"></div>
+        <div class="field"><label>Date we must pay</label><input type="date" id="su-pay-by" value="${this.esc((s?.pay_by_date || '').toString().slice(0, 10))}"></div>
         <div class="field full"><label>Address</label><input id="su-address" value="${this.esc(s?.address)}"></div>
         <div class="field full"><strong>Bank / account details</strong><p class="muted" style="margin:4px 0 0;font-size:12px">Filled on payment receipts (print, PDF, WhatsApp).</p></div>
         <div class="field"><label>Bank name</label><input id="su-bank" value="${this.esc(s?.bank_name)}" placeholder="e.g. FNB, Standard Bank"></div>
@@ -68,6 +112,8 @@ const SuppliersPage = {
         email: document.getElementById('su-email').value.trim(),
         address: document.getElementById('su-address').value.trim(),
         balance_owed: parseFloat(document.getElementById('su-balance').value) || 0,
+        stock_date: document.getElementById('su-stock-date').value || null,
+        pay_by_date: document.getElementById('su-pay-by').value || null,
         bank_name: document.getElementById('su-bank').value.trim(),
         bank_account_name: document.getElementById('su-acc-name').value.trim(),
         bank_account_number: document.getElementById('su-acc-num').value.trim(),
@@ -75,7 +121,7 @@ const SuppliersPage = {
         notes: document.getElementById('su-notes').value.trim()
       }, this.app.user);
       Utils.hideModal();
-      SuppliersPage.render(document.getElementById('page-content'), this.app);
+      SuppliersPage.render(this._host || document.querySelector('.page-host-active'), this.app);
       Utils.toast('Supplier saved', 'success');
     });
   },
@@ -112,7 +158,7 @@ const SuppliersPage = {
           lastPayment = r.data;
         }
         Utils.hideModal();
-        SuppliersPage.render(document.getElementById('page-content'), this.app);
+        SuppliersPage.render(this._host || document.querySelector('.page-host-active'), this.app);
         const remaining = lastPayment?.balance_after ?? Math.max(0, maxOwing - paid);
         Utils.toast(remaining > 0.01
           ? `Paid ${Utils.formatMoney(paid, currency)} — ${Utils.formatMoney(remaining, currency)} still owing`

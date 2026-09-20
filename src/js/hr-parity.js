@@ -458,24 +458,18 @@
       if (!this.canFinalize()) {
         const notes = await this.promptValue('Reason for replacement (sent for Admin approval):');
         if (!notes) return;
-        const fileInput = document.createElement('input');
-        fileInput.type = 'file';
-        fileInput.accept = 'image/*';
-        fileInput.onchange = async () => {
-          const file = fileInput.files?.[0];
-          if (!file) return;
-          const reader = new FileReader();
-          reader.onload = async () => {
-            const restore = this.installApprovalGate();
-            try {
-              const r = await API.updateStaffSelfie(parseInt(d.id, 10), reader.result, notes, this.user);
-              if (r?.pending_approval) this.section = 'approvals';
-              this.refreshSection();
-            } finally { restore(); }
-          };
-          reader.readAsDataURL(file);
-        };
-        fileInput.click();
+        try {
+          const data = await (window.StaffSelfieCapture?.captureNativeSelfie?.() || Utils.captureSelfiePhoto());
+          if (!data) return;
+          const restore = this.installApprovalGate();
+          try {
+            const r = await API.updateStaffSelfie(parseInt(d.id, 10), data, notes, this.user);
+            if (r?.pending_approval) this.section = 'approvals';
+            this.refreshSection();
+          } finally { restore(); }
+        } catch (err) {
+          this.toast(err.message || 'Take a selfie with the camera', 'error');
+        }
         return;
       }
       this.ACT['view-selfie'].call(this, d);

@@ -1,4 +1,4 @@
-// Document Hub — menus, flyers, and WhatsApp sharing
+// Document Hub — menus, documents, and WhatsApp sharing
 const DocumentHubPage = {
   documents: [],
   customers: [],
@@ -6,7 +6,7 @@ const DocumentHubPage = {
   settings: {},
   filter: { doc_type: '', status: '' },
   pendingShareId: null,
-  pendingFlyerId: null,
+  _host: null,
 
   esc(v) {
     return String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -25,23 +25,48 @@ const DocumentHubPage = {
     return `<span class="tag ${cls}">${status || 'draft'}</span>`;
   },
 
+  _rerender() {
+    const host = this._host || document.querySelector('.page-host[data-page="document-hub"]') || document.querySelector('.page-host-active');
+    if (host && this.app) return this.render(host, this.app);
+  },
+
   async render(el, app) {
     this.app = app;
-    if (!['owner', 'manager', 'assistant_manager', 'marketing_agent'].includes(app.user?.role)) {
-      el.innerHTML = '<p class="muted">Document Hub is available to owner, manager, assistant manager, and marketing staff.</p>';
+    this._host = el;
+    if (!['owner', 'manager', 'assistant_manager'].includes(app.user?.role)) {
+      el.innerHTML = '<p class="muted">Document Hub is available to owner, manager, and assistant manager.</p>';
       return;
     }
 
-    const [docRes, custRes, brRes, setRes] = await Promise.all([
-      API.getDocuments(this.pendingFlyerId ? { source_flyer_id: this.pendingFlyerId } : this.filter),
-      API.getCustomers({}),
-      API.getBranches(),
-      API.getWhatsAppSettings()
-    ]);
-    this.documents = docRes.data || [];
-    this.customers = (custRes.data || []).filter(c => c.phone);
-    this.branches = brRes.data || [];
-    this.settings = setRes.data || {};
+    el.innerHTML = `<div class="page-toolbar"><h3>📁 Document Hub</h3>
+      <p class="muted" style="margin:0">Loading…</p></div>`;
+
+    let docRes, custRes, brRes, setRes;
+    try {
+      [docRes, custRes, brRes, setRes] = await Promise.all([
+        API.getDocuments(this.filter).catch((e) => ({ success: false, error: e.message, data: [] })),
+        API.getCustomers({}).catch(() => ({ data: [] })),
+        API.getBranches().catch(() => ({ data: [] })),
+        API.getWhatsAppSettings().catch(() => ({ data: {} }))
+      ]);
+    } catch (err) {
+      el.innerHTML = `<p class="error-msg">${this.esc(err.message || 'Could not load Document Hub')}</p>
+        <button type="button" class="btn btn-primary" id="dh-retry">Retry</button>`;
+      document.getElementById('dh-retry')?.addEventListener('click', () => this._rerender());
+      return;
+    }
+
+    this.documents = Array.isArray(docRes?.data) ? docRes.data : [];
+    this.customers = (Array.isArray(custRes?.data) ? custRes.data : []).filter(c => c.phone);
+    this.branches = Array.isArray(brRes?.data) ? brRes.data : [];
+    this.settings = setRes?.data || {};
+
+    if (docRes?.success === false && !this.documents.length) {
+      el.innerHTML = `<p class="error-msg">${this.esc(docRes.error || 'Could not load documents')}</p>
+        <button type="button" class="btn btn-primary" id="dh-retry">Retry</button>`;
+      document.getElementById('dh-retry')?.addEventListener('click', () => this._rerender());
+      return;
+    }
 
     el.innerHTML = `<div class="page-toolbar">
       <h3>📁 Document Hub</h3>
@@ -65,27 +90,24 @@ const DocumentHubPage = {
         <option value="scheduled">Scheduled</option>
       </select>
       <span class="muted">${this.documents.length} document(s)</span>
-      ${this.pendingFlyerId ? `<button class="btn btn-sm btn-ghost" id="dh-clear-flyer-filter">Show all documents</button>` : ''}
     </div>
-    <div id="dh-grid" class="doc-hub-grid"></div>`;
+    <div id="dh-grid" class="doc-hub-grid"><p class="muted" style="padding:16px">Loading previews…</p></div>`;
 
-    document.getElementById('dh-filter-type').value = this.filter.doc_type || '';
-    document.getElementById('dh-filter-status').value = this.filter.status || '';
-    document.getElementById('dh-filter-type').addEventListener('change', (e) => {
+    const typeEl = document.getElementById('dh-filter-type');
+    const statusEl = document.getElementById('dh-filter-status');
+    if (typeEl) typeEl.value = this.filter.doc_type || '';
+    if (statusEl) statusEl.value = this.filter.status || '';
+    typeEl?.addEventListener('change', (e) => {
       this.filter.doc_type = e.target.value;
-      this.render(el, app);
+      this._rerender();
     });
-    document.getElementById('dh-filter-status').addEventListener('change', (e) => {
+    statusEl?.addEventListener('change', (e) => {
       this.filter.status = e.target.value;
-      this.render(el, app);
+      this._rerender();
     });
-    document.getElementById('dh-upload-menu').addEventListener('click', () => this.uploadDocument('menu'));
-    document.getElementById('dh-upload-doc').addEventListener('click', () => this.uploadDocument('other'));
-    document.getElementById('dh-settings').addEventListener('click', () => this.showSettingsModal());
-    document.getElementById('dh-clear-flyer-filter')?.addEventListener('click', () => {
-      this.pendingFlyerId = null;
-      this.render(el, app);
-    });
+    document.getElementById('dh-upload-menu')?.addEventListener('click', () => this.uploadDocument('menu'));
+    document.getElementById('dh-upload-doc')?.addEventListener('click', () => this.uploadDocument('other'));
+    document.getElementById('dh-settings')?.addEventListener('click', () => this.showSettingsModal());
 
     await this.renderGrid(document.getElementById('dh-grid'));
 
@@ -97,30 +119,46 @@ const DocumentHubPage = {
   },
 
   async renderGrid(container) {
-    if (!this.documents.length) {
+    if (!container) return;
+    const docs = Array.isArray(this.documents) ? this.documents : [];
+    if (!docs.length) {
       container.innerHTML = `<div class="card"><div class="card-body muted" style="text-align:center;padding:40px">
-        ${this.pendingFlyerId
-          ? 'No documents linked to this campaign yet. Save or export the flyer PDF to add it to Document Hub.'
-          : 'No documents yet. Upload a menu or save a marketing flyer — flyers appear here automatically.'}
+        No documents yet. Upload a menu or other document to get started.
       </div></div>`;
       return;
     }
 
-    const thumbs = await Promise.all(this.documents.map(async (d) => {
-      if (!d.thumbnail_path) return { id: d.id, dataUrl: null };
-      const r = await API.getImageDataUrl(d.thumbnail_path);
-      return { id: d.id, dataUrl: r.success ? r.dataUrl : null };
-    }));
-    const thumbMap = new Map(thumbs.map(t => [t.id, t.dataUrl]));
+    let thumbs = [];
+    try {
+      thumbs = await Promise.all(docs.map(async (d) => {
+        if (!d?.thumbnail_path) return { id: d.id, dataUrl: null };
+        try {
+          const r = await API.getImageDataUrl(d.thumbnail_path);
+          return { id: d.id, dataUrl: r?.success ? (r.dataUrl || r.data) : null };
+        } catch (_) {
+          return { id: d.id, dataUrl: null };
+        }
+      }));
+    } catch (_) {
+      thumbs = docs.map((d) => ({ id: d.id, dataUrl: null }));
+    }
+    const thumbMap = new Map((Array.isArray(thumbs) ? thumbs : []).map((t) => [t.id, t.dataUrl]));
+    const needsOverride = (ownerId) => {
+      try {
+        return !!(window.AdminOverride?.needsOverrideReason?.(this.app.user, ownerId));
+      } catch (_) {
+        return false;
+      }
+    };
 
-    container.innerHTML = this.documents.map(d => {
+    container.innerHTML = docs.map((d) => {
       const thumb = thumbMap.get(d.id);
       const preview = thumb
         ? `<img src="${thumb}" alt="" class="doc-hub-thumb">`
-        : `<div class="doc-hub-thumb doc-hub-thumb-placeholder">${d.file_path?.endsWith('.pdf') ? '📄 PDF' : '📁 File'}</div>`;
+        : `<div class="doc-hub-thumb doc-hub-thumb-placeholder">${String(d.file_path || '').endsWith('.pdf') ? '📄 PDF' : '📁 File'}</div>`;
       const canDelete = this.isAdmin(this.app) || d.created_by === this.app.user?.id;
-      const needsOverride = AdminOverride.needsOverrideReason(this.app.user, d.created_by);
-      return `<div class="doc-hub-card card${this.pendingFlyerId && d.source_flyer_id == this.pendingFlyerId ? ' doc-hub-card-highlight' : ''}" data-id="${d.id}">
+      const override = needsOverride(d.created_by);
+      return `<div class="doc-hub-card card" data-id="${d.id}">
         ${preview}
         <div class="doc-hub-card-body">
           <div class="doc-hub-card-title">${this.esc(d.title)}</div>
@@ -128,68 +166,74 @@ const DocumentHubPage = {
             <span class="tag">${this.typeLabel(d.doc_type)}</span>
             ${this.statusPill(d.status)}
           </div>
-          ${d.schedule_at ? `<div class="muted" style="font-size:12px;margin-top:4px">Scheduled: ${d.schedule_at}</div>` : ''}
-          ${d.shared_at ? `<div class="muted" style="font-size:12px">Shared: ${d.shared_at}</div>` : ''}
+          ${d.schedule_at ? `<div class="muted" style="font-size:12px;margin-top:4px">Scheduled: ${this.esc(d.schedule_at)}</div>` : ''}
+          ${d.shared_at ? `<div class="muted" style="font-size:12px">Shared: ${this.esc(d.shared_at)}</div>` : ''}
           <div class="doc-hub-card-actions">
             <button class="btn btn-sm btn-primary dh-share" data-id="${d.id}">Share</button>
             <button class="btn btn-sm btn-ghost dh-open" data-id="${d.id}">Open</button>
-            ${canDelete ? `<button class="btn btn-sm btn-danger dh-delete" data-id="${d.id}" data-owner="${d.created_by || ''}" data-owner-name="${this.esc(d.created_by_name || '')}" ${needsOverride ? 'title="Owner override — reason required"' : ''}>Delete</button>` : ''}
+            ${canDelete ? `<button class="btn btn-sm btn-danger dh-delete" data-id="${d.id}" data-owner="${d.created_by || ''}" data-owner-name="${this.esc(d.created_by_name || '')}" ${override ? 'title="Owner override — reason required"' : ''}>Delete</button>` : ''}
           </div>
         </div>
       </div>`;
     }).join('');
 
-    container.querySelectorAll('.dh-share').forEach(b => b.addEventListener('click', () =>
+    container.querySelectorAll('.dh-share').forEach((b) => b.addEventListener('click', () =>
       this.showShareModal(parseInt(b.dataset.id, 10))));
-    container.querySelectorAll('.dh-open').forEach(b => b.addEventListener('click', async () => {
-      const doc = this.documents.find(x => x.id === parseInt(b.dataset.id, 10));
+    container.querySelectorAll('.dh-open').forEach((b) => b.addEventListener('click', async () => {
+      const doc = docs.find((x) => x.id === parseInt(b.dataset.id, 10));
       if (!doc?.file_path) return;
       const r = await API.openPath(doc.file_path);
       if (!r.success) Utils.toast(r.error || 'Could not open file', 'error');
     }));
-    container.querySelectorAll('.dh-delete').forEach(b => b.addEventListener('click', async () => {
+    container.querySelectorAll('.dh-delete').forEach((b) => b.addEventListener('click', async () => {
       let actor = this.app.user;
       const ownerId = b.dataset.owner ? parseInt(b.dataset.owner, 10) : null;
-      if (AdminOverride.needsOverrideReason(this.app.user, ownerId)) {
-        const guard = await AdminOverride.guardAction(this.app.user, 'Delete Document', ownerId, b.dataset.ownerName || '');
+      if (window.AdminOverride?.needsOverrideReason?.(this.app.user, ownerId)) {
+        const guard = await window.AdminOverride.guardAction(this.app.user, 'Delete Document', ownerId, b.dataset.ownerName || '');
         if (!guard.ok) return;
-        actor = AdminOverride.actorWithOverride(this.app.user, guard.override_reason);
+        actor = window.AdminOverride.actorWithOverride(this.app.user, guard.override_reason);
       }
       if (!confirm('Delete this document from the hub?')) return;
       const r = await API.deleteDocument(parseInt(b.dataset.id, 10), actor);
       if (!r.success) return Utils.toast(r.error, 'error');
       Utils.toast('Document deleted', 'success');
-      this.render(document.getElementById('page-content'), this.app);
+      this._rerender();
     }));
   },
 
   async uploadDocument(docType) {
-    const pick = await API.selectDocument(docType === 'menu' ? 'menu' : 'doc');
-    if (!pick.success) {
-      if (!pick.cancelled) Utils.toast(pick.error || 'Upload cancelled', 'error');
-      return;
+    try {
+      const pick = await API.selectDocument(docType === 'menu' ? 'menu' : 'doc');
+      if (!pick?.success) {
+        if (!pick?.cancelled) Utils.toast(pick?.error || 'Upload cancelled', 'error');
+        return;
+      }
+      let filePath = pick.path;
+      if (!filePath) return Utils.toast('No file selected', 'error');
+      if (String(filePath).startsWith('mobile://')) {
+        const persisted = await API.persistMobileDocument(filePath);
+        if (!persisted.success) return Utils.toast(persisted.error || 'Could not save document on device', 'error');
+        filePath = persisted.path;
+      }
+      const defaultTitle = pathBasename(pick.path || pick.fileName);
+      const title = await this.promptDocumentTitle(defaultTitle);
+      if (!title) return;
+      const branchId = this.app.activeBranch?.id || this.branches[0]?.id || null;
+      const r = await API.saveDocument({
+        title,
+        doc_type: docType,
+        file_path: filePath,
+        thumbnail_path: pick.is_image ? filePath : null,
+        branch_id: branchId,
+        status: 'published'
+      }, this.app.user);
+      if (!r.success) return Utils.toast(r.error || 'Upload failed', 'error');
+      Utils.toast('Document uploaded', 'success');
+      this._rerender();
+    } catch (err) {
+      console.error('[DocumentHub] upload', err);
+      Utils.toast(err.message || 'Upload failed', 'error');
     }
-    let filePath = pick.path;
-    if (String(filePath).startsWith('mobile://')) {
-      const persisted = await API.persistMobileDocument(filePath);
-      if (!persisted.success) return Utils.toast(persisted.error || 'Could not save document on device', 'error');
-      filePath = persisted.path;
-    }
-    const defaultTitle = pathBasename(pick.path || pick.fileName);
-    const title = await this.promptDocumentTitle(defaultTitle);
-    if (!title) return;
-    const branchId = this.app.activeBranch?.id || this.branches[0]?.id || null;
-    const r = await API.saveDocument({
-      title,
-      doc_type: docType,
-      file_path: filePath,
-      thumbnail_path: pick.is_image ? filePath : null,
-      branch_id: branchId,
-      status: 'published'
-    }, this.app.user);
-    if (!r.success) return Utils.toast(r.error, 'error');
-    Utils.toast('Document uploaded', 'success');
-    this.render(document.getElementById('page-content'), this.app);
   },
 
   promptDocumentTitle(defaultTitle) {
@@ -283,8 +327,8 @@ const DocumentHubPage = {
     });
     document.getElementById('dh-export-status')?.addEventListener('click', async () => {
       const r = await API.exportDocumentStatus(docId, this.app.user);
-      if (!r.success) return Utils.toast(r.error, 'error');
-      await API.openPath(r.data.path);
+      if (!r.success) return Utils.toast(r.error || 'Export not available yet', 'error');
+      if (r.data?.path) await API.openPath(r.data.path);
       Utils.toast('WhatsApp Status export ready — attach in Status', 'success');
     });
     document.getElementById('dh-share-instant')?.addEventListener('click', async () => {
@@ -323,11 +367,10 @@ const DocumentHubPage = {
     if (r.data?.scheduled) {
       Utils.hideModal();
       Utils.toast(`Share scheduled for ${scheduleAt}`, 'success');
-      this.render(document.getElementById('page-content'), this.app);
+      this._rerender();
       return;
     }
 
-    // Open WhatsApp first, then put the picture on the clipboard last (so paste keeps the image)
     if (mode === 'group' && r.data?.group_link) {
       if (window.API?.openExternal) await API.openExternal(r.data.group_link);
       else window.open(r.data.group_link, '_blank', 'noopener,noreferrer');
@@ -336,7 +379,6 @@ const DocumentHubPage = {
     }
 
     if (r.data?.file_path) {
-      // File-on-clipboard (Windows) so paste into WhatsApp attaches the picture
       const clip = r.data.is_image
         ? await API.copyImageToClipboard(r.data.file_path).catch(() => ({ success: false }))
         : { success: false };
@@ -353,7 +395,7 @@ const DocumentHubPage = {
       Utils.toast('WhatsApp opened (no picture file on this document)', 'error');
     }
     Utils.hideModal();
-    this.render(document.getElementById('page-content'), this.app);
+    this._rerender();
   }
 };
 

@@ -126,6 +126,8 @@ function resolveSession(token) {
   return { user: row, device, token };
 }
 
+const { sqlLocalDateRange } = require('../lib/shop-date');
+
 function dateRange(filter = {}) {
   const period = filter.period || 'today';
   const today = new Date();
@@ -134,40 +136,46 @@ function dateRange(filter = {}) {
   const d = today.getDate();
   const pad = (n) => String(n).padStart(2, '0');
   const fmt = (dt) => `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
+  const tsStart = (dateStr) => `${dateStr} 00:00:00`;
+  const tsNextDay = (dateStr) => {
+    const parts = dateStr.split('-').map(Number);
+    const nd = new Date(parts[0], parts[1] - 1, parts[2] + 1);
+    return `${fmt(nd)} 00:00:00`;
+  };
   if (period === 'yesterday') {
     const yd = new Date(y, m, d - 1);
     const s = fmt(yd);
-    const end = fmt(today);
-    return { from: `${s}T00:00:00.000`, to: `${end}T00:00:00.000`, label: 'Yesterday', date_from: s, date_to: s };
+    return { from: tsStart(s), to: tsStart(fmt(today)), label: 'Yesterday', date_from: s, date_to: s };
   }
   if (period === 'week') {
     const start = new Date(y, m, d - 6);
-    const end = new Date(y, m, d + 1);
     const startStr = fmt(start);
     const endStr = fmt(today);
-    return { from: `${startStr}T00:00:00.000`, to: `${fmt(end)}T00:00:00.000`, label: 'This week', date_from: startStr, date_to: endStr };
+    return { from: tsStart(startStr), to: tsNextDay(endStr), label: 'This week', date_from: startStr, date_to: endStr };
   }
   if (period === 'month') {
-    const end = new Date(y, m, d + 1);
     const startStr = `${y}-${pad(m + 1)}-01`;
     const endStr = fmt(today);
-    return { from: `${startStr}T00:00:00.000`, to: `${fmt(end)}T00:00:00.000`, label: 'This month', date_from: startStr, date_to: endStr };
+    return { from: tsStart(startStr), to: tsNextDay(endStr), label: 'This month', date_from: startStr, date_to: endStr };
   }
   if (period === 'custom' && filter.from && filter.to) {
-    const endD = new Date(filter.to);
-    endD.setDate(endD.getDate() + 1);
     const sameDay = filter.from === filter.to;
     return {
-      from: `${filter.from}T00:00:00.000`,
-      to: `${fmt(endD)}T00:00:00.000`,
+      from: tsStart(filter.from),
+      to: tsNextDay(filter.to),
       label: sameDay ? filter.from : `${filter.from} → ${filter.to}`,
       date_from: filter.from,
       date_to: filter.to
     };
   }
   const s = fmt(today);
-  const end = new Date(y, m, d + 1);
-  return { from: `${s}T00:00:00.000`, to: `${fmt(end)}T00:00:00.000`, label: 'Today', date_from: s, date_to: s };
+  return { from: tsStart(s), to: tsNextDay(s), label: 'Today', date_from: s, date_to: s };
+}
+
+function createdDateFilter(col, range) {
+  const df = range.date_from || (range.from && String(range.from).slice(0, 10));
+  const dt = range.date_to || df;
+  return sqlLocalDateRange(col, df, dt);
 }
 
 function branchFilterSql(user, filters = {}, alias = 's', paramList = []) {
@@ -466,29 +474,42 @@ function getDashboard(token, filters = {}) {
   const range = dateRange(filters);
   const bc = branchFilterSql(user, filters, 's');
   const obc = onlineBranchFilterSql(user, filters, 'o');
-  const stats = dbGet(`SELECT COUNT(*) AS orders, COALESCE(SUM(total),0) AS sales
-    FROM sales s WHERE s.status = 'completed' AND s.created_at >= ? AND s.created_at < ?${bc.sql}`,
-    [range.from, range.to, ...bc.params]) || { orders: 0, sales: 0 };
-  const onlineStats = dbGet(`SELECT COUNT(*) AS orders, COALESCE(SUM(total),0) AS sales
-    FROM online_orders_local o WHERE o.created_at >= ? AND o.created_at < ?
+  const saleDf = createdDateFilter('s.created_at', range);
+  const onlineDf = createdDateFilter('o.created_at', range);
+  const posStats = dbGet(`SELECT COUNT(*) AS orders, COALESCE(SUM(total),0) AS sales
+    FROM sales s WHERE s.status = 'completed' AND ${saleDf.sql}
+    AND COALESCE(s.order_type,'') != 'online' AND COALESCE(s.order_source,'') NOT IN ('ONLINE','WEB')${bc.sql}`,
+    [...saleDf.params, ...bc.params]) || { orders: 0, sales: 0 };
+  const onlineAcceptedStats = dbGet(`SELECT COUNT(*) AS orders, COALESCE(SUM(total),0) AS sales
+    FROM sales s WHERE s.status = 'completed' AND ${saleDf.sql}
+    AND (COALESCE(s.order_type,'') = 'online' OR COALESCE(s.order_source,'') IN ('ONLINE','WEB'))${bc.sql}`,
+    [...saleDf.params, ...bc.params]) || { orders: 0, sales: 0 };
+  const onlinePendingStats = dbGet(`SELECT COUNT(*) AS orders, COALESCE(SUM(total),0) AS sales
+    FROM online_orders_local o WHERE ${onlineDf.sql}
     AND o.status NOT IN ('cancelled','rejected')
     AND (o.sale_id IS NULL OR o.sale_id = 0)${obc.sql}`,
-    [range.from, range.to, ...obc.params]) || { orders: 0, sales: 0 };
-  const posOrders = Number(stats.orders) || 0;
-  const onlinePending = Number(onlineStats.orders) || 0;
-  const orders = posOrders + onlinePending;
-  const sales = (Number(stats.sales) || 0) + (Number(onlineStats.sales) || 0);
+    [...onlineDf.params, ...obc.params]) || { orders: 0, sales: 0 };
+  const posOrders = Number(posStats.orders) || 0;
+  const onlineAcceptedOrders = Number(onlineAcceptedStats.orders) || 0;
+  const onlinePendingOrders = Number(onlinePendingStats.orders) || 0;
+  const onlineOrders = onlineAcceptedOrders + onlinePendingOrders;
+  const orders = posOrders + onlineOrders;
+  const posSales = Number(posStats.sales) || 0;
+  const onlineAcceptedSales = Number(onlineAcceptedStats.sales) || 0;
+  const onlinePendingSales = Number(onlinePendingStats.sales) || 0;
+  const sales = posSales + onlineAcceptedSales + onlinePendingSales;
   const onlineAllInRange = dbGet(`SELECT COUNT(*) AS orders FROM online_orders_local o
-    WHERE o.created_at >= ? AND o.created_at < ?
+    WHERE ${onlineDf.sql}
     AND o.status NOT IN ('cancelled','rejected')${obc.sql}`,
-    [range.from, range.to, ...obc.params])?.orders || 0;
+    [...onlineDf.params, ...obc.params])?.orders || 0;
   const recent = dbAll(`SELECT s.id, s.order_number, s.receipt_number, s.total, s.created_at, s.branch_id, s.order_source
-    FROM sales s WHERE s.status = 'completed' AND s.created_at >= ? AND s.created_at < ?${bc.sql}
-    ORDER BY s.id DESC LIMIT 8`, [range.from, range.to, ...bc.params]);
+    FROM sales s WHERE s.status = 'completed' AND ${saleDf.sql}${bc.sql}
+    ORDER BY s.id DESC LIMIT 8`, [...saleDf.params, ...bc.params]);
   const recentOnline = dbAll(`SELECT o.id, o.order_number, o.total, o.created_at, o.branch_id, o.status, o.order_source
     FROM online_orders_local o
-    WHERE o.created_at >= ? AND o.created_at < ? AND o.status IN ('pending','accepted')${obc.sql}
-    ORDER BY o.id DESC LIMIT 5`, [range.from, range.to, ...obc.params]);
+    WHERE ${onlineDf.sql} AND o.status IN ('pending','accepted')
+    AND (o.sale_id IS NULL OR o.sale_id = 0)${obc.sql}
+    ORDER BY o.id DESC LIMIT 5`, [...onlineDf.params, ...obc.params]);
   const mergedRecent = [
     ...recent.map((r) => ({
       id: r.id, number: r.order_number || r.receipt_number, total: Number(r.total), time: r.created_at,
@@ -499,25 +520,124 @@ function getDashboard(token, filters = {}) {
       branch_id: o.branch_id, order_source: o.order_source || 'ONLINE', status: o.status
     }))
   ].sort((a, b) => new Date(b.time) - new Date(a.time)).slice(0, 10);
+  const dayFrom = range.date_from || String(range.from || '').slice(0, 10);
+  const dayTo = range.date_to || dayFrom;
+  const eachDate = (from, to) => {
+    const out = [];
+    if (!from || !to) return out;
+    const [y, m, d] = String(from).split('-').map(Number);
+    const [y2, m2, d2] = String(to).split('-').map(Number);
+    const cur = new Date(y, (m || 1) - 1, d || 1);
+    const end = new Date(y2, (m2 || 1) - 1, d2 || 1);
+    while (cur <= end && out.length < 62) {
+      const yy = cur.getFullYear();
+      const mm = String(cur.getMonth() + 1).padStart(2, '0');
+      const dd = String(cur.getDate()).padStart(2, '0');
+      out.push(`${yy}-${mm}-${dd}`);
+      cur.setDate(cur.getDate() + 1);
+    }
+    return out;
+  };
+  const rangeDays = eachDate(dayFrom, dayTo);
   const branchRows = allowedBranchIds(user).map((bid) => {
     const b = dbGet('SELECT name FROM branches WHERE id = ?', [bid]);
+    const branchDf = createdDateFilter('created_at', range);
     const st = dbGet(`SELECT COUNT(*) AS orders, COALESCE(SUM(total),0) AS sales FROM sales
-      WHERE branch_id = ? AND status = 'completed' AND created_at >= ? AND created_at < ?`,
-      [bid, range.from, range.to]);
-    return { id: bid, name: b?.name || `Branch ${bid}`, orders: st?.orders || 0, sales: Number(st?.sales) || 0 };
+      WHERE branch_id = ? AND status = 'completed' AND ${branchDf.sql}`,
+      [bid, ...branchDf.params]) || { orders: 0, sales: 0 };
+    const exp = dbGet(`SELECT COALESCE(SUM(amount),0) AS s FROM expenses
+      WHERE branch_id = ? AND date(expense_date) >= date(?) AND date(expense_date) <= date(?)`,
+      [bid, dayFrom, dayTo]) || { s: 0 };
+    let saleDays = [];
+    let expDays = [];
+    try {
+      saleDays = dbAll(`SELECT date(created_at) AS day, COUNT(*) AS orders, COALESCE(SUM(total),0) AS money_in
+        FROM sales WHERE branch_id = ? AND status = 'completed' AND ${branchDf.sql}
+        GROUP BY date(created_at)`, [bid, ...branchDf.params]) || [];
+    } catch (_) { saleDays = []; }
+    try {
+      expDays = dbAll(`SELECT date(expense_date) AS day, COALESCE(SUM(amount),0) AS money_out
+        FROM expenses WHERE branch_id = ? AND date(expense_date) >= date(?) AND date(expense_date) <= date(?)
+        GROUP BY date(expense_date)`, [bid, dayFrom, dayTo]) || [];
+    } catch (_) { expDays = []; }
+    const inByDay = {};
+    const outByDay = {};
+    const ordersByDay = {};
+    for (const row of saleDays) {
+      const day = String(row.day || '').slice(0, 10);
+      if (!day) continue;
+      inByDay[day] = Number(row.money_in) || 0;
+      ordersByDay[day] = Number(row.orders) || 0;
+    }
+    for (const row of expDays) {
+      const day = String(row.day || '').slice(0, 10);
+      if (!day) continue;
+      outByDay[day] = Number(row.money_out) || 0;
+    }
+    const days = (rangeDays.length ? rangeDays : Object.keys({ ...inByDay, ...outByDay }).sort()).map((day) => {
+      const money_in = Number(inByDay[day] || 0);
+      const money_out = Number(outByDay[day] || 0);
+      return {
+        date: day,
+        orders: Number(ordersByDay[day] || 0),
+        money_in,
+        money_out,
+        expenses: money_out,
+        profit: Math.round((money_in - money_out) * 100) / 100
+      };
+    });
+    const moneyIn = Number(st.sales) || 0;
+    const moneyOut = Number(exp.s) || 0;
+    return {
+      id: bid,
+      name: b?.name || `Branch ${bid}`,
+      orders: st?.orders || 0,
+      sales: moneyIn,
+      money_in: moneyIn,
+      money_out: moneyOut,
+      expenses: moneyOut,
+      profit: Math.round((moneyIn - moneyOut) * 100) / 100,
+      days
+    };
   });
   const alertIds = allowedBranchIds(user);
-  const unread = dbGet(`SELECT COUNT(*) AS c FROM mobile_notifications n
-    WHERE n.user_id = ? AND n.read_at IS NULL AND n.created_at >= ? AND n.created_at < ?
-    AND (n.branch_id IS NULL OR n.branch_id IN (${alertIds.map(() => '?').join(',') || '0'}))`,
-    [user.user_id || user.id, range.from, range.to, ...alertIds])?.c || 0;
-  const posOnline = dbAll(`SELECT * FROM pos_heartbeats WHERE branch_id IN (${allowedBranchIds(user).map(() => '?').join(',') || '0'})`,
-    allowedBranchIds(user));
-  const branchesOnline = posOnline.filter((p) => {
+  const alertDf = createdDateFilter('n.created_at', range);
+  const alertBranchSql = filters.branch_id != null && filters.branch_id !== '' && filters.branch_id !== 'all'
+    ? ' AND n.branch_id = ?' : '';
+  const alertBranchParams = alertBranchSql ? [Number(filters.branch_id)] : [];
+  const unreadRows = dbAll(`SELECT n.id, n.payload_json FROM mobile_notifications n
+    WHERE n.user_id = ? AND n.read_at IS NULL AND ${alertDf.sql}
+    AND (n.branch_id IS NULL OR n.branch_id IN (${alertIds.map(() => '?').join(',') || '0'}))${alertBranchSql}`,
+    [user.user_id || user.id, ...alertDf.params, ...alertIds, ...alertBranchParams]);
+  let unread = 0;
+  for (const row of unreadRows) {
+    const payload = parseJson(row.payload_json, {});
+    if (alertPayloadStillValid(payload)) unread += 1;
+    else {
+      try { dbRun('DELETE FROM mobile_notifications WHERE id = ?', [row.id]); } catch (_) { /* */ }
+    }
+  }
+  const branchIds = allowedBranchIds(user);
+  const posOnline = dbAll(`SELECT * FROM pos_heartbeats WHERE branch_id IN (${branchIds.map(() => '?').join(',') || '0'})`,
+    branchIds);
+  const onlineWindowMs = 5 * 60 * 1000;
+  const onlineTills = posOnline.filter((p) => {
     const age = Date.now() - new Date(p.last_seen_at).getTime();
-    return age < 5 * 60 * 1000;
-  }).length;
-  const branchCount = allowedBranchIds(user).length;
+    return age < onlineWindowMs;
+  });
+  const tillsOnline = onlineTills.length;
+  const tillsRegistered = posOnline.length;
+  const branchesWithOnlineTill = new Set(onlineTills.map((p) => Number(p.branch_id))).size;
+  const branchCount = branchIds.length;
+  const expBc = branchFilterSql(user, filters, 'e');
+  const expFrom = range.date_from || String(range.from).slice(0, 10);
+  const expTo = range.date_to || expFrom;
+  const expenseRow = dbGet(`SELECT COALESCE(SUM(amount),0) AS s FROM expenses e
+    WHERE date(e.expense_date) >= date(?) AND date(e.expense_date) <= date(?)${expBc.sql}`,
+    [expFrom, expTo, ...expBc.params]) || { s: 0 };
+  const expensesTotal = Number(expenseRow.s) || 0;
+  const profitEstimate = (Number(sales) || 0) - expensesTotal;
+  const profitMargin = sales > 0 ? Math.round((profitEstimate / sales) * 1000) / 10 : 0;
   const greeting = (() => {
     const h = new Date().getHours();
     if (h < 12) return 'Good morning';
@@ -533,16 +653,27 @@ function getDashboard(token, filters = {}) {
     updated_at: nowIso(),
     orders,
     pos_orders: posOrders,
-    online_orders: onlinePending,
+    pos_sales: posSales,
+    online_orders: onlineOrders,
+    online_orders_accepted: onlineAcceptedOrders,
+    online_orders_pending: onlinePendingOrders,
+    online_sales: onlineAcceptedSales + onlinePendingSales,
     online_orders_total: Number(onlineAllInRange) || 0,
     sales,
+    expenses: expensesTotal,
+    profit: Math.round(profitEstimate * 100) / 100,
+    profit_margin: profitMargin,
     average_order: orders ? Math.round((sales / orders) * 100) / 100 : 0,
     recent_orders: mergedRecent,
     branches: branchRows,
     multi_branch: branchCount > 1,
     alerts_count: unread,
-    branches_online: branchesOnline,
-    branches_total: branchCount,
+    branches_online: tillsOnline,
+    branches_total: tillsRegistered || branchCount,
+    tills_online: tillsOnline,
+    tills_registered: tillsRegistered,
+    branches_with_online_till: branchesWithOnlineTill,
+    branches_total_count: branchCount,
     permissions: perms
   };
 }
@@ -553,20 +684,22 @@ function listOrders(token, filters = {}) {
   const range = dateRange(filters);
   const bc = branchFilterSql(user, filters, 's');
   const obc = onlineBranchFilterSql(user, filters, 'o');
+  const saleDf = createdDateFilter('s.created_at', range);
+  const onlineDf = createdDateFilter('o.created_at', range);
   const limit = Math.min(Number(filters.limit) || 50, 100);
   const offset = Math.max(Number(filters.offset) || 0, 0);
   const rows = dbAll(`SELECT s.*, b.name AS branch_name, u.full_name AS cashier_name
     FROM sales s
     LEFT JOIN branches b ON b.id = s.branch_id
     LEFT JOIN users u ON u.id = s.user_id
-    WHERE s.created_at >= ? AND s.created_at < ?${bc.sql}
+    WHERE ${saleDf.sql}${bc.sql}
     ORDER BY s.id DESC LIMIT ? OFFSET ?`,
-    [range.from, range.to, ...bc.params, limit, offset]);
+    [...saleDf.params, ...bc.params, limit, offset]);
   const onlineRows = dbAll(`SELECT o.*, b.name AS branch_name FROM online_orders_local o
     LEFT JOIN branches b ON b.id = o.branch_id
-    WHERE o.created_at >= ? AND o.created_at < ?${obc.sql}
+    WHERE ${onlineDf.sql} AND (o.sale_id IS NULL OR o.sale_id = 0)${obc.sql}
     ORDER BY o.id DESC LIMIT ?`,
-    [range.from, range.to, ...obc.params, limit]);
+    [...onlineDf.params, ...obc.params, limit]);
   const sales = rows.map((r) => formatSaleOrder(r, r.branch_name, r.cashier_name));
   const online = onlineRows.map((o) => formatOnlineOrder(o, o.branch_name));
   return [...sales, ...online]
@@ -588,8 +721,9 @@ function listOnlineOrders(token, filters = {}) {
     statusSql = " AND LOWER(o.status) = 'pending' AND (o.sale_id IS NULL OR o.sale_id = 0)";
   } else {
     const range = dateRange(filters);
-    dateSql = 'o.created_at >= ? AND o.created_at < ?';
-    params = [range.from, range.to, ...params];
+    const onlineDf = createdDateFilter('o.created_at', range);
+    dateSql = onlineDf.sql;
+    params = [...onlineDf.params, ...params];
     if (status === 'pending') {
       statusSql = " AND LOWER(o.status) = 'pending'";
     } else if (status === 'accepted') {
@@ -661,11 +795,12 @@ function getStaffActivity(token, filters = {}) {
   if (!effectivePermissions(user).view_staff_activity) throw new Error('Permission denied');
   const range = dateRange(filters);
   const bc = branchClause(user, 's');
+  const saleDf = createdDateFilter('s.created_at', range);
   return dbAll(`SELECT u.full_name AS name, COUNT(s.id) AS orders, COALESCE(SUM(s.total),0) AS sales
     FROM sales s JOIN users u ON u.id = s.user_id
-    WHERE s.status = 'completed' AND s.created_at >= ? AND s.created_at <= ?${bc.sql}
+    WHERE s.status = 'completed' AND ${saleDf.sql}${bc.sql}
     GROUP BY u.id ORDER BY sales DESC LIMIT 20`,
-    [range.from, range.to, ...bc.params]);
+    [...saleDf.params, ...bc.params]);
 }
 
 function getPosStatus(token) {
@@ -690,20 +825,85 @@ function getPosStatus(token) {
   });
 }
 
+function alertPayloadStillValid(payload) {
+  if (!payload || typeof payload !== 'object') return true;
+  const saleId = Number(payload.sale_id);
+  if (saleId) {
+    const sale = dbGet('SELECT id FROM sales WHERE id = ?', [saleId]);
+    if (!sale) return false;
+  }
+  const onlineId = Number(payload.online_order_id);
+  if (onlineId) {
+    const order = dbGet('SELECT id FROM online_orders_local WHERE id = ?', [onlineId]);
+    if (!order) return false;
+  }
+  return true;
+}
+
+function purgeAlertsForSale(saleId) {
+  ensureSchema();
+  const sid = Number(saleId);
+  if (!sid) return { removed: 0 };
+  let removed = 0;
+  try {
+    const rows = dbAll(`SELECT id, payload_json FROM mobile_notifications WHERE type IN ('new_order','large_order')`);
+    for (const row of rows) {
+      const payload = parseJson(row.payload_json, {});
+      if (Number(payload.sale_id) === sid) {
+        dbRun('DELETE FROM mobile_notifications WHERE id = ?', [row.id]);
+        removed += 1;
+      }
+    }
+  } catch (_) { /* optional */ }
+  return { removed };
+}
+
+function purgeAlertsForOnlineOrder(orderId) {
+  ensureSchema();
+  const oid = Number(orderId);
+  if (!oid) return { removed: 0 };
+  let removed = 0;
+  try {
+    const rows = dbAll(`SELECT id, payload_json FROM mobile_notifications WHERE type IN ('new_order','large_order')`);
+    for (const row of rows) {
+      const payload = parseJson(row.payload_json, {});
+      if (Number(payload.online_order_id) === oid) {
+        dbRun('DELETE FROM mobile_notifications WHERE id = ?', [row.id]);
+        removed += 1;
+      }
+    }
+  } catch (_) { /* optional */ }
+  return { removed };
+}
+
 function listAlerts(token, limit = 50, filters = {}) {
   const { user } = resolveSession(token);
   const uid = user.user_id || user.id;
   const ids = allowedBranchIds(user);
   const range = dateRange(filters);
+  const alertDf = createdDateFilter('created_at', range);
+  const bc = filters.branch_id != null && filters.branch_id !== '' && filters.branch_id !== 'all'
+    ? ' AND branch_id = ?' : '';
+  const bcParams = bc ? [Number(filters.branch_id)] : [];
   const rows = dbAll(`SELECT * FROM mobile_notifications
-    WHERE user_id = ? AND created_at >= ? AND created_at < ?
-    AND (branch_id IS NULL OR branch_id IN (${ids.map(() => '?').join(',') || '0'}))
-    ORDER BY id DESC LIMIT ?`, [uid, range.from, range.to, ...ids, limit]);
-  return rows.map((n) => ({
-    id: n.id, type: n.type, title: n.title, body: n.body,
-    payload: parseJson(n.payload_json, {}), branch_id: n.branch_id,
-    read: !!n.read_at, created_at: n.created_at
-  }));
+    WHERE user_id = ? AND ${alertDf.sql}
+    AND (branch_id IS NULL OR branch_id IN (${ids.map(() => '?').join(',') || '0'}))${bc}
+    ORDER BY id DESC LIMIT ?`, [uid, ...alertDf.params, ...ids, ...bcParams, Math.min(Number(limit) || 50, 200)]);
+  const valid = [];
+  for (const n of rows) {
+    const payload = parseJson(n.payload_json, {});
+    if (!alertPayloadStillValid(payload)) {
+      try { dbRun('DELETE FROM mobile_notifications WHERE id = ?', [n.id]); } catch (_) { /* */ }
+      continue;
+    }
+    valid.push({
+      id: n.id, type: n.type, title: n.title, body: n.body,
+      payload, branch_id: n.branch_id,
+      read: !!n.read_at, created_at: n.created_at
+    });
+    if (valid.length >= (Number(limit) || 50)) break;
+  }
+  return valid;
 }
 
 function markNotificationsRead(token, ids) {
@@ -882,9 +1082,23 @@ function pollNotifications(token, sinceId = 0) {
   const { user } = resolveSession(token);
   const uid = user.user_id || user.id;
   const ids = allowedBranchIds(user);
-  return dbAll(`SELECT * FROM mobile_notifications
+  const rows = dbAll(`SELECT * FROM mobile_notifications
     WHERE user_id = ? AND id > ? AND (branch_id IS NULL OR branch_id IN (${ids.map(() => '?').join(',') || '0'}))
     ORDER BY id ASC LIMIT 20`, [uid, sinceId, ...ids]);
+  const out = [];
+  for (const n of rows) {
+    const payload = parseJson(n.payload_json, {});
+    if (!alertPayloadStillValid(payload)) {
+      try { dbRun('DELETE FROM mobile_notifications WHERE id = ?', [n.id]); } catch (_) { /* */ }
+      continue;
+    }
+    out.push({
+      ...n,
+      payload,
+      payload_json: undefined
+    });
+  }
+  return out;
 }
 
 module.exports = {
@@ -893,6 +1107,7 @@ module.exports = {
   getStaffActivity, getPosStatus, listAlerts, markNotificationsRead,
   getNotificationPrefs, saveNotificationPrefs, registerPushToken,
   recordPosHeartbeat, notifyNewSale, notifyOnlineOrder, pollNotifications,
+  purgeAlertsForSale, purgeAlertsForOnlineOrder,
   listMobileUsers, getMobileUser, saveMobileUser, setMobileUserActive,
   listMobileDevices, revokeMobileDevice, allowedBranchIds, effectivePermissions,
   DEFAULT_PREFS, DEFAULT_PERMS, ROLES

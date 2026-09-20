@@ -26,6 +26,7 @@ function stub(msg) {
 
 function buildHandlers(store) {
   const s = store;
+  const branchesSvc = require('../electron/services/branches');
   const H = {};
 
   const add = (ch, fn) => { H[ch.replace(/[:]/g, '_')] = fn; };
@@ -196,12 +197,12 @@ function buildHandlers(store) {
     return true;
   }));
   add('auth:deleteUser', wrapSync((id, a) => {
-    s.requireActor(a, ['owner']);
+    s.requireActor(a, ['owner', 'manager']);
     s.deleteUser(id, a.id, a.username);
     return true;
   }));
   add('auth:permanentlyDeleteUser', wrapSync((id, confirm, a) => {
-    s.requireActor(a, ['owner']);
+    s.requireActor(a, ['owner', 'manager']);
     return s.permanentlyDeleteUser(id, confirm, a.id, a.username);
   }));
   add('auth:verifySession', wrapSync(userId => s.verifyUserSession(userId)));
@@ -297,6 +298,7 @@ function buildHandlers(store) {
 
   add('settings:get', wrapSync(() => s.sanitizeSettingsResponse(s.getSettings())));
   add('settings:getParsed', wrapSync(() => s.getSettingsParsed()));
+  add('settings:getOperatingHours', wrapSync(() => s.getOperatingHoursSettings()));
   add('settings:getMenuHighlights', wrapSync(() => s.getMenuHighlightSettings()));
   add('settings:saveMenuHighlights', wrapSync((d, a) => s.saveMenuHighlightSettings(d || {}, a?.id, a?.username || a?.full_name)));
   add('settings:detectExistingBusiness', wrapSync(() => s.detectExistingBusiness()));
@@ -395,7 +397,12 @@ function buildHandlers(store) {
     return out;
   }));
   add('stock:listAdjustments', wrapSync((f) => s.listStockAdjustments(f || {})));
-  add('stock:history', wrapSync(pid => pid ? s.getStockHistory(pid) : s.getAllStockHistory()));
+  add('stock:history', wrapSync((arg) => {
+    if (arg && typeof arg === 'object' && !Array.isArray(arg)) {
+      return s.getAllStockHistory(arg.limit || 500, arg.from || null, arg.to || null);
+    }
+    return arg ? s.getStockHistory(arg) : s.getAllStockHistory();
+  }));
 
   add('sales:complete', wrapSync((d, a) => {
     const user = s.requireActor(a, ['owner', 'manager', 'cashier', 'supervisor', 'assistant_manager']);
@@ -444,6 +451,35 @@ function buildHandlers(store) {
     s.deleteExpense(id, user.id, user.username);
     return true;
   }));
+  add('expenses:parseReceipt', wrapSync((text) => { requireSession(); return s.parseExpenseReceipt(text); }));
+  add('expenses:budgets', wrapSync((f) => { requireSession(); return s.listExpenseBudgets(f || {}); }));
+  add('expenses:budgetStatus', wrapSync((mk) => { requireSession(); return s.expenseBudgetStatus(mk); }));
+  add('expenses:saveBudget', wrapSync((d, a) => {
+    const user = s.requireActor(a, ['owner', 'manager']);
+    return s.saveExpenseBudget(d, user);
+  }));
+  add('expenses:deleteBudget', wrapSync((id, a) => {
+    s.requireActor(a, ['owner', 'manager']);
+    return s.deleteExpenseBudget(id);
+  }));
+  add('expenses:recurring', wrapSync(() => { requireSession(); return s.listExpenseRecurring(); }));
+  add('expenses:saveRecurring', wrapSync((d, a) => {
+    const user = s.requireActor(a, ['owner', 'manager']);
+    return s.saveExpenseRecurring(d, user);
+  }));
+  add('expenses:deleteRecurring', wrapSync((id, a) => {
+    s.requireActor(a, ['owner', 'manager']);
+    return s.deleteExpenseRecurring(id);
+  }));
+  add('expenses:postRecurring', wrapSync((a) => {
+    const user = s.requireActor(a, ['owner', 'manager', 'supervisor', 'assistant_manager']);
+    return s.postExpenseRecurringDue(user);
+  }));
+  add('expenses:ownerFundings', wrapSync((f) => { requireSession(); return s.listOwnerFundings(f || {}); }));
+  add('expenses:recordOwnerFunding', wrapSync((d, a) => {
+    const user = s.requireActor(a, ['owner', 'manager']);
+    return s.recordOwnerFunding(d, user);
+  }));
 
   add('customers:get', wrapSync(q => s.getCustomers(q)));
   add('customers:getOne', wrapSync(id => s.getCustomer(id)));
@@ -461,6 +497,10 @@ function buildHandlers(store) {
   add('suppliers:save', wrapSync((d, a) => {
     const user = s.requireActor(a, ['owner', 'manager', 'supervisor', 'assistant_manager']);
     return s.saveSupplier(d, user.id, user.username);
+  }));
+  add('suppliers:delete', wrapSync((id, a) => {
+    const user = s.requireActor(a, ['owner', 'manager']);
+    return s.deleteSupplier(id, user.id, user.username);
   }));
   add('suppliers:pay', wrapSync((supplierId, data, actor) => {
     const user = s.requireActor(actor, ['owner', 'manager']);
@@ -533,6 +573,7 @@ function buildHandlers(store) {
     const user = s.requireActor(a, ['owner', 'manager']);
     return s.saveSalesTargets(d, user.id, user.username || user.full_name);
   }));
+  add('settings:getTodayTargetProgress', wrapSync((branchId) => s.getTodayTargetProgress(branchId)));
   add('settings:getShiftSettings', wrapSync(() => s.getShiftSettings()));
   add('settings:enforceCashoutDeadlines', wrapSync(() => s.enforceShiftCashoutDeadlines()));
   add('settings:saveShiftSettings', wrapSync((d, a) => {
@@ -555,7 +596,12 @@ function buildHandlers(store) {
   add('reports:discounts', wrapSync((f, t) => { requireSession(); return s.getDiscountReport(f, t); }));
   add('reports:voids', wrapSync((f, t) => { requireSession(); return s.getVoidReport(f, t); }));
   add('reports:movements', wrapSync((f, t) => { requireSession(); return s.getStockMovementReport(f, t); }));
-  add('reports:profitDash', wrapSync((f, t) => { requireSession(); return s.getProfitDashboard(f, t); }));
+  add('reports:profitDash', wrapSync((f, t, actor) => {
+    const user = requireSession();
+    const scope = branchesSvc.resolveBranchScope(actor || user, {});
+    const branchId = scope.allBranches ? null : scope.branchId;
+    return s.getProfitDashboard(f, t, branchId);
+  }));
   add('reports:giftcards', wrapSync((f, t) => { requireSession(); return s.getGiftCardReport(f, t); }));
   add('reports:layby', wrapSync((f, t) => { requireSession(); return s.getLaybyReport(f, t); }));
   add('reports:quotes', wrapSync((f, t) => { requireSession(); return s.getQuotesReport(f, t); }));
@@ -918,6 +964,18 @@ function buildHandlers(store) {
     const user = s.requireActor(actor, ['owner', 'manager', 'cashier', 'supervisor', 'assistant_manager']);
     return s.addLaybyPayment(id, amount, type, user.id);
   }));
+  add('taken:list', wrapSync((filters, a) => {
+    const user = s.requireActor(a, ['owner', 'manager', 'cashier', 'supervisor', 'assistant_manager']);
+    return require('../electron/services/taken-orders').listTakenOrders(filters || {}, user);
+  }));
+  add('taken:summary', wrapSync((a) => {
+    const user = s.requireActor(a, ['owner', 'manager', 'assistant_manager', 'supervisor']);
+    return require('../electron/services/taken-orders').getAdminSummary(user);
+  }));
+  add('taken:pay', wrapSync((id, data, a) => {
+    const user = s.requireActor(a, ['owner', 'manager', 'cashier', 'supervisor', 'assistant_manager']);
+    return require('../electron/services/taken-orders').payTakenOrder(id, data || {}, user);
+  }));
   add('layby:refund', wrapSync((id, actor) => {
     const user = s.requireActor(actor, ['owner', 'manager', 'assistant_manager', 'supervisor']);
     return s.refundLayby(id, user.id, user.username);
@@ -953,6 +1011,20 @@ function buildHandlers(store) {
     const user = s.requireActor(actor, ['owner', 'manager', 'assistant_manager', 'supervisor']);
     return s.rejectGiftCard(id, user.id, user.username, notes);
   }));
+  add('vouchers:list', wrapSync((filters) => { requireSession(); return require('../electron/services/discount-vouchers').listVouchers(filters || {}); }));
+  add('vouchers:create', wrapSync((d, a) => {
+    const user = s.requireActor(a, ['owner', 'manager']);
+    return require('../electron/services/discount-vouchers').createVoucher(d || {}, user);
+  }));
+  add('vouchers:validate', wrapSync((code, opts) => require('../electron/services/discount-vouchers').validateVoucher(code, opts || {})));
+  add('vouchers:redeem', wrapSync((code, opts, actor) => {
+    const user = actor ? s.requireActor(actor, ['owner', 'manager', 'cashier', 'assistant_manager', 'supervisor']) : null;
+    return require('../electron/services/discount-vouchers').redeemVoucher(code, {
+      ...(opts || {}),
+      actorId: user?.id,
+      actorName: user?.full_name || user?.username
+    });
+  }));
   add('giftcards:getSettings', wrapSync((actor) => {
     s.requireActor(actor || s.getUserSession?.(), ['owner', 'manager', 'assistant_manager', 'supervisor']);
     return s.getGiftCardSettings();
@@ -963,6 +1035,18 @@ function buildHandlers(store) {
   }));
 
   add('loyalty:history', wrapSync(id => s.getLoyaltyHistory(id)));
+  add('loyalty:syncMissing', wrapSync((actor) => {
+    s.requireActor(actor, ['owner', 'manager']);
+    return s.syncMissingLoyaltyPoints({ limit: 2000 });
+  }));
+  add('loyalty:listRestorable', wrapSync((opts, actor) => {
+    s.requireActor(actor, ['owner']);
+    return s.listRestorableExpiredPoints(opts || {});
+  }));
+  add('loyalty:restoreExpired', wrapSync((expireTxnId, actor) => {
+    const user = s.requireActor(actor, ['owner']);
+    return s.restoreExpiredLoyaltyPoints(expireTxnId, user.username || user.name || 'owner');
+  }));
   add('loyalty:adjust', wrapSync((customerId, pointsDelta, notes, actor) => {
     const user = s.requireActor(actor, ['owner', 'manager', 'supervisor', 'assistant_manager']);
     return s.adjustLoyaltyPoints(customerId, pointsDelta, notes, user.id);
@@ -1074,6 +1158,10 @@ function buildHandlers(store) {
   add('tables:save', wrapSync((d, a) => {
     s.requireActor(a || s.getUserSession(), ['owner', 'manager', 'assistant_manager', 'supervisor', 'cashier']);
     return s.saveTable(d);
+  }));
+  add('tables:release', wrapSync((tableId, a) => {
+    s.requireActor(a || s.getUserSession(), ['owner', 'manager', 'assistant_manager', 'supervisor', 'cashier']);
+    return s.releaseRestaurantTable(tableId);
   }));
   add('tables:delete', wrapSync((id, a) => {
     s.requireActor(a || s.getUserSession(), ['owner', 'manager']);
@@ -1315,12 +1403,25 @@ function buildHandlers(store) {
     return s.saveHrDocument(d, a.id, a.username || a.full_name || 'manager');
   }));
   add('staff:getHrDocuments', wrapSync((empId, a) => {
-    s.requireActor(a, ['owner', 'manager']);
+    const user = a || s.getUserSession?.();
+    const empSess = s.getEmployeeSession?.();
+    const isHrAdmin = ['owner', 'manager', 'supervisor', 'assistant_manager'].includes(user?.role);
+    const selfId = empSess?.employee_id ?? user?.employee_id;
+    if (!isHrAdmin && selfId != null) {
+      return s.getHrDocuments(Number(selfId));
+    }
+    s.requireActor(user, ['owner', 'manager', 'supervisor', 'assistant_manager']);
     return s.getHrDocuments(empId);
   }));
   add('staff:getHrDocument', wrapSync((id, a) => {
-    s.requireActor(a, ['owner', 'manager']);
-    return s.getHrDocument(id);
+    const doc = s.getHrDocument(id);
+    if (!doc) throw new Error('Document not found');
+    const user = a || s.getUserSession?.();
+    const empSess = s.getEmployeeSession?.();
+    if (['owner', 'manager', 'supervisor', 'assistant_manager'].includes(user?.role)) return doc;
+    const selfId = empSess?.employee_id ?? user?.employee_id;
+    if (selfId != null && Number(selfId) === Number(doc.employee_id)) return doc;
+    throw new Error('Not authorised');
   }));
   add('staff:buildHrDocumentHtml', wrapSync((d, a) => {
     s.requireActor(a, ['owner', 'manager']);
@@ -1342,7 +1443,13 @@ function buildHandlers(store) {
   add('staff:createAttendance', wrapSync((d, a) => s.createManualAttendance(d, a)));
   add('staff:addAttendancePenalty', wrapSync((d, a) => s.addAttendancePenalty(d, a)));
   add('staff:getAttendancePenalties', wrapSync((f, a) => {
-    s.requireActor(a, ['owner', 'manager', 'supervisor', 'assistant_manager']);
+    const user = a || s.getUserSession?.();
+    const empSess = s.getEmployeeSession?.();
+    const isHrAdmin = ['owner', 'manager', 'supervisor', 'assistant_manager'].includes(user?.role);
+    if (!isHrAdmin && empSess?.employee_id != null) {
+      return s.getAttendancePenalties({ ...(f || {}), employee_id: empSess.employee_id });
+    }
+    s.requireActor(user, ['owner', 'manager', 'supervisor', 'assistant_manager']);
     return s.getAttendancePenalties(f || {});
   }));
   add('staff:cancelAttendancePenalty', wrapSync((id, a) => s.cancelAttendancePenalty(id, a)));
@@ -1359,20 +1466,38 @@ function buildHandlers(store) {
     return s.getSchedules(f, t, e);
   }));
   add('staff:saveSchedule', wrapSync((d, a) => {
-    s.requireActor(a, ['owner', 'manager', 'supervisor', 'assistant_manager']);
+    s.requireActor(a || s.getUserSession?.(), ['owner', 'manager', 'supervisor', 'assistant_manager']);
     return s.saveSchedule(d);
   }));
   add('staff:deleteSchedule', wrapSync((id, a) => {
-    s.requireActor(a, ['owner', 'manager', 'supervisor', 'assistant_manager']);
+    s.requireActor(a || s.getUserSession?.(), ['owner', 'manager', 'supervisor', 'assistant_manager']);
     return s.deleteSchedule(id);
   }));
   add('staff:autoShifts', wrapSync((w, t, ids, overrides, a, options) => {
-    s.requireActor(a, ['owner', 'manager', 'supervisor', 'assistant_manager']);
+    s.requireActor(a || s.getUserSession?.(), ['owner', 'manager', 'supervisor', 'assistant_manager']);
     return s.autoGenerateShifts(w, t, ids, overrides, options || {});
   }));
-  add('staff:getDocuments', wrapSync(id => s.getEmployeeDocuments(id)));
+  add('staff:getDocuments', wrapSync((id, a) => {
+    const user = a || s.getUserSession?.();
+    const empSess = s.getEmployeeSession?.();
+    const isHrAdmin = ['owner', 'manager', 'supervisor', 'assistant_manager'].includes(user?.role);
+    const selfId = empSess?.employee_id ?? user?.employee_id;
+    if (!isHrAdmin && selfId != null) {
+      return s.getEmployeeDocuments(Number(selfId));
+    }
+    if (isHrAdmin) return s.getEmployeeDocuments(id);
+    throw new Error('Authentication required');
+  }));
   add('staff:saveDocument', wrapSync((d, a) => {
-    s.requireActor(a, ['owner', 'manager']);
+    const user = a || s.getUserSession?.();
+    const empSess = s.getEmployeeSession?.();
+    const isHrAdmin = ['owner', 'manager', 'supervisor', 'assistant_manager'].includes(user?.role);
+    if (!isHrAdmin) {
+      const selfId = empSess?.employee_id ?? user?.employee_id;
+      if (selfId == null) throw new Error('Authentication required');
+      return s.saveEmployeeDocument({ ...d, employee_id: Number(selfId) });
+    }
+    s.requireActor(user, ['owner', 'manager', 'supervisor', 'assistant_manager']);
     return s.saveEmployeeDocument(d);
   }));
   add('staff:getDisciplinary', wrapSync(id => s.getDisciplinary(scopedEmployeeId(id))));
@@ -1408,7 +1533,7 @@ function buildHandlers(store) {
       s.verifyEmployeePin(owner.employee_id, pin);
     }
     const st = s.getSettingsParsed();
-    return s.buildPayslipPdf(id, st?.shop_name, st?.currency || 'R', { skipAuth: !!pin });
+    return s.buildPayslipPdf(id, st?.shop_name, st?.currency || 'R', { skipAuth: !!pin || !!s.getUserSession?.()?.id });
   }));
   add('staff:schedulePdf', wrapSync((f, t) => {
     const st = s.getSettingsParsed();
@@ -1476,6 +1601,12 @@ function buildHandlers(store) {
       throw err;
     }
   }));
+  add('hr:listLeases', wrapSync((a) => s.listLeaseAgreements(a)));
+  add('hr:getLease', wrapSync((id, a) => s.getLeaseAgreement(id, a)));
+  add('hr:saveLease', wrapSync((d, a) => s.saveLeaseAgreement(d, a)));
+  add('hr:deleteLease', wrapSync((id, a) => s.deleteLeaseAgreement(id, a)));
+  add('hr:uploadLease', wrapSync((id, name, data, a) => s.uploadLeaseFile(id, name, data, a)));
+  add('hr:leasePdf', wrapSync((id, a) => s.buildLeasePdf(id, a)));
   add('hr:contractPdf', wrapSync((id, a) => {
     const emp = s.getEmployeeSession?.();
     if (emp?.employee_id != null) {
@@ -1486,18 +1617,43 @@ function buildHandlers(store) {
     s.requireActor(a, hrRead);
     return s.buildContractPdf(id, s.getSettingsParsed());
   }));
-  add('hr:getProbations', wrapSync((f, a) => { s.requireActor(a, hrRead); return s.getProbations(f || {}); }));
+  add('hr:getProbations', wrapSync((f, a) => {
+    const empSess = s.getEmployeeSession?.();
+    const userRole = a?.role || s.getUserSession?.()?.role;
+    const isHr = ['owner', 'manager', 'supervisor', 'assistant_manager'].includes(userRole);
+    const selfId = empSess?.employee_id ?? a?.employee_id;
+    if (!isHr && selfId != null) return s.getProbations({ ...(f || {}), employee_id: Number(selfId) });
+    s.requireActor(a, hrRead);
+    return s.getProbations(f || {});
+  }));
   add('hr:getProbation', wrapSync((id, a) => { s.requireActor(a, hrRead); return s.getProbation(id); }));
   add('hr:saveProbation', wrapSync((d, a) => { s.requireActor(a, hrWrite); return s.saveProbation(d, a.id, hrActor(a)); }));
   add('hr:deleteProbation', wrapSync((id, a) => { s.requireActor(a, ['owner', 'manager']); return s.deleteProbation(id, a.id, hrActor(a)); }));
   add('hr:getDecisionRules', wrapSync((a) => { s.requireActor(a, hrRead); return s.getDecisionRules(); }));
   add('hr:saveDecisionRule', wrapSync((d, a) => { s.requireActor(a, hrWrite); return s.saveDecisionRule(d, a.id, hrActor(a)); }));
   add('hr:saveDailyEvaluation', wrapSync((d, a) => { s.requireActor(a, hrRead); return s.saveDailyEvaluation(d, a.id, hrActor(a)); }));
-  add('hr:getEvaluationHistory', wrapSync((f, a) => { s.requireActor(a, hrRead); return s.getEvaluationHistory(f || {}); }));
+  add('hr:getEvaluationHistory', wrapSync((f, a) => {
+    const empSess = s.getEmployeeSession?.();
+    const userRole = a?.role || s.getUserSession?.()?.role;
+    const isHr = ['owner', 'manager', 'supervisor', 'assistant_manager'].includes(userRole);
+    const selfId = empSess?.employee_id ?? a?.employee_id;
+    if (!isHr && selfId != null) return s.getEvaluationHistory({ ...(f || {}), employee_id: Number(selfId) });
+    s.requireActor(a, hrRead);
+    return s.getEvaluationHistory(f || {});
+  }));
   add('hr:getRecommendation', wrapSync((pid, a) => { s.requireActor(a, hrRead); return s.getRecommendation(pid); }));
   add('hr:finalProbationDecision', wrapSync((pid, dec, reason, ext, a) => { s.requireActor(a, hrWrite); return s.finalProbationDecision(pid, dec, reason, a.id, hrActor(a), ext); }));
   add('hr:getProbationDashboard', wrapSync((f, a) => { s.requireActor(a, hrRead); return s.getProbationDashboard(f || {}); }));
-  add('hr:probationPdf', wrapSync((id, a) => { s.requireActor(a, hrRead); return s.buildProbationPdf(id, s.getSettingsParsed()); }));
+  add('hr:probationPdf', wrapSync((id, a) => {
+    const emp = s.getEmployeeSession?.();
+    if (emp?.employee_id != null) {
+      const p = s.getProbation(id);
+      if (!p || Number(p.employee_id) !== Number(emp.employee_id)) throw new Error('Not authorised');
+      return s.buildProbationPdf(id, s.getSettingsParsed());
+    }
+    s.requireActor(a, hrRead);
+    return s.buildProbationPdf(id, s.getSettingsParsed());
+  }));
   add('hr:evaluationReportPdf', wrapSync((id, a) => { s.requireActor(a, hrRead); return s.buildEvaluationReportPdf(id, s.getSettingsParsed()); }));
   add('hr:probationLetterPdf', wrapSync((id, dec, a) => { s.requireActor(a, hrRead); return s.buildProbationLetterPdf(id, dec, s.getSettingsParsed()); }));
   add('hr:getPersonnelFile', wrapSync((eid, a) => { s.requireActor(a, hrRead); return s.getEmployeePersonnelFile(eid); }));
@@ -1544,6 +1700,72 @@ function buildHandlers(store) {
   add('hr:saveIncident', wrapSync((d, a) => s.saveIncident(d || {}, hrPlatA(a))));
   add('hr:disciplinaryCases', wrapSync((f, a) => s.listDisciplinaryCases(f || {}, hrPlatA(a))));
   add('hr:saveDisciplinaryCase', wrapSync((d, a) => s.saveDisciplinaryCase(d || {}, hrPlatA(a))));
+
+  const mgrHr = require('../electron/services/mgr-hr-portal');
+  // Any authenticated user may use portal APIs; service checks assignment / admin rights.
+  const mgrHrUser = (a) => {
+    if (a?.id) {
+      try { return s.requireActor(a, []); } catch (_) { /* fall through */ }
+    }
+    return requireUserSession([]);
+  };
+  add('mgrHr:listAssignments', wrapSync((a) => mgrHr.listAssignments(mgrHrUser(a))));
+  add('mgrHr:getAssignment', wrapSync((id, a) => mgrHr.getAssignment(id, mgrHrUser(a))));
+  add('mgrHr:saveAssignment', wrapSync((d, a) => mgrHr.saveAssignment(d || {}, mgrHrUser(a))));
+  add('mgrHr:setAssignmentActive', wrapSync((id, active, a) => mgrHr.setAssignmentActive(id, active, mgrHrUser(a))));
+  add('mgrHr:listEligibleUsers', wrapSync((a) => mgrHr.listEligibleUsers(mgrHrUser(a))));
+  add('mgrHr:listActivity', wrapSync((f, a) => mgrHr.listActivity(f || {}, mgrHrUser(a))));
+  add('mgrHr:portalContext', wrapSync((a) => mgrHr.getPortalContext(mgrHrUser(a))));
+  add('mgrHr:dashboard', wrapSync((a) => mgrHr.dashboard(mgrHrUser(a))));
+  add('mgrHr:listMyStaff', wrapSync((a) => mgrHr.listMyStaff(mgrHrUser(a))));
+  add('mgrHr:listCases', wrapSync((f, a) => mgrHr.listCases(f || {}, mgrHrUser(a))));
+  add('mgrHr:getCase', wrapSync((id, a) => mgrHr.getCase(id, mgrHrUser(a))));
+  add('mgrHr:createCase', wrapSync((d, a) => mgrHr.createCase(d || {}, mgrHrUser(a))));
+  add('mgrHr:updateStatus', wrapSync((id, status, notes, a) => mgrHr.updateCaseStatus(id, status, notes, mgrHrUser(a))));
+  add('mgrHr:requestResponse', wrapSync((id, notes, a) => mgrHr.requestEmployeeResponse(id, notes, mgrHrUser(a))));
+  add('mgrHr:addRecommendation', wrapSync((id, d, a) => mgrHr.addRecommendation(id, d || {}, mgrHrUser(a))));
+  add('mgrHr:createWarning', wrapSync((id, d, a) => mgrHr.createWarningFromCase(id, d || {}, mgrHrUser(a))));
+  add('mgrHr:adminDecide', wrapSync((id, d, a) => mgrHr.adminDecide(id, d || {}, mgrHrUser(a))));
+  add('mgrHr:deleteCase', wrapSync((id, a) => mgrHr.deleteCase(id, mgrHrUser(a))));
+  add('mgrHr:listNotifications', wrapSync((audience, a) => mgrHr.listNotifications(mgrHrUser(a), audience)));
+  add('mgrHr:markNotificationRead', wrapSync((id, a) => mgrHr.markNotificationRead(id, mgrHrUser(a))));
+  add('mgrHr:listEmployeeCases', wrapSync((a) => {
+    const emp = s.getEmployeeSession?.() || a;
+    return mgrHr.listEmployeeCases(emp || requireUserSession([]));
+  }));
+  add('mgrHr:getEmployeeCase', wrapSync((id, a) => {
+    const emp = s.getEmployeeSession?.() || a;
+    return mgrHr.getEmployeeCase(id, emp || a);
+  }));
+  add('mgrHr:submitEmployeeResponse', wrapSync((id, d, a) => {
+    const emp = s.getEmployeeSession?.() || a;
+    return mgrHr.submitEmployeeResponse(id, d || {}, emp || a);
+  }));
+  add('mgrHr:listRecordings', wrapSync((f, a) => mgrHr.listRecordings(f || {}, mgrHrUser(a))));
+  add('mgrHr:getRecording', wrapSync((id, a) => mgrHr.getRecording(id, mgrHrUser(a))));
+  add('mgrHr:createRecording', wrapSync((d, a) => mgrHr.createRecording(d || {}, mgrHrUser(a))));
+  add('mgrHr:updateRecording', wrapSync((id, d, a) => mgrHr.updateRecording(id, d || {}, mgrHrUser(a))));
+  add('mgrHr:deleteRecording', wrapSync((id, a) => mgrHr.deleteRecording(id, mgrHrUser(a))));
+  add('mgrHr:analyzeRecording', wrapAsync(async (id, d, a) => mgrHr.analyzeRecording(id, d || {}, mgrHrUser(a))));
+  add('mgrHr:recordingDocumentHtml', wrapSync((id, a) => {
+    const rec = mgrHr.getRecording(id, mgrHrUser(a));
+    let shop = 'Company';
+    try {
+      shop = require('../electron/database/db').getDb().prepare('SELECT shop_name FROM shop_settings WHERE id=1').get()?.shop_name || shop;
+    } catch (_) { /* ignore */ }
+    return { html: mgrHr.buildRecordingDocumentHtml(rec, shop), recording: { ...rec, audio_data: undefined } };
+  }));
+  add('mgrHr:caseDocumentHtml', wrapSync((id, a) => {
+    const c = mgrHr.getCase(id, mgrHrUser(a));
+    let shop = { shop_name: 'Company' };
+    try {
+      shop = require('../electron/database/db').getDb().prepare(
+        'SELECT shop_name, address, phone, email FROM shop_settings WHERE id=1'
+      ).get() || shop;
+    } catch (_) { /* ignore */ }
+    return { html: mgrHr.buildCaseDocumentHtml(c, shop), case: { ...c, evidence_paths: undefined } };
+  }));
+
   add('hr:onboardingTemplates', wrapSync((a) => s.listOnboardingTemplates(hrPlatA(a))));
   add('hr:onboardingProgress', wrapSync((eid, a) => s.getOnboardingProgress(eid, hrPlatA(a))));
   add('hr:saveOnboardingProgress', wrapSync((d, a) => s.saveOnboardingProgress(d || {}, hrPlatA(a))));
@@ -1608,6 +1830,24 @@ function buildHandlers(store) {
     return s.getRecruitmentSettings();
   }));
   add('jobs:saveSettings', wrapSync((d, a) => s.saveRecruitmentSettings(d, a)));
+  add('jobs:getPublicPosting', wrapSync((token) => s.getPublicPosting(token)));
+  add('jobs:listPublicPostings', wrapSync(() => s.listPublicOpenPostings()));
+  add('jobs:getPublicApplication', wrapSync((editToken) => s.getPublicApplication(editToken)));
+  add('jobs:lookupPublicApplication', wrapSync((token, phone) => s.lookupPublicApplication(token, phone)));
+  add('jobs:submitPublicApplication', wrapSync((token, data) => s.submitPublicApplication(token, data)));
+  add('jobs:updatePublicApplication', wrapSync((editToken, data) => s.updatePublicApplication(editToken, data)));
+  add('jobs:deletePublicApplication', wrapSync((editToken) => s.deletePublicApplication(editToken)));
+  add('jobs:deleteCandidate', wrapSync((id, a) => s.deleteJobCandidate(id, a)));
+  add('jobs:downloadCv', wrapSync((id, a) => s.downloadCandidateCv(id, a)));
+  add('jobs:posterPdf', wrapSync((id, a) => {
+    const r = s.buildJobPosterPdf(id, a);
+    return {
+      buffer: r.buffer, apply_url: r.apply_url, order_url: r.order_url, posting: r.posting,
+      shop: r.shop, logo_data_url: r.logo_data_url, share: r.share
+    };
+  }));
+  add('jobs:shareMessage', wrapSync((id, a) => s.buildJobShareMessage(id, a)));
+  add('jobs:previewWa', wrapSync((id, mt, a) => s.previewCandidateWhatsApp(id, mt, a)));
 
   add('payroll:getSettings', wrapSync(() => s.getPayrollSettings()));
   add('payroll:saveSettings', wrapSync((d, a) => {
@@ -1889,6 +2129,11 @@ function buildHandlers(store) {
   add('ops:pendingChecklists', wrapSync(() => s.getPendingChecklistSubmissions()));
   add('ops:getAdminSignature', wrapSync(() => s.getAdminSignature()));
   add('ops:saveAdminSignature', wrapSync((p, a) => s.saveAdminSignature(p, a)));
+  add('ops:saveAdminSignatureData', wrapSync((dataUrl, a) => s.saveAdminSignatureFromData(dataUrl, a)));
+  add('ops:getRuleCategories', wrapSync(() => s.getRuleCategories()));
+  add('ops:saveRuleCategory', wrapSync((name, a) => s.saveRuleCategory(name, a)));
+  add('ops:getRuleAcks', wrapSync((f) => s.getRuleAcknowledgements(f || {})));
+  add('ops:signRule', wrapSync((ruleId, empId, sig, a) => s.signCompanyRule(ruleId, empId, sig, a)));
   add('ops:getChecklistSettings', wrapSync(() => s.getChecklistSettings()));
   add('ops:saveChecklistSettings', wrapSync((d, a) => s.saveChecklistSettings(d, a)));
   add('ops:checklistWarnings', wrapSync(f => s.getChecklistWarnings(f)));
@@ -1967,6 +2212,10 @@ function buildHandlers(store) {
   add('recipe:wasteDelete', wrapSync((id, a) => { s.deleteRecipeWaste(id, a); return true; }));
   add('recipe:productionMeals', wrapSync((a, f) => s.listProductionMeals(a, f || {})));
   add('recipe:ingredientStockHistory', wrapSync((f, a) => s.getIngredientStockHistory(f || {}, a)));
+  add('recipe:restockPreview', wrapSync((d, a) => s.computeRestockPreview(d || {}, a)));
+  add('recipe:restockBatchHistory', wrapSync((f, a) => s.listRestockBatches(f || {}, a)));
+  add('recipe:restockBatchDetail', wrapSync((id, a) => s.getRestockBatchDetail(id, a)));
+  add('recipe:restockBatchSave', wrapSync((d, a) => s.restockIngredientsBatch(d || {}, a)));
   add('recipe:profitsLosses', wrapSync((f, a) => s.getProfitsLosses(f || {}, a)));
   add('recipe:listPurchaseOrders', wrapSync((f, a) => s.listRecipePurchaseOrders(f || {}, a)));
   add('recipe:ensureMealProfile', wrapSync((pid, a) => s.ensureApprovedProfileForMeal(pid, a, { autoApprove: true })));
@@ -1985,8 +2234,9 @@ function buildHandlers(store) {
   add('recipe:rejectSub', wrapSync((id, a) => { s.rejectSubstitution(id, a); return true; }));
   add('recipe:forecast', wrapSync((days, a) => s.getStockForecast(a, days || 14)));
   add('recipe:mealProducts', wrapSync((f, a) => s.listMealProducts(f || {}, a)));
-  add('recipe:getMeal', wrapSync((id, a) => s.getProductMealRecipe(id, a)));
+  add('recipe:getMeal', wrapSync((id, a, opts) => s.getProductMealRecipe(id, a, opts || { for_editor: true })));
   add('recipe:saveMeal', wrapSync((d, a) => s.saveProductMealRecipe(d || {}, a)));
+  add('recipe:ingredientCatalog', wrapSync((a) => s.listIngredientCatalog(a)));
   add('recipe:restockIngredient', wrapSync((d, a) => s.restockIngredient(d || {}, a)));
   add('recipe:ensureIngredient', wrapSync((d, a) => s.ensureIngredient(d || {}, a)));
   add('recipe:updateIngredient', wrapSync((d, a) => s.updateIngredient(d || {}, a)));
@@ -1994,164 +2244,16 @@ function buildHandlers(store) {
   add('recipe:restockPlan', wrapSync((t, a) => s.calculateRestockPlan(t, a)));
   add('recipe:setPosMenuFlags', wrapSync((d, a) => { s.setPosMenuFlags(d || {}, a); return true; }));
   add('recipe:restockList', wrapSync(a => s.listRestockIngredients(a)));
+  add('recipe:ingredientGroups', wrapSync(a => s.listIngredientGroups(a)));
+  add('recipe:ingredientGroup', wrapSync((id, a) => s.getIngredientGroup(id, a)));
+  add('recipe:saveIngredientGroup', wrapSync((d, a) => s.saveIngredientGroup(d || {}, a)));
+  add('recipe:deleteIngredientGroup', wrapSync((id, a) => s.deleteIngredientGroup(id, a)));
+  add('recipe:expandIngredientGroups', wrapSync((ids, a) => s.expandIngredientGroups(ids || [], a)));
   add('recipe:productionAvailability', wrapSync((productId, a) => s.getProductionAvailability(productId, a)));
   add('recipe:productionDashboard', wrapSync(a => s.getLiveProductionDashboard(a)));
   add('recipe:refreshProduction', wrapSync(a => s.refreshProductionAvailability(a)));
   add('recipe:productRestock', wrapSync((productId, targetQty, a) => s.getProductRestockRecommendation(productId, targetQty, a)));
 
-  add('flyers:get', wrapSync(f => s.getFlyers(f)));
-  add('flyers:getOne', wrapSync(id => s.getFlyer(id)));
-  add('flyers:save', wrapSync((d, a) => s.saveFlyer(d, a)));
-  add('flyers:delete', wrapSync((id, a) => { s.deleteFlyer(id, a); return true; }));
-  add('flyers:duplicate', wrapSync((id, a) => s.duplicateFlyer(id, a)));
-  add('flyers:templates', wrapSync(() => s.getFlyerTemplates()));
-  add('flyers:saveTemplate', wrapSync((d, a) => s.saveFlyerTemplate(d, a)));
-  add('flyers:pdf', wrapSync((id, sizeOverride) => {
-    const st = s.getSettingsParsed();
-    return s.buildFlyerPdf(id, st, sizeOverride || null);
-  }));
-  add('flyers:applyPosPrices', wrapSync((id, a) => s.applyFlyerPricesToPos(id, a)));
-  add('flyers:restorePrices', wrapSync((id, a) => s.restoreFlyerPrices(id, a)));
-  add('flyers:submitApproval', wrapSync((id, a) => s.submitFlyerForApproval(id, a)));
-  add('flyers:approve', wrapSync((id, a) => s.approveFlyer(id, a)));
-  add('flyers:reject', wrapSync((id, a, notes) => s.rejectFlyer(id, a, notes)));
-  add('flyers:analytics', wrapSync(id => s.getFlyerAnalytics(id)));
-  add('flyers:smartSuggestions', wrapSync((f, a) => s.getSmartPromotionSuggestions(f, a)));
-  add('flyers:aiGenerate', wrapSync((f, a) => s.generateAiFlyer(f, a)));
-  add('flyers:bulkPrices', wrapSync((id, u, a) => s.bulkUpdateFlyerPrices(id, u, a)));
-  add('flyers:recordEvent', wrapSync((id, eventType) => s.recordFlyerEvent(id, eventType)));
-  add('flyers:brandKit', wrapSync(() => s.getBrandKit()));
-  add('flyers:saveBrandKit', wrapSync((d, a) => s.saveBrandKit(d, a)));
-  add('flyers:goLive', wrapSync((id, a) => s.goLiveFlyer(id, a)));
-  add('flyers:endCampaign', wrapSync((id, a) => s.endCampaign(id, a)));
-  add('flyers:activeCampaigns', wrapSync(branchId => s.getActiveCampaigns(branchId)));
-  add('flyers:dashboard', wrapSync(() => s.getCampaignDashboard()));
-  add('flyers:share', wrapSync((id, opts, a) => s.shareFlyerCampaign(id, opts, a)));
-
-  const mktA = (a) => a || s.getUserSession();
-  add('mkt:agents', wrapSync((f) => s.listAgents(f || {})));
-  add('mkt:saveAgent', wrapSync((userId, data, a) => s.ensureAgentForUser(userId, data || {}, mktA(a))));
-  add('mkt:setAgentStatus', wrapSync((id, status, a) => s.setAgentStatus(id, status, mktA(a))));
-  add('mkt:issueToken', wrapSync((id, hours, deviceId, a) => s.issueAccessToken(id, hours, mktA(a), deviceId)));
-  add('mkt:revokeToken', wrapSync((tokenId, a) => s.revokeAccessToken(tokenId, mktA(a))));
-  add('mkt:listTokens', wrapSync((agentId, a) => s.listAccessTokens(agentId, mktA(a))));
-  add('mkt:loginToken', wrapSync((token, deviceId) => s.loginWithAccessToken(token, deviceId)));
-  add('mkt:dashboard', wrapSync((a) => s.agentDashboard(mktA(a))));
-  add('mkt:adminSummary', wrapSync((f, a) => s.adminMarketingSummary(f || {}, mktA(a))));
-  add('mkt:scorecard', wrapSync((agentId, a) => s.performanceScorecard(agentId, mktA(a))));
-  add('mkt:tasks', wrapSync((f) => s.listTasks(f || {})));
-  add('mkt:saveTask', wrapSync((data, a) => s.saveTask(data || {}, mktA(a))));
-  add('mkt:customers', wrapSync((f, a) => s.listMarketingCustomers(f || {}, mktA(a))));
-  add('mkt:saveCustomer', wrapSync((data, a) => s.saveMarketingCustomer(data || {}, mktA(a))));
-  add('mkt:convertCustomer', wrapSync((id, total, a) => s.markCustomerConverted(id, total, mktA(a))));
-  add('mkt:recruitmentStats', wrapSync((f, a) => s.recruitmentStats(mktA(a), f || {})));
-  add('mkt:campaigns', wrapSync((f, a) => s.listCampaigns(f || {}, mktA(a))));
-  add('mkt:saveCampaign', wrapSync((data, a) => s.saveCampaign(data || {}, mktA(a))));
-  add('mkt:submitCampaign', wrapSync((id, a) => s.submitCampaign(id, mktA(a))));
-  add('mkt:approveCampaign', wrapSync((id, approve, notes, a) => s.approveCampaign(id, approve !== false, notes, mktA(a))));
-  add('mkt:menus', wrapSync((f, a) => s.listMenus(f || {}, mktA(a))));
-  add('mkt:getMenu', wrapSync((id, a) => s.getMenu(id, mktA(a))));
-  add('mkt:saveMenu', wrapSync((data, a) => s.saveMenu(data || {}, mktA(a))));
-  add('mkt:submitMenu', wrapSync((id, a) => s.submitMenu(id, mktA(a))));
-  add('mkt:reviewMenu', wrapSync((id, approve, notes, a) => s.reviewMenu(id, approve !== false, notes, mktA(a))));
-  add('mkt:updateMenuPrices', wrapSync((id, a) => s.updateMenuPricesFromPos(id, mktA(a))));
-  add('mkt:msgTemplates', wrapSync(() => s.listMessageTemplates()));
-  add('mkt:messages', wrapSync((f, a) => s.listMessages(f || {}, mktA(a))));
-  add('mkt:saveMessage', wrapAsync((data, a) => s.saveMessage(data || {}, mktA(a))));
-  add('mkt:saveReport', wrapSync((data, a) => s.saveProgressReport(data || {}, mktA(a))));
-  add('mkt:reports', wrapSync((f, a) => s.listProgressReports(f || {}, mktA(a))));
-  add('mkt:respondReport', wrapSync((id, response, a) => s.respondProgressReport(id, response, mktA(a))));
-  add('mkt:saveFeedback', wrapSync((data, a) => s.saveFeedback(data || {}, mktA(a))));
-  add('mkt:feedback', wrapSync((f, a) => s.listFeedback(f || {}, mktA(a))));
-  add('mkt:media', wrapSync((a) => s.listMedia(mktA(a))));
-  add('mkt:saveMedia', wrapSync((data, a) => s.saveMedia(data || {}, mktA(a))));
-  add('mkt:setMediaStatus', wrapSync((id, status, a) => s.setMediaStatus(id, status, mktA(a))));
-  add('mkt:notifications', wrapSync((a) => s.listNotifications(mktA(a))));
-  add('mkt:readNotification', wrapSync((id, a) => s.markNotificationRead(id, mktA(a))));
-  add('mkt:syncStatus', wrapSync(() => s.getSyncStatus()));
-  add('mkt:processSync', wrapSync((a) => s.processSyncQueue(mktA(a))));
-  add('mkt:syncConflicts', wrapSync((a) => s.listSyncConflicts(mktA(a))));
-  add('mkt:resolveConflict', wrapSync((id, keep, a) => s.resolveSyncConflict(id, keep, mktA(a))));
-  add('mkt:audit', wrapSync((f, a) => s.listAudit(f || {}, mktA(a))));
-  add('mkt:products', wrapSync((f, a) => s.searchProductsForMarketing(f || {}, mktA(a))));
-  add('mkt:brandKit', wrapSync((a) => s.getBrandKitForAgent(mktA(a))));
-  add('mkt:productCards', wrapSync((ids) => s.buildProductCards(ids || [])));
-  add('mkt:digitalMenu', wrapSync((slug, a) => s.getDigitalMenu(slug, mktA(a))));
-  add('mkt:menuPrintHtml', wrapSync((id, a) => s.buildMenuPrintHtml(id, mktA(a))));
-  add('mkt:menuTemplates', wrapSync((a) => s.listMenuTemplates(mktA(a))));
-  add('mkt:saveMenuTemplate', wrapSync((data, a) => s.saveMenuTemplate(data || {}, mktA(a))));
-
-  // Marketing Command Centre (mktp:*)
-  const mktpReady = () => { try { s.ensurePlatformReady?.(); } catch (_) { /* ignore */ } };
-  add('mktp:dashboard', wrapSync((f, a) => { mktpReady(); return s.getCommandCentreDashboard(f || {}, mktA(a)); }));
-  add('mktp:businesses', wrapSync((f) => { mktpReady(); return s.listBusinesses(f || {}); }));
-  add('mktp:getBusiness', wrapSync((id) => s.getBusiness(id)));
-  add('mktp:saveBusiness', wrapSync((data, a) => s.saveBusiness(data || {}, mktA(a))));
-  add('mktp:setBusinessActive', wrapSync((id, active, a) => s.setBusinessActive(id, active, mktA(a))));
-  add('mktp:branches', wrapSync((f) => s.listMktBranches(f || {})));
-  add('mktp:linkBranch', wrapSync((branchId, businessId, a) => s.saveBranchBusinessLink(branchId, businessId, mktA(a))));
-  add('mktp:promotions', wrapSync((f, a) => s.listPromotions(f || {}, mktA(a))));
-  add('mktp:getPromotion', wrapSync((id) => s.getPromotion(id)));
-  add('mktp:savePromotion', wrapSync((data, a) => s.savePromotion(data || {}, mktA(a))));
-  add('mktp:setPromotionStatus', wrapSync((id, status, a) => s.setPromotionStatus(id, status, mktA(a))));
-  add('mktp:campaigns', wrapSync((f, a) => s.listCampaignsV2(f || {}, mktA(a))));
-  add('mktp:getCampaign', wrapSync((id) => s.getCampaignV2(id)));
-  add('mktp:saveCampaign', wrapSync((data, a) => s.saveCampaignV2(data || {}, mktA(a))));
-  add('mktp:duplicateCampaign', wrapSync((id, a) => s.duplicateCampaignV2(id, mktA(a))));
-  add('mktp:setCampaignStatus', wrapSync((id, status, a) => s.setCampaignStatus(id, status, mktA(a))));
-  add('mktp:generateAssets', wrapSync((id, a) => s.generateCampaignAssets(id, mktA(a))));
-  add('mktp:socialPosts', wrapSync((f, a) => s.listSocialPosts(f || {}, mktA(a))));
-  add('mktp:saveSocialPost', wrapSync((data, a) => s.saveSocialPost(data || {}, mktA(a))));
-  add('mktp:publishSocialPost', wrapAsync(async (id, a) => s.publishSocialPostLive(id, mktA(a))));
-  add('mktp:whatsappBlasts', wrapSync((f, a) => s.listWhatsappBlasts(f || {}, mktA(a))));
-  add('mktp:saveWhatsappBlast', wrapSync((data, a) => s.saveWhatsappBlast(data || {}, mktA(a))));
-  add('mktp:whatsappAudience', wrapSync((seg, biz, branch) => s.previewWhatsappAudience(seg, biz, branch)));
-  add('mktp:customers', wrapSync((f, a) => s.listMktCustomers(f || {}, mktA(a))));
-  add('mktp:segments', wrapSync((f, a) => s.listCustomerSegments(f || {}, mktA(a))));
-  add('mktp:saveSegment', wrapSync((data, a) => s.saveCustomerSegment(data || {}, mktA(a))));
-  add('mktp:evaluateSegment', wrapSync((id) => s.evaluateSegment(id)));
-  add('mktp:loyaltyRules', wrapSync((f, a) => s.listLoyaltyRules(f || {}, mktA(a))));
-  add('mktp:saveLoyaltyRule', wrapSync((data, a) => s.saveLoyaltyRule(data || {}, mktA(a))));
-  add('mktp:agents', wrapSync((f, a) => s.listReferralAgents(f || {}, mktA(a))));
-  add('mktp:getAgent', wrapSync((id) => s.getReferralAgent(id)));
-  add('mktp:applyAgent', wrapSync((data) => s.applyAsReferralAgent(data || {})));
-  add('mktp:approveAgent', wrapSync((id, data, a) => s.approveReferralAgent(id, data || {}, mktA(a))));
-  add('mktp:setAgentStatus', wrapSync((id, status, reason, a) => s.setReferralAgentStatus(id, status, reason, mktA(a))));
-  add('mktp:ensureAgentLogin', wrapSync((agentId, a) => s.ensureAgentLoginById(agentId, mktA(a))));
-  add('mktp:linkAgentUser', wrapSync((agentId, userId, a) => s.linkAgentUser?.(agentId, userId, mktA(a))));
-  add('mktp:recordClick', wrapSync((code, meta) => s.recordReferralClick(code, meta || {})));
-  add('mktp:attribute', wrapSync((data, a) => s.attributeReferral(data || {}, mktA(a))));
-  add('mktp:commissions', wrapSync((f, a) => s.listCommissions(f || {}, mktA(a))));
-  add('mktp:setCommissionStatus', wrapSync((id, status, notes, a) => s.setCommissionStatus(id, status, notes, mktA(a))));
-  add('mktp:commissionRules', wrapSync((f, a) => s.listCommissionRules(f || {}, mktA(a))));
-  add('mktp:saveCommissionRule', wrapSync((data, a) => s.saveCommissionRule(data || {}, mktA(a))));
-  add('mktp:payments', wrapSync((f, a) => s.listAgentPayments(f || {}, mktA(a))));
-  add('mktp:savePayment', wrapSync((data, a) => s.saveAgentPayment(data || {}, mktA(a))));
-  add('mktp:contractTemplates', wrapSync((f, a) => s.listContractTemplates(f || {}, mktA(a))));
-  add('mktp:saveContractTemplate', wrapSync((data, a) => s.saveContractTemplate(data || {}, mktA(a))));
-  add('mktp:contracts', wrapSync((f, a) => s.listAgentContracts(f || {}, mktA(a))));
-  add('mktp:createContract', wrapSync((agentId, templateId, a) => s.createAgentContractFromTemplate(agentId, templateId, mktA(a))));
-  add('mktp:setContractStatus', wrapSync((id, status, a) => s.setContractStatus(id, status, mktA(a))));
-  add('mktp:acceptContract', wrapSync((id, sig, a) => s.acceptContract(id, sig, mktA(a))));
-  add('mktp:incentives', wrapSync((f, a) => s.listIncentives(f || {}, mktA(a))));
-  add('mktp:saveIncentive', wrapSync((data, a) => s.saveIncentive(data || {}, mktA(a))));
-  add('mktp:qrCodes', wrapSync((f, a) => s.listQrCodes(f || {}, mktA(a))));
-  add('mktp:createQr', wrapSync((data, a) => s.createQrCode(data || {}, mktA(a))));
-  add('mktp:coupons', wrapSync((f, a) => s.listCoupons(f || {}, mktA(a))));
-  add('mktp:createCoupon', wrapSync((data, a) => s.createCoupon(data || {}, mktA(a))));
-  add('mktp:redeemCoupon', wrapSync((code, saleId, a) => s.redeemCoupon(code, saleId, mktA(a))));
-  add('mktp:calendar', wrapSync((f, a) => s.listCalendarEvents(f || {}, mktA(a))));
-  add('mktp:saveCalendar', wrapSync((data, a) => s.saveCalendarEvent(data || {}, mktA(a))));
-  add('mktp:campaignAnalytics', wrapSync((id, a) => s.getCampaignAnalytics(id, mktA(a))));
-  add('mktp:leaderboard', wrapSync((f, a) => s.getLeaderboard(f || {}, mktA(a))));
-  add('mktp:roi', wrapSync((f, a) => s.getMarketingRoi(f || {}, mktA(a))));
-  add('mktp:notifications', wrapSync((f, a) => s.listMktNotifications(f || {}, mktA(a))));
-  add('mktp:readNotification', wrapSync((id, a) => s.markMktNotificationRead(id, mktA(a))));
-  add('mktp:settings', wrapSync(() => s.getMktSettings()));
-  add('mktp:saveSettings', wrapSync((data, a) => s.saveMktSettings(data || {}, mktA(a))));
-  add('mktp:audit', wrapSync((f, a) => s.listPlatformAudit(f || {}, mktA(a))));
-  add('mktp:agentDashboard', wrapSync((a) => s.getReferralAgentDashboard(mktA(a))));
-  add('mktp:publicAgent', wrapSync((code) => s.getAgentPublicProfile(code)));
 
   const ACC_SESSION_ROLES = ['owner', 'manager', 'accountant', 'bookkeeper', 'auditor', 'finance_manager', 'finance', 'payroll', 'hr', 'admin', 'supervisor', 'assistant_manager', 'viewer', 'read_only'];
   const ACC_WRITE_ROLES = ['owner', 'manager', 'accountant', 'bookkeeper', 'finance_manager', 'finance', 'admin'];
@@ -2485,6 +2587,61 @@ function buildHandlers(store) {
   add('driver:updateStatus', wrapSync((token, id, status, notes) => dp.driverUpdateStatus(token, id, status, { notes })));
   add('driver:availability', wrapSync((token, availability) => dp.setDriverAvailability(token, availability)));
 
+  const ref = require('../electron/services/referral-commission');
+  add('referral:dashboard', wrapSync((f, a) => ref.getAdminDashboard(f || {}, a || requireUserSession(['owner', 'manager', 'assistant_manager']))));
+  add('referral:applications', wrapSync((f, a) => ref.listApplications(f || {}, a || requireUserSession(['owner', 'manager', 'assistant_manager']))));
+  add('referral:getAgent', wrapSync((id, a, opts) => ref.getAgent(id, a || requireUserSession(['owner', 'manager', 'assistant_manager']), opts || {})));
+  add('referral:approveAgent', wrapSync((id, a, opts) => ref.approveAgent(id, a || requireUserSession(['owner', 'manager', 'assistant_manager']), opts || {})));
+  add('referral:rejectAgent', wrapSync((id, reason, a) => ref.rejectAgent(id, reason, a || requireUserSession(['owner', 'manager', 'assistant_manager']))));
+  add('referral:underReview', wrapSync((id, a) => ref.setUnderReview(id, a || requireUserSession(['owner', 'manager', 'assistant_manager']))));
+  add('referral:suspendAgent', wrapSync((id, a) => ref.suspendAgent(id, a || requireUserSession(['owner', 'manager', 'assistant_manager']))));
+  add('referral:unsuspendAgent', wrapSync((id, a) => ref.unsuspendAgent(id, a || requireUserSession(['owner', 'manager', 'assistant_manager']))));
+  add('referral:updateAgent', wrapSync((id, d, a) => ref.updateAgent(id, d || {}, a || requireUserSession(['owner', 'manager', 'assistant_manager']))));
+  add('referral:deleteAgent', wrapSync((id, a) => ref.deleteAgent(id, a || requireUserSession(['owner', 'manager', 'assistant_manager']))));
+  add('referral:awardCommission', wrapSync((id, d, a) => ref.awardManualCommission(id, d || {}, a || requireUserSession(['owner', 'manager', 'assistant_manager']))));
+  add('referral:listAwardRequests', wrapSync((f, a) => ref.listAwardRequests(f || {}, a || requireUserSession(['owner', 'manager', 'assistant_manager']))));
+  add('referral:getAwardRequest', wrapSync((id, a) => ref.getAwardRequest(id, a || requireUserSession(['owner', 'manager', 'assistant_manager']))));
+  add('referral:decideAwardRequest', wrapSync((id, d, a) => ref.decideAwardRequest(id, d || {}, a || requireUserSession(['owner', 'assistant_manager']))));
+  add('referral:searchCodes', wrapSync((q) => ref.searchReferralCodes(q)));
+  add('referral:agents', wrapSync((f, a) => ref.listAgents(f || {}, a || requireUserSession(['owner', 'manager', 'assistant_manager']))));
+  add('referral:commissions', wrapSync((f, a) => ref.listCommissions(f || {}, a || requireUserSession(['owner', 'manager', 'assistant_manager']))));
+  add('referral:approveCommission', wrapSync((id, a) => ref.approveCommission(id, a || requireUserSession(['owner', 'manager', 'assistant_manager']))));
+  add('referral:markAvailable', wrapSync((a) => ref.markCommissionsAvailable(a || requireUserSession(['owner', 'manager', 'assistant_manager']))));
+  add('referral:payouts', wrapSync((f, a) => ref.listPayouts(f || {}, a || requireUserSession(['owner', 'manager', 'assistant_manager']))));
+  add('referral:getPayout', wrapSync((id, a) => ref.getPayout(id, a || requireUserSession(['owner', 'manager', 'assistant_manager']))));
+  add('referral:generatePayout', wrapSync((d, a) => ref.generatePayoutBatch(d || {}, a || requireUserSession(['owner', 'manager', 'assistant_manager']))));
+  add('referral:approvePayout', wrapSync((id, a) => ref.approvePayout(id, a || requireUserSession(['owner', 'manager', 'assistant_manager']))));
+  add('referral:markPayoutPaid', wrapSync((id, d, a) => ref.markPayoutPaid(id, d || {}, a || requireUserSession(['owner', 'manager', 'assistant_manager']))));
+  add('referral:claimWallet', wrapSync((a) => ref.claimWalletPayout(a || requireUserSession(['owner', 'manager', 'assistant_manager', 'referral_agent']))));
+  add('referral:getPayslip', wrapSync((id, a) => ref.getAgentPayslip(id, a || requireUserSession(['owner', 'manager', 'assistant_manager', 'referral_agent']))));
+  add('referral:settings', wrapSync((a) => { requireUserSession(['owner', 'manager', 'assistant_manager']); return ref.getSettings(); }));
+  add('referral:updateSettings', wrapSync((d, a) => ref.updateSettings(d || {}, a || requireUserSession(['owner', 'manager', 'assistant_manager']))));
+  add('referral:attributions', wrapSync((f, a) => ref.listAttributions(f || {}, a || requireUserSession(['owner', 'manager', 'assistant_manager']))));
+  add('referral:codes', wrapSync((a) => ref.listCodes(a || requireUserSession(['owner', 'manager', 'assistant_manager']))));
+  add('referral:topAgents', wrapSync((f, a) => ref.getTopAgents(f || {}, a || requireUserSession(['owner', 'manager', 'assistant_manager']))));
+  add('referral:audit', wrapSync((f, a) => ref.listAudit(f || {}, a || requireUserSession(['owner', 'manager', 'assistant_manager']))));
+  add('referral:fraud', wrapSync((a) => ref.listFraud(a || requireUserSession(['owner', 'manager', 'assistant_manager']))));
+  add('referral:approveBankChange', wrapSync((id, a) => ref.approveBankChange(id, a || requireUserSession(['owner', 'manager', 'assistant_manager']))));
+  add('referral:apply', wrapSync((d) => ref.applyAsAgent(d || {})));
+  add('referral:agentDashboard', wrapSync((a) => ref.getAgentDashboard(a || requireUserSession(['owner', 'manager', 'assistant_manager', 'referral_agent']))));
+  add('referral:unreadNotifications', wrapSync((f, a) => ref.listUnreadNotifications(f || {}, a || requireUserSession(['owner', 'manager', 'assistant_manager', 'supervisor', 'referral_agent']))));
+  add('referral:ackNotification', wrapSync((id, meta, a) => ref.ackReferralNotification(id, meta || {}, a || requireUserSession(['owner', 'manager', 'assistant_manager', 'supervisor', 'referral_agent']))));
+  add('referral:ackAllNotifications', wrapSync((f, a) => ref.ackAllReferralNotifications(f || {}, a || requireUserSession(['owner', 'manager', 'assistant_manager', 'supervisor', 'referral_agent']))));
+  add('referral:requestBankChange', wrapSync((d, a) => ref.requestBankChange(d || {}, a || requireUserSession(['referral_agent', 'owner', 'manager']))));
+  add('referral:validateCode', wrapSync((code) => ref.validateReferralCode(code)));
+  add('referral:recordClick', wrapSync((code, meta) => ref.recordClick(code, meta || {})));
+  add('referral:attribute', wrapSync((d, a) => ref.attributeCustomer({ ...(d || {}), actor: a || requireUserSession(['owner', 'manager']) })));
+  add('referral:resetAgentPassword', wrapSync((id, a, opts) => ref.adminResetAgentPassword(id, a || requireUserSession(['owner', 'manager', 'assistant_manager']), opts || {})));
+  add('referral:ensureAgentLogin', wrapSync((id, a) => {
+    a || requireUserSession(['owner', 'manager', 'assistant_manager']);
+    const { getDb } = require('../electron/database/db');
+    const agent = getDb().prepare('SELECT * FROM referral_agents WHERE id=?').get(id);
+    if (!agent) throw new Error('Agent not found');
+    if (!agent.password_hash) throw new Error('No password on file — use Reset password (WhatsApp) first');
+    ref.ensureAgentUserAccount(agent);
+    return { success: true, username: agent.username };
+  }));
+
   add('whatsapp:getTemplates', wrapSync(f => s.getWhatsAppTemplates(f)));
   add('whatsapp:getTemplate', wrapSync(id => s.getTemplate(id)));
   add('whatsapp:saveTemplate', wrapSync((d, a) => s.saveTemplate(d, a)));
@@ -2508,7 +2665,44 @@ function buildHandlers(store) {
   add('documentHub:share', wrapSync((id, opts, a) => s.shareDocument(id, opts, a)));
   add('documentHub:exportStatus', wrapSync((id, a) => s.exportDocumentStatus(id, a)));
   add('documentHub:processScheduled', wrapSync(() => s.processScheduledDocuments()));
-  add('documentHub:syncFlyer', wrapSync((flyerId, opts) => s.syncFlyerToHub(flyerId, opts || {})));
+
+  add('firstOnlineGift:get', wrapSync((actor) => require('../electron/services/first-online-gift').getCampaign(actor || s.getUserSession?.())));
+  add('firstOnlineGift:save', wrapSync((data, actor) => require('../electron/services/first-online-gift').saveCampaign(data || {}, actor || s.getUserSession?.())));
+  add('firstOnlineGift:dashboard', wrapSync((filters, actor) => require('../electron/services/first-online-gift').getDashboard(filters || {}, actor || s.getUserSession?.())));
+  add('firstOnlineGift:winners', wrapSync((filters, actor) => require('../electron/services/first-online-gift').listWinners(filters || {}, actor || s.getUserSession?.())));
+  add('firstOnlineGift:selfTest', wrapSync((actor) => require('../electron/services/first-online-gift').runSelfTest(actor || s.getUserSession?.())));
+
+  const payGw = () => require('../electron/services/payment-gateway');
+  add('paymentGateways:list', wrapSync((actor) => {
+    const user = requireUserSession(['owner', 'manager']);
+    return payGw().listGateways(actor || user);
+  }));
+  add('paymentGateways:save', wrapSync((provider, data, actor) => {
+    const user = requireUserSession(['owner', 'manager']);
+    return payGw().saveGateway(provider, data || {}, actor || user);
+  }));
+  add('paymentGateways:test', wrapAsync(async (provider, actor) => {
+    const user = requireUserSession(['owner', 'manager']);
+    return payGw().testConnection(provider, actor || user);
+  }));
+  add('paymentGateways:registerWebhook', wrapAsync(async (provider, actor) => {
+    const user = requireUserSession(['owner', 'manager']);
+    return payGw().registerWebhook(provider, actor || user);
+  }));
+  add('paymentGateways:listTransactions', wrapSync((filters, actor) => {
+    const user = requireUserSession(['owner', 'manager']);
+    return payGw().listTransactions(filters || {}, actor || user);
+  }));
+  add('paymentGateways:refund', wrapAsync(async (txnId, amount, actor) => {
+    const user = requireUserSession(['owner', 'manager']);
+    return payGw().refundTransaction(txnId, amount, actor || user);
+  }));
+  add('web:startOnlinePayment', wrapAsync(async (orderId, token, opts) => {
+    return payGw().createPaymentForOrder(orderId, token, opts || {});
+  }));
+  add('web:getPaymentStatus', wrapSync((orderRef, token) => {
+    return payGw().publicPaymentStatus(orderRef, token);
+  }));
 
   add('rewards:getRules', wrapSync(() => s.getRewardRules()));
   add('rewards:saveRule', wrapSync((data, a) => s.saveRewardRule(data, a)));
@@ -2520,6 +2714,35 @@ function buildHandlers(store) {
   add('branches:setView', wrapSync((id, a) => {
     s.requireActor(a || s.getUserSession?.(), ['owner', 'manager']);
     return s.setViewBranch(id);
+  }));
+  add('branches:delete', wrapSync((id, a) => {
+    const user = s.requireActor(a, ['owner']);
+    return branchesSvc.deleteBranch(id, user);
+  }));
+  add('branches:listTills', wrapSync((branchId) => branchesSvc.listBranchTills(branchId)));
+  add('branches:saveTill', wrapSync((branchId, data, a) => {
+    s.requireActor(a, ['owner', 'manager']);
+    return branchesSvc.saveBranchTill(branchId, data || {});
+  }));
+  add('branches:updateTill', wrapSync((branchId, deviceId, patch, a) => {
+    s.requireActor(a, ['owner', 'manager']);
+    return branchesSvc.updateBranchTill(branchId, deviceId, patch || {});
+  }));
+  add('branches:deleteTill', wrapSync((branchId, deviceId, a) => {
+    s.requireActor(a, ['owner', 'manager']);
+    return branchesSvc.deleteBranchTill(branchId, deviceId);
+  }));
+  add('web:adminOrderDetail', wrapSync((orderId, actor) => {
+    requireUserSession(['owner', 'manager', 'supervisor', 'assistant_manager']);
+    return web.getAdminOrderDetail(orderId, actor);
+  }));
+  add('web:adminUpdateOrder', wrapSync((orderId, patch, actor) => {
+    const user = requireUserSession(['owner', 'manager']);
+    return web.updateAdminOrder(orderId, patch || {}, actor || user);
+  }));
+  add('web:adminDeleteOrder', wrapSync((orderId, reason, actor) => {
+    const user = requireUserSession(['owner', 'manager']);
+    return web.deleteAdminOrder(orderId, reason, actor || user);
   }));
   add('branches:save', wrapSync((data, a) => {
     s.requireActor(a || s.getUserSession?.(), ['owner', 'manager']);
@@ -2571,6 +2794,28 @@ function buildHandlers(store) {
     if (user.role === 'cashier') s.verifySupervisorCode(code, 'void');
     return s.voidSale(id, r, user.id, user.full_name);
   }));
+  add('audit:updateSale', wrapSync((id, patch, a) => {
+    const user = s.requireActor(a, ['owner', 'manager']);
+    return s.updateSaleRecord(id, patch || {}, user.id, user.full_name);
+  }));
+  add('audit:deleteSale', wrapSync((id, reason, a) => {
+    const user = s.requireActor(a, ['owner', 'manager']);
+    if (user.role !== 'owner') {
+      let perms = {};
+      try { perms = JSON.parse(user.permissions || '{}'); } catch (_) { /* ignore */ }
+      if (!perms.delete_sales) throw new Error('Permission denied — delete sales');
+    }
+    return s.deleteSaleRecord(id, reason, user.id, user.full_name);
+  }));
+  add('audit:deleteSalesBulk', wrapSync((ids, reason, a) => {
+    const user = s.requireActor(a, ['owner', 'manager']);
+    if (user.role !== 'owner') {
+      let perms = {};
+      try { perms = JSON.parse(user.permissions || '{}'); } catch (_) { /* ignore */ }
+      if (!perms.delete_sales) throw new Error('Permission denied — delete sales');
+    }
+    return s.deleteSalesBulk(ids, reason, user.id, user.full_name);
+  }));
   add('audit:soldProducts', wrapSync((f, t) => s.getSoldProductsReport(f, t)));
   add('audit:lowPerformance', wrapSync(d => s.getLowPerformanceProducts(d)));
   add('audit:returnDetail', wrapSync(id => s.getReturnDetail(id)));
@@ -2595,6 +2840,19 @@ function buildHandlers(store) {
   }));
 
   add('db:health', wrapSync(() => { requireSession(); return s.getDatabaseHealth(); }));
+  add('db:storageMonitor', wrapAsync(async (opts, a) => {
+    const actor = a || requireSession();
+    s.requireActor(actor, ['owner', 'manager', 'assistant_manager']);
+    const storage = require('../electron/services/system-storage');
+    storage.ensureSchema();
+    return storage.getStorageMonitor(opts || {});
+  }));
+  add('db:storageSnapshot', wrapAsync(async (a) => {
+    const actor = a || requireSession();
+    s.requireActor(actor, ['owner', 'manager', 'assistant_manager']);
+    const storage = require('../electron/services/system-storage');
+    return storage.recordStorageSnapshot();
+  }));
   add('db:optimize', wrapSync(() => s.optimizeDatabase()));
   add('db:repair', wrapSync(() => s.repairDatabase()));
   add('db:resetDemo', wrapSync(actor => {
@@ -2620,25 +2878,50 @@ function buildHandlers(store) {
 
   const web = require('../electron/services/online-ordering');
   add('web:getSettings', wrapSync(() => web.getGlobalSettings()));
+  add('web:getHoursStatus', wrapSync(() => web.getHoursStatus()));
+  add('web:trackEvents', wrapSync((payload) => {
+    const analytics = require('../electron/services/web-analytics');
+    return analytics.trackEvents(payload || {});
+  }));
+  add('web:visitorDashboard', wrapSync((filters, actor) => {
+    const user = requireUserSession(['owner', 'manager', 'supervisor']);
+    return require('../electron/services/web-analytics').getVisitorDashboard(filters || {}, actor || user);
+  }));
+  add('web:onlineCustomers', wrapSync((filters, actor) => {
+    const user = requireUserSession(['owner', 'manager', 'supervisor']);
+    return require('../electron/services/web-analytics').listOnlineCustomers(filters || {}, actor || user);
+  }));
   add('web:getBranches', wrapSync(() => web.getPublicBranches()));
   add('web:getMenu', wrapSync((branchId, filters) => web.getBranchMenu(branchId, filters || {})));
   add('web:getProduct', wrapSync((branchId, productId) => web.getProductDetail(branchId, productId)));
   add('web:checkRegistration', wrapSync((data) => web.checkWebRegistration(data || {})));
-  add('web:sendRegistrationCode', wrapSync((data) => web.sendWebRegistrationCode(data || {})));
+  add('web:sendRegistrationCode', wrapAsync((data) => web.sendWebRegistrationCode(data || {})));
   add('web:register', wrapSync((data) => web.registerWebCustomer(data || {})));
   add('web:login', wrapSync((login, password) => web.loginWebCustomer(login, password)));
+  add('web:sendPasswordReset', wrapAsync((data) => web.sendWebPasswordReset(data || {})));
+  add('web:resetPassword', wrapSync((data) => web.resetWebPassword(data || {})));
   add('web:account', wrapSync((token) => web.getCustomerAccount(token)));
   add('web:validateCart', wrapSync((branchId, cart) => web.validateCart(branchId, cart || {})));
   add('web:validateCoupon', wrapSync((code, branchId, cart, customerId) => web.validateCoupon(code, branchId, cart || {}, customerId)));
+  add('web:initiateCardPayment', wrapSync((branchId, amount, token, method) => {
+    const customer = token ? web.resolveWebCustomer(token) : null;
+    return web.createCardPaymentIntent(amount, branchId, customer?.id || null, method || 'card');
+  }));
+  add('web:confirmCardPayment', wrapSync((intentToken, reference) => web.verifyCardPaymentIntent(intentToken, reference)));
   add('web:submitOrder', wrapSync((branchId, payload, token, idem) => web.submitOrder(branchId, payload || {}, token, idem)));
   add('web:getOrder', wrapSync((orderId, token) => web.getOrder(orderId, token)));
   add('web:listOrders', wrapSync((token, limit) => web.listCustomerOrders(token, limit)));
   add('web:toggleFavorite', wrapSync((token, productId, branchId) => web.toggleFavorite(token, productId, branchId)));
-  add('web:checkGiftCard', wrapSync((code) => web.checkGiftCardForWeb(code)));
-  add('web:deleteAccount', wrapSync((token) => web.deleteWebCustomerAccount(token)));
+  add('web:checkGiftCard', wrapSync((code, token) => web.checkGiftCardForWeb(code, token)));
+  add('web:deleteAccount', wrapSync((token, password) => web.deleteWebCustomerAccount(token, password)));
+  add('web:submitIssue', wrapSync((data, token) => web.submitCustomerIssue(data || {}, token)));
+  add('web:listMyIssues', wrapSync((token) => web.listMyCustomerIssues(token)));
+  add('web:listIssues', wrapSync((f, a) => web.listCustomerIssues(f || {}, a)));
+  add('web:getIssue', wrapSync((id, a) => web.getCustomerIssue(id, a)));
+  add('web:replyIssue', wrapSync((id, reply, a) => web.replyCustomerIssue(id, reply, a)));
   add('web:adminOrders', wrapSync((filters, actor) => {
-    requireUserSession(['owner', 'manager', 'supervisor']);
-    return web.listAdminOrders(filters || {});
+    const user = requireUserSession(['owner', 'manager', 'supervisor', 'assistant_manager', 'cashier']);
+    return web.listAdminOrders(filters || {}, actor || user);
   }));
   
 add('web:adminAnalytics', wrapSync((filters, actor) => {
@@ -2653,9 +2936,17 @@ add('web:adminAnalytics', wrapSync((filters, actor) => {
     const recovery = require('../electron/services/panel-password-recovery');
     return recovery.recoverDriverPassword(identifier);
   }));
-  add('auth:recoverMarketingPassword', wrapSync((identifier) => {
+  add('auth:recoverReferralAgentPassword', wrapSync((identifier) => {
     const recovery = require('../electron/services/panel-password-recovery');
-    return recovery.recoverMarketingAgentPassword(identifier);
+    return recovery.sendReferralAgentResetCode(identifier);
+  }));
+  add('auth:resetReferralAgentPassword', wrapSync((data) => {
+    const recovery = require('../electron/services/panel-password-recovery');
+    return recovery.resetReferralAgentPassword(data || {});
+  }));
+  add('auth:recoverAdminPassword', wrapSync((identifier) => {
+    const recovery = require('../electron/services/panel-password-recovery');
+    return recovery.recoverAdminPassword(identifier);
   }));
   add('web:saveGlobalSettings', wrapSync((data, actor) => {
     const user = requireUserSession(['owner', 'manager']);
@@ -2874,6 +3165,10 @@ add('web:adminAnalytics', wrapSync((filters, actor) => {
   add('kiosk:saveDevice', wrapSync((tok, d) => kioskSvc.saveDevice(d || {}, tok)));
   add('kiosk:catalog', wrapSync((deviceTok) => kioskSvc.getKioskCatalog(deviceTok)));
   add('kiosk:placeOrder', wrapSync((deviceTok, data) => kioskSvc.placeKioskOrder(deviceTok, data || {})));
+  add('kiosk:validateVoucher', wrapSync((deviceTok, code, opts) => {
+    kioskSvc.getKioskCatalog(deviceTok); // validates device token
+    return require('../electron/services/discount-vouchers').validateVoucher(code, opts || {});
+  }));
   add('kiosk:heartbeat', wrapSync((deviceTok, payload) => kioskSvc.deviceHeartbeat(deviceTok, payload || {})));
   add('kiosk:remoteCommand', wrapSync((tok, deviceId, cmd, payload) => kioskSvc.remoteCommand(deviceId, cmd, payload || {}, tok)));
   add('kiosk:listOrders', wrapSync((tok, filters) => kioskSvc.listKioskOrders(tok, filters || {})));
@@ -2930,6 +3225,134 @@ add('web:adminAnalytics', wrapSync((filters, actor) => {
   add('expenseApp:categories', wrapSync(() => expenseApp.expenseCategories()));
   add('expenseApp:settings', wrapSync(() => expenseApp.expenseShopSettings()));
   add('expenseApp:grantAccess', wrapSync((d) => expenseApp.expenseGrantAccess(d || {})));
+  add('expenseApp:wasteProducts', wrapSync((tok) => expenseApp.expenseWasteProducts(tok)));
+  add('expenseApp:wasteList', wrapSync((tok, f) => expenseApp.expenseWasteList(tok, f || {})));
+  add('expenseApp:wasteRecord', wrapSync((tok, d) => expenseApp.expenseWasteRecord(tok, d || {})));
+
+  const studioApp = require('../electron/services/studio-app-platform');
+  add('studioApp:login', wrapSync((u, p, d) => studioApp.studioLogin(u, p, d || {})));
+  add('studioApp:logout', wrapSync((tok) => studioApp.studioLogout(tok)));
+  add('studioApp:profile', wrapSync((tok) => studioApp.studioProfile(tok)));
+  add('studioApp:check', wrapSync((tok) => studioApp.studioCheck(tok)));
+  add('studioApp:beginModule', wrapSync((tok, mod) => studioApp.studioBeginModule(tok, mod)));
+  add('studioApp:settings', wrapSync(() => studioApp.studioShopSettings()));
+
+  // ─── Chisanyama Connection Radio ───────────────────────────────────────────
+  const radioApp = require('../electron/services/radio-platform');
+  add('radio:publicStatus', wrapSync((slug) => radioApp.publicStatus(slug)));
+  add('radio:publicChatList', wrapSync((slug, afterId) => radioApp.publicChatList(slug, afterId)));
+  add('radio:publicChatPost', wrapSync((slug, payload) => radioApp.publicChatPost(slug, payload || {})));
+  add('radio:publicListenerPing', wrapSync((slug, sessionKey, meta) => radioApp.publicListenerPing(slug, sessionKey, meta || {})));
+  add('radio:publicRequestCall', wrapSync((slug, payload) => radioApp.publicRequestCall(slug, payload || {})));
+  add('radio:login', wrapSync((u, p, d) => radioApp.radioLogin(u, p, d || {})));
+  add('radio:logout', wrapSync((tok) => radioApp.radioLogout(tok)));
+  add('radio:profile', wrapSync((tok) => radioApp.radioProfile(tok)));
+  add('radio:check', wrapSync((tok) => radioApp.radioCheck(tok)));
+  add('radio:studioSnapshot', wrapSync((tok) => radioApp.studioSnapshot(tok)));
+  add('radio:setGoLive', wrapSync((tok, on) => radioApp.setGoLive(tok, on)));
+  add('radio:setMicDuck', wrapSync((tok, payload) => radioApp.setMicDuck(tok, payload || {})));
+  add('radio:updateNowPlaying', wrapSync((tok, payload) => radioApp.updateNowPlaying(tok, payload || {})));
+  add('radio:playNow', wrapSync((tok, payload) => radioApp.playNow(tok, payload || {})));
+  add('radio:playTrack', wrapSync((tok, trackId, opts) => radioApp.playTrack(tok, trackId, opts || {})));
+  add('radio:playPlaylist', wrapSync((tok, playlistId) => radioApp.playPlaylist(tok, playlistId)));
+  add('radio:advanceQueue', wrapSync((tok) => radioApp.advanceQueue(tok)));
+  add('radio:saveSchedule', wrapSync((tok, items) => radioApp.saveSchedule(tok, items || [])));
+  add('radio:saveProgramme', wrapSync((tok, items) => radioApp.saveProgramme(tok, items || [])));
+  add('radio:addTrack', wrapSync((tok, data) => radioApp.addTrack(tok, data || {})));
+  add('radio:updateTrack', wrapSync((tok, id, data) => radioApp.updateTrack(tok, id, data || {})));
+  add('radio:deleteTrack', wrapSync((tok, id) => radioApp.deleteTrack(tok, id)));
+  add('radio:addAnnouncement', wrapSync((tok, data) => radioApp.addAnnouncement(tok, data || {})));
+  add('radio:savePlaylist', wrapSync((tok, data) => radioApp.savePlaylist(tok, data || {})));
+  add('radio:deletePlaylist', wrapSync((tok, id) => radioApp.deletePlaylist(tok, id)));
+  add('radio:duplicatePlaylist', wrapSync((tok, id) => radioApp.duplicatePlaylist(tok, id)));
+  add('radio:saveFolder', wrapSync((tok, data) => radioApp.saveFolder(tok, data || {})));
+  add('radio:saveSfx', wrapSync((tok, data) => radioApp.saveSfx(tok, data || {})));
+  add('radio:playSfx', wrapSync((tok, id) => radioApp.playSfx(tok, id)));
+  add('radio:saveMixer', wrapSync((tok, mixer) => radioApp.saveMixer(tok, mixer || {})));
+  add('radio:hideChatMessage', wrapSync((tok, id, hidden) => radioApp.hideChatMessage(tok, id, hidden)));
+  add('radio:moderateChat', wrapSync((tok, id, hidden) => radioApp.hideChatMessage(tok, id, hidden)));
+  add('radio:pinChatMessage', wrapSync((tok, id, pinned) => radioApp.pinChatMessage(tok, id, pinned)));
+  add('radio:handleChatMessage', wrapSync((tok, id, handled) => radioApp.handleChatMessage(tok, id, handled)));
+  add('radio:blockChatAuthor', wrapSync((tok, key, reason) => radioApp.blockChatAuthor(tok, key, reason)));
+  add('radio:staffChatReply', wrapSync((tok, body) => radioApp.staffChatReply(tok, body)));
+  add('radio:upsertCall', wrapSync((tok, data) => radioApp.upsertCall(tok, data || {})));
+  add('radio:saveSocialDestination', wrapSync((tok, data) => radioApp.saveSocialDestination(tok, data || {})));
+  add('radio:updateStationSettings', wrapSync((tok, data) => radioApp.updateStationSettings(tok, data || {})));
+  add('radio:createPromoAnnouncement', wrapSync((tok, productId) => radioApp.createPromoAnnouncement(tok, productId)));
+  add('radio:liveJoin', wrapSync((slug, sessionKey) => radioApp.liveJoin(slug, sessionKey)));
+  add('radio:liveLeave', wrapSync((slug, sessionKey) => radioApp.liveLeave(slug, sessionKey)));
+  add('radio:liveStudioPending', wrapSync((tok) => radioApp.liveStudioPending(tok)));
+  add('radio:liveStudioSetOffer', wrapSync((tok, peerId, offer) => radioApp.liveStudioSetOffer(tok, peerId, offer)));
+  add('radio:liveStudioSetIce', wrapSync((tok, peerId, cand) => radioApp.liveStudioSetIce(tok, peerId, cand)));
+  add('radio:liveStudioConsumeAnswer', wrapSync((tok, peerId) => radioApp.liveStudioConsumeAnswer(tok, peerId)));
+  add('radio:liveListenerPoll', wrapSync((slug, sessionKey) => radioApp.liveListenerPoll(slug, sessionKey)));
+  add('radio:liveListenerAnswer', wrapSync((slug, sessionKey, answer) => radioApp.liveListenerAnswer(slug, sessionKey, answer)));
+  add('radio:liveListenerIce', wrapSync((slug, sessionKey, cand) => radioApp.liveListenerIce(slug, sessionKey, cand)));
+  add('radio:liveListenerConsumeIce', wrapSync((slug, sessionKey) => radioApp.liveListenerConsumeIce(slug, sessionKey)));
+  add('radio:setPlaybackState', wrapSync((tok, state) => radioApp.setPlaybackState(tok, state)));
+  add('radio:playAdvert', wrapSync((tok, data) => radioApp.playAdvert(tok, data || {})));
+  add('radio:clearAdvert', wrapSync((tok) => radioApp.clearAdvert(tok)));
+  add('radio:pushVoiceChunk', wrapSync((tok, data) => radioApp.pushVoiceChunk(tok, data || {})));
+  add('radio:stopVoice', wrapSync((tok) => radioApp.stopVoice(tok)));
+  add('radio:publicVoiceChunks', wrapSync((slug, afterSeq) => radioApp.publicVoiceChunks(slug, afterSeq)));
+  add('radio:scheduleAdvertJob', wrapSync((tok, data) => radioApp.scheduleAdvertJob(tok, data || {})));
+  add('radio:listAdvertJobs', wrapSync((tok) => radioApp.listAdvertJobs(tok)));
+  add('radio:adminOverview', wrapSync((a) => { requireUserSession(['owner', 'manager']); return radioApp.adminOverview(); }));
+  add('radio:adminSaveSettings', wrapSync((data, a) => { requireUserSession(['owner', 'manager']); return radioApp.adminSaveSettings(data || {}); }));
+
+  // ─── Communication Center ─────────────────────────────────────────────────
+  const cc = () => require('../electron/services/communication-center');
+  add('cc:dashboard', wrapSync((a) => { requireUserSession(['owner', 'manager', 'supervisor']); return cc().dashboard(); }));
+  add('cc:history', wrapSync((f, a) => { requireUserSession(['owner', 'manager', 'supervisor']); return cc().listHistory(f || {}); }));
+  add('cc:failed', wrapSync((a) => { requireUserSession(['owner', 'manager']); return cc().listFailed(); }));
+  add('cc:scheduled', wrapSync((a) => { requireUserSession(['owner', 'manager']); return cc().listScheduled(); }));
+  add('cc:retry', wrapSync((id, a) => { requireUserSession(['owner', 'manager']); return cc().retryJob(id, a); }));
+  add('cc:cancel', wrapSync((id, a) => { requireUserSession(['owner', 'manager']); return cc().cancelJob(id, a); }));
+  add('cc:sendNow', wrapSync((id, a) => { requireUserSession(['owner', 'manager']); return cc().sendJobNow(id, a); }));
+  add('cc:createMessage', wrapSync((d, a) => { requireUserSession(['owner', 'manager']); return cc().createMessage(d || {}, a); }));
+  add('cc:sharePublish', wrapSync((d, a) => { requireUserSession(['owner', 'manager', 'supervisor']); return cc().sharePublish(d || {}, a); }));
+  add('cc:previewAudience', wrapSync((aud, a) => { requireUserSession(['owner', 'manager']); return { count: cc().previewAudienceCount(aud || {}) }; }));
+  add('cc:templates', wrapSync((a) => { requireUserSession(['owner', 'manager']); return cc().listTemplates(); }));
+  add('cc:saveTemplate', wrapSync((d, a) => { requireUserSession(['owner', 'manager']); return cc().saveTemplate(d || {}, a); }));
+  add('cc:eventTypes', wrapSync((a) => { requireUserSession(['owner', 'manager']); return cc().listEventTypes(); }));
+  add('cc:saveEventType', wrapSync((d, a) => { requireUserSession(['owner', 'manager']); return cc().saveEventType(d || {}, a); }));
+  add('cc:routingRules', wrapSync((a) => { requireUserSession(['owner', 'manager']); return cc().listRoutingRules(); }));
+  add('cc:saveRoutingRule', wrapSync((d, a) => { requireUserSession(['owner', 'manager']); return cc().saveRoutingRule(d || {}, a); }));
+  add('cc:automations', wrapSync((a) => { requireUserSession(['owner', 'manager']); return cc().listAutomations(); }));
+  add('cc:saveAutomation', wrapSync((d, a) => { requireUserSession(['owner', 'manager']); return cc().saveAutomation(d || {}, a); }));
+  add('cc:setAutomationEnabled', wrapSync((id, en, a) => { requireUserSession(['owner', 'manager']); return cc().setAutomationEnabled(id, !!en, a); }));
+  add('cc:campaigns', wrapSync((a) => { requireUserSession(['owner', 'manager']); return cc().listCampaigns(); }));
+  add('cc:connections', wrapSync((a) => { requireUserSession(['owner', 'manager']); return cc().listConnections(); }));
+  add('cc:saveConnection', wrapSync((d, a) => { requireUserSession(['owner', 'manager']); return cc().saveConnection(d || {}, a); }));
+  add('cc:media', wrapSync((a) => { requireUserSession(['owner', 'manager', 'supervisor']); return cc().listMedia(); }));
+  add('cc:addMedia', wrapSync((d, a) => { requireUserSession(['owner', 'manager']); return cc().addMedia(d || {}, a); }));
+  add('cc:settings', wrapSync((a) => { requireUserSession(['owner', 'manager']); return cc().getSettings(); }));
+  add('cc:saveSettings', wrapSync((d, a) => { requireUserSession(['owner', 'manager']); return cc().saveSettings(d || {}, a); }));
+  add('cc:branches', wrapSync((a) => { requireUserSession(['owner', 'manager']); return cc().getBranchDestinations(); }));
+  add('cc:saveBranch', wrapSync((d, a) => { requireUserSession(['owner', 'manager']); return cc().saveBranchDestination(d || {}, a); }));
+  add('cc:processQueue', wrapAsync(async (a) => { requireUserSession(['owner', 'manager']); return cc().processQueue(30); }));
+  add('cc:emit', wrapSync((key, payload, opts, a) => { requireUserSession(['owner', 'manager']); return cc().emit(key, payload || {}, { ...(opts || {}), actor: a }); }));
+  add('cc:createVerification', wrapSync((d, a) => { requireUserSession(['owner', 'manager', 'system']); return cc().createVerificationCode(d || {}, a); }));
+  add('cc:verifyCode', wrapSync((d) => cc().verifyCode(d || {})));
+
+  // ─── Legacy RPC aliases (audit scripts & older clients) ───────────────────
+  add('delivery:listOrders', H.delivery_list);
+  add('delivery:listDrivers', H.delivery_drivers);
+  add('delivery:getSettings', H.delivery_settings);
+  add('dashboard:admin', H.dashboard_stats);
+  add('shifts:list', H.shifts_get);
+  add('shifts:getOpen', H.shifts_current);
+  add('held:get', H.sales_getHeld);
+  add('audit:log', H.audit_get);
+  add('audit:activity', wrapSync((f, t) => s.getActivityTimeline(f, t)));
+  add('audit:saleDetail', wrapSync((f) => { requireSession(); return s.getUnifiedSalesList({ ...(f || {}), limit: 1 }); }));
+  add('staff:list', H.staff_getEmployees);
+  add('ops:complianceDashboard', H.ops_dashboard);
+  add('payroll:runs', wrapSync((f, a) => s.listPayrollRecords(f || {}, a || s.getUserSession())));
+  add('payroll:listRuns', wrapSync((f, a) => s.listPayrollRecords(f || {}, a || s.getUserSession())));
+  add('mobile:users', H.mobile_adminListUsers);
+  add('mobile:listUsers', H.mobile_adminListUsers);
+  add('hr:employees', H.staff_getEmployees);
 
   scheduleDailyBackup(store);
   return H;

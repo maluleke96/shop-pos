@@ -7,8 +7,10 @@
   --dd-border: var(--border, #e2e8f0);
   --dd-text: var(--text, #0f172a);
   --dd-muted: var(--muted, #64748b);
-  max-width: 1280px;
-  margin: 0 auto;
+  max-width: none;
+  width: 100%;
+  margin: 0;
+  box-sizing: border-box;
 }
 
 .dd-hero {

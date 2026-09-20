@@ -6,14 +6,11 @@
     "buildResources": "build"
   },
   "files": [
-    "electron/**/*",
-    "src/**/*",
-    "mobile/**/*",
-    "lib/**/*",
+    "electron/admin-shell.js",
     "package.json"
   ],
   "extraMetadata": {
-    "main": "electron/cloud-shell-config-admin.js",
+    "main": "electron/admin-shell.js",
     "name": "com.shoppos.admin"
   },
   "win": {

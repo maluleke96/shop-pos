@@ -1,8 +1,7 @@
 // Admin — Recruitment / Jobs (candidates, interviews, WhatsApp, admin approval)
+// Also used from Staff Portal → Recruitment tab (must work without AdminPage loaded).
 (function () {
-  if (!window.AdminPage) return;
-
-  if (!AdminPage.sections.some(s => s.id === 'recruitment')) {
+  if (window.AdminPage?.sections && !AdminPage.sections.some(s => s.id === 'recruitment')) {
     AdminPage.sections.splice(5, 0, { id: 'recruitment', label: '💼 Recruitment', icon: 'recruitment' });
   }
 
@@ -17,7 +16,11 @@
   const AdminRecruitmentPage = {
     async render(el, admin) {
       this.admin = admin;
-      this.app = admin.app;
+      this.app = admin?.app;
+      if (!this.app?.user) {
+        el.innerHTML = `<div class="admin-section"><p class="error-msg">Sign in required for Recruitment.</p></div>`;
+        return;
+      }
       this.expandedPostingId = this.expandedPostingId || null;
       const isAdmin = ['owner', 'manager'].includes(this.app.user?.role);
       const canRequestEmploy = ['owner', 'manager', 'supervisor', 'assistant_manager'].includes(this.app.user?.role);
@@ -27,19 +30,37 @@
         <div id="rec-content"><p class="muted">Loading…</p></div></div>`;
 
       const content = document.getElementById('rec-content');
-      const [postRes, pendingRes, interviewRes, settingsRes] = await Promise.all([
-        API.getJobPostings({}, this.app.user),
-        API.getJobCandidates({ employ_requested: true }, this.app.user),
-        API.getJobCandidates({ interview_pending: true }, this.app.user),
-        API.getRecruitmentSettings(this.app.user)
+      const withTimeout = (promise, ms, label) => Promise.race([
+        Promise.resolve(promise).catch((err) => ({ success: false, error: err?.message || String(err), _label: label })),
+        new Promise((resolve) => setTimeout(() => resolve({ success: false, error: 'Timed out', _label: label }), ms))
       ]);
-      const postings = postRes.data || [];
+      let postRes, pendingRes, interviewRes, settingsRes;
+      try {
+        [postRes, pendingRes, interviewRes, settingsRes] = await Promise.all([
+          withTimeout(API.getJobPostings({}, this.app.user), 10000, 'postings'),
+          withTimeout(API.getJobCandidates({ employ_requested: true }, this.app.user), 10000, 'pending'),
+          withTimeout(API.getJobCandidates({ interview_pending: true }, this.app.user), 10000, 'interviews'),
+          withTimeout(API.getRecruitmentSettings(this.app.user), 8000, 'settings')
+        ]);
+      } catch (err) {
+        content.innerHTML = `<p class="error-msg">${Utils.escHtml(err.message || 'Recruitment failed to load')}</p>
+          <button type="button" class="btn btn-primary" id="rec-retry">Retry</button>`;
+        document.getElementById('rec-retry')?.addEventListener('click', () => this.render(el, admin));
+        return;
+      }
+      if (postRes?.success === false && !postRes?.data) {
+        content.innerHTML = `<p class="error-msg">${Utils.escHtml(postRes.error || 'Could not load job postings')}</p>
+          <button type="button" class="btn btn-primary" id="rec-retry">Retry</button>`;
+        document.getElementById('rec-retry')?.addEventListener('click', () => this.render(el, admin));
+        return;
+      }
+      const postings = postRes?.data || [];
       const pendingMap = new Map();
-      [...(pendingRes.data || []), ...(interviewRes.data || [])]
+      [...(pendingRes?.data || []), ...(interviewRes?.data || [])]
         .filter(c => !c.admin_decision)
         .forEach(c => pendingMap.set(c.id, c));
       const pending = [...pendingMap.values()];
-      const settings = settingsRes.data || { max_pictures: 5 };
+      const settings = settingsRes?.data || { max_pictures: 5 };
 
       content.innerHTML = `
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin:12px 0;align-items:center">
@@ -64,11 +85,14 @@
           </tbody></table></div></div></div>` : isAdmin ? `<p class="muted" style="margin:12px 0">No pending employment requests.</p>` : ''}
         <div class="table-wrap"><table><thead><tr><th>Title</th><th>Status</th><th>Created</th><th></th></tr></thead>
         <tbody>${postings.map(p => `<tr>
-          <td><strong>${Utils.escHtml(p.title)}</strong><br><small class="muted">${Utils.escHtml((p.description || '').slice(0, 80))}</small></td>
+          <td><strong>${Utils.escHtml(p.title)}</strong><br><small class="muted">${Utils.escHtml((p.extra?.position || p.position_title || p.description || '').slice(0, 80))}</small>
+            ${p.closes_at ? `<br><small>Closes ${Utils.escHtml(String(p.closes_at).slice(0, 10))}</small>` : ''}</td>
           <td><span class="tag">${Utils.escHtml(p.status)}</span></td>
           <td>${Utils.formatDateTime(p.created_at)}<br><small>${Utils.escHtml(p.created_by_name || '')}</small></td>
           <td style="white-space:nowrap">
-            <button class="btn btn-sm btn-ghost rec-view-cands" data-id="${p.id}">Candidates</button>
+            <button class="btn btn-sm btn-primary rec-view-cands" data-id="${p.id}">Applications</button>
+            <button class="btn btn-sm btn-ghost rec-poster" data-id="${p.id}">Poster / QR</button>
+            <button class="btn btn-sm btn-ghost rec-share" data-id="${p.id}">Message / link</button>
             ${isAdmin ? `<button class="btn btn-sm btn-ghost rec-edit-job" data-id="${p.id}">Edit</button>
               <button class="btn btn-sm btn-danger rec-del-job" data-id="${p.id}">Delete</button>` : ''}
             ${isAdmin && p.status === 'pending' ? `<button class="btn btn-sm btn-success rec-approve" data-id="${p.id}">Approve</button>
@@ -80,21 +104,7 @@
 
       document.getElementById('rec-settings')?.addEventListener('click', () => this.showSettingsModal(el, admin, settings));
 
-      document.getElementById('rec-new-job')?.addEventListener('click', () => {
-        Utils.showModal('New Job Posting', `
-          <div class="field"><label>Title *</label><input id="jp-title"></div>
-          <div class="field"><label>Description</label><textarea id="jp-desc" rows="4"></textarea></div>`,
-          '<button class="btn btn-primary" id="jp-save">Submit</button>');
-        document.getElementById('jp-save').addEventListener('click', async () => {
-          const title = document.getElementById('jp-title').value.trim();
-          if (!title) return Utils.toast('Title required', 'error');
-          const r = await API.saveJobPosting({ title, description: document.getElementById('jp-desc').value.trim() }, this.app.user);
-          if (!r.success) return Utils.toast(r.error, 'error');
-          Utils.hideModal();
-          Utils.toast(isAdmin ? 'Job posting created' : 'Submitted for admin approval', 'success');
-          this.render(el, admin);
-        });
-      });
+      document.getElementById('rec-new-job')?.addEventListener('click', () => this.showJobForm(null, el, admin, isAdmin));
 
       content.querySelectorAll('.rec-approve').forEach(b => b.addEventListener('click', async () => {
         const r = await API.approveJobPosting(parseInt(b.dataset.id, 10), this.app.user);
@@ -126,31 +136,11 @@
         this.render(el, admin);
       }));
       content.querySelectorAll('.rec-edit-job').forEach(b => b.addEventListener('click', () => {
-        const id = parseInt(b.dataset.id, 10);
-        const posting = postings.find(p => p.id === id);
-        if (!posting) return;
-        Utils.showModal('Edit Job Posting', `
-          <div class="field"><label>Title *</label><input id="jp-title" value="${Utils.escHtml(posting.title || '')}"></div>
-          <div class="field"><label>Description</label><textarea id="jp-desc" rows="4">${Utils.escHtml(posting.description || '')}</textarea></div>
-          <div class="field"><label>Status</label><select id="jp-status">
-            ${['pending', 'active', 'closed'].map(s => `<option value="${s}" ${posting.status === s ? 'selected' : ''}>${s}</option>`).join('')}
-          </select></div>`,
-          '<button class="btn btn-primary" id="jp-save-edit">Save</button>');
-        document.getElementById('jp-save-edit')?.addEventListener('click', async () => {
-          const title = document.getElementById('jp-title').value.trim();
-          if (!title) return Utils.toast('Title required', 'error');
-          const r = await API.saveJobPosting({
-            id,
-            title,
-            description: document.getElementById('jp-desc').value.trim(),
-            status: document.getElementById('jp-status').value
-          }, this.app.user);
-          if (!r.success) return Utils.toast(r.error, 'error');
-          Utils.hideModal();
-          Utils.toast('Job posting updated', 'success');
-          this.render(el, admin);
-        });
+        const posting = postings.find(p => p.id === parseInt(b.dataset.id, 10));
+        if (posting) this.showJobForm(posting, el, admin, isAdmin);
       }));
+      content.querySelectorAll('.rec-poster').forEach(b => b.addEventListener('click', () => this.showPoster(parseInt(b.dataset.id, 10))));
+      content.querySelectorAll('.rec-share').forEach(b => b.addEventListener('click', () => this.showShare(parseInt(b.dataset.id, 10))));
       content.querySelectorAll('.rec-del-job').forEach(b => b.addEventListener('click', async () => {
         if (!confirm('Delete this job posting and all its candidates?')) return;
         const r = await API.deleteJobPosting(parseInt(b.dataset.id, 10), this.app.user);
@@ -165,21 +155,17 @@
         else document.getElementById('rec-posting-candidates').innerHTML = '';
       }));
 
-      content.querySelectorAll('.rec-pending-cv').forEach(b => b.addEventListener('click', () => API.openPath(b.dataset.path)));
+      content.querySelectorAll('.rec-pending-cv').forEach(b => b.addEventListener('click', () => {
+        const id = parseInt(b.closest('tr')?.querySelector('.rec-pending-detail')?.dataset.id || '0', 10);
+        this.openCv(id, b.dataset.path);
+      }));
       content.querySelectorAll('.rec-pending-detail').forEach(b => b.addEventListener('click', () => {
         this.showCandidateDetails(parseInt(b.dataset.id, 10), isAdmin, () => this.render(el, admin));
       }));
-      content.querySelectorAll('.rec-pending-hire').forEach(b => b.addEventListener('click', async () => {
-        const r = await API.decideJobCandidate(parseInt(b.dataset.id, 10), 'approved', '', this.app.user);
-        if (!r.success) return Utils.toast(r.error, 'error');
-        Utils.toast(hireToast(r), 'success');
-        this.render(el, admin);
-      }));
-      content.querySelectorAll('.rec-pending-reject').forEach(b => b.addEventListener('click', async () => {
-        const notes = prompt('Rejection notes:') || '';
-        await API.decideJobCandidate(parseInt(b.dataset.id, 10), 'rejected', notes, this.app.user);
-        this.render(el, admin);
-      }));
+      content.querySelectorAll('.rec-pending-hire').forEach(b => b.addEventListener('click', () =>
+        this.decideAndWhatsApp(parseInt(b.dataset.id, 10), 'approved', () => this.render(el, admin))));
+      content.querySelectorAll('.rec-pending-reject').forEach(b => b.addEventListener('click', () =>
+        this.decideAndWhatsApp(parseInt(b.dataset.id, 10), 'rejected', () => this.render(el, admin))));
 
       if (this.expandedPostingId) {
         await this.showPostingCandidates(this.expandedPostingId, content, canRequestEmploy, isAdmin);
@@ -194,14 +180,16 @@
           <input type="number" id="rec-max-pics" min="1" max="20" value="${s.max_pictures || 5}"></div>
         <div class="field"><label>Hire message</label><textarea id="rec-hire-msg" rows="5">${Utils.escHtml(s.hire_message || '')}</textarea></div>
         <div class="field"><label>Reject message</label><textarea id="rec-reject-msg" rows="5">${Utils.escHtml(s.reject_message || '')}</textarea></div>
-        <div class="field"><label>Interview invite message</label><textarea id="rec-interview-msg" rows="5">${Utils.escHtml(s.interview_message || '')}</textarea></div>`,
+        <div class="field"><label>Interview invite message</label><textarea id="rec-interview-msg" rows="5">${Utils.escHtml(s.interview_message || '')}</textarea></div>
+        <div class="field"><label>Waitlist message</label><textarea id="rec-wait-msg" rows="5">${Utils.escHtml(s.waitlist_message || '')}</textarea></div>`,
         '<button class="btn btn-primary" id="rec-settings-save">Save Settings</button>');
       document.getElementById('rec-settings-save')?.addEventListener('click', async () => {
         const r = await API.saveRecruitmentSettings({
           max_pictures: parseInt(document.getElementById('rec-max-pics').value, 10) || 5,
           hire_message: document.getElementById('rec-hire-msg').value,
           reject_message: document.getElementById('rec-reject-msg').value,
-          interview_message: document.getElementById('rec-interview-msg').value
+          interview_message: document.getElementById('rec-interview-msg').value,
+          waitlist_message: document.getElementById('rec-wait-msg')?.value
         }, this.app.user);
         if (!r.success) return Utils.toast(r.error, 'error');
         Utils.hideModal();
@@ -238,12 +226,14 @@
             <td>${c.interview_at ? Utils.formatDateTime(c.interview_at) : '—'}<br><small>${Utils.escHtml(c.interview_status || '')}</small></td>
             <td style="white-space:nowrap">
               <button class="btn btn-sm btn-ghost rec-detail" data-id="${c.id}">View details</button>
-              ${c.cv_path ? `<button class="btn btn-sm btn-ghost rec-cv" data-path="${Utils.escHtml(c.cv_path)}">CV</button>` : ''}
+              ${c.cv_path ? `<button class="btn btn-sm btn-ghost rec-cv" data-id="${c.id}" data-path="${Utils.escHtml(c.cv_path)}">Download CV</button>` : ''}
+              ${isAdmin && c.status !== 'hired' && c.status !== 'rejected'
+                ? `<button class="btn btn-sm btn-success rec-hire" data-id="${c.id}">Approve</button>
+                   <button class="btn btn-sm btn-ghost rec-wait" data-id="${c.id}">Waitlist</button>
+                   <button class="btn btn-sm btn-danger rec-reject" data-id="${c.id}">Reject</button>` : ''}
+              ${isAdmin ? `<button class="btn btn-sm btn-danger rec-del-cand" data-id="${c.id}">Delete</button>` : ''}
               ${canRequestEmploy && !c.employ_request_by && c.status !== 'hired' && c.status !== 'rejected'
                 ? `<button class="btn btn-sm btn-primary rec-request" data-id="${c.id}">Request Hire</button>` : ''}
-              ${isAdmin && c.employ_request_by && !c.admin_decision
-                ? `<button class="btn btn-sm btn-success rec-hire" data-id="${c.id}">Approve</button>
-                   <button class="btn btn-sm btn-danger rec-reject" data-id="${c.id}">Reject</button>` : ''}
               ${isAdmin && c.interview_status === 'result_uploaded' && !c.admin_decision
                 ? `<button class="btn btn-sm btn-success rec-iv-approve" data-id="${c.id}">Approve interview</button>
                    <button class="btn btn-sm btn-danger rec-iv-reject" data-id="${c.id}">Reject interview</button>` : ''}
@@ -290,24 +280,19 @@
         this.showCandidateDetails(parseInt(b.dataset.id, 10), isAdmin, () =>
           this.showPostingCandidates(postingId, el, canRequestEmploy, isAdmin));
       }));
-      panel.querySelectorAll('.rec-cv').forEach(b => b.addEventListener('click', () => API.openPath(b.dataset.path)));
+      panel.querySelectorAll('.rec-cv').forEach(b => b.addEventListener('click', () => this.openCv(parseInt(b.dataset.id, 10), b.dataset.path)));
       panel.querySelectorAll('.rec-request').forEach(b => b.addEventListener('click', async () => {
         const r = await API.requestEmployCandidate(parseInt(b.dataset.id, 10), this.app.user);
         if (!r.success) return Utils.toast(r.error, 'error');
         Utils.toast('Employment request sent to admin', 'success');
         this.showPostingCandidates(postingId, el, canRequestEmploy, isAdmin);
       }));
-      panel.querySelectorAll('.rec-hire').forEach(b => b.addEventListener('click', async () => {
-        const r = await API.decideJobCandidate(parseInt(b.dataset.id, 10), 'approved', '', this.app.user);
-        if (!r.success) return Utils.toast(r.error, 'error');
-        Utils.toast(hireToast(r), 'success');
-        this.showPostingCandidates(postingId, el, canRequestEmploy, isAdmin);
-      }));
-      panel.querySelectorAll('.rec-reject').forEach(b => b.addEventListener('click', async () => {
-        const notes = prompt('Rejection notes:') || '';
-        await API.decideJobCandidate(parseInt(b.dataset.id, 10), 'rejected', notes, this.app.user);
-        this.showPostingCandidates(postingId, el, canRequestEmploy, isAdmin);
-      }));
+      panel.querySelectorAll('.rec-hire').forEach(b => b.addEventListener('click', () =>
+        this.decideAndWhatsApp(parseInt(b.dataset.id, 10), 'approved', () => this.showPostingCandidates(postingId, el, canRequestEmploy, isAdmin))));
+      panel.querySelectorAll('.rec-wait').forEach(b => b.addEventListener('click', () =>
+        this.decideAndWhatsApp(parseInt(b.dataset.id, 10), 'waitlisted', () => this.showPostingCandidates(postingId, el, canRequestEmploy, isAdmin))));
+      panel.querySelectorAll('.rec-reject').forEach(b => b.addEventListener('click', () =>
+        this.decideAndWhatsApp(parseInt(b.dataset.id, 10), 'rejected', () => this.showPostingCandidates(postingId, el, canRequestEmploy, isAdmin))));
       panel.querySelectorAll('.rec-iv-approve').forEach(b => b.addEventListener('click', async () => {
         const notes = prompt('Approval notes (optional):') || '';
         const r = await API.approveJobInterview(parseInt(b.dataset.id, 10), 'approved', notes, this.app.user);
@@ -320,6 +305,13 @@
         const r = await API.approveJobInterview(parseInt(b.dataset.id, 10), 'rejected', notes, this.app.user);
         if (!r.success) return Utils.toast(r.error, 'error');
         Utils.toast('Interview outcome rejected', 'success');
+        this.showPostingCandidates(postingId, el, canRequestEmploy, isAdmin);
+      }));
+      panel.querySelectorAll('.rec-del-cand').forEach(b => b.addEventListener('click', async () => {
+        if (!confirm('Permanently delete this application? This cannot be undone.')) return;
+        const r = await API.deleteJobCandidate(parseInt(b.dataset.id, 10), this.app.user);
+        if (!r.success) return Utils.toast(r.error, 'error');
+        Utils.toast('Application permanently deleted', 'success');
         this.showPostingCandidates(postingId, el, canRequestEmploy, isAdmin);
       }));
     },
@@ -531,25 +523,397 @@
         Utils.hideModal();
         if (onDone) onDone();
       });
+    },
+
+    collectJobForm() {
+      return {
+        title: document.getElementById('jp-title')?.value.trim(),
+        description: document.getElementById('jp-desc')?.value.trim(),
+        status: document.getElementById('jp-status')?.value,
+        position: document.getElementById('jp-position')?.value.trim(),
+        department: document.getElementById('jp-dept')?.value.trim(),
+        branch: document.getElementById('jp-branch')?.value.trim(),
+        employment_type: document.getElementById('jp-etype')?.value,
+        hours: document.getElementById('jp-hours')?.value.trim(),
+        salary_text: document.getElementById('jp-salary')?.value.trim(),
+        salary_type: document.getElementById('jp-stype')?.value,
+        vacancies: document.getElementById('jp-vac')?.value.trim(),
+        experience: document.getElementById('jp-exp')?.value.trim(),
+        education: document.getElementById('jp-edu')?.value.trim(),
+        requirements: document.getElementById('jp-req')?.value.trim(),
+        duties: document.getElementById('jp-duties')?.value.trim(),
+        benefits: document.getElementById('jp-ben')?.value.trim(),
+        closes_at: (() => {
+          const day = document.getElementById('jp-close')?.value;
+          const tm = document.getElementById('jp-close-time')?.value || '23:59';
+          return day ? `${day}T${tm}` : '';
+        })(),
+        contact_name: document.getElementById('jp-cname')?.value.trim(),
+        contact_phone: document.getElementById('jp-cphone')?.value.trim()
+      };
+    },
+
+    showJobForm(posting, el, admin, isAdmin) {
+      const p = posting || {};
+      const x = p.extra || {};
+      Utils.showModal(posting ? 'Edit Job Posting' : 'New Job Posting', `
+        <p class="muted">Fill in the vacancy professionally. A poster, WhatsApp message, and online apply link are created when you save.</p>
+        <div class="form-grid">
+          <div class="field"><label>Job title *</label><input id="jp-title" value="${Utils.escHtml(p.title || '')}"></div>
+          <div class="field"><label>Position needed</label><input id="jp-position" value="${Utils.escHtml(x.position || p.position_title || '')}" placeholder="e.g. Grill chef, Cashier"></div>
+          <div class="field"><label>Department</label><input id="jp-dept" value="${Utils.escHtml(x.department || '')}"></div>
+          <div class="field"><label>Branch / site</label><input id="jp-branch" value="${Utils.escHtml(x.branch || this.app.settings?.shop_name || '')}"></div>
+          <div class="field"><label>Employment type</label>
+            <select id="jp-etype">${['Permanent', 'Fixed-term', 'Part-time', 'Casual', 'Temporary', 'Learnership / Training'].map(t =>
+              `<option ${ (x.employment_type || 'Permanent') === t ? 'selected' : '' }>${t}</option>`).join('')}</select></div>
+          <div class="field"><label>Hours / shift</label><input id="jp-hours" value="${Utils.escHtml(x.hours || '')}" placeholder="e.g. 08:00–17:00, weekends"></div>
+          <div class="field"><label>Salary / amount</label><input id="jp-salary" value="${Utils.escHtml(x.salary_text || p.salary_text || '')}" placeholder="e.g. R6 500 per month or Market related"></div>
+          <div class="field"><label>Pay type</label>
+            <select id="jp-stype">${['Monthly', 'Weekly', 'Daily', 'Hourly', 'To be discussed'].map(t =>
+              `<option ${ (x.salary_type || 'Monthly') === t ? 'selected' : '' }>${t}</option>`).join('')}</select></div>
+          <div class="field"><label>Number of vacancies</label><input id="jp-vac" value="${Utils.escHtml(x.vacancies || '1')}"></div>
+          <div class="field"><label>Closing date</label><input type="date" id="jp-close" value="${Utils.escHtml(String(p.closes_at || x.closing_date || '').slice(0, 10))}"></div>
+          <div class="field"><label>Closing time</label><input type="time" id="jp-close-time" value="${/T/.test(String(p.closes_at || '')) ? String(p.closes_at).slice(11, 16) : '23:59'}"></div>
+          <div class="field"><label>Experience needed</label><input id="jp-exp" value="${Utils.escHtml(x.experience || '')}" placeholder="e.g. 1 year braai / kitchen"></div>
+          <div class="field"><label>Education</label><input id="jp-edu" value="${Utils.escHtml(x.education || '')}" placeholder="e.g. Matric advantageous"></div>
+          ${posting ? `<div class="field"><label>Status</label><select id="jp-status">
+            ${['pending', 'active', 'closed'].map(s => `<option value="${s}" ${p.status === s ? 'selected' : ''}>${s}</option>`).join('')}
+          </select></div>` : ''}
+          <div class="field"><label>Contact person</label><input id="jp-cname" value="${Utils.escHtml(x.contact_name || '')}"></div>
+          <div class="field"><label>Contact phone</label><input id="jp-cphone" value="${Utils.escHtml(x.contact_phone || this.app.settings?.phone || '')}"></div>
+          <div class="field full"><label>About the role</label><textarea id="jp-desc" rows="3">${Utils.escHtml(p.description || '')}</textarea></div>
+          <div class="field full"><label>Key duties</label><textarea id="jp-duties" rows="3">${Utils.escHtml(x.duties || '')}</textarea></div>
+          <div class="field full"><label>Requirements</label><textarea id="jp-req" rows="3">${Utils.escHtml(x.requirements || '')}</textarea></div>
+          <div class="field full"><label>Benefits</label><textarea id="jp-ben" rows="2">${Utils.escHtml(x.benefits || '')}</textarea></div>
+        </div>`,
+        `<button class="btn btn-primary" id="jp-save">${posting ? 'Save posting' : 'Create posting'}</button>`);
+      document.getElementById('jp-save')?.addEventListener('click', async () => {
+        const data = this.collectJobForm();
+        if (!data.title) return Utils.toast('Job title is required', 'error');
+        if (posting) data.id = posting.id;
+        const r = await API.saveJobPosting(data, this.app.user);
+        if (!r.success) return Utils.toast(r.error, 'error');
+        Utils.hideModal();
+        Utils.toast(posting ? 'Job posting updated' : (isAdmin ? 'Job posting created — poster and apply link are ready' : 'Submitted for admin approval'), 'success');
+        this.render(el, admin);
+      });
+    },
+
+    async showPoster(id) {
+      const r = await API.getJobPosterPdf(id, this.app.user);
+      if (!r.success) return Utils.toast(r.error || 'Could not build poster', 'error');
+      const d = r.data || {};
+      const applyUrl = d.apply_url || '';
+      const shopName = d.shop?.shop_name || this.app.settings?.shop_name || 'Chisanyama';
+      const [png, qrCard] = await Promise.all([
+        this.drawWhatsAppPoster(d),
+        this.drawApplyQrCard(applyUrl, shopName)
+      ]);
+      Utils.showModal('Job poster & QR', `
+        <p class="muted">WhatsApp status size (1080×1920) plus a QR card. Shop name is printed on the QR with “Scan me to apply for a job”.</p>
+        ${applyUrl ? `<p><strong>Apply link</strong><br><input readonly value="${Utils.escHtml(applyUrl)}" style="width:100%"></p>` : ''}
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;max-height:58vh;overflow:auto;background:#0f172a;border-radius:12px;padding:10px">
+          <div style="text-align:center">
+            ${png ? `<img id="jp-poster-img" src="${png}" alt="Job poster" style="width:min(220px,70vw);height:auto;border-radius:10px">` : '<p class="muted">Could not draw picture</p>'}
+            <div class="muted" style="color:#94a3b8;margin-top:6px">Hiring poster</div>
+          </div>
+          <div style="text-align:center">
+            ${qrCard ? `<img id="jp-qr-img" src="${qrCard}" alt="Apply QR" style="width:min(220px,70vw);height:auto;border-radius:10px;background:#fff">` : '<p class="muted">Could not draw QR</p>'}
+            <div class="muted" style="color:#94a3b8;margin-top:6px">${Utils.escHtml(shopName)} — scan to apply</div>
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
+          <button class="btn btn-primary" id="jp-poster-view">View picture</button>
+          <button class="btn btn-ghost" id="jp-poster-save-img">Save picture</button>
+          <button class="btn btn-success" id="jp-poster-save-qr">Save QR</button>
+          <button class="btn btn-success" id="jp-poster-wa-img">Send on WhatsApp</button>
+          <button class="btn btn-ghost" id="jp-poster-save">Save PDF</button>
+          <button class="btn btn-ghost" id="jp-poster-wa">Share message</button>
+        </div>`, '<button class="btn btn-ghost" id="jp-poster-close">Close</button>');
+      document.getElementById('jp-poster-close')?.addEventListener('click', () => Utils.hideModal());
+      document.getElementById('jp-poster-view')?.addEventListener('click', () => this.viewPosterPage(png, d));
+      document.getElementById('jp-poster-save-img')?.addEventListener('click', () => this.downloadPosterPng(png, id));
+      document.getElementById('jp-poster-save-qr')?.addEventListener('click', () => this.downloadPosterPng(qrCard, `job-qr-${id}`));
+      document.getElementById('jp-poster-wa-img')?.addEventListener('click', () => this.sharePosterWhatsApp(png, d));
+      document.getElementById('jp-poster-save')?.addEventListener('click', () =>
+        Utils.savePdfBuffer(`job-poster-${id}.pdf`, { success: true, data: d.buffer }));
+      document.getElementById('jp-poster-wa')?.addEventListener('click', () => this.showShare(id));
+    },
+
+    qrUrl(applyUrl, size = 360) {
+      return `https://api.qrserver.com/v1/create-qr-code/?size=${size}x${size}&margin=8&data=${encodeURIComponent(applyUrl || '')}`;
+    },
+
+    async drawApplyQrCard(applyUrl, shopName) {
+      if (!applyUrl) return '';
+      const canvas = document.createElement('canvas');
+      canvas.width = 900;
+      canvas.height = 1180;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, 900, 1180);
+      ctx.fillStyle = '#0f2744';
+      ctx.fillRect(0, 0, 900, 18);
+      ctx.fillRect(0, 1162, 900, 18);
+      ctx.fillStyle = '#0f172a';
+      ctx.textAlign = 'center';
+      ctx.font = '800 54px system-ui,sans-serif';
+      this.fitText(ctx, shopName || 'Chisanyama', 450, 160, 800, 54);
+      try {
+        const img = await this.loadImg(this.qrUrl(applyUrl, 420));
+        ctx.drawImage(img, 210, 220, 480, 480);
+      } catch (_) {
+        ctx.fillStyle = '#94a3b8';
+        ctx.font = '600 22px system-ui,sans-serif';
+        ctx.fillText(applyUrl, 450, 460);
+      }
+      ctx.fillStyle = '#0f172a';
+      ctx.font = '800 36px system-ui,sans-serif';
+      ctx.fillText('Scan me to apply for a job', 450, 800);
+      ctx.fillStyle = '#64748b';
+      ctx.font = '600 22px system-ui,sans-serif';
+      this.wrapText(ctx, applyUrl, 450, 860, 760, 28, 3);
+      return canvas.toDataURL('image/png');
+    },
+
+    viewPosterPage(png, d) {
+      const shop = d.shop?.shop_name || this.app.settings?.shop_name || 'Job poster';
+      const w = window.open('', '_blank', 'noopener,noreferrer');
+      if (!w) {
+        Utils.toast('Allow pop-ups to view the picture', 'error');
+        return;
+      }
+      w.document.write(`<!doctype html><html><head><title>${shop} — Hiring poster</title>
+        <meta name="viewport" content="width=device-width,initial-scale=1">
+        <style>body{margin:0;background:#0f172a;display:flex;align-items:center;justify-content:center;min-height:100vh}
+        img{width:min(100vw,420px);height:auto;display:block}</style></head>
+        <body>${png ? `<img src="${png}" alt="Job poster">` : '<p style="color:#fff">No picture</p>'}</body></html>`);
+      w.document.close();
+    },
+
+    downloadPosterPng(png, id) {
+      if (!png) return Utils.toast('Picture not ready', 'error');
+      const a = document.createElement('a');
+      a.href = png;
+      a.download = `job-poster-${id}.png`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      Utils.toast('Picture saved — add it to WhatsApp status or a chat', 'success');
+    },
+
+    async sharePosterWhatsApp(png, d) {
+      const body = d.share?.body || `We are hiring. Apply: ${d.apply_url || ''}`;
+      const phone = d.share?.phone || this.app.settings?.phone || '';
+      if (png && navigator.share && navigator.canShare) {
+        try {
+          const blob = await (await fetch(png)).blob();
+          const file = new File([blob], 'job-poster.png', { type: 'image/png' });
+          if (navigator.canShare({ files: [file] })) {
+            await navigator.share({ files: [file], title: 'Now hiring', text: body });
+            return;
+          }
+        } catch (_) { /* fall through */ }
+      }
+      this.downloadPosterPng(png, d.posting?.id || 'job');
+      await Utils.deliverWhatsApp({ success: true }, phone, `${body}\n\n(Attach the saved poster picture for WhatsApp / status)`);
+    },
+
+    async drawWhatsAppPoster(pack) {
+      const posting = pack.posting || {};
+      const extra = posting.extra || {};
+      const shop = pack.shop || this.app.settings || {};
+      const canvas = document.createElement('canvas');
+      canvas.width = 1080;
+      canvas.height = 1920;
+      const ctx = canvas.getContext('2d');
+      const g = ctx.createLinearGradient(0, 0, 0, 1920);
+      g.addColorStop(0, '#0f2744');
+      g.addColorStop(1, '#1e3a5f');
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, 1080, 1920);
+      ctx.fillStyle = '#f59e0b';
+      ctx.fillRect(0, 0, 1080, 14);
+      ctx.fillRect(0, 1906, 1080, 14);
+      if (pack.logo_data_url) {
+        try {
+          const img = await this.loadImg(pack.logo_data_url);
+          const size = 168;
+          ctx.fillStyle = '#fff';
+          this.roundRect(ctx, 456, 48, size, size, 28);
+          ctx.fill();
+          ctx.drawImage(img, 468, 60, 144, 144);
+        } catch (_) { /* skip logo */ }
+      }
+      ctx.fillStyle = '#f8fafc';
+      ctx.textAlign = 'center';
+      ctx.font = '700 28px system-ui,sans-serif';
+      ctx.fillText('NOW HIRING', 540, 260);
+      ctx.font = '800 72px system-ui,sans-serif';
+      this.fitText(ctx, shop.shop_name || 'Our shop', 540, 350, 920, 72);
+      ctx.font = '700 42px system-ui,sans-serif';
+      ctx.fillStyle = '#fde68a';
+      this.wrapText(ctx, posting.title || extra.position || 'Vacancy', 540, 430, 920, 50, 2);
+      ctx.fillStyle = '#f59e0b';
+      this.roundRect(ctx, 180, 540, 720, 78, 39);
+      ctx.fill();
+      ctx.fillStyle = '#0f172a';
+      ctx.font = '800 30px system-ui,sans-serif';
+      ctx.fillText(posting.closes_at ? `CLOSES ${String(posting.closes_at).slice(0, 10)}` : 'APPLICATIONS OPEN NOW', 540, 590);
+      const rows = [
+        ['Position', extra.position || posting.position_title || posting.title],
+        ['Type', extra.employment_type],
+        ['Hours', extra.hours],
+        ['Salary', extra.salary_text || posting.salary_text],
+        ['Branch', extra.branch || shop.shop_name],
+        ['Experience', extra.experience]
+      ].filter(([, v]) => v);
+      let y = 680;
+      rows.forEach(([k, v]) => {
+        ctx.fillStyle = 'rgba(255,255,255,.08)';
+        this.roundRect(ctx, 90, y, 900, 86, 18);
+        ctx.fill();
+        ctx.textAlign = 'left';
+        ctx.fillStyle = '#94a3b8';
+        ctx.font = '700 22px system-ui,sans-serif';
+        ctx.fillText(String(k).toUpperCase(), 120, y + 34);
+        ctx.fillStyle = '#fff';
+        ctx.font = '700 30px system-ui,sans-serif';
+        ctx.fillText(String(v).slice(0, 42), 120, y + 68);
+        y += 100;
+      });
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#e2e8f0';
+      ctx.font = '600 26px system-ui,sans-serif';
+      this.wrapText(ctx, extra.requirements || posting.description || 'Apply online with your name, WhatsApp number and CV.', 540, Math.min(y + 30, 1360), 880, 34, 3);
+      ctx.fillStyle = '#ffffff';
+      this.roundRect(ctx, 90, 1480, 900, 380, 28);
+      ctx.fill();
+      try {
+        const qr = await this.loadImg(this.qrUrl(pack.apply_url || '', 280));
+        ctx.drawImage(qr, 130, 1520, 280, 280);
+      } catch (_) { /* skip qr */ }
+      ctx.fillStyle = '#0f172a';
+      ctx.textAlign = 'left';
+      ctx.font = '800 36px system-ui,sans-serif';
+      this.fitText(ctx, shop.shop_name || 'Chisanyama', 440, 1620, 500, 36);
+      ctx.font = '800 28px system-ui,sans-serif';
+      ctx.fillText('Scan me to apply', 440, 1680);
+      ctx.fillText('for a job', 440, 1718);
+      ctx.fillStyle = '#64748b';
+      ctx.font = '600 18px system-ui,sans-serif';
+      ctx.fillText('Or open the apply link', 440, 1770);
+      return canvas.toDataURL('image/png');
+    },
+
+    loadImg(src) {
+      return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        img.onload = () => resolve(img);
+        img.onerror = reject;
+        img.src = src;
+      });
+    },
+
+    roundRect(ctx, x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.arcTo(x + w, y, x + w, y + h, r);
+      ctx.arcTo(x + w, y + h, x, y + h, r);
+      ctx.arcTo(x, y + h, x, y, r);
+      ctx.arcTo(x, y, x + w, y, r);
+      ctx.closePath();
+    },
+
+    fitText(ctx, text, x, y, max, size) {
+      let s = size;
+      ctx.font = `800 ${s}px system-ui,sans-serif`;
+      while (s > 28 && ctx.measureText(text).width > max) {
+        s -= 2;
+        ctx.font = `800 ${s}px system-ui,sans-serif`;
+      }
+      ctx.fillText(text, x, y);
+    },
+
+    wrapText(ctx, text, x, y, max, lineH, maxLines) {
+      const words = String(text || '').split(/\s+/);
+      let line = '';
+      let used = 0;
+      for (const word of words) {
+        const test = line ? `${line} ${word}` : word;
+        if (ctx.measureText(test).width > max && line) {
+          ctx.fillText(line, x, y);
+          y += lineH;
+          line = word;
+          used += 1;
+          if (used >= maxLines - 1) break;
+        } else line = test;
+      }
+      if (line && used < maxLines) ctx.fillText(line, x, y);
+    },
+
+    async showShare(id) {
+      const r = await API.getJobShareMessage(id, this.app.user);
+      if (!r.success) return Utils.toast(r.error || 'Could not build message', 'error');
+      const d = r.data || {};
+      Utils.showModal('Hiring message', `
+        <p class="muted">Professional WhatsApp text with the vacancy, online ordering link, and the apply link for this posting.</p>
+        <div class="field"><label>Apply link</label><input readonly value="${Utils.escHtml(d.apply_url || '')}"></div>
+        <div class="field"><label>Online ordering</label><input readonly value="${Utils.escHtml(d.order_url || '')}"></div>
+        <div class="field"><label>Message</label><textarea id="jp-share-body" rows="12">${Utils.escHtml(d.body || '')}</textarea></div>`,
+        '<button class="btn btn-success" id="jp-share-go">Open WhatsApp</button>');
+      document.getElementById('jp-share-go')?.addEventListener('click', async () => {
+        const body = document.getElementById('jp-share-body').value;
+        Utils.hideModal();
+        await Utils.deliverWhatsApp({ success: true }, d.phone || '', body);
+      });
+    },
+
+    async openCv(id, fallbackPath) {
+      if (id) {
+        const r = await API.downloadJobCandidateCv(id, this.app.user);
+        if (r.success && r.data?.buffer) {
+          const name = r.data.filename || `cv-${id}.pdf`;
+          if (String(name).toLowerCase().endsWith('.pdf')) {
+            await Utils.savePdfBuffer(name, { success: true, data: r.data.buffer });
+          } else {
+            await API.saveFile(name, [{ name: 'Document', extensions: ['*'] }], r.data.buffer);
+          }
+          return;
+        }
+      }
+      if (fallbackPath) API.openPath(fallbackPath);
+      else Utils.toast('CV is not available', 'error');
+    },
+
+    async decideAndWhatsApp(id, decision, onDone) {
+      const notes = decision === 'rejected' ? (prompt('Rejection notes (optional):') || '') : '';
+      const r = await API.decideJobCandidate(id, decision, notes, this.app.user);
+      if (!r.success) return Utils.toast(r.error, 'error');
+      if (decision === 'approved') Utils.toast(hireToast(r), 'success');
+      else if (decision === 'waitlisted') Utils.toast('Applicant waitlisted', 'success');
+      else Utils.toast('Applicant rejected', 'success');
+      const wa = r.data?._whatsapp || (await API.previewJobCandidateWhatsApp(id, decision === 'approved' ? 'hire' : decision === 'waitlisted' ? 'waitlist' : 'reject', this.app.user)).data;
+      if (!wa?.phone) {
+        Utils.toast('No WhatsApp number on this application', 'error');
+        if (onDone) onDone();
+        return;
+      }
+      Utils.showModal(decision === 'approved' ? 'Send offer on WhatsApp' : decision === 'waitlisted' ? 'Send waitlist WhatsApp' : 'Send rejection on WhatsApp', `
+        <p class="muted">The decision is saved. Send this professional message to <strong>${Utils.escHtml(wa.name || '')}</strong> on <strong>${Utils.escHtml(wa.phone)}</strong>.</p>
+        <div class="field"><label>Message</label><textarea id="dec-wa-body" rows="12">${Utils.escHtml(wa.body || '')}</textarea></div>`,
+        '<button class="btn btn-success" id="dec-wa-go">Send to applicant WhatsApp</button>');
+      document.getElementById('dec-wa-go')?.addEventListener('click', async () => {
+        const body = document.getElementById('dec-wa-body').value;
+        const wr = await API.sendJobCandidateWhatsApp(id, wa.type || 'reject', this.app.user, body);
+        Utils.hideModal();
+        await Utils.deliverWhatsApp(wr, wa.phone, body);
+        if (onDone) onDone();
+      });
     }
   };
 
   window.AdminRecruitmentPage = AdminRecruitmentPage;
 
-  const origRenderSection = AdminPage.renderSection.bind(AdminPage);
-  AdminPage.renderSection = async function (el) {
-    if (this.section === 'hrcontracts' && window.AdminHrPage) {
-      el.innerHTML = '<p class="muted">Loading…</p>';
-      return AdminHrPage.render(el, this);
-    }
-    if (this.section === 'recruitment' && window.AdminRecruitmentPage) {
-      el.innerHTML = '<p class="muted">Loading…</p>';
-      return AdminRecruitmentPage.render(el, this);
-    }
-    if (this.section === 'employee-of-month' && window.AdminEmployeeMonthPage) {
-      el.innerHTML = '<p class="muted">Loading…</p>';
-      return AdminEmployeeMonthPage.render(el, this);
-    }
-    return origRenderSection(el);
-  };
 })();

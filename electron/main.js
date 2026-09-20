@@ -108,7 +108,6 @@ const TITLES = {
   admin: 'Shop POS Admin',
   pos: 'Shop POS',
   staff: 'Staff Portal',
-  marketing: 'Marketing Agent',
   recipe: 'Recipe & Production'
 };
 
@@ -263,12 +262,12 @@ function registerIpc() {
     return true;
   }));
   ipcMain.handle('auth:deleteUser', wrapSync((id, actor) => {
-    store.requireActor(actor, ['owner']);
+    store.requireActor(actor, ['owner', 'manager']);
     store.deleteUser(id, actor.id, actor.username);
     return true;
   }));
   ipcMain.handle('auth:permanentlyDeleteUser', wrapSync((id, confirmUsername, actor) => {
-    store.requireActor(actor, ['owner']);
+    store.requireActor(actor, ['owner', 'manager']);
     store.permanentlyDeleteUser(id, confirmUsername, actor.id, actor.username);
     return true;
   }));
@@ -319,6 +318,7 @@ function registerIpc() {
 
   // Settings
   ipcMain.handle('settings:getParsed', wrapSync(() => store.getSettingsParsed()));
+  ipcMain.handle('settings:getOperatingHours', wrapSync(() => store.getOperatingHoursSettings()));
   ipcMain.handle('settings:getMenuHighlights', wrapSync(() => store.getMenuHighlightSettings()));
   ipcMain.handle('settings:saveMenuHighlights', wrapF((data, actor) => store.saveMenuHighlightSettings(data, actor?.id, actor?.username || actor?.full_name)));
   ipcMain.handle('settings:get', wrapSync(() => store.sanitizeSettingsResponse(store.getSettings())));
@@ -401,7 +401,12 @@ function registerIpc() {
     return out;
   }));
   ipcMain.handle('stock:listAdjustments', wrapSync((filters) => store.listStockAdjustments(filters || {})));
-  ipcMain.handle('stock:history', wrap((productId) => productId ? store.getStockHistory(productId) : store.getAllStockHistory()));
+  ipcMain.handle('stock:history', wrap((arg) => {
+    if (arg && typeof arg === 'object' && !Array.isArray(arg)) {
+      return store.getAllStockHistory(arg.limit || 500, arg.from || null, arg.to || null);
+    }
+    return arg ? store.getStockHistory(arg) : store.getAllStockHistory();
+  }));
 
   // Sales
   ipcMain.handle('sales:complete', wrapSync((data, actor) => {
@@ -430,6 +435,12 @@ function registerIpc() {
 
   // Expenses
   ipcMain.handle('expenses:get', wrap((filters) => { requireSession(); return store.getExpenses(filters); }));
+  ipcMain.handle('expenses:getOne', wrap((id) => { requireSession(); return store.getExpenseById(id); }));
+  ipcMain.handle('expenses:getCategories', wrap(() => { requireSession(); return store.getExpenseCategories(); }));
+  ipcMain.handle('expenses:saveCategories', wrapSync((cats, actor) => {
+    const user = store.requireActor(actor, ['owner', 'manager']);
+    return store.saveExpenseCategories(cats, user.id, user.username);
+  }));
   ipcMain.handle('expenses:dashboardStats', wrap((filters, actor) => {
     const user = store.getUserSession?.() || actor;
     return store.getExpenseDashboardStats(user, filters || {});
@@ -442,6 +453,50 @@ function registerIpc() {
     const user = store.requireActor(actor, ['owner', 'manager']);
     store.deleteExpense(id, user.id, user.username);
     return true;
+  }));
+  ipcMain.handle('expenses:parseReceipt', wrapSync((text) => {
+    requireSession();
+    return store.parseExpenseReceipt(text);
+  }));
+  ipcMain.handle('expenses:budgets', wrap((filters) => {
+    requireSession();
+    return store.listExpenseBudgets(filters || {});
+  }));
+  ipcMain.handle('expenses:budgetStatus', wrap((monthKey) => {
+    requireSession();
+    return store.expenseBudgetStatus(monthKey);
+  }));
+  ipcMain.handle('expenses:saveBudget', wrapSync((data, actor) => {
+    const user = store.requireActor(actor, ['owner', 'manager']);
+    return store.saveExpenseBudget(data, user);
+  }));
+  ipcMain.handle('expenses:deleteBudget', wrapSync((id, actor) => {
+    store.requireActor(actor, ['owner', 'manager']);
+    return store.deleteExpenseBudget(id);
+  }));
+  ipcMain.handle('expenses:recurring', wrap(() => {
+    requireSession();
+    return store.listExpenseRecurring();
+  }));
+  ipcMain.handle('expenses:saveRecurring', wrapSync((data, actor) => {
+    const user = store.requireActor(actor, ['owner', 'manager']);
+    return store.saveExpenseRecurring(data, user);
+  }));
+  ipcMain.handle('expenses:deleteRecurring', wrapSync((id, actor) => {
+    store.requireActor(actor, ['owner', 'manager']);
+    return store.deleteExpenseRecurring(id);
+  }));
+  ipcMain.handle('expenses:postRecurring', wrapSync((actor) => {
+    const user = store.requireActor(actor, ['owner', 'manager', 'supervisor', 'assistant_manager']);
+    return store.postExpenseRecurringDue(user);
+  }));
+  ipcMain.handle('expenses:ownerFundings', wrap((filters) => {
+    requireSession();
+    return store.listOwnerFundings(filters || {});
+  }));
+  ipcMain.handle('expenses:recordOwnerFunding', wrapSync((data, actor) => {
+    const user = store.requireActor(actor, ['owner', 'manager']);
+    return store.recordOwnerFunding(data, user);
   }));
 
   // Customers
@@ -462,6 +517,10 @@ function registerIpc() {
   ipcMain.handle('suppliers:save', wrapSync((data, actor) => {
     const user = store.requireActor(actor, ['owner', 'manager', 'supervisor', 'assistant_manager']);
     return store.saveSupplier(data, user.id, user.username);
+  }));
+  ipcMain.handle('suppliers:delete', wrapSync((id, actor) => {
+    const user = store.requireActor(actor, ['owner', 'manager']);
+    return store.deleteSupplier(id, user.id, user.username);
   }));
   ipcMain.handle('suppliers:pay', wrap((supplierId, data, actor) => {
     const user = store.requireActor(actor, ['owner', 'manager']);
@@ -524,6 +583,7 @@ function registerIpc() {
     const user = store.requireActor(actor, ['owner', 'manager']);
     return store.saveSalesTargets(data, user.id, user.username || user.full_name);
   }));
+  ipcMain.handle('settings:getTodayTargetProgress', wrapSync((branchId) => store.getTodayTargetProgress(branchId)));
   ipcMain.handle('settings:getShiftSettings', wrapSync(() => store.getShiftSettings()));
   ipcMain.handle('settings:enforceCashoutDeadlines', wrapSync(() => store.enforceShiftCashoutDeadlines()));
   ipcMain.handle('settings:saveShiftSettings', wrapSync((data, actor) => {
@@ -1083,6 +1143,19 @@ function registerIpc() {
 
   // Database manager
   ipcMain.handle('db:health', wrapF(() => { requireSession(); return store.getDatabaseHealth(); }));
+  ipcMain.handle('db:storageMonitor', wrap(async (opts, actor) => {
+    const a = actor || store.getUserSession();
+    store.requireActor(a, ['owner', 'manager', 'assistant_manager']);
+    const storage = require('./services/system-storage');
+    storage.ensureSchema();
+    return storage.getStorageMonitor(opts || {});
+  }));
+  ipcMain.handle('db:storageSnapshot', wrap(async (actor) => {
+    const a = actor || store.getUserSession();
+    store.requireActor(a, ['owner', 'manager', 'assistant_manager']);
+    const storage = require('./services/system-storage');
+    return storage.recordStorageSnapshot();
+  }));
   ipcMain.handle('db:optimize', wrapF((actor) => {
     store.requireActor(actor || store.getUserSession(), ['owner']);
     return store.optimizeDatabase();
@@ -1154,6 +1227,18 @@ function registerIpc() {
     const user = store.requireActor(actor, ['owner', 'manager', 'cashier', 'supervisor', 'assistant_manager']);
     return store.addLaybyPayment(id, amount, type, user.id);
   }));
+  ipcMain.handle('taken:list', wrapF((filters, actor) => {
+    const user = store.requireActor(actor, ['owner', 'manager', 'cashier', 'supervisor', 'assistant_manager']);
+    return require('./services/taken-orders').listTakenOrders(filters || {}, user);
+  }));
+  ipcMain.handle('taken:summary', wrapF((actor) => {
+    const user = store.requireActor(actor, ['owner', 'manager', 'assistant_manager', 'supervisor']);
+    return require('./services/taken-orders').getAdminSummary(user);
+  }));
+  ipcMain.handle('taken:pay', wrapF((id, data, actor) => {
+    const user = store.requireActor(actor, ['owner', 'manager', 'cashier', 'supervisor', 'assistant_manager']);
+    return require('./services/taken-orders').payTakenOrder(id, data || {}, user);
+  }));
   // Gift cards
   ipcMain.handle('giftcards:get', wrapF((s) => { requireSession(); return store.getGiftCards(s); }));
   ipcMain.handle('giftcards:create', wrapF((data, actor) => {
@@ -1177,6 +1262,25 @@ function registerIpc() {
     const user = store.requireActor(actor, ['owner', 'manager', 'assistant_manager', 'supervisor']);
     return store.rejectGiftCard(id, user.id, user.username, notes);
   }));
+  // Discount vouchers (Stock Discount → POS / Online / Kiosk)
+  ipcMain.handle('vouchers:list', wrapF((filters) => {
+    requireSession();
+    return require('./services/discount-vouchers').listVouchers(filters || {});
+  }));
+  ipcMain.handle('vouchers:create', wrapF((data, actor) => {
+    const user = store.requireActor(actor, ['owner', 'manager']);
+    return require('./services/discount-vouchers').createVoucher(data || {}, user);
+  }));
+  ipcMain.handle('vouchers:validate', wrapF((code, opts) =>
+    require('./services/discount-vouchers').validateVoucher(code, opts || {})));
+  ipcMain.handle('vouchers:redeem', wrapF((code, opts, actor) => {
+    const user = actor ? store.requireActor(actor, ['owner', 'manager', 'cashier', 'assistant_manager', 'supervisor']) : null;
+    return require('./services/discount-vouchers').redeemVoucher(code, {
+      ...(opts || {}),
+      actorId: user?.id,
+      actorName: user?.full_name || user?.username
+    });
+  }));
   ipcMain.handle('giftcards:getSettings', wrapF((actor) => {
     store.requireActor(actor || store.getUserSession(), ['owner', 'manager', 'assistant_manager', 'supervisor']);
     return store.getGiftCardSettings();
@@ -1187,6 +1291,18 @@ function registerIpc() {
   }));
   // Loyalty & credit
   ipcMain.handle('loyalty:history', wrapF((id) => store.getLoyaltyHistory(id)));
+  ipcMain.handle('loyalty:syncMissing', wrapF((actor) => {
+    store.requireActor(actor, ['owner', 'manager']);
+    return store.syncMissingLoyaltyPoints({ limit: 2000 });
+  }));
+  ipcMain.handle('loyalty:listRestorable', wrapF((opts, actor) => {
+    store.requireActor(actor, ['owner']);
+    return store.listRestorableExpiredPoints(opts || {});
+  }));
+  ipcMain.handle('loyalty:restoreExpired', wrapF((expireTxnId, actor) => {
+    const user = store.requireActor(actor, ['owner']);
+    return store.restoreExpiredLoyaltyPoints(expireTxnId, user.username || user.name || 'owner');
+  }));
   ipcMain.handle('loyalty:adjust', wrapF((customerId, pointsDelta, notes, actor) => store.adjustLoyaltyPoints(customerId, pointsDelta, notes, actor?.id)));
   ipcMain.handle('loyalty:pointsSummary', wrapF((id) => store.getCustomerPointsSummary(id)));
   ipcMain.handle('loyalty:reminders', wrapF(() => store.listLoyaltyReminders()));
@@ -1292,6 +1408,12 @@ function registerIpc() {
     ]);
     return store.saveTable(data);
   }));
+  ipcMain.handle('tables:release', wrapF((tableId, actor) => {
+    store.requireActor(actor || store.getUserSession(), [
+      'owner', 'manager', 'assistant_manager', 'supervisor', 'cashier'
+    ]);
+    return store.releaseRestaurantTable(tableId);
+  }));
   ipcMain.handle('tables:delete', wrapF((id, actor) => {
     store.requireActor(actor || store.getUserSession(), ['owner', 'manager']);
     store.deleteTable(id);
@@ -1378,6 +1500,28 @@ function registerIpc() {
     const user = store.requireActor(actor, ['owner', 'manager', 'cashier', 'supervisor', 'assistant_manager']);
     if (user.role === 'cashier') store.verifySupervisorCode(supervisorCode, 'void');
     return store.voidSale(id, reason, user.id, user.full_name);
+  }));
+  ipcMain.handle('audit:updateSale', wrapF((id, patch, actor) => {
+    const user = store.requireActor(actor, ['owner', 'manager']);
+    return store.updateSaleRecord(id, patch || {}, user.id, user.full_name);
+  }));
+  ipcMain.handle('audit:deleteSale', wrapF((id, reason, actor) => {
+    const user = store.requireActor(actor, ['owner', 'manager']);
+    if (user.role !== 'owner') {
+      let perms = {};
+      try { perms = JSON.parse(user.permissions || '{}'); } catch (_) { /* ignore */ }
+      if (!perms.delete_sales) throw new Error('Permission denied — delete sales');
+    }
+    return store.deleteSaleRecord(id, reason, user.id, user.full_name);
+  }));
+  ipcMain.handle('audit:deleteSalesBulk', wrapF((ids, reason, actor) => {
+    const user = store.requireActor(actor, ['owner', 'manager']);
+    if (user.role !== 'owner') {
+      let perms = {};
+      try { perms = JSON.parse(user.permissions || '{}'); } catch (_) { /* ignore */ }
+      if (!perms.delete_sales) throw new Error('Permission denied — delete sales');
+    }
+    return store.deleteSalesBulk(ids, reason, user.id, user.full_name);
   }));
   ipcMain.handle('security:generateCode', wrapF((actor, purpose) => {
     const user = store.requireActor(actor, ['owner', 'manager']);
@@ -1671,12 +1815,25 @@ function registerIpc() {
     return store.saveHrDocument(data, actor.id, actor.username || actor.full_name || 'manager');
   }));
   ipcMain.handle('staff:getHrDocuments', wrapF((employeeId, actor) => {
-    store.requireActor(actor, ['owner', 'manager']);
+    const user = actor || store.getUserSession();
+    const empSess = store.getEmployeeSession?.();
+    const isHrAdmin = ['owner', 'manager', 'supervisor', 'assistant_manager'].includes(user?.role);
+    const selfId = empSess?.employee_id ?? user?.employee_id;
+    if (!isHrAdmin && selfId != null) {
+      return store.getHrDocuments(Number(selfId));
+    }
+    store.requireActor(user, ['owner', 'manager', 'supervisor', 'assistant_manager']);
     return store.getHrDocuments(employeeId);
   }));
   ipcMain.handle('staff:getHrDocument', wrapF((id, actor) => {
-    store.requireActor(actor, ['owner', 'manager']);
-    return store.getHrDocument(id);
+    const doc = store.getHrDocument(id);
+    if (!doc) throw new Error('Document not found');
+    const user = actor || store.getUserSession();
+    const empSess = store.getEmployeeSession?.();
+    if (['owner', 'manager', 'supervisor', 'assistant_manager'].includes(user?.role)) return doc;
+    const selfId = empSess?.employee_id ?? user?.employee_id;
+    if (selfId != null && Number(selfId) === Number(doc.employee_id)) return doc;
+    throw new Error('Not authorised');
   }));
   ipcMain.handle('staff:buildHrDocumentHtml', wrapF((data, actor) => {
     store.requireActor(actor, ['owner', 'manager']);
@@ -1698,7 +1855,13 @@ function registerIpc() {
   ipcMain.handle('staff:createAttendance', wrapF((data, actor) => store.createManualAttendance(data, actor)));
   ipcMain.handle('staff:addAttendancePenalty', wrapF((data, actor) => store.addAttendancePenalty(data, actor)));
   ipcMain.handle('staff:getAttendancePenalties', wrapF((filters, actor) => {
-    store.requireActor(actor, ['owner', 'manager', 'supervisor', 'assistant_manager']);
+    const user = actor || store.getUserSession();
+    const empSess = store.getEmployeeSession?.();
+    const isHrAdmin = ['owner', 'manager', 'supervisor', 'assistant_manager'].includes(user?.role);
+    if (!isHrAdmin && empSess?.employee_id != null) {
+      return store.getAttendancePenalties({ ...(filters || {}), employee_id: empSess.employee_id });
+    }
+    store.requireActor(user, ['owner', 'manager', 'supervisor', 'assistant_manager']);
     return store.getAttendancePenalties(filters || {});
   }));
   ipcMain.handle('staff:cancelAttendancePenalty', wrapF((id, actor) => store.cancelAttendancePenalty(id, actor)));
@@ -1715,20 +1878,38 @@ function registerIpc() {
     return store.getSchedules(from, to, empId);
   }));
   ipcMain.handle('staff:saveSchedule', wrapF((data, actor) => {
-    store.requireActor(actor, ['owner', 'manager', 'supervisor', 'assistant_manager']);
+    store.requireActor(actor || store.getUserSession(), ['owner', 'manager', 'supervisor', 'assistant_manager']);
     return store.saveSchedule(data);
   }));
   ipcMain.handle('staff:deleteSchedule', wrapF((id, actor) => {
-    store.requireActor(actor, ['owner', 'manager', 'supervisor', 'assistant_manager']);
+    store.requireActor(actor || store.getUserSession(), ['owner', 'manager', 'supervisor', 'assistant_manager']);
     return store.deleteSchedule(id);
   }));
   ipcMain.handle('staff:autoShifts', wrapF((weekStart, templates, employeeIds, employeeOverrides, actor, options) => {
-    store.requireActor(actor, ['owner', 'manager', 'supervisor', 'assistant_manager']);
+    store.requireActor(actor || store.getUserSession(), ['owner', 'manager', 'supervisor', 'assistant_manager']);
     return store.autoGenerateShifts(weekStart, templates, employeeIds, employeeOverrides, options || {});
   }));
-  ipcMain.handle('staff:getDocuments', wrapF((id) => store.getEmployeeDocuments(id)));
+  ipcMain.handle('staff:getDocuments', wrapF((id, actor) => {
+    const user = actor || store.getUserSession();
+    const empSess = store.getEmployeeSession?.();
+    const isHrAdmin = ['owner', 'manager', 'supervisor', 'assistant_manager'].includes(user?.role);
+    const selfId = empSess?.employee_id ?? user?.employee_id;
+    if (!isHrAdmin && selfId != null) {
+      return store.getEmployeeDocuments(Number(selfId));
+    }
+    if (isHrAdmin) return store.getEmployeeDocuments(id);
+    throw new Error('Authentication required');
+  }));
   ipcMain.handle('staff:saveDocument', wrapF((data, actor) => {
-    store.requireActor(actor, ['owner', 'manager']);
+    const user = actor || store.getUserSession();
+    const empSess = store.getEmployeeSession?.();
+    const isHrAdmin = ['owner', 'manager', 'supervisor', 'assistant_manager'].includes(user?.role);
+    if (!isHrAdmin) {
+      const selfId = empSess?.employee_id ?? user?.employee_id;
+      if (selfId == null) throw new Error('Authentication required');
+      return store.saveEmployeeDocument({ ...data, employee_id: Number(selfId) });
+    }
+    store.requireActor(user, ['owner', 'manager', 'supervisor', 'assistant_manager']);
     return store.saveEmployeeDocument(data);
   }));
   ipcMain.handle('staff:getDisciplinary', wrapF((id) => store.getDisciplinary(scopedEmployeeId(id))));
@@ -1764,7 +1945,8 @@ function registerIpc() {
       store.verifyEmployeePin(owner.employee_id, pin);
     }
     const s = store.getSettingsParsed();
-    return store.buildPayslipPdf(id, s?.shop_name, s?.currency || 'R', { skipAuth: !!pin });
+    const sess = store.getUserSession?.();
+    return store.buildPayslipPdf(id, s?.shop_name, s?.currency || 'R', { skipAuth: !!pin || !!sess?.id });
   }));
   ipcMain.handle('staff:schedulePdf', wrapF((from, to) => {
     const s = store.getSettingsParsed();
@@ -1857,6 +2039,12 @@ function registerIpc() {
       throw err;
     }
   }));
+  ipcMain.handle('hr:listLeases', wrapF((actor) => store.listLeaseAgreements(actor)));
+  ipcMain.handle('hr:getLease', wrapF((id, actor) => store.getLeaseAgreement(id, actor)));
+  ipcMain.handle('hr:saveLease', wrapF((data, actor) => store.saveLeaseAgreement(data, actor)));
+  ipcMain.handle('hr:deleteLease', wrapF((id, actor) => store.deleteLeaseAgreement(id, actor)));
+  ipcMain.handle('hr:uploadLease', wrapF((id, fileName, dataUrl, actor) => store.uploadLeaseFile(id, fileName, dataUrl, actor)));
+  ipcMain.handle('hr:leasePdf', wrapF((id, actor) => store.buildLeasePdf(id, actor)));
   ipcMain.handle('hr:contractPdf', wrapF((id, actor) => {
     const empSess = store.getEmployeeSession?.();
     if (empSess?.employee_id != null) {
@@ -1868,6 +2056,13 @@ function registerIpc() {
     return store.buildContractPdf(id, store.getSettingsParsed());
   }));
   ipcMain.handle('hr:getProbations', wrapF((filters, actor) => {
+    const empSess = store.getEmployeeSession?.();
+    const userRole = actor?.role || store.getUserSession?.()?.role;
+    const isHr = ['owner', 'manager', 'supervisor', 'assistant_manager'].includes(userRole);
+    const selfId = empSess?.employee_id ?? actor?.employee_id;
+    if (!isHr && selfId != null) {
+      return store.getProbations({ ...(filters || {}), employee_id: Number(selfId) });
+    }
     store.requireActor(actor, hrReadRoles);
     return store.getProbations(filters || {});
   }));
@@ -1896,6 +2091,13 @@ function registerIpc() {
     return store.saveDailyEvaluation(data, actor.id, hrActor(actor));
   }));
   ipcMain.handle('hr:getEvaluationHistory', wrapF((filters, actor) => {
+    const empSess = store.getEmployeeSession?.();
+    const userRole = actor?.role || store.getUserSession?.()?.role;
+    const isHr = ['owner', 'manager', 'supervisor', 'assistant_manager'].includes(userRole);
+    const selfId = empSess?.employee_id ?? actor?.employee_id;
+    if (!isHr && selfId != null) {
+      return store.getEvaluationHistory({ ...(filters || {}), employee_id: Number(selfId) });
+    }
     store.requireActor(actor, hrReadRoles);
     return store.getEvaluationHistory(filters || {});
   }));
@@ -1912,6 +2114,12 @@ function registerIpc() {
     return store.getProbationDashboard(filters || {});
   }));
   ipcMain.handle('hr:probationPdf', wrapF((id, actor) => {
+    const empSess = store.getEmployeeSession?.();
+    if (empSess?.employee_id != null) {
+      const p = store.getProbation(id);
+      if (!p || Number(p.employee_id) !== Number(empSess.employee_id)) throw new Error('Not authorised');
+      return store.buildProbationPdf(id, store.getSettingsParsed());
+    }
     store.requireActor(actor, hrReadRoles);
     return store.buildProbationPdf(id, store.getSettingsParsed());
   }));
@@ -1978,6 +2186,24 @@ function registerIpc() {
     return store.getRecruitmentSettings();
   }));
   ipcMain.handle('jobs:saveSettings', wrapF((data, actor) => store.saveRecruitmentSettings(data, actor)));
+  ipcMain.handle('jobs:getPublicPosting', wrapF((token) => store.getPublicPosting(token)));
+  ipcMain.handle('jobs:listPublicPostings', wrapF(() => store.listPublicOpenPostings()));
+  ipcMain.handle('jobs:getPublicApplication', wrapF((editToken) => store.getPublicApplication(editToken)));
+  ipcMain.handle('jobs:lookupPublicApplication', wrapF((token, phone) => store.lookupPublicApplication(token, phone)));
+  ipcMain.handle('jobs:submitPublicApplication', wrapF((token, data) => store.submitPublicApplication(token, data)));
+  ipcMain.handle('jobs:updatePublicApplication', wrapF((editToken, data) => store.updatePublicApplication(editToken, data)));
+  ipcMain.handle('jobs:deletePublicApplication', wrapF((editToken) => store.deletePublicApplication(editToken)));
+  ipcMain.handle('jobs:deleteCandidate', wrapF((id, actor) => store.deleteJobCandidate(id, actor)));
+  ipcMain.handle('jobs:downloadCv', wrapF((id, actor) => store.downloadCandidateCv(id, actor)));
+  ipcMain.handle('jobs:posterPdf', wrapF((id, actor) => {
+    const r = store.buildJobPosterPdf(id, actor);
+    return {
+      buffer: r.buffer, apply_url: r.apply_url, order_url: r.order_url, posting: r.posting,
+      shop: r.shop, logo_data_url: r.logo_data_url, share: r.share
+    };
+  }));
+  ipcMain.handle('jobs:shareMessage', wrapF((id, actor) => store.buildJobShareMessage(id, actor)));
+  ipcMain.handle('jobs:previewWa', wrapF((id, messageType, actor) => store.previewCandidateWhatsApp(id, messageType, actor)));
 
   // Payroll & Compliance
   ipcMain.handle('payroll:getSettings', wrapF(() => store.getPayrollSettings()));
@@ -2275,6 +2501,11 @@ function registerIpc() {
   ipcMain.handle('ops:pendingChecklists', wrapF(() => store.getPendingChecklistSubmissions()));
   ipcMain.handle('ops:getAdminSignature', wrapF(() => store.getAdminSignature()));
   ipcMain.handle('ops:saveAdminSignature', wrapF((path, actor) => store.saveAdminSignature(path, actor)));
+  ipcMain.handle('ops:saveAdminSignatureData', wrapF((dataUrl, actor) => store.saveAdminSignatureFromData(dataUrl, actor)));
+  ipcMain.handle('ops:getRuleCategories', wrapF(() => store.getRuleCategories()));
+  ipcMain.handle('ops:saveRuleCategory', wrapF((name, actor) => store.saveRuleCategory(name, actor)));
+  ipcMain.handle('ops:getRuleAcks', wrapF((filters) => store.getRuleAcknowledgements(filters || {})));
+  ipcMain.handle('ops:signRule', wrapF((ruleId, employeeId, signatureData, actor) => store.signCompanyRule(ruleId, employeeId, signatureData, actor)));
   ipcMain.handle('ops:getChecklistSettings', wrapF(() => store.getChecklistSettings()));
   ipcMain.handle('ops:saveChecklistSettings', wrapF((data, actor) => store.saveChecklistSettings(data, actor)));
   ipcMain.handle('ops:checklistWarnings', wrapF((filters) => store.getChecklistWarnings(filters)));
@@ -2358,6 +2589,10 @@ function registerIpc() {
   ipcMain.handle('recipe:wasteDelete', wrapF((id, actor) => { store.deleteRecipeWaste(id, actor); return true; }));
   ipcMain.handle('recipe:productionMeals', wrapF((actor, filters) => store.listProductionMeals(actor, filters || {})));
   ipcMain.handle('recipe:ingredientStockHistory', wrapF((filters, actor) => store.getIngredientStockHistory(filters || {}, actor)));
+  ipcMain.handle('recipe:restockPreview', wrapF((data, actor) => store.computeRestockPreview(data || {}, actor)));
+  ipcMain.handle('recipe:restockBatchHistory', wrapF((filters, actor) => store.listRestockBatches(filters || {}, actor)));
+  ipcMain.handle('recipe:restockBatchDetail', wrapF((id, actor) => store.getRestockBatchDetail(id, actor)));
+  ipcMain.handle('recipe:restockBatchSave', wrapF((data, actor) => store.restockIngredientsBatch(data || {}, actor)));
   ipcMain.handle('recipe:profitsLosses', wrapF((filters, actor) => store.getProfitsLosses(filters || {}, actor)));
   ipcMain.handle('recipe:listPurchaseOrders', wrapF((filters, actor) => store.listRecipePurchaseOrders(filters || {}, actor)));
   ipcMain.handle('recipe:ensureMealProfile', wrapF((productId, actor) => store.ensureApprovedProfileForMeal(productId, actor, { autoApprove: true })));
@@ -2376,8 +2611,9 @@ function registerIpc() {
   ipcMain.handle('recipe:rejectSub', wrapF((id, actor) => { store.rejectSubstitution(id, actor); return true; }));
   ipcMain.handle('recipe:forecast', wrapF((days, actor) => store.getStockForecast(actor, days || 14)));
   ipcMain.handle('recipe:mealProducts', wrapF((filters, actor) => store.listMealProducts(filters || {}, actor)));
-  ipcMain.handle('recipe:getMeal', wrapF((id, actor) => store.getProductMealRecipe(id, actor)));
+  ipcMain.handle('recipe:getMeal', wrapF((id, actor, opts) => store.getProductMealRecipe(id, actor, opts || { for_editor: true })));
   ipcMain.handle('recipe:saveMeal', wrapF((data, actor) => store.saveProductMealRecipe(data || {}, actor)));
+  ipcMain.handle('recipe:ingredientCatalog', wrapF((actor) => store.listIngredientCatalog(actor)));
   ipcMain.handle('recipe:restockIngredient', wrapF((data, actor) => store.restockIngredient(data || {}, actor)));
   ipcMain.handle('recipe:ensureIngredient', wrapF((data, actor) => store.ensureIngredient(data || {}, actor)));
   ipcMain.handle('recipe:updateIngredient', wrapF((data, actor) => store.updateIngredient(data || {}, actor)));
@@ -2385,179 +2621,15 @@ function registerIpc() {
   ipcMain.handle('recipe:restockPlan', wrapF((target, actor) => store.calculateRestockPlan(target, actor)));
   ipcMain.handle('recipe:setPosMenuFlags', wrapF((data, actor) => { store.setPosMenuFlags(data || {}, actor); return true; }));
   ipcMain.handle('recipe:restockList', wrapF((actor) => store.listRestockIngredients(actor)));
+  ipcMain.handle('recipe:ingredientGroups', wrapF((actor) => store.listIngredientGroups(actor)));
+  ipcMain.handle('recipe:ingredientGroup', wrapF((id, actor) => store.getIngredientGroup(id, actor)));
+  ipcMain.handle('recipe:saveIngredientGroup', wrapF((data, actor) => store.saveIngredientGroup(data || {}, actor)));
+  ipcMain.handle('recipe:deleteIngredientGroup', wrapF((id, actor) => store.deleteIngredientGroup(id, actor)));
+  ipcMain.handle('recipe:expandIngredientGroups', wrapF((ids, actor) => store.expandIngredientGroups(ids || [], actor)));
   ipcMain.handle('recipe:productionAvailability', wrapF((productId, actor) => store.getProductionAvailability(productId, actor)));
   ipcMain.handle('recipe:productionDashboard', wrapF((actor) => store.getLiveProductionDashboard(actor)));
   ipcMain.handle('recipe:refreshProduction', wrapF((actor) => store.refreshProductionAvailability(actor)));
   ipcMain.handle('recipe:productRestock', wrapF((productId, targetQty, actor) => store.getProductRestockRecommendation(productId, targetQty, actor)));
-
-  // Promotion Flyers
-  ipcMain.handle('flyers:get', wrapF((filters) => store.getFlyers(filters)));
-  ipcMain.handle('flyers:getOne', wrapF((id) => store.getFlyer(id)));
-  ipcMain.handle('flyers:save', wrapF((data, actor) => store.saveFlyer(data, actor)));
-  ipcMain.handle('flyers:delete', wrapF((id, actor) => { store.deleteFlyer(id, actor); return true; }));
-  ipcMain.handle('flyers:duplicate', wrapF((id, actor) => store.duplicateFlyer(id, actor)));
-  ipcMain.handle('flyers:templates', wrapF(() => store.getFlyerTemplates()));
-  ipcMain.handle('flyers:saveTemplate', wrapF((data, actor) => store.saveFlyerTemplate(data, actor)));
-  ipcMain.handle('flyers:pdf', wrapF((id, sizeOverride) => {
-    const s = store.getSettingsParsed();
-    return store.buildFlyerPdf(id, s, sizeOverride || null);
-  }));
-  ipcMain.handle('flyers:applyPosPrices', wrapF((id, actor) => store.applyFlyerPricesToPos(id, actor)));
-  ipcMain.handle('flyers:restorePrices', wrapF((id, actor) => store.restoreFlyerPrices(id, actor)));
-  ipcMain.handle('flyers:submitApproval', wrapF((id, actor) => store.submitFlyerForApproval(id, actor)));
-  ipcMain.handle('flyers:approve', wrapF((id, actor) => store.approveFlyer(id, actor)));
-  ipcMain.handle('flyers:reject', wrapF((id, actor, notes) => store.rejectFlyer(id, actor, notes)));
-  ipcMain.handle('flyers:analytics', wrapF((id) => store.getFlyerAnalytics(id)));
-  ipcMain.handle('flyers:smartSuggestions', wrapF((filters, actor) => store.getSmartPromotionSuggestions(filters, actor)));
-  ipcMain.handle('flyers:aiGenerate', wrapF((filters, actor) => store.generateAiFlyer(filters, actor)));
-  ipcMain.handle('flyers:bulkPrices', wrapF((id, updates, actor) => store.bulkUpdateFlyerPrices(id, updates, actor)));
-  ipcMain.handle('flyers:recordEvent', wrapF((id, eventType) => store.recordFlyerEvent(id, eventType)));
-  ipcMain.handle('flyers:brandKit', wrapF(() => store.getBrandKit()));
-  ipcMain.handle('flyers:saveBrandKit', wrapF((data, actor) => store.saveBrandKit(data, actor)));
-  ipcMain.handle('flyers:goLive', wrapF((id, actor) => store.goLiveFlyer(id, actor)));
-  ipcMain.handle('flyers:endCampaign', wrapF((id, actor) => store.endCampaign(id, actor)));
-  ipcMain.handle('flyers:activeCampaigns', wrapF((branchId) => store.getActiveCampaigns(branchId)));
-  ipcMain.handle('flyers:dashboard', wrapF(() => store.getCampaignDashboard()));
-  ipcMain.handle('flyers:share', wrapF((id, options, actor) => store.shareFlyerCampaign(id, options, actor)));
-
-  // Marketing Agent System
-  const mktActor = (actor) => actor || store.getUserSession();
-  ipcMain.handle('mkt:agents', wrapF((f, actor) => store.listAgents(f || {})));
-  ipcMain.handle('mkt:saveAgent', wrapF((userId, data, actor) => store.ensureAgentForUser(userId, data || {}, mktActor(actor))));
-  ipcMain.handle('mkt:setAgentStatus', wrapF((id, status, actor) => store.setAgentStatus(id, status, mktActor(actor))));
-  ipcMain.handle('mkt:issueToken', wrapF((id, hours, deviceId, actor) => store.issueAccessToken(id, hours, mktActor(actor), deviceId)));
-  ipcMain.handle('mkt:revokeToken', wrapF((tokenId, actor) => store.revokeAccessToken(tokenId, mktActor(actor))));
-  ipcMain.handle('mkt:listTokens', wrapF((agentId, actor) => store.listAccessTokens(agentId, mktActor(actor))));
-  ipcMain.handle('mkt:loginToken', wrapF((token, deviceId) => store.loginWithAccessToken(token, deviceId)));
-  ipcMain.handle('mkt:dashboard', wrapF((actor) => store.agentDashboard(mktActor(actor))));
-  ipcMain.handle('mkt:adminSummary', wrapF((f, actor) => store.adminMarketingSummary(f || {}, mktActor(actor))));
-  ipcMain.handle('mkt:scorecard', wrapF((agentId, actor) => store.performanceScorecard(agentId, mktActor(actor))));
-  ipcMain.handle('mkt:tasks', wrapF((f, actor) => store.listTasks(f || {})));
-  ipcMain.handle('mkt:saveTask', wrapF((data, actor) => store.saveTask(data || {}, mktActor(actor))));
-  ipcMain.handle('mkt:customers', wrapF((f, actor) => store.listMarketingCustomers(f || {}, mktActor(actor))));
-  ipcMain.handle('mkt:saveCustomer', wrapF((data, actor) => store.saveMarketingCustomer(data || {}, mktActor(actor))));
-  ipcMain.handle('mkt:convertCustomer', wrapF((id, total, actor) => store.markCustomerConverted(id, total, mktActor(actor))));
-  ipcMain.handle('mkt:recruitmentStats', wrapF((f, actor) => store.recruitmentStats(mktActor(actor), f || {})));
-  ipcMain.handle('mkt:campaigns', wrapF((f, actor) => store.listCampaigns(f || {}, mktActor(actor))));
-  ipcMain.handle('mkt:saveCampaign', wrapF((data, actor) => store.saveCampaign(data || {}, mktActor(actor))));
-  ipcMain.handle('mkt:submitCampaign', wrapF((id, actor) => store.submitCampaign(id, mktActor(actor))));
-  ipcMain.handle('mkt:approveCampaign', wrapF((id, approve, notes, actor) => store.approveCampaign(id, approve !== false, notes, mktActor(actor))));
-  ipcMain.handle('mkt:menus', wrapF((f, actor) => store.listMenus(f || {}, mktActor(actor))));
-  ipcMain.handle('mkt:getMenu', wrapF((id, actor) => store.getMenu(id, mktActor(actor))));
-  ipcMain.handle('mkt:saveMenu', wrapF((data, actor) => store.saveMenu(data || {}, mktActor(actor))));
-  ipcMain.handle('mkt:submitMenu', wrapF((id, actor) => store.submitMenu(id, mktActor(actor))));
-  ipcMain.handle('mkt:reviewMenu', wrapF((id, approve, notes, actor) => store.reviewMenu(id, approve !== false, notes, mktActor(actor))));
-  ipcMain.handle('mkt:updateMenuPrices', wrapF((id, actor) => store.updateMenuPricesFromPos(id, mktActor(actor))));
-  ipcMain.handle('mkt:msgTemplates', wrapF(() => store.listMessageTemplates()));
-  ipcMain.handle('mkt:messages', wrapF((f, actor) => store.listMessages(f || {}, mktActor(actor))));
-  ipcMain.handle('mkt:saveMessage', wrap((data, actor) => store.saveMessage(data || {}, mktActor(actor))));
-  ipcMain.handle('mkt:saveReport', wrapF((data, actor) => store.saveProgressReport(data || {}, mktActor(actor))));
-  ipcMain.handle('mkt:reports', wrapF((f, actor) => store.listProgressReports(f || {}, mktActor(actor))));
-  ipcMain.handle('mkt:respondReport', wrapF((id, response, actor) => store.respondProgressReport(id, response, mktActor(actor))));
-  ipcMain.handle('mkt:saveFeedback', wrapF((data, actor) => store.saveFeedback(data || {}, mktActor(actor))));
-  ipcMain.handle('mkt:feedback', wrapF((f, actor) => store.listFeedback(f || {}, mktActor(actor))));
-  ipcMain.handle('mkt:media', wrapF((actor) => store.listMedia(mktActor(actor))));
-  ipcMain.handle('mkt:saveMedia', wrapF((data, actor) => store.saveMedia(data || {}, mktActor(actor))));
-  ipcMain.handle('mkt:setMediaStatus', wrapF((id, status, actor) => store.setMediaStatus(id, status, mktActor(actor))));
-  ipcMain.handle('mkt:notifications', wrapF((actor) => store.listNotifications(mktActor(actor))));
-  ipcMain.handle('mkt:readNotification', wrapF((id, actor) => store.markNotificationRead(id, mktActor(actor))));
-  ipcMain.handle('mkt:syncStatus', wrapF(() => store.getSyncStatus()));
-  ipcMain.handle('mkt:processSync', wrapF((actor) => store.processSyncQueue(mktActor(actor))));
-  ipcMain.handle('mkt:syncConflicts', wrapF((actor) => store.listSyncConflicts(mktActor(actor))));
-  ipcMain.handle('mkt:resolveConflict', wrapF((id, keep, actor) => store.resolveSyncConflict(id, keep, mktActor(actor))));
-  ipcMain.handle('mkt:audit', wrapF((f, actor) => store.listAudit(f || {}, mktActor(actor))));
-  ipcMain.handle('mkt:products', wrapF((f, actor) => store.searchProductsForMarketing(f || {}, mktActor(actor))));
-  ipcMain.handle('mkt:brandKit', wrapF((actor) => store.getBrandKitForAgent(mktActor(actor))));
-  ipcMain.handle('mkt:productCards', wrapF((ids) => store.buildProductCards(ids || [])));
-  ipcMain.handle('mkt:digitalMenu', wrapF((slug, actor) => store.getDigitalMenu(slug, mktActor(actor))));
-  ipcMain.handle('mkt:menuPrintHtml', wrapF((id, actor) => store.buildMenuPrintHtml(id, mktActor(actor))));
-  ipcMain.handle('mkt:menuTemplates', wrapF((actor) => store.listMenuTemplates(mktActor(actor))));
-  ipcMain.handle('mkt:saveMenuTemplate', wrapF((data, actor) => store.saveMenuTemplate(data || {}, mktActor(actor))));
-
-  // Marketing Command Centre (mktp:*)
-  const mktp = (fn) => wrapF((...args) => {
-    store.ensurePlatformReady?.();
-    return fn(...args);
-  });
-  ipcMain.handle('mktp:dashboard', mktp((f, actor) => {
-    try { require('./database/db').maybeReloadFromDisk?.(true); } catch (_) { /* ignore */ }
-    return store.getCommandCentreDashboard(f || {}, mktActor(actor));
-  }));
-  ipcMain.handle('mktp:businesses', mktp((f) => store.listBusinesses(f || {})));
-  ipcMain.handle('mktp:getBusiness', mktp((id) => store.getBusiness(id)));
-  ipcMain.handle('mktp:saveBusiness', mktp((data, actor) => store.saveBusiness(data || {}, mktActor(actor))));
-  ipcMain.handle('mktp:setBusinessActive', mktp((id, active, actor) => store.setBusinessActive(id, active, mktActor(actor))));
-  ipcMain.handle('mktp:branches', mktp((f) => store.listMktBranches(f || {})));
-  ipcMain.handle('mktp:linkBranch', mktp((branchId, businessId, actor) => store.saveBranchBusinessLink(branchId, businessId, mktActor(actor))));
-  ipcMain.handle('mktp:promotions', mktp((f, actor) => store.listPromotions(f || {}, mktActor(actor))));
-  ipcMain.handle('mktp:getPromotion', mktp((id) => store.getPromotion(id)));
-  ipcMain.handle('mktp:savePromotion', mktp((data, actor) => store.savePromotion(data || {}, mktActor(actor))));
-  ipcMain.handle('mktp:setPromotionStatus', mktp((id, status, actor) => store.setPromotionStatus(id, status, mktActor(actor))));
-  ipcMain.handle('mktp:campaigns', mktp((f, actor) => store.listCampaignsV2(f || {}, mktActor(actor))));
-  ipcMain.handle('mktp:getCampaign', mktp((id) => store.getCampaignV2(id)));
-  ipcMain.handle('mktp:saveCampaign', mktp((data, actor) => store.saveCampaignV2(data || {}, mktActor(actor))));
-  ipcMain.handle('mktp:duplicateCampaign', mktp((id, actor) => store.duplicateCampaignV2(id, mktActor(actor))));
-  ipcMain.handle('mktp:setCampaignStatus', mktp((id, status, actor) => store.setCampaignStatus(id, status, mktActor(actor))));
-  ipcMain.handle('mktp:generateAssets', mktp((id, actor) => store.generateCampaignAssets(id, mktActor(actor))));
-  ipcMain.handle('mktp:socialPosts', mktp((f, actor) => store.listSocialPosts(f || {}, mktActor(actor))));
-  ipcMain.handle('mktp:saveSocialPost', mktp((data, actor) => store.saveSocialPost(data || {}, mktActor(actor))));
-  ipcMain.handle('mktp:publishSocialPost', wrap(async (id, actor) => {
-    store.ensurePlatformReady?.();
-    return store.publishSocialPostLive(id, mktActor(actor));
-  }));
-  ipcMain.handle('mktp:whatsappBlasts', mktp((f, actor) => store.listWhatsappBlasts(f || {}, mktActor(actor))));
-  ipcMain.handle('mktp:saveWhatsappBlast', mktp((data, actor) => store.saveWhatsappBlast(data || {}, mktActor(actor))));
-  ipcMain.handle('mktp:whatsappAudience', mktp((seg, biz, branch) => store.previewWhatsappAudience(seg, biz, branch)));
-  ipcMain.handle('mktp:customers', mktp((f, actor) => store.listMktCustomers(f || {}, mktActor(actor))));
-  ipcMain.handle('mktp:segments', mktp((f, actor) => store.listCustomerSegments(f || {}, mktActor(actor))));
-  ipcMain.handle('mktp:saveSegment', mktp((data, actor) => store.saveCustomerSegment(data || {}, mktActor(actor))));
-  ipcMain.handle('mktp:evaluateSegment', mktp((id) => store.evaluateSegment(id)));
-  ipcMain.handle('mktp:loyaltyRules', mktp((f, actor) => store.listLoyaltyRules(f || {}, mktActor(actor))));
-  ipcMain.handle('mktp:saveLoyaltyRule', mktp((data, actor) => store.saveLoyaltyRule(data || {}, mktActor(actor))));
-  ipcMain.handle('mktp:agents', mktp((f, actor) => store.listReferralAgents(f || {}, mktActor(actor))));
-  ipcMain.handle('mktp:getAgent', mktp((id) => store.getReferralAgent(id)));
-  ipcMain.handle('mktp:applyAgent', mktp((data) => store.applyAsReferralAgent(data || {})));
-  ipcMain.handle('mktp:approveAgent', mktp((id, data, actor) => store.approveReferralAgent(id, data || {}, mktActor(actor))));
-  ipcMain.handle('mktp:setAgentStatus', mktp((id, status, reason, actor) => store.setReferralAgentStatus(id, status, reason, mktActor(actor))));
-  ipcMain.handle('mktp:linkAgentUser', mktp((agentId, userId, actor) => store.linkAgentUser(agentId, userId, mktActor(actor))));
-  ipcMain.handle('mktp:recordClick', mktp((code, meta) => store.recordReferralClick(code, meta || {})));
-  ipcMain.handle('mktp:attribute', mktp((data, actor) => store.attributeReferral(data || {}, mktActor(actor))));
-  ipcMain.handle('mktp:commissions', mktp((f, actor) => store.listCommissions(f || {}, mktActor(actor))));
-  ipcMain.handle('mktp:setCommissionStatus', mktp((id, status, notes, actor) => store.setCommissionStatus(id, status, notes, mktActor(actor))));
-  ipcMain.handle('mktp:commissionRules', mktp((f, actor) => store.listCommissionRules(f || {}, mktActor(actor))));
-  ipcMain.handle('mktp:saveCommissionRule', mktp((data, actor) => store.saveCommissionRule(data || {}, mktActor(actor))));
-  ipcMain.handle('mktp:payments', mktp((f, actor) => store.listAgentPayments(f || {}, mktActor(actor))));
-  ipcMain.handle('mktp:savePayment', mktp((data, actor) => store.saveAgentPayment(data || {}, mktActor(actor))));
-  ipcMain.handle('mktp:contractTemplates', mktp((f, actor) => store.listContractTemplates(f || {}, mktActor(actor))));
-  ipcMain.handle('mktp:saveContractTemplate', mktp((data, actor) => store.saveContractTemplate(data || {}, mktActor(actor))));
-  ipcMain.handle('mktp:contracts', mktp((f, actor) => store.listAgentContracts(f || {}, mktActor(actor))));
-  ipcMain.handle('mktp:createContract', mktp((agentId, templateId, actor) => store.createAgentContractFromTemplate(agentId, templateId, mktActor(actor))));
-  ipcMain.handle('mktp:setContractStatus', mktp((id, status, actor) => store.setContractStatus(id, status, mktActor(actor))));
-  ipcMain.handle('mktp:acceptContract', mktp((id, sig, actor) => store.acceptContract(id, sig, mktActor(actor))));
-  ipcMain.handle('mktp:incentives', mktp((f, actor) => store.listIncentives(f || {}, mktActor(actor))));
-  ipcMain.handle('mktp:saveIncentive', mktp((data, actor) => store.saveIncentive(data || {}, mktActor(actor))));
-  ipcMain.handle('mktp:qrCodes', mktp((f, actor) => store.listQrCodes(f || {}, mktActor(actor))));
-  ipcMain.handle('mktp:createQr', mktp((data, actor) => store.createQrCode(data || {}, mktActor(actor))));
-  ipcMain.handle('mktp:coupons', mktp((f, actor) => store.listCoupons(f || {}, mktActor(actor))));
-  ipcMain.handle('mktp:createCoupon', mktp((data, actor) => store.createCoupon(data || {}, mktActor(actor))));
-  ipcMain.handle('mktp:redeemCoupon', mktp((code, saleOrData, actor) => {
-    const data = (saleOrData && typeof saleOrData === 'object' && !Array.isArray(saleOrData))
-      ? saleOrData
-      : { sale_id: saleOrData };
-    return store.redeemCoupon(code, data, mktActor(actor));
-  }));
-  ipcMain.handle('mktp:calendar', mktp((f, actor) => store.listCalendarEvents(f || {}, mktActor(actor))));
-  ipcMain.handle('mktp:saveCalendar', mktp((data, actor) => store.saveCalendarEvent(data || {}, mktActor(actor))));
-  ipcMain.handle('mktp:campaignAnalytics', mktp((id, actor) => store.getCampaignAnalytics(id, mktActor(actor))));
-  ipcMain.handle('mktp:leaderboard', mktp((f, actor) => store.getLeaderboard(f || {}, mktActor(actor))));
-  ipcMain.handle('mktp:roi', mktp((f, actor) => store.getMarketingRoi(f || {}, mktActor(actor))));
-  ipcMain.handle('mktp:notifications', mktp((f, actor) => store.listMktNotifications(f || {}, mktActor(actor))));
-  ipcMain.handle('mktp:readNotification', mktp((id, actor) => store.markMktNotificationRead(id, mktActor(actor))));
-  ipcMain.handle('mktp:settings', mktp(() => store.getMktSettings()));
-  ipcMain.handle('mktp:saveSettings', mktp((data, actor) => store.saveMktSettings(data || {}, mktActor(actor))));
-  ipcMain.handle('mktp:audit', mktp((f, actor) => store.listPlatformAudit(f || {}, mktActor(actor))));
-  ipcMain.handle('mktp:agentDashboard', mktp((actor) => store.getReferralAgentDashboard(mktActor(actor))));
-  ipcMain.handle('mktp:publicAgent', mktp((code) => store.getAgentPublicProfile(code)));
 
   // Accounting Command Centre (acc:*)
   const acc = (fn) => wrapF((...args) => {
@@ -2684,23 +2756,214 @@ function registerIpc() {
   }));
 
   const delivery = require('./services/delivery-platform');
-  ipcMain.handle('delivery:list', wrap((filters) => {
-    const user = requireUserSession(['owner', 'manager', 'supervisor', 'assistant_manager', 'cashier']);
+  const deliveryActor = () => requireUserSession(['owner', 'manager', 'supervisor', 'assistant_manager', 'delivery_manager', 'cashier']);
+  ipcMain.handle('delivery:dashboard', wrap((filters, actor) => {
+    const user = actor || deliveryActor();
+    return delivery.deliveryDashboard(filters || {}, user);
+  }));
+  ipcMain.handle('delivery:list', wrap((filters, actor) => {
+    const user = actor || deliveryActor();
     const { assertUserPermission } = require('./services/authz');
-    assertUserPermission(user, 'delivery', ['owner', 'manager', 'supervisor', 'assistant_manager', 'cashier']);
-    return delivery.listDeliveries(filters || {});
+    assertUserPermission(user, 'delivery', ['owner', 'manager', 'supervisor', 'assistant_manager', 'cashier', 'delivery_manager']);
+    return delivery.listDeliveries(filters || {}, user);
   }));
-  ipcMain.handle('delivery:drivers', wrap(() => {
-    requireUserSession(['owner', 'manager', 'supervisor', 'assistant_manager']);
-    return delivery.listDrivers();
+  ipcMain.handle('delivery:get', wrap((id, actor) => {
+    deliveryActor();
+    return delivery.getDelivery(id);
   }));
-  ipcMain.handle('delivery:assign', wrap((id, employeeId) => {
-    const user = requireUserSession(['owner', 'manager', 'supervisor', 'assistant_manager']);
-    return delivery.assignDriver(id, employeeId, user);
+  ipcMain.handle('delivery:drivers', wrap((filters, actor) => {
+    deliveryActor();
+    return delivery.listDrivers(filters || {});
   }));
-  ipcMain.handle('delivery:updateStatus', wrap((id, status, notes) => {
-    const user = requireUserSession(['owner', 'manager', 'supervisor', 'assistant_manager', 'cashier']);
+  ipcMain.handle('delivery:getDriver', wrap((id) => {
+    deliveryActor();
+    return delivery.getDriver(id);
+  }));
+  ipcMain.handle('delivery:saveDriver', wrap((data, actor) => {
+    const user = actor || deliveryActor();
+    return delivery.saveDriver(data || {}, user);
+  }));
+  ipcMain.handle('delivery:approveDriver', wrap((id, actor) => {
+    const user = actor || deliveryActor();
+    return delivery.approveDriver(id, user);
+  }));
+  ipcMain.handle('delivery:rejectDriver', wrap((id, reason, actor) => {
+    const user = actor || deliveryActor();
+    return delivery.rejectDriver(id, reason, user);
+  }));
+  ipcMain.handle('delivery:registerDriver', wrap((data) => delivery.registerDriver(data || {})));
+  ipcMain.handle('delivery:adminRegisterDriver', wrap((data, actor) => {
+    const user = actor || deliveryActor();
+    return delivery.adminRegisterDriver(data || {}, user);
+  }));
+  ipcMain.handle('delivery:releaseToPool', wrap((id, actor) => {
+    const user = actor || deliveryActor();
+    return delivery.releaseToDriverPool(id, user);
+  }));
+  ipcMain.handle('delivery:assign', wrap((id, driverId, actor, opts) => {
+    const user = actor || deliveryActor();
+    return delivery.assignDriver(id, driverId, user, opts || {});
+  }));
+  ipcMain.handle('delivery:autoAssign', wrap((id, actor) => {
+    const user = actor || deliveryActor();
+    return delivery.autoAssignDriver(id, user);
+  }));
+  ipcMain.handle('delivery:assignMultiple', wrap((ids, driverId, actor, opts) => {
+    const user = actor || deliveryActor();
+    return delivery.assignMultipleOrders(ids, driverId, user, opts || {});
+  }));
+  ipcMain.handle('delivery:updateStatus', wrap((id, status, notes, actor) => {
+    const user = actor || deliveryActor();
     return delivery.updateDeliveryStatus(id, status, user, { notes });
+  }));
+  ipcMain.handle('delivery:updateDelivery', wrap((id, data, actor) => {
+    const user = actor || deliveryActor();
+    return delivery.updateDeliveryAdmin(id, data || {}, user);
+  }));
+  ipcMain.handle('delivery:cancelDelivery', wrap((id, actor) => {
+    const user = actor || deliveryActor();
+    return delivery.cancelDeliveryAdmin(id, user);
+  }));
+  ipcMain.handle('delivery:settings', wrap((actor) => {
+    const user = actor || deliveryActor();
+    return delivery.getSettings(user);
+  }));
+  ipcMain.handle('delivery:saveSettings', wrap((data, actor) => {
+    const user = actor || deliveryActor();
+    return delivery.saveSettings(data || {}, user);
+  }));
+  ipcMain.handle('delivery:branchSettings', wrap((branchId, actor) => {
+    deliveryActor();
+    return delivery.getBranchSettings(branchId);
+  }));
+  ipcMain.handle('delivery:saveBranchSettings', wrap((branchId, data, actor) => {
+    const user = actor || deliveryActor();
+    return delivery.saveBranchSettings(branchId, data || {}, user);
+  }));
+  ipcMain.handle('delivery:listBranchSettings', wrap((actor) => {
+    deliveryActor();
+    return delivery.listAllBranchSettings();
+  }));
+  ipcMain.handle('delivery:deleteBranchSettings', wrap((branchId, actor) => {
+    const user = actor || deliveryActor();
+    return delivery.deleteBranchSettings(branchId, user);
+  }));
+  ipcMain.handle('delivery:suspendDriver', wrap((id, actor) => {
+    const user = actor || deliveryActor();
+    return delivery.suspendDriver(id, user);
+  }));
+  ipcMain.handle('delivery:deleteDriver', wrap((id, actor) => {
+    const user = actor || deliveryActor();
+    return delivery.deleteDriver(id, user);
+  }));
+  ipcMain.handle('delivery:driverEarnings', wrap((driverId, filters, actor) => {
+    deliveryActor();
+    return delivery.driverEarningsReport(driverId, filters || {});
+  }));
+  ipcMain.handle('delivery:reports', wrap((filters, actor) => {
+    const user = actor || deliveryActor();
+    return delivery.deliveryReports(filters || {}, user);
+  }));
+  ipcMain.handle('delivery:tracking', wrap((token) => delivery.getDeliveryByTracking(token)));
+  ipcMain.handle('delivery:driverPaymentSummary', wrap((actor) => {
+    const user = actor || deliveryActor();
+    return delivery.listDriverPaymentSummary(user);
+  }));
+  ipcMain.handle('delivery:previewDriverPayout', wrap((driverId, data, actor) => {
+    const user = actor || deliveryActor();
+    return delivery.previewDriverPayout(driverId, data?.period_from || data?.from, data?.period_to || data?.to, user);
+  }));
+  ipcMain.handle('delivery:recordDriverPayout', wrap((driverId, data, actor) => {
+    const user = actor || deliveryActor();
+    return delivery.recordDriverPayout(driverId, data || {}, user);
+  }));
+  ipcMain.handle('delivery:driverPayoutHistory', wrap((driverId, filters, actor) => {
+    const user = actor || deliveryActor();
+    return delivery.getDriverPayoutHistory(driverId, filters || {}, user);
+  }));
+  ipcMain.handle('delivery:listPayoutClaims', wrap((filters, actor) => {
+    const user = actor || deliveryActor();
+    return delivery.listPayoutClaims(filters || {}, user);
+  }));
+  ipcMain.handle('delivery:approvePayoutClaim', wrap((id, notes, actor) => {
+    const user = actor || deliveryActor();
+    return delivery.approvePayoutClaim(id, notes, user);
+  }));
+  ipcMain.handle('delivery:rejectPayoutClaim', wrap((id, reason, actor) => {
+    const user = actor || deliveryActor();
+    return delivery.rejectPayoutClaim(id, reason, user);
+  }));
+  ipcMain.handle('driver:login', wrap((username, password, device) => delivery.driverLogin(username, password, device || {})));
+  ipcMain.handle('driver:logout', wrap((token) => delivery.driverLogout(token)));
+  ipcMain.handle('driver:dashboard', wrap((token) => delivery.driverDashboard(token)));
+  ipcMain.handle('driver:orders', wrap((token, filters) => delivery.driverListOrders(token, filters || {})));
+  ipcMain.handle('driver:accept', wrap((token, id) => delivery.driverAcceptDelivery(token, id)));
+  ipcMain.handle('driver:reject', wrap((token, id, reason) => delivery.driverRejectDelivery(token, id, reason)));
+  ipcMain.handle('driver:release', wrap((token, id, reason) => delivery.driverReleaseDelivery(token, id, reason)));
+  ipcMain.handle('driver:updateStatus', wrap((token, id, status, notes) => delivery.driverUpdateStatus(token, id, status, { notes })));
+  ipcMain.handle('driver:availability', wrap((token, availability) => delivery.setDriverAvailability(token, availability)));
+  ipcMain.handle('driver:history', wrap((token, filters) => delivery.driverHistory(token, filters || {})));
+  ipcMain.handle('driver:earnings', wrap((token, filters) => delivery.driverEarnings(token, filters || {})));
+  ipcMain.handle('driver:payments', wrap((token, filters) => delivery.driverPayments(token, filters || {})));
+  ipcMain.handle('driver:profile', wrap((token) => delivery.driverGetProfile(token)));
+  ipcMain.handle('driver:updateProfile', wrap((token, data) => delivery.driverUpdateProfile(token, data || {})));
+  ipcMain.handle('driver:submitClaim', wrap((token) => delivery.submitPayoutClaim(token)));
+
+  const referral = require('./services/referral-commission');
+  const refAdmin = () => requireUserSession(['owner', 'manager', 'assistant_manager']);
+  const refAny = () => requireUserSession(['owner', 'manager', 'assistant_manager', 'referral_agent']);
+  ipcMain.handle('referral:dashboard', wrap((filters, actor) => referral.getAdminDashboard(filters || {}, actor || refAdmin())));
+  ipcMain.handle('referral:applications', wrap((filters, actor) => referral.listApplications(filters || {}, actor || refAdmin())));
+  ipcMain.handle('referral:getAgent', wrap((id, actor, opts) => referral.getAgent(id, actor || refAdmin(), opts || {})));
+  ipcMain.handle('referral:approveAgent', wrap((id, actor, opts) => referral.approveAgent(id, actor || refAdmin(), opts || {})));
+  ipcMain.handle('referral:rejectAgent', wrap((id, reason, actor) => referral.rejectAgent(id, reason, actor || refAdmin())));
+  ipcMain.handle('referral:underReview', wrap((id, actor) => referral.setUnderReview(id, actor || refAdmin())));
+  ipcMain.handle('referral:suspendAgent', wrap((id, actor) => referral.suspendAgent(id, actor || refAdmin())));
+  ipcMain.handle('referral:unsuspendAgent', wrap((id, actor) => referral.unsuspendAgent(id, actor || refAdmin())));
+  ipcMain.handle('referral:updateAgent', wrap((id, data, actor) => referral.updateAgent(id, data || {}, actor || refAdmin())));
+  ipcMain.handle('referral:deleteAgent', wrap((id, actor) => referral.deleteAgent(id, actor || refAdmin())));
+  ipcMain.handle('referral:awardCommission', wrap((id, data, actor) => referral.awardManualCommission(id, data || {}, actor || refAdmin())));
+  ipcMain.handle('referral:listAwardRequests', wrap((filters, actor) => referral.listAwardRequests(filters || {}, actor || refAdmin())));
+  ipcMain.handle('referral:getAwardRequest', wrap((id, actor) => referral.getAwardRequest(id, actor || refAdmin())));
+  ipcMain.handle('referral:decideAwardRequest', wrap((id, data, actor) => referral.decideAwardRequest(id, data || {}, actor || requireUserSession(['owner', 'assistant_manager']))));
+  ipcMain.handle('referral:searchCodes', wrap((q) => referral.searchReferralCodes(q)));
+  ipcMain.handle('referral:agents', wrap((filters, actor) => referral.listAgents(filters || {}, actor || refAdmin())));
+  ipcMain.handle('referral:commissions', wrap((filters, actor) => referral.listCommissions(filters || {}, actor || refAdmin())));
+  ipcMain.handle('referral:approveCommission', wrap((id, actor) => referral.approveCommission(id, actor || refAdmin())));
+  ipcMain.handle('referral:markAvailable', wrap((actor) => referral.markCommissionsAvailable(actor || refAdmin())));
+  ipcMain.handle('referral:payouts', wrap((filters, actor) => referral.listPayouts(filters || {}, actor || refAdmin())));
+  ipcMain.handle('referral:getPayout', wrap((id, actor) => referral.getPayout(id, actor || refAdmin())));
+  ipcMain.handle('referral:generatePayout', wrap((data, actor) => referral.generatePayoutBatch(data || {}, actor || refAdmin())));
+  ipcMain.handle('referral:approvePayout', wrap((id, actor) => referral.approvePayout(id, actor || refAdmin())));
+  ipcMain.handle('referral:markPayoutPaid', wrap((id, data, actor) => referral.markPayoutPaid(id, data || {}, actor || refAdmin())));
+  ipcMain.handle('referral:claimWallet', wrap((actor) => referral.claimWalletPayout(actor || refAny())));
+  ipcMain.handle('referral:getPayslip', wrap((id, actor) => referral.getAgentPayslip(id, actor || refAny())));
+  ipcMain.handle('referral:settings', wrap((actor) => { refAdmin(); return referral.getSettings(); }));
+  ipcMain.handle('referral:updateSettings', wrap((data, actor) => referral.updateSettings(data || {}, actor || refAdmin())));
+  ipcMain.handle('referral:attributions', wrap((filters, actor) => referral.listAttributions(filters || {}, actor || refAdmin())));
+  ipcMain.handle('referral:codes', wrap((actor) => referral.listCodes(actor || refAdmin())));
+  ipcMain.handle('referral:topAgents', wrap((filters, actor) => referral.getTopAgents(filters || {}, actor || refAdmin())));
+  ipcMain.handle('referral:audit', wrap((filters, actor) => referral.listAudit(filters || {}, actor || refAdmin())));
+  ipcMain.handle('referral:fraud', wrap((actor) => referral.listFraud(actor || refAdmin())));
+  ipcMain.handle('referral:approveBankChange', wrap((id, actor) => referral.approveBankChange(id, actor || refAdmin())));
+  ipcMain.handle('referral:apply', wrap((data) => referral.applyAsAgent(data || {})));
+  ipcMain.handle('referral:agentDashboard', wrap((actor) => referral.getAgentDashboard(actor || refAny())));
+  ipcMain.handle('referral:unreadNotifications', wrap((filters, actor) => referral.listUnreadNotifications(filters || {}, actor || refAny())));
+  ipcMain.handle('referral:ackNotification', wrap((id, meta, actor) => referral.ackReferralNotification(id, meta || {}, actor || refAny())));
+  ipcMain.handle('referral:ackAllNotifications', wrap((filters, actor) => referral.ackAllReferralNotifications(filters || {}, actor || refAny())));
+  ipcMain.handle('referral:requestBankChange', wrap((data, actor) => referral.requestBankChange(data || {}, actor || refAny())));
+  ipcMain.handle('referral:validateCode', wrap((code) => referral.validateReferralCode(code)));
+  ipcMain.handle('referral:recordClick', wrap((code, meta) => referral.recordClick(code, meta || {})));
+  ipcMain.handle('referral:attribute', wrap((data, actor) => referral.attributeCustomer({ ...(data || {}), actor: actor || refAdmin() })));
+  ipcMain.handle('referral:resetAgentPassword', wrap((id, actor, opts) => referral.adminResetAgentPassword(id, actor || refAdmin(), opts || {})));
+  ipcMain.handle('referral:ensureAgentLogin', wrap((id, actor) => {
+    const admin = actor || refAdmin();
+    const { getDb } = require('./database/db');
+    const agent = getDb().prepare('SELECT * FROM referral_agents WHERE id=?').get(id);
+    if (!agent) throw new Error('Agent not found');
+    if (!agent.password_hash) throw new Error('No password on file — use Reset password (WhatsApp) first');
+    referral.ensureAgentUserAccount(agent);
+    return { success: true, username: agent.username, fixed_by: admin?.username || null };
   }));
 
   const hrA = (actor) => actor || store.getUserSession();
@@ -2749,6 +3012,61 @@ function registerIpc() {
   ipcMain.handle('hr:saveIncident', hr((data, actor) => store.saveIncident(data || {}, hrA(actor))));
   ipcMain.handle('hr:disciplinaryCases', hr((f, actor) => store.listDisciplinaryCases(f || {}, hrA(actor))));
   ipcMain.handle('hr:saveDisciplinaryCase', hr((data, actor) => store.saveDisciplinaryCase(data || {}, hrA(actor))));
+
+  const mgrHr = require('./services/mgr-hr-portal');
+  const mgrHrA = (actor) => actor || store.getUserSession();
+  const mgrHrWrap = (fn) => wrap((...args) => {
+    try { mgrHr.ensureSchema(); return fn(...args); }
+    catch (err) { return { success: false, error: err.message || String(err) }; }
+  });
+  ipcMain.handle('mgrHr:listAssignments', mgrHrWrap((actor) => mgrHr.listAssignments(mgrHrA(actor))));
+  ipcMain.handle('mgrHr:getAssignment', mgrHrWrap((id, actor) => mgrHr.getAssignment(id, mgrHrA(actor))));
+  ipcMain.handle('mgrHr:saveAssignment', mgrHrWrap((data, actor) => mgrHr.saveAssignment(data || {}, mgrHrA(actor))));
+  ipcMain.handle('mgrHr:setAssignmentActive', mgrHrWrap((id, active, actor) => mgrHr.setAssignmentActive(id, active, mgrHrA(actor))));
+  ipcMain.handle('mgrHr:listEligibleUsers', mgrHrWrap((actor) => mgrHr.listEligibleUsers(mgrHrA(actor))));
+  ipcMain.handle('mgrHr:listActivity', mgrHrWrap((f, actor) => mgrHr.listActivity(f || {}, mgrHrA(actor))));
+  ipcMain.handle('mgrHr:portalContext', mgrHrWrap((actor) => mgrHr.getPortalContext(mgrHrA(actor))));
+  ipcMain.handle('mgrHr:dashboard', mgrHrWrap((actor) => mgrHr.dashboard(mgrHrA(actor))));
+  ipcMain.handle('mgrHr:listMyStaff', mgrHrWrap((actor) => mgrHr.listMyStaff(mgrHrA(actor))));
+  ipcMain.handle('mgrHr:listCases', mgrHrWrap((f, actor) => mgrHr.listCases(f || {}, mgrHrA(actor))));
+  ipcMain.handle('mgrHr:getCase', mgrHrWrap((id, actor) => mgrHr.getCase(id, mgrHrA(actor))));
+  ipcMain.handle('mgrHr:createCase', mgrHrWrap((data, actor) => mgrHr.createCase(data || {}, mgrHrA(actor))));
+  ipcMain.handle('mgrHr:updateStatus', mgrHrWrap((id, status, notes, actor) => mgrHr.updateCaseStatus(id, status, notes, mgrHrA(actor))));
+  ipcMain.handle('mgrHr:requestResponse', mgrHrWrap((id, notes, actor) => mgrHr.requestEmployeeResponse(id, notes, mgrHrA(actor))));
+  ipcMain.handle('mgrHr:addRecommendation', mgrHrWrap((id, data, actor) => mgrHr.addRecommendation(id, data || {}, mgrHrA(actor))));
+  ipcMain.handle('mgrHr:createWarning', mgrHrWrap((id, data, actor) => mgrHr.createWarningFromCase(id, data || {}, mgrHrA(actor))));
+  ipcMain.handle('mgrHr:adminDecide', mgrHrWrap((id, data, actor) => mgrHr.adminDecide(id, data || {}, mgrHrA(actor))));
+  ipcMain.handle('mgrHr:deleteCase', mgrHrWrap((id, actor) => mgrHr.deleteCase(id, mgrHrA(actor))));
+  ipcMain.handle('mgrHr:listNotifications', mgrHrWrap((audience, actor) => mgrHr.listNotifications(mgrHrA(actor), audience)));
+  ipcMain.handle('mgrHr:markNotificationRead', mgrHrWrap((id, actor) => mgrHr.markNotificationRead(id, mgrHrA(actor))));
+  ipcMain.handle('mgrHr:listEmployeeCases', mgrHrWrap((actor) => mgrHr.listEmployeeCases(actor || store.getEmployeeSession() || store.getUserSession())));
+  ipcMain.handle('mgrHr:getEmployeeCase', mgrHrWrap((id, actor) => mgrHr.getEmployeeCase(id, actor || store.getEmployeeSession() || store.getUserSession())));
+  ipcMain.handle('mgrHr:submitEmployeeResponse', mgrHrWrap((id, data, actor) => mgrHr.submitEmployeeResponse(id, data || {}, actor || store.getEmployeeSession() || store.getUserSession())));
+  ipcMain.handle('mgrHr:listRecordings', mgrHrWrap((f, actor) => mgrHr.listRecordings(f || {}, mgrHrA(actor))));
+  ipcMain.handle('mgrHr:getRecording', mgrHrWrap((id, actor) => mgrHr.getRecording(id, mgrHrA(actor))));
+  ipcMain.handle('mgrHr:createRecording', mgrHrWrap((data, actor) => mgrHr.createRecording(data || {}, mgrHrA(actor))));
+  ipcMain.handle('mgrHr:updateRecording', mgrHrWrap((id, data, actor) => mgrHr.updateRecording(id, data || {}, mgrHrA(actor))));
+  ipcMain.handle('mgrHr:deleteRecording', mgrHrWrap((id, actor) => mgrHr.deleteRecording(id, mgrHrA(actor))));
+  ipcMain.handle('mgrHr:analyzeRecording', mgrHrWrap((id, data, actor) => mgrHr.analyzeRecording(id, data || {}, mgrHrA(actor))));
+  ipcMain.handle('mgrHr:recordingDocumentHtml', mgrHrWrap((id, actor) => {
+    const rec = mgrHr.getRecording(id, mgrHrA(actor));
+    let shop = 'Company';
+    try {
+      shop = require('./database/db').getDb().prepare('SELECT shop_name FROM shop_settings WHERE id=1').get()?.shop_name || shop;
+    } catch (_) { /* ignore */ }
+    return { html: mgrHr.buildRecordingDocumentHtml(rec, shop), recording: { ...rec, audio_data: undefined } };
+  }));
+  ipcMain.handle('mgrHr:caseDocumentHtml', mgrHrWrap((id, actor) => {
+    const c = mgrHr.getCase(id, mgrHrA(actor));
+    let shop = { shop_name: 'Company' };
+    try {
+      shop = require('./database/db').getDb().prepare(
+        'SELECT shop_name, address, phone, email FROM shop_settings WHERE id=1'
+      ).get() || shop;
+    } catch (_) { /* ignore */ }
+    return { html: mgrHr.buildCaseDocumentHtml(c, shop), case: { ...c, evidence_paths: undefined } };
+  }));
+
   ipcMain.handle('hr:onboardingTemplates', hr((actor) => store.listOnboardingTemplates(hrA(actor))));
   ipcMain.handle('hr:onboardingProgress', hr((employeeId, actor) => store.getOnboardingProgress(employeeId, hrA(actor))));
   ipcMain.handle('hr:saveOnboardingProgress', hr((data, actor) => store.saveOnboardingProgress(data || {}, hrA(actor))));
@@ -2788,7 +3106,47 @@ function registerIpc() {
   ipcMain.handle('documentHub:share', wrapF((id, options, actor) => store.shareDocument(id, options, actor)));
   ipcMain.handle('documentHub:exportStatus', wrapF((id, actor) => store.exportDocumentStatus(id, actor)));
   ipcMain.handle('documentHub:processScheduled', wrapF(() => store.processScheduledDocuments()));
-  ipcMain.handle('documentHub:syncFlyer', wrapF((flyerId, options) => store.syncFlyerToHub(flyerId, options || {})));
+
+  ipcMain.handle('firstOnlineGift:get', wrapF((actor) => {
+    return require('./services/first-online-gift').getCampaign(actor || store.getUserSession());
+  }));
+  ipcMain.handle('firstOnlineGift:save', wrapF((data, actor) => {
+    return require('./services/first-online-gift').saveCampaign(data || {}, actor || store.getUserSession());
+  }));
+  ipcMain.handle('firstOnlineGift:dashboard', wrapF((filters, actor) => {
+    return require('./services/first-online-gift').getDashboard(filters || {}, actor || store.getUserSession());
+  }));
+  ipcMain.handle('firstOnlineGift:winners', wrapF((filters, actor) => {
+    return require('./services/first-online-gift').listWinners(filters || {}, actor || store.getUserSession());
+  }));
+  ipcMain.handle('firstOnlineGift:selfTest', wrapF((actor) => {
+    return require('./services/first-online-gift').runSelfTest(actor || store.getUserSession());
+  }));
+
+  ipcMain.handle('paymentGateways:list', wrapF((actor) => {
+    store.requireActor(actor || store.getUserSession(), ['owner', 'manager']);
+    return require('./services/payment-gateway').listGateways(actor || store.getUserSession());
+  }));
+  ipcMain.handle('paymentGateways:save', wrapF((provider, data, actor) => {
+    store.requireActor(actor || store.getUserSession(), ['owner', 'manager']);
+    return require('./services/payment-gateway').saveGateway(provider, data || {}, actor || store.getUserSession());
+  }));
+  ipcMain.handle('paymentGateways:test', wrap(async (provider, actor) => {
+    store.requireActor(actor || store.getUserSession(), ['owner', 'manager']);
+    return require('./services/payment-gateway').testConnection(provider, actor || store.getUserSession());
+  }));
+  ipcMain.handle('paymentGateways:registerWebhook', wrap(async (provider, actor) => {
+    store.requireActor(actor || store.getUserSession(), ['owner', 'manager']);
+    return require('./services/payment-gateway').registerWebhook(provider, actor || store.getUserSession());
+  }));
+  ipcMain.handle('paymentGateways:listTransactions', wrapF((filters, actor) => {
+    store.requireActor(actor || store.getUserSession(), ['owner', 'manager']);
+    return require('./services/payment-gateway').listTransactions(filters || {}, actor || store.getUserSession());
+  }));
+  ipcMain.handle('paymentGateways:refund', wrap(async (txnId, amount, actor) => {
+    store.requireActor(actor || store.getUserSession(), ['owner', 'manager']);
+    return require('./services/payment-gateway').refundTransaction(txnId, amount, actor || store.getUserSession());
+  }));
 
   ipcMain.handle('rewards:getRules', wrapF(() => store.getRewardRules()));
   ipcMain.handle('rewards:saveRule', wrapF((data, actor) => {
@@ -2819,6 +3177,23 @@ function registerIpc() {
   ipcMain.handle('branches:saveSettings', wrap((branchId, data, actor) => {
     store.requireActor(actor || store.getUserSession(), ['owner', 'manager']);
     return store.saveBranchSettings(branchId, data || {});
+  }));
+  ipcMain.handle('branches:delete', wrap((id, actor) => {
+    store.requireActor(actor || store.getUserSession(), ['owner']);
+    return store.deleteBranch(id, actor);
+  }));
+  ipcMain.handle('branches:listTills', wrap((branchId) => store.listBranchTills(branchId)));
+  ipcMain.handle('branches:saveTill', wrap((branchId, data, actor) => {
+    store.requireActor(actor || store.getUserSession(), ['owner', 'manager']);
+    return store.saveBranchTill(branchId, data || {});
+  }));
+  ipcMain.handle('branches:updateTill', wrap((branchId, deviceId, patch, actor) => {
+    store.requireActor(actor || store.getUserSession(), ['owner', 'manager']);
+    return store.updateBranchTill(branchId, deviceId, patch || {});
+  }));
+  ipcMain.handle('branches:deleteTill', wrap((branchId, deviceId, actor) => {
+    store.requireActor(actor || store.getUserSession(), ['owner', 'manager']);
+    return store.deleteBranchTill(branchId, deviceId);
   }));
   ipcMain.handle('sync:getStatus', wrap(() => store.getSyncStatus()));
   ipcMain.handle('sync:saveSettings', wrap((data, actor) => {
@@ -2853,11 +3228,25 @@ function registerIpc() {
 
   const web = require('./services/online-ordering');
   ipcMain.handle('web:getSettings', wrap(() => web.getGlobalSettings()));
+  ipcMain.handle('web:getHoursStatus', wrap(() => web.getHoursStatus()));
+  ipcMain.handle('web:trackEvents', wrap((payload) => {
+    return require('./services/web-analytics').trackEvents(payload || {});
+  }));
+  ipcMain.handle('web:visitorDashboard', wrap((filters, actor) => {
+    requireUserSession(['owner', 'manager', 'supervisor']);
+    return require('./services/web-analytics').getVisitorDashboard(filters || {}, actor);
+  }));
+  ipcMain.handle('web:onlineCustomers', wrap((filters, actor) => {
+    requireUserSession(['owner', 'manager', 'supervisor']);
+    return require('./services/web-analytics').listOnlineCustomers(filters || {}, actor);
+  }));
   ipcMain.handle('web:getBranches', wrap(() => web.getPublicBranches()));
   ipcMain.handle('web:getMenu', wrap((branchId, filters) => web.getBranchMenu(branchId, filters || {})));
   ipcMain.handle('web:getProduct', wrap((branchId, productId) => web.getProductDetail(branchId, productId)));
   ipcMain.handle('web:register', wrap((data) => web.registerWebCustomer(data || {})));
   ipcMain.handle('web:login', wrap((login, password) => web.loginWebCustomer(login, password)));
+  ipcMain.handle('web:sendPasswordReset', wrap((data) => web.sendWebPasswordReset(data || {})));
+  ipcMain.handle('web:resetPassword', wrap((data) => web.resetWebPassword(data || {})));
   ipcMain.handle('web:account', wrap((token) => web.getCustomerAccount(token)));
   ipcMain.handle('web:validateCart', wrap((branchId, cart) => web.validateCart(branchId, cart || {})));
   ipcMain.handle('web:validateCoupon', wrap((code, branchId, cart, customerId) => web.validateCoupon(code, branchId, cart || {}, customerId)));
@@ -2865,11 +3254,28 @@ function registerIpc() {
   ipcMain.handle('web:getOrder', wrap((orderId, token) => web.getOrder(orderId, token)));
   ipcMain.handle('web:listOrders', wrap((token, limit) => web.listCustomerOrders(token, limit)));
   ipcMain.handle('web:toggleFavorite', wrap((token, productId, branchId) => web.toggleFavorite(token, productId, branchId)));
-  ipcMain.handle('web:checkGiftCard', wrap((code) => web.checkGiftCardForWeb(code)));
-  ipcMain.handle('web:deleteAccount', wrap((token) => web.deleteWebCustomerAccount(token)));
+  ipcMain.handle('web:checkGiftCard', wrap((code, token) => web.checkGiftCardForWeb(code, token)));
+  ipcMain.handle('web:deleteAccount', wrap((token, password) => web.deleteWebCustomerAccount(token, password)));
+  ipcMain.handle('web:submitIssue', wrap((data, token) => web.submitCustomerIssue(data || {}, token)));
+  ipcMain.handle('web:listMyIssues', wrap((token) => web.listMyCustomerIssues(token)));
+  ipcMain.handle('web:listIssues', wrap((filters, actor) => web.listCustomerIssues(filters || {}, actor)));
+  ipcMain.handle('web:getIssue', wrap((id, actor) => web.getCustomerIssue(id, actor)));
+  ipcMain.handle('web:replyIssue', wrap((id, reply, actor) => web.replyCustomerIssue(id, reply, actor)));
   ipcMain.handle('web:adminOrders', wrap((filters, actor) => {
     requireUserSession(['owner', 'manager', 'supervisor']);
-    return web.listAdminOrders(filters || {});
+    return web.listAdminOrders(filters || {}, actor);
+  }));
+  ipcMain.handle('web:adminOrderDetail', wrap((orderId, actor) => {
+    requireUserSession(['owner', 'manager', 'supervisor', 'assistant_manager']);
+    return web.getAdminOrderDetail(orderId, actor);
+  }));
+  ipcMain.handle('web:adminUpdateOrder', wrap((orderId, patch, actor) => {
+    const user = requireUserSession(['owner', 'manager']);
+    return web.updateAdminOrder(orderId, patch || {}, actor || user);
+  }));
+  ipcMain.handle('web:adminDeleteOrder', wrap((orderId, reason, actor) => {
+    const user = requireUserSession(['owner', 'manager']);
+    return web.deleteAdminOrder(orderId, reason, actor || user);
   }));
   
 ipcMain.handle('web:adminAnalytics', wrap((filters, actor) => {
@@ -2884,9 +3290,17 @@ ipcMain.handle('web:adminAnalytics', wrap((filters, actor) => {
     const recovery = require('./services/panel-password-recovery');
     return recovery.recoverDriverPassword(identifier);
   }));
-  ipcMain.handle('auth:recoverMarketingPassword', wrap((identifier) => {
+  ipcMain.handle('auth:recoverReferralAgentPassword', wrap((identifier) => {
     const recovery = require('./services/panel-password-recovery');
-    return recovery.recoverMarketingAgentPassword(identifier);
+    return recovery.sendReferralAgentResetCode(identifier);
+  }));
+  ipcMain.handle('auth:resetReferralAgentPassword', wrap((data) => {
+    const recovery = require('./services/panel-password-recovery');
+    return recovery.resetReferralAgentPassword(data || {});
+  }));
+  ipcMain.handle('auth:recoverAdminPassword', wrap((identifier) => {
+    const recovery = require('./services/panel-password-recovery');
+    return recovery.recoverAdminPassword(identifier);
   }));
   ipcMain.handle('web:saveGlobalSettings', wrap((data, actor) => {
     requireUserSession(['owner', 'manager']);
@@ -3008,7 +3422,11 @@ ipcMain.handle('web:adminAnalytics', wrap((filters, actor) => {
   ipcMain.handle('mobile:searchOrders', wrap((token, query) => mm.searchOrders(token, query || {})));
   ipcMain.handle('mobile:staffActivity', wrap((token, filters) => mm.getStaffActivity(token, filters || {})));
   ipcMain.handle('mobile:posStatus', wrap((token) => mm.getPosStatus(token)));
-  ipcMain.handle('mobile:alerts', wrap((token, limit) => mm.listAlerts(token, limit)));
+  ipcMain.handle('mobile:alerts', wrap((token, arg) => {
+    const opts = typeof arg === 'object' && arg !== null ? arg : { limit: arg || 50 };
+    return mm.listAlerts(token, opts.limit || 50, opts);
+  }));
+  ipcMain.handle('mobile:heartbeat', wrap((branchId, deviceId, label) => mm.recordPosHeartbeat(branchId, deviceId, label)));
   ipcMain.handle('mobile:markRead', wrap((token, ids) => mm.markNotificationsRead(token, ids)));
   ipcMain.handle('mobile:getPrefs', wrap((token) => mm.getNotificationPrefs(token)));
   ipcMain.handle('mobile:savePrefs', wrap((token, prefs) => mm.saveNotificationPrefs(token, prefs)));

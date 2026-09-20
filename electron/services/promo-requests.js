@@ -50,26 +50,65 @@ function resolveStatusForDates(startDate, endDate, baseStatus) {
 }
 
 let _lastPromoSyncAt = 0;
-function syncPromoStatuses() {
+function syncPromoStatuses(force = false) {
   // Throttle status sync — called on every products:get otherwise.
-  if (Date.now() - _lastPromoSyncAt < 60 * 1000) return;
+  if (!force && Date.now() - _lastPromoSyncAt < 60 * 1000) return;
   const db = getDb();
   const todayStr = today();
-  db.prepare(`
-    UPDATE product_promo_requests SET status = 'active', updated_at = datetime('now')
-    WHERE status = 'approved' AND date(?) BETWEEN date(start_date) AND date(end_date)
-  `).run(todayStr);
-  db.prepare(`
-    UPDATE product_promo_requests SET status = 'expired', updated_at = datetime('now')
-    WHERE status IN ('active', 'approved', 'pending') AND date(end_date) < date(?)
-  `).run(todayStr);
+  try {
+    db.prepare(`
+      UPDATE product_promo_requests SET status = 'active', updated_at = datetime('now')
+      WHERE status = 'approved' AND date(?) BETWEEN date(start_date) AND date(end_date)
+    `).run(todayStr);
+    db.prepare(`
+      UPDATE product_promo_requests SET status = 'expired', updated_at = datetime('now')
+      WHERE status IN ('active', 'approved', 'pending') AND date(end_date) < date(?)
+    `).run(todayStr);
+  } catch (_) { /* schema may lag briefly */ }
   _lastPromoSyncAt = Date.now();
+}
+
+function ensurePromoChannelColumns() {
+  const db = getDb();
+  try { db.prepare('ALTER TABLE product_promo_requests ADD COLUMN show_on_pos INTEGER NOT NULL DEFAULT 1').run(); } catch (_) { /* exists */ }
+  try { db.prepare('ALTER TABLE product_promo_requests ADD COLUMN show_on_online INTEGER NOT NULL DEFAULT 1').run(); } catch (_) { /* exists */ }
+}
+
+function normalizePromoChannels(data = {}) {
+  const raw = String(data.channels || data.channel || '').toLowerCase().trim();
+  if (raw === 'pos') return { show_on_pos: 1, show_on_online: 0 };
+  if (raw === 'online' || raw === 'order_online' || raw === 'web') return { show_on_pos: 0, show_on_online: 1 };
+  if (raw === 'both' || raw === 'all') return { show_on_pos: 1, show_on_online: 1 };
+  const showPos = data.show_on_pos == null ? 1 : (Number(data.show_on_pos) ? 1 : 0);
+  const showOnline = data.show_on_online == null ? 1 : (Number(data.show_on_online) ? 1 : 0);
+  if (!showPos && !showOnline) return { show_on_pos: 1, show_on_online: 1 };
+  return { show_on_pos: showPos, show_on_online: showOnline };
+}
+
+function promoChannelLabel(row) {
+  const pos = Number(row?.show_on_pos ?? 1) === 1;
+  const online = Number(row?.show_on_online ?? 1) === 1;
+  if (pos && online) return 'POS + Online';
+  if (pos) return 'POS only';
+  if (online) return 'Online only';
+  return 'None';
 }
 
 function mapRequestRow(row) {
   if (!row) return null;
   return {
     ...row,
+    show_on_pos: Number(row.show_on_pos ?? 1) ? 1 : 0,
+    show_on_online: Number(row.show_on_online ?? 1) ? 1 : 0,
+    channels: (() => {
+      const pos = Number(row.show_on_pos ?? 1) === 1;
+      const online = Number(row.show_on_online ?? 1) === 1;
+      if (pos && online) return 'both';
+      if (pos) return 'pos';
+      if (online) return 'online';
+      return 'both';
+    })(),
+    channel_label: promoChannelLabel(row),
     display_status: resolveStatusForDates(row.start_date, row.end_date, row.status)
   };
 }
@@ -106,27 +145,38 @@ function attachPromoStatus(product) {
   };
 }
 
-function getActivePromosMap() {
+function getActivePromosMap(channel = null) {
+  ensurePromoChannelColumns();
   syncPromoStatuses();
   const todayStr = today();
-  const rows = getDb().prepare(`
+  let sql = `
     SELECT * FROM product_promo_requests
     WHERE status IN ('active', 'approved')
       AND date(?) BETWEEN date(start_date) AND date(end_date)
-  `).all(todayStr);
+  `;
+  const params = [todayStr];
+  if (channel === 'pos') {
+    sql += ' AND COALESCE(show_on_pos, 1) = 1';
+  } else if (channel === 'online') {
+    sql += ' AND COALESCE(show_on_online, 1) = 1';
+  }
+  const rows = getDb().prepare(sql).all(...params);
   const map = {};
   for (const row of rows) map[row.product_id] = row;
   return map;
 }
 
-function applyPromoPricesToProducts(products, preloadedMap) {
+function applyPromoPricesToProducts(products, preloadedMap, opts = {}) {
+  const channel = opts.channel || null;
   const promos = preloadedMap || (() => {
     syncPromoStatuses();
-    return getActivePromosMap();
+    return getActivePromosMap(channel);
   })();
   return products.map(p => {
     const promo = promos[p.id];
     if (!promo) return p;
+    if (channel === 'pos' && Number(promo.show_on_pos ?? 1) !== 1) return p;
+    if (channel === 'online' && Number(promo.show_on_online ?? 1) !== 1) return p;
     const original = Number(promo.original_price) || Number(p.selling_price);
     const promoPrice = Number(promo.proposed_price);
     return {
@@ -135,13 +185,16 @@ function applyPromoPricesToProducts(products, preloadedMap) {
       original_price: original,
       promo_active: true,
       promo_request_id: promo.id,
-      promo_end_date: promo.end_date
+      promo_end_date: promo.end_date,
+      promo_channels: mapRequestRow(promo).channels,
+      promo_channel_label: promoChannelLabel(promo)
     };
   });
 }
 
 function proposeProductPromo(productId, data, actor) {
   requireRole(actor, PROPOSER_ROLES);
+  ensurePromoChannelColumns();
   const db = getDb();
   const product = db.prepare('SELECT id, name, selling_price, buying_price, is_active FROM products WHERE id = ?').get(productId);
   if (!product || !product.is_active) throw new Error('Product not found or inactive');
@@ -150,6 +203,7 @@ function proposeProductPromo(productId, data, actor) {
   const startDate = String(data.start_date || '').trim();
   const endDate = String(data.end_date || '').trim();
   const notes = data.notes?.trim() || null;
+  const channels = normalizePromoChannels(data);
 
   if (!proposedPrice || proposedPrice <= 0) throw new Error('Proposed sale price must be greater than 0');
   const cost = Math.max(0, Number(product.buying_price) || 0);
@@ -181,14 +235,18 @@ function proposeProductPromo(productId, data, actor) {
   const originalPrice = Number(product.selling_price) || 0;
   const r = db.prepare(`
     INSERT INTO product_promo_requests
-      (product_id, proposed_price, original_price, start_date, end_date, status, proposed_by, notes)
-    VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)
-  `).run(productId, proposedPrice, originalPrice, startDate, endDate, actor?.id || null, notes);
+      (product_id, proposed_price, original_price, start_date, end_date, status, proposed_by, notes, show_on_pos, show_on_online)
+    VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)
+  `).run(
+    productId, proposedPrice, originalPrice, startDate, endDate, actor?.id || null, notes,
+    channels.show_on_pos, channels.show_on_online
+  );
 
   const requestId = r.lastInsertRowid;
   audit(actor?.id, actor?.username, 'propose_product_promo', requestId, {
     product_id: productId, product_name: product.name, proposed_price: proposedPrice,
-    original_price: originalPrice, start_date: startDate, end_date: endDate, notes
+    original_price: originalPrice, start_date: startDate, end_date: endDate, notes,
+    show_on_pos: channels.show_on_pos, show_on_online: channels.show_on_online
   });
 
   addNotification(
@@ -202,6 +260,7 @@ function proposeProductPromo(productId, data, actor) {
     `Promo proposed: ${proposedPrice} (${startDate} to ${endDate})`, productId
   );
 
+  syncPromoStatuses(true);
   if (ADMIN_ROLES.includes(actor?.role)) {
     return approvePromoRequest(requestId, actor);
   }
@@ -222,7 +281,8 @@ function getPendingPromoRequests() {
 }
 
 function getPromoRequestHistory(filters = {}) {
-  syncPromoStatuses();
+  ensurePromoChannelColumns();
+  syncPromoStatuses(!!filters.force_sync);
   let sql = `
     SELECT pr.*, p.name AS product_name, p.sku, p.barcode,
       u1.full_name AS proposed_by_name, u2.full_name AS approved_by_name
@@ -233,7 +293,12 @@ function getPromoRequestHistory(filters = {}) {
     WHERE 1=1
   `;
   const params = [];
-  if (filters.status) { sql += ' AND pr.status = ?'; params.push(filters.status); }
+  if (filters.status === 'live' || filters.status === 'active_or_approved') {
+    sql += ` AND pr.status IN ('active', 'approved')`;
+  } else if (filters.status) {
+    sql += ' AND pr.status = ?';
+    params.push(filters.status);
+  }
   if (filters.product_id) { sql += ' AND pr.product_id = ?'; params.push(filters.product_id); }
   sql += ' ORDER BY pr.created_at DESC LIMIT 200';
   return getDb().prepare(sql).all(...params).map(mapRequestRow);
@@ -241,6 +306,7 @@ function getPromoRequestHistory(filters = {}) {
 
 function approvePromoRequest(id, actor) {
   requireRole(actor, ADMIN_ROLES);
+  ensurePromoChannelColumns();
   const db = getDb();
   const req = db.prepare('SELECT * FROM product_promo_requests WHERE id = ?').get(id);
   if (!req) throw new Error('Promo request not found');
@@ -270,6 +336,7 @@ function approvePromoRequest(id, actor) {
     );
   }
 
+  syncPromoStatuses(true);
   return getPromoRequest(id);
 }
 
@@ -361,6 +428,7 @@ function deletePromoRequest(id, actor) {
 
 function updatePromoRequest(id, data, actor) {
   requireRole(actor, ADMIN_ROLES);
+  ensurePromoChannelColumns();
   const db = getDb();
   const req = db.prepare('SELECT * FROM product_promo_requests WHERE id = ?').get(id);
   if (!req) throw new Error('Promo request not found');
@@ -372,6 +440,16 @@ function updatePromoRequest(id, data, actor) {
   const startDate = data.start_date != null ? String(data.start_date).trim() : req.start_date;
   const endDate = data.end_date != null ? String(data.end_date).trim() : req.end_date;
   const notes = data.notes != null ? (String(data.notes).trim() || null) : req.notes;
+  const channels = (data.channels != null || data.channel != null || data.show_on_pos != null || data.show_on_online != null)
+    ? normalizePromoChannels({
+      channels: data.channels || data.channel,
+      show_on_pos: data.show_on_pos != null ? data.show_on_pos : req.show_on_pos,
+      show_on_online: data.show_on_online != null ? data.show_on_online : req.show_on_online
+    })
+    : {
+      show_on_pos: Number(req.show_on_pos ?? 1) ? 1 : 0,
+      show_on_online: Number(req.show_on_online ?? 1) ? 1 : 0
+    };
 
   if (!proposedPrice || proposedPrice <= 0) throw new Error('Sale price must be greater than 0');
   if (!startDate || !endDate) throw new Error('Start date and end date are required');
@@ -391,18 +469,24 @@ function updatePromoRequest(id, data, actor) {
 
   db.prepare(`
     UPDATE product_promo_requests
-    SET proposed_price = ?, start_date = ?, end_date = ?, notes = ?, status = ?, updated_at = datetime('now')
+    SET proposed_price = ?, start_date = ?, end_date = ?, notes = ?, status = ?,
+        show_on_pos = ?, show_on_online = ?, updated_at = datetime('now')
     WHERE id = ?
-  `).run(proposedPrice, startDate, endDate, notes, newStatus, id);
+  `).run(
+    proposedPrice, startDate, endDate, notes, newStatus,
+    channels.show_on_pos, channels.show_on_online, id
+  );
 
   db.prepare('UPDATE products SET promo_flag = 1, promo_notes = ? WHERE id = ?').run(
     `Promo: ${proposedPrice} (${startDate} to ${endDate})`, req.product_id
   );
 
   audit(actor?.id, actor?.username, 'update_product_promo', id, {
-    product_id: req.product_id, proposed_price: proposedPrice, start_date: startDate, end_date: endDate, status: newStatus
+    product_id: req.product_id, proposed_price: proposedPrice, start_date: startDate, end_date: endDate,
+    status: newStatus, show_on_pos: channels.show_on_pos, show_on_online: channels.show_on_online
   });
 
+  syncPromoStatuses(true);
   return getPromoRequest(id);
 }
 
@@ -464,5 +548,8 @@ module.exports = {
   updatePromoRequest,
   buildPromoWhatsAppMessage,
   getPromoSalesLog,
-  getActivePromosMap
+  getActivePromosMap,
+  normalizePromoChannels,
+  promoChannelLabel,
+  ensurePromoChannelColumns
 };

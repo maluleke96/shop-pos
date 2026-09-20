@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>Apply for a job</title>
+  <base href="/">
+  <link rel="icon" href="/api/logo">
+  <style>
+    html, body { margin: 0; background: #f1f5f9; color: #0f172a; font-family: system-ui, sans-serif; }
+    .field { margin: 12px 0; }
+    .field label { display: block; font-size: 13px; font-weight: 650; margin-bottom: 4px; }
+    .field input, .field textarea, .field select {
+      width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid #cbd5e1;
+      border-radius: 10px; font: inherit;
+    }
+    .btn { border: 0; border-radius: 10px; padding: 10px 16px; font-weight: 700; cursor: pointer; }
+    .btn-primary { background: #1e3a5f; color: #fff; }
+    .btn-ghost { background: #e2e8f0; color: #0f172a; }
+    .btn-danger { background: #dc2626; color: #fff; }
+    .btn:disabled { opacity: .6; cursor: not-allowed; }
+  </style>
+</head>
+<body>
+  <div id="apply-mount"><p style="text-align:center;padding:48px;color:#64748b">Loading vacancy…</p></div>
+  <script src="js/env.js"></script>
+  <script src="js/pages/apply-job.js"></script>
+  <script>
+    window.ApplyJobPage?.render?.();
+  </script>
+</body>
+</html>

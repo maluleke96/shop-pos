@@ -1,0 +1,8 @@
+{
+  "appId": "com.shoppos.delivery",
+  "appName": "Delivery Department",
+  "webDir": "www",
+  "android": {
+    "allowMixedContent": false
+  }
+}

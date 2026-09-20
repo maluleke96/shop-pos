@@ -25,17 +25,27 @@ async function rpc(method, args = [], token = null) {
 }
 
 function unwrap(r) {
-  if (r?.json?.success === false) throw new Error(r.json.error || 'RPC failed');
-  return r.json?.data ?? r.json;
+  const j = r?.json;
+  if (!j) throw new Error('Empty RPC response');
+  if (j.success === false) throw new Error(j.error || 'RPC failed');
+  if (j.error && j.data == null) throw new Error(j.error);
+  return j.data ?? j;
+}
+
+function asProductList(data) {
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data?.products)) return data.products;
+  if (Array.isArray(data?.data)) return data.data;
+  throw new Error(`Expected product array, got ${typeof data}`);
 }
 
 (async () => {
   const passEnv = process.env.SMOKE_PASS || process.env.SHOP_POS_SMOKE_PASS || '123456';
   const ownerUser = process.env.SMOKE_USER || 'chisa96';
 
-  const login = await rpc('auth:login', [ownerUser, passEnv]);
+  let login = await rpc('auth:login', [ownerUser, passEnv]);
   const owner = login.json?.user;
-  const token = login.token;
+  let token = login.token;
   if (!owner?.id) {
     fail('login', { error: login.json?.error || 'login failed' });
     console.log(JSON.stringify({ results }, null, 2));
@@ -76,7 +86,11 @@ function unwrap(r) {
     }
   }
 
-  const products = unwrap(await rpc('products:get', [{ for_pos: true }], token));
+  const products = asProductList(unwrap(await (async () => {
+    const r = await rpc('products:get', [{ for_pos: true }], token);
+    token = r.token || token;
+    return r;
+  })()));
   const product = products.find((p) => Number(p.stock_quantity) > 5 && Number(p.selling_price) > 0)
     || products.find((p) => Number(p.stock_quantity) > 0);
   if (!product?.id) {
@@ -88,7 +102,9 @@ function unwrap(r) {
   const branchStockBefore = Number(stockBeforeMain.stock_quantity);
 
   async function getBranchStock(branchId) {
-    const prods = unwrap(await rpc('products:get', [{ for_pos: true, branch_id: branchId, actor: owner }], token));
+    const r = await rpc('products:get', [{ for_pos: true, branch_id: branchId }], token);
+    token = r.token || token;
+    const prods = asProductList(unwrap(r));
     const row = prods.find((p) => Number(p.id) === Number(product.id));
     return Number(row?.stock_quantity ?? -1);
   }
@@ -132,8 +148,12 @@ function unwrap(r) {
   }
 
   // POS 1 sale on main branch
-  const sale1 = unwrap(await rpc('sales:complete', [salePayload(1, mainBranch.id, DEVICE_1, 'pos1'), owner], token));
-  const sale1Row = unwrap(await rpc('sales:get', [sale1.saleId || sale1.sale?.id], token));
+  let sale1Res = await rpc('sales:complete', [salePayload(1, mainBranch.id, DEVICE_1, 'pos1'), owner], token);
+  token = sale1Res.token || token;
+  const sale1 = unwrap(sale1Res);
+  let sale1GetRes = await rpc('sales:get', [sale1.saleId || sale1.sale?.id], token);
+  token = sale1GetRes.token || token;
+  const sale1Row = unwrap(sale1GetRes);
   if (Number(sale1Row.branch_id) === Number(mainBranch.id)) {
     pass('sale1-branch', { detail: `branch_id=${sale1Row.branch_id}` });
   } else {
@@ -153,7 +173,9 @@ function unwrap(r) {
   }
 
   // POS 2 reads catalog (simulated)
-  const catalogPos2 = unwrap(await rpc('products:get', [{ for_pos: true, branch_id: mainBranch.id, actor: owner }], token));
+  let catalogRes = await rpc('products:get', [{ for_pos: true, branch_id: mainBranch.id }], token);
+  token = catalogRes.token || token;
+  const catalogPos2 = asProductList(unwrap(catalogRes));
   const pos2Prod = catalogPos2.find((p) => Number(p.id) === Number(product.id));
   if (Number(pos2Prod?.stock_quantity) === stockAfterSale1) {
     pass('pos2-catalog-stock', { detail: `POS2 sees qty=${pos2Prod.stock_quantity}` });
@@ -162,8 +184,12 @@ function unwrap(r) {
   }
 
   // POS 2 sale
-  const sale2 = unwrap(await rpc('sales:complete', [salePayload(1, mainBranch.id, DEVICE_2, 'pos2'), owner], token));
-  const sale2Row = unwrap(await rpc('sales:get', [sale2.saleId || sale2.sale?.id], token));
+  let sale2Res = await rpc('sales:complete', [salePayload(1, mainBranch.id, DEVICE_2, 'pos2'), owner], token);
+  token = sale2Res.token || token;
+  const sale2 = unwrap(sale2Res);
+  let sale2GetRes = await rpc('sales:get', [sale2.saleId || sale2.sale?.id], token);
+  token = sale2GetRes.token || token;
+  const sale2Row = unwrap(sale2GetRes);
   if (Number(sale2Row.branch_id) === Number(mainBranch.id)) pass('sale2-branch', { detail: `branch_id=${sale2Row.branch_id}` });
   else fail('sale2-branch', { error: `expected ${mainBranch.id}, got ${sale2Row.branch_id}` });
   if (sale2Row.device_id === DEVICE_2) pass('sale2-device', { detail: sale2Row.device_id });
@@ -257,7 +283,7 @@ function unwrap(r) {
     }
 
     // Cashier catalog scoped to own branch
-    const cashierCatalog = unwrap(await rpc('products:get', [{ for_pos: true, actor: cashier }], cashierToken));
+    const cashierCatalog = asProductList(unwrap(await rpc('products:get', [{ for_pos: true }], cashierToken)));
     pass('cashier-catalog-access', { detail: `${cashierCatalog.length} products visible` });
   }
 

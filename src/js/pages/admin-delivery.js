@@ -16,6 +16,9 @@ window.AdminDeliveryPage = {
   _payHistoryDriverId: null,
   _payFrom: null,
   _payTo: null,
+  _ordersOffset: 0,
+  _historyOffset: 0,
+  _pageSize: 50,
 
   _paymentRows() {
     const s = this.paymentSummary;
@@ -37,14 +40,16 @@ window.AdminDeliveryPage = {
     this.stopAutoRefresh();
     this._refreshTimer = setInterval(() => {
       if (document.hidden) return;
-      const tab = this.tab;
       const preserve = {
         payHistoryDriverId: this._payHistoryDriverId,
         payFrom: this._payFrom,
         payTo: this._payTo
       };
-      this.ensureTabData(tab).then(() => this.paintTab({ silent: true, preserve })).catch(() => {});
-    }, 30000);
+      this.load(true).then(() => {
+        this._lastRefresh = new Date();
+        this.paintTab({ silent: true, preserve });
+      }).catch(() => {});
+    }, 15000);
   },
 
   poolOrders() {
@@ -99,7 +104,7 @@ window.AdminDeliveryPage = {
   trackUrl(token) {
     if (!token) return '';
     const base = this.baseUrl();
-    return `${base}/driver/track.html?token=${encodeURIComponent(token)}`;
+    return `${base}/track/${encodeURIComponent(token)}`;
   },
 
   baseUrl() {
@@ -139,7 +144,7 @@ window.AdminDeliveryPage = {
         <div>
           <h2>Delivery Operations</h2>
           <p>Manage drivers, live pool, payouts, and delivery settings — synced with the driver app in real time.</p>
-          <div class="dd-live"><span class="dd-live-dot"></span> Live sync · refreshes every 30s</div>
+          <div class="dd-live"><span class="dd-live-dot"></span> Live sync · refreshes every 15s</div>
         </div>
         <div class="dd-hero-actions">
           ${window.PanelNotify ? PanelNotify.soundToggleHtml('delivery', { id: 'dd-notify-sound', label: 'Alert sounds' }) : ''}
@@ -235,28 +240,44 @@ window.AdminDeliveryPage = {
     return labels[t] || t.charAt(0).toUpperCase() + t.slice(1);
   },
 
-  async ensureTabData(tab) {
-    if (this._loadedTabs[tab]) return;
+  async ensureTabData(tab, opts = {}) {
+    const force = !!opts.force;
+    if (this._loadedTabs[tab] && !force) return;
     try {
+      const pageSize = this._pageSize || 50;
       if (tab === 'dashboard' || tab === 'pool') {
         const [dash, orders, driversRes] = await Promise.all([
           API.deliveryDashboard({}, this.actor),
-          API.listDeliveries({ active: true, limit: 100 }, this.actor),
+          API.listDeliveries({ active: true, limit: pageSize, offset: 0 }, this.actor),
           API.listDeliveryDrivers({}, this.actor).catch(() => [])
         ]);
         this.dash = dash;
         this.orders = orders?.data || orders || [];
+        this._ordersOffset = this.orders.length;
         this.drivers = driversRes?.data || driversRes || [];
-        if (!this.settings) this.settings = await API.getDeliverySettings(this.actor).catch(() => ({}));
+        if (!this.settings) {
+          const raw = await API.getDeliverySettings(this.actor).catch(() => ({}));
+          this.settings = raw?.data || raw || {};
+        }
       } else if (tab === 'orders') {
+        const off = force && opts.reset ? 0 : (opts.ordersOffset ?? 0);
+        const histOff = force && opts.reset ? 0 : (opts.historyOffset ?? 0);
         const [orders, history, settings] = await Promise.all([
-          API.listDeliveries({ active: true, limit: 100 }, this.actor),
-          API.listDeliveries({ history: true, limit: 100 }, this.actor),
+          API.listDeliveries({ active: true, limit: pageSize, offset: off }, this.actor),
+          API.listDeliveries({ history: true, limit: pageSize, offset: histOff }, this.actor),
           API.getDeliverySettings(this.actor).catch(() => ({}))
         ]);
-        this.orders = orders?.data || orders || [];
-        this.orderHistory = history?.data || history || [];
-        this.settings = settings;
+        const orderRows = orders?.data || orders || [];
+        const histRows = history?.data || history || [];
+        if (off > 0) this.orders = [...(this.orders || []), ...orderRows];
+        else this.orders = orderRows;
+        if (histOff > 0) this.orderHistory = [...(this.orderHistory || []), ...histRows];
+        else this.orderHistory = histRows;
+        this._ordersOffset = off + orderRows.length;
+        this._historyOffset = histOff + histRows.length;
+        this._ordersHasMore = orderRows.length >= pageSize;
+        this._historyHasMore = histRows.length >= pageSize;
+        this.settings = settings?.data || settings || {};
       }
       if (tab === 'drivers' || tab === 'pending' || tab === 'orders') {
         const drivers = await API.listDeliveryDrivers({}, this.actor);
@@ -272,7 +293,7 @@ window.AdminDeliveryPage = {
           API.getBranches?.().catch(() => ({ data: [] })),
           API.listDeliveryBranchSettings?.(this.actor).catch(() => [])
         ]);
-        this.settings = settings;
+        this.settings = settings?.data || settings || {};
         this.branches = branchesRes?.data || branchesRes || [];
         this.branchFees = Array.isArray(fees) ? fees : (fees?.data || []);
       }
@@ -291,8 +312,12 @@ window.AdminDeliveryPage = {
   },
 
   async load(force = false) {
-    if (force) this._loadedTabs = {};
-    await this.ensureTabData(this.tab);
+    if (force) {
+      this._loadedTabs = {};
+      this._ordersOffset = 0;
+      this._historyOffset = 0;
+    }
+    await this.ensureTabData(this.tab, { force, reset: force });
   },
 
   money(n) { return Utils.formatMoney(n); },
@@ -397,6 +422,8 @@ window.AdminDeliveryPage = {
   paintTab(opts = {}) {
     const body = this.el?.querySelector('#del-body');
     if (!body) return;
+    // Never rebuild Settings on silent auto-refresh — it wiped place name/fee inputs mid-type
+    if (opts.silent && this.tab === 'settings') return;
     const alreadyLoaded = !!this._loadedTabs[this.tab];
     if (!opts.silent && !alreadyLoaded) body.innerHTML = '<p class="muted">Loading…</p>';
     const render = () => {
@@ -507,6 +534,7 @@ window.AdminDeliveryPage = {
       <span class="muted">Bulk-assign or release to driver pool (same as driver app)</span>
     </div>
     <div id="del-orders-list">${this.ordersTable(this.orders, { selectable: true, showReceipt: true })}</div>
+    ${this._ordersHasMore ? '<button type="button" class="btn btn-ghost btn-sm" id="del-load-more-active" style="margin-top:8px">Load more active orders</button>' : ''}
     <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
       <select id="del-bulk-driver"><option value="">Assign selected to driver…</option>
         ${(this.drivers || []).filter((d) => d.status === 'active').map((d) => `<option value="${d.id}">${this.esc(d.full_name)}</option>`).join('')}
@@ -516,18 +544,23 @@ window.AdminDeliveryPage = {
     <h3 style="margin-top:28px">Delivery history</h3>
     <p class="muted">Completed, failed, or cancelled deliveries — tap View for full details, edit, or delete.</p>
     <div id="del-history-list">${this.ordersTable(this.orderHistory || [], { history: true, showReceipt: true })}</div>
+    ${this._historyHasMore ? '<button type="button" class="btn btn-ghost btn-sm" id="del-load-more-history" style="margin-top:8px">Load more history</button>' : ''}
     </div>`;
     body.querySelector('#del-refresh').onclick = async () => {
-      const st = body.querySelector('#del-filter-status').value;
-      const filters = st ? { status: st } : { active: true, limit: 100 };
-      this.orders = await API.listDeliveries(filters, this.actor);
-      this.orders = this.orders?.data || this.orders || [];
-      this.orderHistory = await API.listDeliveries({ history: true, limit: 100 }, this.actor);
-      this.orderHistory = this.orderHistory?.data || this.orderHistory || [];
-      body.querySelector('#del-orders-list').innerHTML = this.ordersTable(this.orders, { selectable: true, showReceipt: true });
-      body.querySelector('#del-history-list').innerHTML = this.ordersTable(this.orderHistory, { history: true, showReceipt: true });
-      this.bindOrderActions(body);
+      this._loadedTabs.orders = false;
+      await this.load(true);
+      this.renderOrders(body);
     };
+    body.querySelector('#del-load-more-active')?.addEventListener('click', async () => {
+      this._loadedTabs.orders = false;
+      await this.ensureTabData('orders', { force: true, ordersOffset: this._ordersOffset, historyOffset: 0, reset: false });
+      this.renderOrders(body);
+    });
+    body.querySelector('#del-load-more-history')?.addEventListener('click', async () => {
+      this._loadedTabs.orders = false;
+      await this.ensureTabData('orders', { force: true, ordersOffset: 0, historyOffset: this._historyOffset, reset: false });
+      this.renderOrders(body);
+    });
     body.querySelector('#del-bulk-assign').onclick = () => this.bulkAssign(body);
     this.bindOrderActions(body);
   },
@@ -584,9 +617,9 @@ window.AdminDeliveryPage = {
       <td><span class="badge">${this.esc(sourceLabel(o))}</span></td>
       <td><strong>${this.esc(o.confirmation_code || '—')}</strong></td>
       <td>${this.esc(o.customer_name)}<br><small>${this.esc(o.customer_phone)}</small></td>
-      <td>${this.esc(o.delivery_address)}</td>
+      <td>${this.esc(o.delivery_address)}${o.special_instructions ? `<div class="muted" style="font-size:11px;margin-top:2px">${this.esc(o.special_instructions)}</div>` : ''}</td>
       <td>${this.esc(o.branch_name || o.branch_id || '')}</td>
-      <td>${this.money(o.delivery_fee)}</td>
+      <td><strong>${this.money(o.delivery_fee)}</strong>${Number(o.total) > 0 ? `<div class="muted" style="font-size:11px">order ${this.money(o.total)}</div>` : ''}</td>
       <td>${this.esc(o.driver_name || '—')}</td>
       <td>${this.statusBadge(o.status)}</td>
       <td class="del-actions" data-oid="${o.id}">
@@ -597,7 +630,7 @@ window.AdminDeliveryPage = {
         ${!opts.history ? `<select class="del-assign-driver" data-oid="${o.id}" data-fee="${o.delivery_fee || 0}"><option value="">Switch driver…</option>
           ${this.driversForOrder(o).map((d) => `<option value="${d.id}" ${o.driver_id == d.id ? 'selected' : ''}>${this.esc(d.full_name)}</option>`).join('')}
         </select>
-        <button type="button" class="btn btn-ghost btn-sm" data-act="auto-assign" data-oid="${o.id}">${o.driver_id ? 'Release to pool' : ((this.settings?.default_assignment_mode === 'auto') ? 'Release to pool' : 'Send to drivers')}</button>` : ''}
+        <button type="button" class="btn btn-ghost btn-sm" data-act="auto-assign" data-oid="${o.id}">${o.driver_id ? 'Release to pool' : ((this.settings?.default_assignment_mode === 'auto') ? 'Release to pool' : 'Auto-assign driver')}</button>` : ''}
       </td>
     </tr>`).join('')}</tbody></table>`;
   },
@@ -642,8 +675,15 @@ window.AdminDeliveryPage = {
     body.querySelectorAll('[data-act="auto-assign"]').forEach((btn) => {
       btn.onclick = async () => {
         try {
-          await API.releaseDeliveryToPool(btn.dataset.oid, this.actor);
-          Utils.toast('Released to driver pool — any online driver can accept', 'success');
+          const orderId = btn.dataset.oid;
+          const mode = this.settings?.default_assignment_mode;
+          if (mode === 'auto' || btn.textContent.includes('Release')) {
+            await API.releaseDeliveryToPool(orderId, this.actor);
+            Utils.toast('Released to driver pool — online drivers can accept', 'success');
+          } else {
+            await API.autoAssignDelivery(orderId, this.actor);
+            Utils.toast('Assigned to the next available online driver', 'success');
+          }
           this._loadedTabs.orders = false;
           this._loadedTabs.pool = false;
           await this.load(true);
@@ -940,29 +980,31 @@ window.AdminDeliveryPage = {
       <button type="submit" class="btn btn-primary">Save settings</button>
     </form>
     <hr style="margin:24px 0">
-    <h3>Saved branch delivery fees</h3>
-    <p class="muted">These fees apply on POS and online ordering. Free delivery applies when order subtotal is at or above the threshold.</p>
-    <table class="data-table" style="margin:12px 0"><thead><tr><th>Branch</th><th>Fee</th><th>Free above</th><th>Min order</th><th></th></tr></thead>
-    <tbody>${(this.branchFees || []).length ? this.branchFees.map((b) => `<tr>
+    <h3>Branch delivery places</h3>
+    <p class="muted">Add multiple delivery places under each branch (e.g. Ceylon, townships). Each place has its own fee, free-above amount, and minimum order. POS and Order Online use these when the customer picks a place.</p>
+    <table class="data-table" style="margin:12px 0"><thead><tr><th>Branch</th><th>Places</th><th></th></tr></thead>
+    <tbody>${(this.branchFees || []).length ? this.branchFees.map((b) => {
+      const places = b.places || [];
+      const placesHtml = places.length
+        ? places.map((p) => `<div style="font-size:12px;margin:2px 0"><strong>${this.esc(p.name)}</strong> · fee ${this.money(p.delivery_fee)}${p.free_delivery_above > 0 ? ` · free above ${this.money(p.free_delivery_above)}` : ''}${p.min_order > 0 ? ` · min ${this.money(p.min_order)}` : ''}</div>`).join('')
+        : `<div class="muted" style="font-size:12px">Flat fee ${this.money(b.delivery_fee)} (no places yet)</div>`;
+      return `<tr>
       <td>${this.esc(b.branch_name || b.branch_id)}</td>
-      <td>${this.money(b.delivery_fee)}</td>
-      <td>${this.money(b.free_delivery_above)}</td>
-      <td>${this.money(b.min_order)}</td>
-      <td><button class="btn btn-ghost btn-sm" data-edit-fee="${b.branch_id}">Edit</button>
+      <td>${placesHtml}</td>
+      <td><button class="btn btn-ghost btn-sm" data-edit-fee="${b.branch_id}">Edit places</button>
       <button class="btn btn-ghost btn-sm" data-del-fee="${b.branch_id}">Delete</button></td>
-    </tr>`).join('') : '<tr><td colspan="5" class="muted">No branch fees saved yet — add one below.</td></tr>'}
+    </tr>`;
+    }).join('') : '<tr><td colspan="3" class="muted">No branch delivery settings yet — pick a branch below.</td></tr>'}
     </tbody></table>
-    <h3>Add / edit branch fee</h3>
+    <h3>Add / edit places for a branch</h3>
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin:12px 0;align-items:center">
       <select id="del-branch-pick"><option value="">— Select branch —</option>${branchOpts}</select>
-      <label style="display:flex;align-items:center;gap:6px;font-size:13px"><input type="checkbox" id="del-all-branches"> Apply to all branches</label>
       <button class="btn btn-ghost" id="del-branch-load">Load branch</button>
     </div>
-    <form id="del-branch-fee-form" class="form-grid" style="max-width:420px;display:none">
-      <label class="field full">Delivery fee (R)<input name="delivery_fee" type="number" min="0" step="0.01"></label>
-      <label class="field full">Free delivery above (R)<input name="free_delivery_above" type="number" min="0" step="0.01" placeholder="0 = always charge fee"></label>
-      <label class="field full">Minimum order (R)<input name="min_order" type="number" min="0" step="0.01"></label>
-      <button type="submit" class="btn btn-primary">Save branch fee</button>
+    <form id="del-branch-fee-form" style="max-width:640px;display:none">
+      <div id="del-places-list" style="margin-bottom:12px"></div>
+      <button type="button" class="btn btn-ghost btn-sm" id="del-place-add">+ Add delivery place</button>
+      <div style="margin-top:14px"><button type="submit" class="btn btn-primary">Save delivery places</button></div>
     </form>`;
     const settingsNotify = body.querySelector('#dd-settings-notify');
     if (settingsNotify && window.PanelNotify) PanelNotify.bindSoundToggle(settingsNotify, 'delivery');
@@ -973,8 +1015,12 @@ window.AdminDeliveryPage = {
       if (payload.payout_day_of_week === '') payload.payout_day_of_week = null;
       try {
         const saved = await API.saveDeliverySettings(payload, this.actor);
-        this.settings = saved?.data || saved || await API.getDeliverySettings(this.actor);
-        this._loadedTabs.settings = false;
+        if (saved && saved.success === false) {
+          Utils.toast(saved.error || 'Could not save settings', 'error');
+          return;
+        }
+        this.settings = saved?.data || saved || {};
+        this._loadedTabs.settings = true; // keep unwrapped row — avoid re-fetch envelope glitch
         this._loadedTabs.dashboard = false;
         this._loadedTabs.pool = false;
         Utils.toast('Settings saved — driver app will use these on next refresh', 'success');
@@ -984,19 +1030,90 @@ window.AdminDeliveryPage = {
       }
     };
     const branchForm = body.querySelector('#del-branch-fee-form');
-    const loadBranchForm = async (bid) => {
-      const bs = await API.getDeliveryBranchSettings(bid, this.actor);
-      branchForm.style.display = '';
-      branchForm.delivery_fee.value = bs.delivery_fee || 0;
-      branchForm.free_delivery_above.value = bs.free_delivery_above || 0;
-      branchForm.min_order.value = bs.min_order || 0;
-      branchForm.dataset.branchId = bid;
+    const placesList = body.querySelector('#del-places-list');
+    const placeRowHtml = (p = {}) => `
+      <div class="del-place-row" style="border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:10px;background:var(--surface,#fff)">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div class="field" style="grid-column:1/-1">
+            <label>Place name *</label>
+            <input name="place_name" type="text" value="${this.esc(p.name || '')}" placeholder="e.g. Ceylon" autocomplete="off" required>
+          </div>
+          <div class="field">
+            <label>Delivery fee (R)</label>
+            <input name="place_fee" type="number" min="0" step="0.01" inputmode="decimal" value="${p.delivery_fee ?? 0}">
+          </div>
+          <div class="field">
+            <label>Free above (R)</label>
+            <input name="place_free" type="number" min="0" step="0.01" inputmode="decimal" value="${p.free_delivery_above ?? 0}" placeholder="0 = always charge">
+          </div>
+          <div class="field" style="grid-column:1/-1">
+            <label>Minimum order (R)</label>
+            <input name="place_min" type="number" min="0" step="0.01" inputmode="decimal" value="${p.min_order ?? 0}">
+          </div>
+        </div>
+        <button type="button" class="btn btn-ghost btn-sm del-place-remove" style="margin-top:8px">Remove place</button>
+      </div>`;
+    const bindPlaceRows = () => {
+      placesList.querySelectorAll('.del-place-remove').forEach((btn) => {
+        btn.onclick = (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          btn.closest('.del-place-row')?.remove();
+        };
+      });
+      // Stop Enter in a field from submitting / reloading the branch form accidentally
+      placesList.querySelectorAll('input').forEach((inp) => {
+        inp.addEventListener('keydown', (ev) => {
+          if (ev.key === 'Enter') ev.preventDefault();
+        });
+      });
     };
-    body.querySelector('#del-branch-load').onclick = async () => {
+    const loadBranchForm = async (bid) => {
+      if (!bid) return Utils.toast('Select a branch first', 'error');
+      const pick = body.querySelector('#del-branch-pick');
+      if (pick) pick.value = String(bid);
+      const loadBtn = body.querySelector('#del-branch-load');
+      if (loadBtn) {
+        loadBtn.disabled = true;
+        loadBtn.textContent = 'Loading…';
+      }
+      try {
+        const bs = await API.getDeliveryBranchSettings(bid, this.actor);
+        const data = bs?.data || bs || {};
+        const places = data.places || data.zones || [];
+        branchForm.style.display = '';
+        branchForm.dataset.branchId = String(bid);
+        placesList.innerHTML = (places.length
+          ? places
+          : [{ name: '', delivery_fee: data.delivery_fee || 0, free_delivery_above: data.free_delivery_above || 0, min_order: data.min_order || 0 }])
+          .map((p) => placeRowHtml(p)).join('');
+        bindPlaceRows();
+        placesList.querySelector('input[name=place_name]')?.focus();
+      } catch (err) {
+        Utils.toast(err.message || 'Could not load branch places', 'error');
+      } finally {
+        if (loadBtn) {
+          loadBtn.disabled = false;
+          loadBtn.textContent = 'Load branch';
+        }
+      }
+    };
+    body.querySelector('#del-branch-load').onclick = async (ev) => {
+      ev.preventDefault();
       await loadBranchForm(body.querySelector('#del-branch-pick').value);
     };
+    body.querySelector('#del-place-add')?.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      placesList.insertAdjacentHTML('beforeend', placeRowHtml());
+      bindPlaceRows();
+      const rows = placesList.querySelectorAll('.del-place-row');
+      rows[rows.length - 1]?.querySelector('input[name=place_name]')?.focus();
+    });
     body.querySelectorAll('[data-edit-fee]').forEach((btn) => {
-      btn.onclick = () => loadBranchForm(btn.dataset.editFee);
+      btn.onclick = (ev) => {
+        ev.preventDefault();
+        loadBranchForm(btn.dataset.editFee);
+      };
     });
     body.querySelectorAll('[data-del-fee]').forEach((btn) => {
       btn.onclick = async () => {
@@ -1009,24 +1126,29 @@ window.AdminDeliveryPage = {
     });
     branchForm.onsubmit = async (e) => {
       e.preventDefault();
-      const fd = new FormData(branchForm);
-      const payload = Object.fromEntries(fd.entries());
-      const allBranches = body.querySelector('#del-all-branches')?.checked;
-      if (allBranches) {
-        const branches = this.branches?.length ? this.branches : (await API.getBranches?.().catch(() => ({ data: [] })))?.data || [];
-        for (const b of branches) {
-          await API.saveDeliveryBranchSettings(b.id, payload, this.actor);
-        }
-        Utils.toast(`Delivery fees saved for ${branches.length} branch(es) — synced to POS & online`, 'success');
-      } else {
-        const bid = branchForm.dataset.branchId || body.querySelector('#del-branch-pick')?.value;
-        if (!bid) return Utils.toast('Select a branch first', 'error');
-        await API.saveDeliveryBranchSettings(bid, payload, this.actor);
-        Utils.toast('Branch delivery fee saved — synced to POS & online', 'success');
-      }
+      const bid = branchForm.dataset.branchId || body.querySelector('#del-branch-pick')?.value;
+      if (!bid) return Utils.toast('Select a branch first', 'error');
+      const places = [...placesList.querySelectorAll('.del-place-row')].map((row, i) => ({
+        id: row.dataset.placeId || `p${bid}_${i}_${Date.now().toString(36)}`,
+        name: row.querySelector('[name=place_name]')?.value.trim() || '',
+        delivery_fee: parseFloat(row.querySelector('[name=place_fee]')?.value) || 0,
+        free_delivery_above: parseFloat(row.querySelector('[name=place_free]')?.value) || 0,
+        min_order: parseFloat(row.querySelector('[name=place_min]')?.value) || 0
+      })).filter((p) => p.name);
+      if (!places.length) return Utils.toast('Add at least one delivery place name', 'error');
+      const payload = {
+        places,
+        delivery_fee: places[0].delivery_fee,
+        free_delivery_above: places[0].free_delivery_above,
+        min_order: places[0].min_order
+      };
+      await API.saveDeliveryBranchSettings(bid, payload, this.actor);
+      Utils.toast('Delivery places saved — synced to POS & online', 'success');
       this._loadedTabs.settings = false;
       await this.load(true);
       this.renderTab();
+      // Re-open the same branch so fields stay visible after save
+      setTimeout(() => loadBranchForm(bid), 50);
     };
   },
 

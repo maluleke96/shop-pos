@@ -198,6 +198,24 @@ html.pos-kiosk .pos-till .pos-layout {
   50% { box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.2); }
 }
 
+.pos-oo-popup {
+  position: fixed; right: 16px; top: 72px; z-index: 900;
+  max-width: min(420px, calc(100vw - 24px));
+  pointer-events: none;
+}
+.pos-oo-popup .pos-oo-card { pointer-events: auto; }
+.pos-oo-popup.hidden { display: none !important; }
+.pos-oo-card {
+  background: #fff; color: #0f172a; border: 1px solid #f59e0b;
+  border-radius: 14px; padding: 14px 16px;
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.22);
+}
+.pos-oo-card-head { font-weight: 800; color: #b45309; margin-bottom: 8px; }
+.pos-oo-card ul { margin: 8px 0; padding-left: 18px; font-size: 13px; }
+.pos-oo-card-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+.product-card .combo-mini-thumbs { padding: 0 8px 6px; }
+.pos-opt-missing { outline: 2px solid #dc2626; border-radius: 10px; padding: 6px; }
+
 /* ── Status strip ── */
 .pos-status-strip {
   display: flex; align-items: center; justify-content: space-between; gap: 10px;

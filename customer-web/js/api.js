@@ -32,6 +32,7 @@ const OrderAPI = {
   },
 
   getSettings: () => OrderAPI.call('web:getSettings'),
+  getHoursStatus: () => OrderAPI.call('web:getHoursStatus'),
   getBranches: () => OrderAPI.call('web:getBranches'),
   getMenu: (branchId, filters) => OrderAPI.call('web:getMenu', [branchId, filters || {}]),
   getProduct: (branchId, productId) => OrderAPI.call('web:getProduct', [branchId, productId]),
@@ -39,15 +40,27 @@ const OrderAPI = {
   sendRegistrationCode: (data) => OrderAPI.call('web:sendRegistrationCode', [data]),
   register: (data) => OrderAPI.call('web:register', [data]),
   login: (login, password) => OrderAPI.call('web:login', [login, password]),
+  sendPasswordReset: (data) => OrderAPI.call('web:sendPasswordReset', [data || {}]),
+  resetPassword: (data) => OrderAPI.call('web:resetPassword', [data || {}]),
   account: (token) => OrderAPI.call('web:account', [token]),
   validateCart: (branchId, cart) => OrderAPI.call('web:validateCart', [branchId, cart]),
   validateCoupon: (code, branchId, cart, customerId) => OrderAPI.call('web:validateCoupon', [code, branchId, cart, customerId]),
+  initiateCardPayment: (branchId, amount, token, method) => OrderAPI.call('web:initiateCardPayment', [branchId, amount, token, method || 'card']),
+  confirmCardPayment: (intentToken, reference) => OrderAPI.call('web:confirmCardPayment', [intentToken, reference]),
+  startOnlinePayment: (orderId, token, opts) => OrderAPI.call('web:startOnlinePayment', [orderId, token, opts || {}]),
+  getPaymentStatus: (orderRef, token) => OrderAPI.call('web:getPaymentStatus', [orderRef, token]),
   submitOrder: (branchId, payload, token, idem) => OrderAPI.call('web:submitOrder', [branchId, payload, token, idem]),
   getOrder: (orderId, token) => OrderAPI.call('web:getOrder', [orderId, token]),
   listOrders: (token, limit) => OrderAPI.call('web:listOrders', [token, limit || 50]),
   toggleFavorite: (token, productId, branchId) => OrderAPI.call('web:toggleFavorite', [token, productId, branchId]),
-  checkGiftCard: (code) => OrderAPI.call('web:checkGiftCard', [code]),
-  deleteAccount: (token) => OrderAPI.call('web:deleteAccount', [token])
+  checkGiftCard: (code, token) => OrderAPI.call('web:checkGiftCard', [code, token]),
+  deleteAccount: (token, password) => OrderAPI.call('web:deleteAccount', [token, password]),
+  listPublicJobs: () => OrderAPI.call('jobs:listPublicPostings'),
+  getPublicJob: (token) => OrderAPI.call('jobs:getPublicPosting', [token]),
+  submitPublicJob: (token, data) => OrderAPI.call('jobs:submitPublicApplication', [token, data]),
+  submitIssue: (data, token) => OrderAPI.call('web:submitIssue', [data, token]),
+  listMyIssues: (token) => OrderAPI.call('web:listMyIssues', [token]),
+  trackEvents: (payload) => OrderAPI.call('web:trackEvents', [payload || {}])
 };
 
 window.OrderAPI = OrderAPI;

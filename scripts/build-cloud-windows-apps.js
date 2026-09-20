@@ -1,5 +1,5 @@
 /**
- * Build Windows installers for Admin, Staff, Marketing, Recipe.
+ * Build Windows installers for Admin, Staff, Recipe, …
  * Full local Electron + SQLite (works offline). Syncs to Railway when online.
  * Copies into the existing Downloads/ShopPOS-Installers folders (not Windows\).
  */
@@ -20,7 +20,32 @@ const apps = [
     name: 'Shop POS Admin',
     appId: 'com.shoppos.admin',
     artifact: 'ShopPOS-Admin',
-    folder: 'Admin'
+    folder: 'Admin',
+    liveShell: 'electron/admin-shell.js'
+  },
+  {
+    mode: 'referral',
+    name: 'Referral Agent',
+    appId: 'com.shoppos.referral',
+    artifact: 'ShopPOS-ReferralAgent',
+    folder: 'Referral-Agent',
+    liveShell: 'electron/referral-shell.js'
+  },
+  {
+    mode: 'referral-commission',
+    name: 'Referral & Commission',
+    appId: 'com.shoppos.referralcommission',
+    artifact: 'ShopPOS-ReferralCommission',
+    folder: 'Referral-Commission',
+    liveShell: 'electron/referral-commission-shell.js'
+  },
+  {
+    mode: 'delivery',
+    name: 'Delivery Department',
+    appId: 'com.shoppos.delivery',
+    artifact: 'ShopPOS-Delivery',
+    folder: 'Delivery-Department',
+    liveShell: 'electron/delivery-shell.js'
   },
   {
     mode: 'pos',
@@ -34,21 +59,24 @@ const apps = [
     name: 'Staff Portal',
     appId: 'com.shoppos.staff',
     artifact: 'ShopPOS-StaffPortal',
-    folder: 'Staff-Portal'
-  },
-  {
-    mode: 'marketing',
-    name: 'Marketing Agent',
-    appId: 'com.shoppos.marketing',
-    artifact: 'ShopPOS-Marketing',
-    folder: 'Marketing-Agent'
+    folder: 'Staff-Portal',
+    liveShell: 'electron/staff-shell.js'
   },
   {
     mode: 'recipe',
     name: 'Recipe & Production',
     appId: 'com.shoppos.recipe',
     artifact: 'ShopPOS-Recipe',
-    folder: 'Recipe-Production'
+    folder: 'Recipe-Production',
+    liveShell: 'electron/recipe-shell.js'
+  },
+  {
+    mode: 'studio',
+    name: 'Menu & Promo Studio',
+    appId: 'com.shoppos.studio',
+    artifact: 'ShopPOS-Studio',
+    folder: 'Menu-Promo-Studio',
+    liveShell: 'electron/studio-shell.js'
   },
   {
     mode: 'hr',
@@ -108,20 +136,31 @@ function safeCopy(src, dest) {
 for (const a of apps) {
   console.log(`\n=== Building ${a.name} (${a.mode}) — local-first ===`);
   const bake = path.join(root, 'electron', `cloud-shell-config-${a.mode}.js`);
-  fs.writeFileSync(
-    bake,
-    `process.env.SHOP_POS_APP_MODE = ${JSON.stringify(a.mode)};\n` +
-      `process.env.SHOP_POS_LOCAL_INSTALLER = '1';\n` +
-      `process.env.SHOP_POS_SYNC_URL = ${JSON.stringify(cloudUrl)};\n` +
-      `require('./cloud-shell.js');\n`
-  );
+  if (a.liveShell) {
+    fs.writeFileSync(
+      bake,
+      `process.env.SHOP_POS_APP_MODE = ${JSON.stringify(a.mode)};\n` +
+        `process.env.SHOP_POS_SYNC_URL = ${JSON.stringify(cloudUrl)};\n` +
+        `require(${JSON.stringify('./' + path.basename(a.liveShell))});\n`
+    );
+  } else {
+    fs.writeFileSync(
+      bake,
+      `process.env.SHOP_POS_APP_MODE = ${JSON.stringify(a.mode)};\n` +
+        `process.env.SHOP_POS_LOCAL_INSTALLER = '1';\n` +
+        `process.env.SHOP_POS_SYNC_URL = ${JSON.stringify(cloudUrl)};\n` +
+        `require('./cloud-shell.js');\n`
+    );
+  }
 
   const cfg = {
     appId: a.appId,
     productName: a.name,
     directories: { output: path.join('dist', 'cloud-apps', a.mode), buildResources: 'build' },
-    files: ['electron/**/*', 'src/**/*', 'mobile/**/*', 'lib/**/*', 'package.json'],
-    extraMetadata: { main: `electron/cloud-shell-config-${a.mode}.js`, name: a.appId },
+    files: a.liveShell
+      ? [a.liveShell, 'package.json']
+      : ['electron/**/*', 'src/**/*', 'mobile/**/*', 'lib/**/*', 'package.json'],
+    extraMetadata: { main: a.liveShell || `electron/cloud-shell-config-${a.mode}.js`, name: a.appId },
     win: {
       target: [
         { target: 'nsis', arch: ['x64'] },
@@ -170,11 +209,14 @@ Each app connects to your online Railway shop:
 ${cloudUrl}
 
 Folders:
-  Admin\\              — Sign in + Set up shop (owner/manager)
+  Admin\\              — Live admin app (loads the latest Railway admin automatically)
+  Referral-Agent\\     — Live Referral Agent portal (register / sign in / forgot password)
+  Referral-Commission\\ — Live Referral & Commission (Admin password; department inside Admin)
+  Delivery-Department\\ — Live Delivery Department (delivery managers / admin)
   POS\\                 — Till only — use cashier/manager usernames from Admin → Users
-  Staff-Portal\\       — Employee ID + PIN login only
-  Marketing-Agent\\    — Marketing login only
-  Recipe-Production\\  — Recipe & production login only
+  Staff-Portal\\       — Live Staff Portal (loads latest Railway staff app automatically)
+  Recipe-Production\\  — Live Recipe & Production (loads latest Railway recipe app automatically)
+  Menu-Promo-Studio\\  — Live Menu & Promo Studio (staff login + Studio Access permissions)
   HR\\                 — HR, payroll & documents login only
   Accounting\\         — Business accounting login only
   Online-Ordering\\    — Customer ordering app (opens your /order/ site)

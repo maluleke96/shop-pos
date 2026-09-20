@@ -36,7 +36,7 @@ const OnlineOrdersWidget = {
   },
 
   isAllowed() {
-    return !!window.POSPage?.canShowOnlineOrders?.();
+    return !!(window.POSPage?.canPollOnlineOrders?.() || window.POSPage?.canShowOnlineOrders?.());
   },
 
   reminderMinutes() {
@@ -80,13 +80,11 @@ const OnlineOrdersWidget = {
   stopPolling() {
     if (this._timer) clearInterval(this._timer);
     this._timer = null;
-    this.updateBadge(0);
-    this.syncAlertSound([]);
   },
 
   startPolling() {
-    this.stopPolling();
     if (!this.isAllowed()) return;
+    if (this._timer) return;
     this._timer = setInterval(() => this.poll(), this._pollMs);
     this.poll();
   },
@@ -114,14 +112,14 @@ const OnlineOrdersWidget = {
 
       for (const o of pending) this._knownIds.add(String(o.id));
 
-      if (newOnes.length) {
-        for (const order of newOnes) {
-          this.showNewOrderPopup(order);
-        }
-        Utils.toast(`${newOnes.length} new online order(s)!`, 'info');
-      }
-
       this.syncAlertSound(pending);
+      if (newOnes.length) {
+        Utils.toast(`${newOnes.length} new online order(s)!`, 'info');
+        this.playAlert();
+        this.showNewOrderPopup(newOnes[0]);
+      } else {
+        this.ensurePendingPopup(pending);
+      }
       this.checkReminders(pending);
       this.updateBadge(pending.length);
 
@@ -152,11 +150,10 @@ const OnlineOrdersWidget = {
     this._handledIds.add(id);
     delete this._quietUntil[id];
     window.PanelNotify?.ack(this._eventKey(orderId), 'accepted');
-    this.stopAlertSound();
   },
   syncAlertSound(pending) {
     const unacked = (pending || []).filter((o) =>
-      !window.PanelNotify?.isAcked(this._eventKey(o.id)) && !this.isQuiet(o.id)
+      !this._handledIds.has(String(o.id)) && !window.PanelNotify?.isAcked(this._eventKey(o.id))
     );
     const hasPending = unacked.length > 0;
     const ns = this._app?.settings?.notification_settings || {};
@@ -337,45 +334,67 @@ const OnlineOrdersWidget = {
     </div>`;
   },
 
+  ensureStickyHost() {
+    let el = document.getElementById('pos-online-order-popup');
+    if (el) return el;
+    el = document.createElement('div');
+    el.id = 'pos-online-order-popup';
+    el.className = 'pos-oo-popup hidden';
+    document.body.appendChild(el);
+    return el;
+  },
+
+  hideStickyPopup() {
+    const el = document.getElementById('pos-online-order-popup');
+    if (el) {
+      el.classList.add('hidden');
+      el.innerHTML = '';
+    }
+    this._popupOpen = false;
+  },
+
+  pendingUnacked(pending) {
+    return (pending || this.pendingOrders()).filter((o) =>
+      !this._handledIds.has(String(o.id)) && !window.PanelNotify?.isAcked(this._eventKey(o.id))
+    );
+  },
+
+  ensurePendingPopup(pending) {
+    const unacked = this.pendingUnacked(pending);
+    if (!unacked.length) {
+      this.hideStickyPopup();
+      return;
+    }
+    if (!this._popupOpen) this.showNewOrderPopup(unacked[0]);
+  },
+
   showNewOrderPopup(order, isReminder = false) {
     if (!this.isAllowed() || !order) return;
     if (!window.POSPage?._shiftFlowComplete) return;
-    const overlay = document.getElementById('modal-overlay');
-    if (overlay && !overlay.classList.contains('hidden') && overlay.dataset.noDismiss === '1') return;
     this._popupOpen = true;
     const items = this.parseItems(order);
-    const title = isReminder ? '⏰ Online order needs attention' : '🛒 New online order';
+    const title = isReminder ? 'Online order needs attention' : 'New online order';
     const fulfillment = order.fulfillment_type || order.fulfillment || 'collection';
-    Utils.showModal(title, `
-      <p><strong>${this.esc(order.order_number)}</strong> · ${Utils.formatMoney(order.total, this.currency())} ${this.sourceTag(order)}</p>
-      <p><strong>${this.esc(order.customer_name || 'Customer')}</strong>${order.customer_email ? `<br>${this.esc(order.customer_email)}` : ''}<br>
-      <strong>Phone:</strong> ${this.esc(order.customer_phone || '—')}${this.customerContactHtml(order.customer_phone, true)}</p>
-      <p class="muted">${this.esc(fulfillment)}${fulfillment === 'delivery' && order.delivery_address ? ` · ${this.esc(order.delivery_address)}` : ''} · ${items.length} item(s)</p>
-      ${order.notes ? `<p class="muted"><strong>Note:</strong> ${this.esc(order.notes)}</p>` : ''}
-      <ul style="margin:8px 0;padding-left:18px;font-size:13px">${items.slice(0, 8).map((i) =>
-        `<li>${this.esc(i.name)} ×${i.quantity}${this.itemModifiersHtml(i)}</li>`).join('')}</ul>
-      ${this.financialSummaryHtml(order)}`,
-      `<button type="button" class="btn btn-ghost" id="oo-popup-later">Later</button>
-       <button type="button" class="btn btn-ghost" id="oo-popup-view">View all</button>
-       <button type="button" class="btn btn-primary" id="oo-popup-accept">Accept on POS</button>`,
-      { noDismiss: true });
+    const host = this.ensureStickyHost();
+    host.classList.remove('hidden');
+    host.innerHTML = `
+      <div class="pos-oo-card" role="dialog" aria-live="assertive">
+        <div class="pos-oo-card-head">${this.esc(title)}</div>
+        <p><strong>${this.esc(order.order_number)}</strong> · ${Utils.formatMoney(order.total, this.currency())}</p>
+        <p><strong>${this.esc(order.customer_name || 'Customer')}</strong> · ${this.esc(order.customer_phone || '—')}</p>
+        <p class="muted">${this.esc(fulfillment)} · ${items.length} item(s)</p>
+        <ul>${items.slice(0, 6).map((i) =>
+          `<li>${this.esc(i.name)} ×${i.quantity}${this.itemModifiersHtml(i)}</li>`).join('')}</ul>
+        <div class="pos-oo-card-actions">
+          <button type="button" class="btn btn-ghost" id="oo-popup-view">View all</button>
+          <button type="button" class="btn btn-primary" id="oo-popup-accept">Accept on POS</button>
+        </div>
+      </div>`;
 
-    document.getElementById('oo-popup-later')?.addEventListener('click', () => {
-      this.snoozeOrder(order.id, this.reminderMinutes());
-      this.stopAlertSound();
-      this._popupOpen = false;
-      Utils.forceHideModal?.() || Utils.hideModal();
-    });
     document.getElementById('oo-popup-view')?.addEventListener('click', () => {
-      this._popupOpen = false;
-      Utils.forceHideModal?.() || Utils.hideModal();
       this.openPanel('pending');
     });
     document.getElementById('oo-popup-accept')?.addEventListener('click', async () => {
-      this.markHandled(order.id);
-      this.stopAlertSound();
-      this._popupOpen = false;
-      Utils.hideModal();
       await this.accept(order);
     });
   },
@@ -496,7 +515,7 @@ const OnlineOrdersWidget = {
     });
   },
 
-  async accept(order) {
+  async accept(order, opts = {}) {
     const btn = document.getElementById('oo-accept') || document.getElementById('oo-popup-accept');
     const prevText = btn?.textContent || 'Accept on POS';
     if (btn) { btn.disabled = true; btn.textContent = 'Accepting…'; }
@@ -510,17 +529,21 @@ const OnlineOrdersWidget = {
       if (r?.error) throw new Error(r.error);
       this.markHandled(order.id);
       this.stopAlertSound();
+      this.syncAlertSound(this.pendingOrders().filter((o) => String(o.id) !== String(order.id)));
       Utils.toast(`Online order ${order.order_number} accepted on POS`, 'success');
       try { await API.refreshKitchenDisplay?.(); } catch (_) { /* optional */ }
       try { await API.refreshCustomerDisplay?.(); } catch (_) { /* optional */ }
       await this.refreshOrders();
-      this._panelTab = 'accepted';
-      this._popupOpen = false;
-      Utils.forceHideModal?.() || Utils.hideModal();
-      this.renderPanel();
+      this.hideStickyPopup();
+      if (!opts.auto) {
+        this._panelTab = 'accepted';
+        if (this._panelOpen) this.renderPanel();
+        else Utils.forceHideModal?.();
+      }
     } catch (err) {
       if (btn) { btn.disabled = false; btn.textContent = prevText; }
-      Utils.toast(err?.message || 'Accept failed', 'error');
+      if (!opts.auto) Utils.toast(err?.message || 'Accept failed', 'error');
+      else Utils.toast(err?.message || 'Could not auto-accept — tap Accept on POS', 'error');
     }
   },
 
@@ -543,6 +566,8 @@ const OnlineOrdersWidget = {
         const r = await API.rejectOnlineOrder?.(order.id, reason, this._app?.user);
         if (r?.success === false) throw new Error(r.error || 'Reject failed');
         this.markHandled(order.id);
+        this.stopAlertSound();
+        this.hideStickyPopup();
         Utils.toast('Order rejected — customer will be notified', 'info');
         await this.refreshOrders();
         this._panelTab = 'history';

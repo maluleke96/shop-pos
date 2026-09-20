@@ -1,11 +1,42 @@
 const QuotesPage = {
   tab: 'open',
 
+  async activate(el, app) {
+    this.app = app;
+    this._host = el;
+    if (el?.querySelector?.('#new-quote') && (this._allQuotes || []).length) {
+      API.getQuotes({ limit: 200 }).then((res) => {
+        this._allQuotes = res.data || [];
+        this.paint(el);
+      }).catch(() => {});
+      return;
+    }
+    return this.render(el, app);
+  },
+
   async render(el, app) {
     this.app = app;
+    this._host = el;
+    if (this._allQuotes?.length) this.paint(el);
+    else {
+      el.innerHTML = `<div class="page-toolbar"><h3>Quotations & Proforma</h3>
+        <button class="btn btn-primary" id="new-quote">+ New Quote</button></div>
+        <div class="card">${Utils.pageSkeleton ? Utils.pageSkeleton(4) : '<p class="muted">Opening…</p>'}</div>`;
+      document.getElementById('new-quote')?.addEventListener('click', () => this.showQuoteForm());
+    }
+    try {
+      const res = await API.getQuotes({ limit: 200 });
+      this._allQuotes = res.data || [];
+      this.paint(el);
+    } catch (err) {
+      if (!this._allQuotes?.length) throw err;
+    }
+  },
+
+  paint(el) {
+    const app = this.app;
     const currency = app.settings?.currency || 'R';
-    const res = await API.getQuotes({ limit: 200 });
-    const allQuotes = res.data || [];
+    const allQuotes = this._allQuotes || [];
     const quotes = this.tab === 'history'
       ? allQuotes.filter(q => q.status !== 'open')
       : allQuotes.filter(q => q.status === 'open');
@@ -37,7 +68,7 @@ const QuotesPage = {
       const btn = e.target.closest('[data-tab]');
       if (!btn) return;
       this.tab = btn.dataset.tab;
-      this.render(el, app);
+      this.paint(el);
     });
 
     document.getElementById('new-quote').addEventListener('click', () => this.showQuoteForm());
@@ -129,7 +160,7 @@ const QuotesPage = {
       if (!r.success) return Utils.toast(r.error, 'error');
       Utils.hideModal();
       Utils.toast('Quote created', 'success');
-      this.render(document.getElementById('page-content'), this.app);
+      this.render(this._host || document.querySelector('.page-host-active'), this.app);
     });
   }
 };

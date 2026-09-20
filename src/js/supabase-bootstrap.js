@@ -21,7 +21,8 @@
 
   function isAdminPortal() {
     try {
-      return (window.__SHOP_POS_APP_MODE__ || document.documentElement.dataset.appMode || '') === 'admin';
+      const mode = window.__SHOP_POS_APP_MODE__ || document.documentElement.dataset.appMode || '';
+      return mode === 'admin' || mode === 'studio-builder';
     } catch (_) {
       return false;
     }
@@ -101,13 +102,22 @@
     }
   }
 
+  function rpcTimeoutMs(method) {
+    const key = String(method || '');
+    if (/^sales_complete$/i.test(key)) return 25000;
+    if (window.OfflineStore?.isReadMethod?.(key)) return 8000;
+    if (/^auth_/.test(key)) return 10000;
+    return 18000;
+  }
+
   async function sendRpc(method, args, opts) {
     const headers = { 'Content-Type': 'application/json' };
     if (sessionToken) headers['X-Session-Token'] = sessionToken;
     const clientRequestId = opts && opts.clientRequestId ? String(opts.clientRequestId) : '';
     if (clientRequestId) headers['X-Idempotency-Key'] = clientRequestId;
     const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
-    const timer = ctrl ? setTimeout(() => ctrl.abort(), 60000) : null;
+    const timeoutMs = (opts && opts.timeoutMs) || rpcTimeoutMs(method);
+    const timer = ctrl ? setTimeout(() => ctrl.abort(), timeoutMs) : null;
     let r;
     try {
       const body = { method, args: args || [] };
@@ -206,6 +216,13 @@
 
   async function invokeChannel(prop, args) {
     const key = String(prop).replace(/[:.]/g, '_');
+    const store = window.OfflineStore;
+    const offline = typeof navigator !== 'undefined' && navigator.onLine === false;
+
+    if (offline && store?.isReadMethod?.(key)) {
+      const cached = await store.getRpc(key, args || []);
+      if (cached) return cached;
+    }
 
     if (electronAPI && ELECTRON_PASSTHROUGH.test(key) && typeof electronAPI[key] === 'function') {
       try {
@@ -216,7 +233,6 @@
     }
 
     const q = window.ShopPosOfflineQueue;
-    const offline = typeof navigator !== 'undefined' && navigator.onLine === false;
     const canQueue = canQueueMethod(key);
     const prepared = ensureSaleClientRequestId(key, args || []);
     const callArgs = prepared.args;
@@ -233,6 +249,10 @@
         };
       }
       const res = await sendRpc(key, callArgs, { clientRequestId: saleRequestId || undefined });
+      if (store?.isReadMethod?.(key) && looksLikeNetworkFailure(res)) {
+        const cached = await store.getRpc(key, callArgs);
+        if (cached) return cached;
+      }
       if (canQueue && looksLikeNetworkFailure(res)) {
         const enq = await q.enqueue(key, callArgs, { clientRequestId: saleRequestId });
         return {
@@ -242,8 +262,15 @@
           message: 'Network error — queued offline (same sale id; will not duplicate)'
         };
       }
+      if (store?.isReadMethod?.(key) && res?.success) {
+        store.putRpc(key, callArgs, res).catch(() => {});
+      }
       return res;
     } catch (e) {
+      if (store?.isReadMethod?.(key)) {
+        const cached = await store.getRpc(key, callArgs);
+        if (cached) return cached;
+      }
       if (canQueue) {
         const enq = await q.enqueue(key, callArgs, { clientRequestId: saleRequestId });
         return {
@@ -295,9 +322,13 @@
       flushOfflineQueue();
     });
     window.addEventListener('offline', () => {
-      try { window.ShopPosConnection?.set?.('offline', 'Offline'); } catch (_) { /* ignore */ }
+      try { window.ShopPosConnection?.set?.('offline', 'Offline — till still works'); } catch (_) { /* ignore */ }
     });
     setTimeout(() => { flushOfflineQueue().catch(() => {}); }, 0);
+
+    if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+      navigator.serviceWorker.register('/sw.js').catch(() => {});
+    }
 
     if (loading) loading.style.display = 'none';
     window.dispatchEvent(new Event('posAPIReady'));

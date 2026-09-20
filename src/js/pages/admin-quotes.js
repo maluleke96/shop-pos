@@ -6,12 +6,6 @@
     AdminPage.sections.splice(6, 0, { id: 'quotes', label: '📄 Quotes', icon: 'quotes' });
   }
 
-  const origRenderSection = AdminPage.renderSection.bind(AdminPage);
-  AdminPage.renderSection = async function (el) {
-    if (this.section === 'quotes') return this.renderQuotesAdmin(el);
-    return origRenderSection(el);
-  };
-
   AdminPage.showQuoteDetailAdmin = async function (quoteId) {
     const r = await API.getQuote(quoteId);
     const q = r.data;

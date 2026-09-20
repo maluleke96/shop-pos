@@ -6,12 +6,6 @@
     AdminPage.sections.splice(4, 0, { id: 'payroll', label: '💼 Payroll & Compliance', icon: 'payroll' });
   }
 
-  const origRenderSection = AdminPage.renderSection.bind(AdminPage);
-  AdminPage.renderSection = async function (el) {
-    if (this.section === 'payroll') return this.renderPayrollCompliance(el);
-    return origRenderSection(el);
-  };
-
   AdminPage.renderPayrollCompliance = async function (el) {
     this.payrollTab = this.payrollTab || 'settings';
     const tabs = [
@@ -487,10 +481,16 @@
     ]);
     const claims = claimsRes.data || [];
     const emps = empsRes.data || [];
+    const ps = this.payrollSettings || {};
+    const openDays = Number(ps.claim_open_days_before_pay) || 30;
+    const closeDays = Number(ps.claim_close_days_before_pay) || 3;
     el.innerHTML = `<div class="card" style="margin-bottom:16px"><div class="card-body">
       <h4>Open salary claim window</h4>
-      <p class="muted">Generate payroll first, then open claims. Employees must claim in Staff Portal <strong>before</strong> the deadline. Approve uses your uploaded admin signature.</p>
+      <p class="muted">Generate payroll first, then open claims. Staff see a popup and a top notification when the claim window is open. Approve uses your uploaded admin signature.</p>
       <div class="form-grid">
+        <div class="field"><label>Claims open this many days before payday</label><input type="number" min="1" max="60" id="sc-open-days" value="${openDays}"></div>
+        <div class="field"><label>Claims close this many days before payday</label><input type="number" min="0" max="30" id="sc-close-days" value="${closeDays}"></div>
+        <div class="field full"><button class="btn btn-ghost" id="sc-save-window">Save claim times</button></div>
         <div class="field"><label>Period from</label><input type="date" id="sc-from" value="${Utils.daysAgo(30)}"></div>
         <div class="field"><label>Period to</label><input type="date" id="sc-to" value="${Utils.today()}"></div>
         <div class="field"><label>Payment date</label><input type="date" id="sc-paydate"></div>
@@ -530,6 +530,36 @@
       if (!v) return null;
       try { return new Date(v).toISOString(); } catch { return v; }
     };
+
+    const fillFromPayDate = () => {
+      const pay = document.getElementById('sc-paydate')?.value;
+      if (!pay) return;
+      const openN = parseInt(document.getElementById('sc-open-days')?.value, 10) || 30;
+      const closeN = parseInt(document.getElementById('sc-close-days')?.value, 10) || 3;
+      const payDate = new Date(`${pay}T09:00:00`);
+      const opens = new Date(payDate);
+      opens.setDate(opens.getDate() - openN);
+      const deadline = new Date(payDate);
+      deadline.setDate(deadline.getDate() - closeN);
+      const toLocal = (d) => {
+        const x = new Date(d);
+        x.setMinutes(x.getMinutes() - x.getTimezoneOffset());
+        return x.toISOString().slice(0, 16);
+      };
+      const opensEl = document.getElementById('sc-opens');
+      const deadEl = document.getElementById('sc-deadline');
+      if (opensEl) opensEl.value = toLocal(opens);
+      if (deadEl) deadEl.value = toLocal(deadline);
+    };
+    document.getElementById('sc-paydate')?.addEventListener('change', fillFromPayDate);
+    document.getElementById('sc-open-days')?.addEventListener('change', fillFromPayDate);
+    document.getElementById('sc-close-days')?.addEventListener('change', fillFromPayDate);
+    document.getElementById('sc-save-window')?.addEventListener('click', () => {
+      self.savePayrollSettingsPartial({
+        claim_open_days_before_pay: parseInt(document.getElementById('sc-open-days').value, 10) || 30,
+        claim_close_days_before_pay: parseInt(document.getElementById('sc-close-days').value, 10) || 3
+      });
+    });
 
     document.getElementById('sc-open-window')?.addEventListener('click', async () => {
       const from = document.getElementById('sc-from').value;

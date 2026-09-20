@@ -39,6 +39,9 @@ function ensureSchema() {
   try { dbGet('SELECT 1 FROM expense_permission_grants LIMIT 1'); } catch (_) {
     runMigration('migrations-v102-expense-permission-grants.sql');
   }
+  try { dbGet('SELECT 1 FROM expense_invoices LIMIT 1'); } catch (_) {
+    runMigration('migrations-v103-expense-invoice-data.sql');
+  }
   try {
     const db = require('../database/db').getDb();
     db.prepare("INSERT INTO expenses (category, description, amount, user_id) VALUES ('__test_cat__', 'test', 0.01, NULL)").run();
@@ -122,9 +125,11 @@ function mapExpenseRow(row) {
   const ed = require('../../lib/expense-documents');
   const li = require('../../lib/expense-line-items');
   const line_items = li.parseLineItems(row.line_items_json);
+  const { invoice_data, ...rest } = row || {};
   return {
-    ...row,
+    ...rest,
     line_items,
+    has_invoice: ed.hasInvoice(row),
     invoice_url: ed.resolveInvoiceUrl(row)
   };
 }
@@ -158,10 +163,14 @@ function expenseSave(token, data = {}) {
     expense_date: data.expense_date,
     branch_id: data.branch_id != null ? data.branch_id : u.branch_id,
     line_items: data.line_items || [],
+    payment_method: data.payment_method || 'cash',
     invoice_image: data.invoice_image || null
   }, u.id, u.username);
-  const rows = store.getExpenses({ from: data.expense_date, to: data.expense_date });
-  const row = rows.find((r) => Number(r.id) === Number(id)) || { id, user_id: u.id, user_name: u.full_name || u.username };
+  const row = store.getExpenseById(id) || { id, user_id: u.id, user_name: u.full_name || u.username };
+  if (data.invoice_image && !row.invoice_path) {
+    row.invoice_path = `expense-docs/${id}/invoice.jpg`;
+    row.has_invoice = true;
+  }
   return mapExpenseRow(row);
 }
 
@@ -268,6 +277,46 @@ function expenseShopSettings() {
   };
 }
 
+function expenseWasteProducts(token) {
+  resolveSession(token);
+  try {
+    return require('../database/db').getDb().prepare(`
+      SELECT id, name, stock_quantity, unit, buying_price, item_type
+      FROM products WHERE COALESCE(is_active,1)=1 AND name != '__Property Damage__'
+      ORDER BY name LIMIT 500`).all();
+  } catch (_) {
+    return [];
+  }
+}
+
+function expenseWasteList(token, filters = {}) {
+  const u = resolveSession(token);
+  const store = require('./store');
+  const from = filters.from || null;
+  const to = filters.to || null;
+  let rows = store.getWasteRecords(from, to, { status: filters.status || null });
+  if (!['owner', 'manager'].includes(u.role)) {
+    rows = rows.filter((r) => Number(r.employee_id) === Number(u.id));
+  }
+  return rows.slice(0, 80);
+}
+
+function expenseWasteRecord(token, data = {}) {
+  const u = resolveSession(token);
+  const store = require('./store');
+  const id = store.recordWaste({
+    damage_kind: data.damage_kind || (data.product_id ? 'ingredient' : 'property'),
+    product_id: data.product_id || null,
+    property_name: data.property_name || data.description || null,
+    quantity: data.quantity,
+    reason: data.reason || 'Damaged',
+    notes: data.notes || '',
+    photo_image: data.photo_image || data.photo_data || null,
+    photo_path_1: data.photo_path_1 || null
+  }, u.id);
+  return { id, status: 'pending' };
+}
+
 module.exports = {
   ensureSchema,
   expenseLogin,
@@ -279,5 +328,8 @@ module.exports = {
   expenseGet,
   expenseCategories,
   expenseShopSettings,
+  expenseWasteProducts,
+  expenseWasteList,
+  expenseWasteRecord,
   PERM
 };

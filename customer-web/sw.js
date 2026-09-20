@@ -1,4 +1,4 @@
-const IMAGE_CACHE = 'shop-order-images-v2';
+const IMAGE_CACHE = 'shop-order-images-v3';
 
 function isMenuImageRequest(url) {
   const path = url.pathname;
@@ -8,7 +8,13 @@ function isMenuImageRequest(url) {
 }
 
 self.addEventListener('install', (e) => { e.waitUntil(self.skipWaiting()); });
-self.addEventListener('activate', (e) => { e.waitUntil(self.clients.claim()); });
+self.addEventListener('activate', (e) => {
+  e.waitUntil((async () => {
+    const keys = await caches.keys();
+    await Promise.all(keys.filter((k) => k.startsWith('shop-order-images-') && k !== IMAGE_CACHE).map((k) => caches.delete(k)));
+    await self.clients.claim();
+  })());
+});
 
 self.addEventListener('fetch', (e) => {
   if (e.request.method !== 'GET') return;
@@ -19,14 +25,10 @@ self.addEventListener('fetch', (e) => {
   e.respondWith((async () => {
     const cache = await caches.open(IMAGE_CACHE);
     const cached = await cache.match(e.request);
-    if (cached) return cached;
-    try {
-      const resp = await fetch(e.request);
+    const network = fetch(e.request).then((resp) => {
       if (resp.ok) cache.put(e.request, resp.clone());
       return resp;
-    } catch (err) {
-      if (cached) return cached;
-      throw err;
-    }
+    }).catch(() => cached);
+    return cached || network;
   })());
 });

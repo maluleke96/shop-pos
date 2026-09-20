@@ -204,7 +204,10 @@ const Utils = {
   },
 
   toast(msg, type = 'info') {
-    if (window.__SHOP_POS_APP_MODE__ === 'pos') return;
+    if (window.__SHOP_POS_APP_MODE__ === 'pos') {
+      Utils.briefNotice(msg, type);
+      return;
+    }
     const el = document.createElement('div');
     el.className = `toast ${type}`;
     el.textContent = msg;
@@ -240,6 +243,7 @@ const Utils = {
     document.getElementById('modal-body').innerHTML = bodyHtml;
     document.getElementById('modal-footer').innerHTML = footerHtml;
     overlay.classList.remove('hidden');
+    document.getElementById('modal')?.classList.toggle('modal-wide', !!options.wide);
     overlay.dataset.noDismiss = options.noDismiss ? '1' : '0';
     const closeBtn = document.getElementById('modal-close');
     if (closeBtn) closeBtn.style.display = options.noDismiss ? 'none' : '';
@@ -251,8 +255,105 @@ const Utils = {
     if (overlay?.dataset.noDismiss === '1') return;
     overlay.classList.add('hidden');
     overlay.dataset.noDismiss = '0';
+    document.getElementById('modal')?.classList.remove('modal-wide');
     const closeBtn = document.getElementById('modal-close');
     if (closeBtn) closeBtn.style.display = '';
+  },
+
+  /**
+   * Searchable product / ingredient picker popup.
+   * Uses a stacked overlay so it works on top of an existing modal (e.g. Add Expense).
+   * opts: { items, title, hint, onPick(item), emptyText }
+   */
+  openProductSearchPicker(opts = {}) {
+    const items = Array.isArray(opts.items) ? opts.items : [];
+    const title = opts.title || 'Select product / ingredient';
+    const hint = opts.hint || 'Type to search, then tap an item.';
+    const onPick = typeof opts.onPick === 'function' ? opts.onPick : () => {};
+    if (!items.length) {
+      Utils.toast(opts.emptyText || 'No products available', 'error');
+      return;
+    }
+
+    let overlay = document.getElementById('prod-pick-overlay');
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'prod-pick-overlay';
+      overlay.className = 'modal-overlay';
+      overlay.style.cssText = 'z-index:10050;display:flex;align-items:center;justify-content:center;position:fixed;inset:0;background:rgba(0,0,0,.45)';
+      overlay.innerHTML = `<div class="modal modal-wide" id="prod-pick-modal" style="max-width:560px;width:94%;max-height:90vh;display:flex;flex-direction:column;background:var(--card,#fff);border-radius:12px;box-shadow:0 20px 50px rgba(0,0,0,.25)">
+        <div class="modal-header" style="display:flex;justify-content:space-between;align-items:center;padding:14px 16px;border-bottom:1px solid var(--border)">
+          <h3 id="prod-pick-title" style="margin:0;font-size:1.05rem"></h3>
+          <button type="button" class="btn btn-ghost btn-sm" id="prod-pick-x" aria-label="Close">×</button>
+        </div>
+        <div class="modal-body" id="prod-pick-body" style="padding:14px 16px;overflow:auto;flex:1"></div>
+        <div class="modal-footer" style="padding:12px 16px;border-top:1px solid var(--border);display:flex;justify-content:flex-end">
+          <button type="button" class="btn btn-ghost" id="prod-pick-close">Cancel</button>
+        </div>
+      </div>`;
+      document.body.appendChild(overlay);
+      overlay.addEventListener('click', (e) => {
+        if (e.target === overlay) Utils.closeProductSearchPicker();
+      });
+    }
+
+    const close = () => Utils.closeProductSearchPicker();
+    document.getElementById('prod-pick-title').textContent = title;
+    document.getElementById('prod-pick-body').innerHTML = `
+      <p class="muted" style="margin:0 0 10px">${Utils.escHtml(hint)}</p>
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
+        <input type="search" id="prod-pick-q" placeholder="Search name, SKU, barcode…" style="flex:1;min-width:200px" autocomplete="off">
+        <span class="tag" id="prod-pick-count">0</span>
+      </div>
+      <div id="prod-pick-list" style="max-height:360px;overflow:auto"></div>`;
+
+    const paint = (q = '') => {
+      const list = document.getElementById('prod-pick-list');
+      const countEl = document.getElementById('prod-pick-count');
+      if (!list) return;
+      const needle = String(q || '').trim().toLowerCase();
+      const rows = items.filter((p) => {
+        if (!needle) return true;
+        const name = String(p.name || '').toLowerCase();
+        const sku = String(p.sku || p.barcode || '').toLowerCase();
+        return name.includes(needle) || sku.includes(needle);
+      }).slice(0, 80);
+      if (countEl) countEl.textContent = `${rows.length} shown`;
+      list.innerHTML = rows.length
+        ? rows.map((p) => {
+          const stock = p.stock_quantity != null ? ` · ${p.stock_quantity} ${p.unit || p.stock_unit || ''}` : '';
+          const type = p.item_type === 'ingredient' ? 'Ingredient' : (p.category_name || 'Product');
+          return `<button type="button" class="btn btn-ghost prod-pick-btn" data-id="${p.id}"
+            style="display:flex;justify-content:space-between;align-items:center;width:100%;text-align:left;padding:10px 12px;margin:0 0 6px;border:1px solid var(--border);border-radius:8px">
+            <span><strong>${Utils.escHtml(p.name)}</strong><br><small class="muted">${Utils.escHtml(type)}${Utils.escHtml(stock)}</small></span>
+            <span class="muted">Select</span>
+          </button>`;
+        }).join('')
+        : '<p class="muted" style="padding:12px;margin:0">No matches — try another search.</p>';
+      list.querySelectorAll('.prod-pick-btn').forEach((btn) => {
+        btn.onclick = () => {
+          const row = items.find((x) => String(x.id) === String(btn.dataset.id));
+          if (!row) return;
+          close();
+          onPick(row);
+        };
+      });
+    };
+
+    paint('');
+    overlay.style.display = 'flex';
+    overlay.classList.remove('hidden');
+    document.getElementById('prod-pick-q')?.addEventListener('input', (e) => paint(e.target.value));
+    document.getElementById('prod-pick-q')?.focus();
+    document.getElementById('prod-pick-close').onclick = close;
+    document.getElementById('prod-pick-x').onclick = close;
+  },
+
+  closeProductSearchPicker() {
+    const overlay = document.getElementById('prod-pick-overlay');
+    if (!overlay) return;
+    overlay.style.display = 'none';
+    overlay.classList.add('hidden');
   },
 
   forceHideModal() {
@@ -260,6 +361,7 @@ const Utils = {
     if (!overlay) return;
     overlay.classList.add('hidden');
     overlay.dataset.noDismiss = '0';
+    document.getElementById('modal')?.classList.remove('modal-wide');
     const closeBtn = document.getElementById('modal-close');
     if (closeBtn) closeBtn.style.display = '';
   },
@@ -288,11 +390,10 @@ const Utils = {
     }
     if (page === 'admin') return Utils.canAccessAdmin(user);
     if (user.role === 'owner') return true;
-    if (user.role === 'marketing_agent') return page === 'marketing' || page === 'document-hub';
     const pagePermMap = {
       dashboard: 'view_reports', pos: 'sell', staff: 'staff_portal', products: 'products', categories: 'products',
       stock: 'manage_stock', customers: 'customers', suppliers: 'suppliers', expenses: 'view_reports',
-      returns: 'refunds', quotes: 'quotes', layby: 'layby', giftcards: 'gift_cards', marketing: 'products',
+      returns: 'refunds', quotes: 'quotes', layby: 'layby', giftcards: 'gift_cards',
       'document-hub': 'operations', whatsapp: 'whatsapp', operations: 'operations', restaurant: 'kitchen', 'purchase-orders': 'suppliers',
       reports: 'reports', audit: 'view_reports', bookkeeping: 'bookkeeping', admin: 'system_settings', users: 'system_settings',
       settings: 'system_settings', recipe: 'recipe'
@@ -305,7 +406,7 @@ const Utils = {
     if (perm && Utils.hasPermission(user, perm)) return true;
     // staff / returns never fall through to role page lists — admin must grant staff_portal / refunds
     if (page === 'staff' || page === 'returns') return false;
-    const managerPages = ['dashboard', 'admin', 'pos', 'products', 'categories', 'stock', 'customers', 'suppliers', 'expenses', 'quotes', 'layby', 'giftcards', 'marketing', 'document-hub', 'whatsapp', 'operations', 'restaurant', 'recipe', 'purchase-orders', 'reports', 'bookkeeping', 'audit', 'settings', 'users'];
+    const managerPages = ['dashboard', 'admin', 'pos', 'products', 'categories', 'stock', 'customers', 'suppliers', 'expenses', 'quotes', 'layby', 'giftcards', 'document-hub', 'whatsapp', 'operations', 'restaurant', 'recipe', 'purchase-orders', 'reports', 'bookkeeping', 'audit', 'settings', 'users'];
     const cashierPages = ['pos'];
     const supervisorPages = ['admin', 'pos', 'operations', 'layby', 'giftcards', 'quotes'];
     if (user.role === 'manager') return managerPages.includes(page);
@@ -316,18 +417,18 @@ const Utils = {
 
   /** Owner-only admin sidebar sections — hidden from manager/supervisor search & nav */
   adminOwnerOnlySections: new Set([
-    'backup', 'payroll', 'database', 'developer', 'automation',
+    'backup', 'payroll', 'database', 'system-health', 'developer', 'automation',
     'customfields', 'formats', 'importexport', 'device', 'customer-rewards',
     'analytics'
   ]),
 
   /** Sections managers/supervisors should always see when they have admin access */
   adminManagerSections: new Set([
-    'overview', 'staffhr', 'staffportal', 'hrcontracts', 'recruitment', 'marketing-mgmt', 'employee-of-month', 'opscompliance', 'combos',
-    'menu-builder',
+    'overview', 'staffhr', 'staffportal', 'hrcontracts', 'recruitment', 'employee-of-month', 'opscompliance', 'combos',
+    'menu-builder', 'promo-video-builder', 'radio', 'communication-center',
     'quotes', 'approvals', 'recipe', 'tax', 'tax-hub', 'cashiers', 'branches',
     'mobile-app', 'business-manager', 'business-modules', 'digital-signage', 'online-orders', 'hr-workspace', 'hr-approvals', 'accounting-workspace',
-    'delivery-dept', 'loyalty', 'discounts', 'payments', 'inventory', 'shifts', 'operating', 'cashdrawer', 'customize', 'onaccount',
+    'delivery-dept', 'referral-dept', 'loyalty', 'discounts', 'payments', 'inventory', 'shifts', 'operating', 'cashdrawer', 'customize', 'onaccount', 'taken-orders',
     'printer', 'receipt', 'security', 'permissions', 'sales-targets', 'top-customers',
     'salesmgmt', 'pos-menu', 'saleexplorer', 'soldproducts', 'returnsmgmt', 'activity', 'exceptions', 'alerts', 'dailyclose', 'discount-report'
   ]),
@@ -339,12 +440,26 @@ const Utils = {
     if (user.role === 'supervisor') return true;
     if (user.role === 'delivery_manager') return true;
     if (user.role === 'assistant_manager') return Utils.hasPermission(user, 'system_settings');
+    // Studio Windows/Android handoff — staff with Studio Access may open builders only
+    try {
+      const lock = sessionStorage.getItem('shoppos_studio_lock');
+      if (lock && (Utils.hasPermission(user, 'studio_menu_builder') || Utils.hasPermission(user, 'studio_promo_video'))) {
+        return true;
+      }
+    } catch (_) { /* */ }
     return false;
   },
 
   canAccessAdminSection(user, sectionId) {
     if (!Utils.canAccessAdmin(user)) return false;
     if (sectionId === 'deliveries') sectionId = 'delivery-dept';
+    try {
+      const lock = sessionStorage.getItem('shoppos_studio_lock');
+      if (lock) {
+        const allowed = new Set(lock.split(',').map((s) => s.trim()).filter(Boolean));
+        return allowed.has(sectionId);
+      }
+    } catch (_) { /* */ }
     if (user.role === 'delivery_manager') {
       return ['delivery-dept', 'online-orders'].includes(sectionId);
     }
@@ -363,10 +478,11 @@ const Utils = {
     supervisor: { sell: true, void_sales: true, refunds: true, discounts: true, cash_up: true, operations: true, kitchen: true, gift_cards: true, layby: true, quotes: true, staff_portal: false, delivery: true },
     assistant_manager: {
       sell: true, void_sales: true, refunds: true, discounts: true, cash_up: true, operations: true,
-      kitchen: true, gift_cards: true, layby: true, quotes: true, view_reports: true, customers: true, products: true, staff_portal: false, delivery: true
+      kitchen: true, gift_cards: true, layby: true, quotes: true, view_reports: true, customers: true, products: true,
+      staff_portal: false, delivery: true, whatsapp: true
     },
-    marketing_agent: {},
     delivery_manager: { delivery: true, view_reports: true, manage_stock: false, sell: false },
+    referral_agent: { sell: false, view_reports: false, manage_stock: false },
     cashier: { sell: true, refunds: false, owner_salary: false, owner_salary_only: false, staff_portal: false, delivery: true }
   },
 
@@ -404,14 +520,59 @@ const Utils = {
     return String(parsed?.cashout_whatsapp_phone || settings?.phone || '').trim();
   },
 
-  openWhatsApp(phone, message) {
+  whatsappUrl(phone, message) {
     const digits = String(phone || '').replace(/\D/g, '');
-    if (!digits) return false;
+    if (!digits) return '';
     const num = digits.startsWith('0') ? `27${digits.slice(1)}` : digits;
-    const url = `https://wa.me/${num}?text=${encodeURIComponent(message || '')}`;
-    if (window.API?.openExternal) API.openExternal(url);
-    else window.open(url, '_blank', 'noopener,noreferrer');
-    return true;
+    return `https://wa.me/${num}?text=${encodeURIComponent(message || '')}`;
+  },
+
+  canSilentWhatsApp(settings) {
+    const raw = settings?.whatsapp_settings;
+    let parsed = raw;
+    if (typeof raw === 'string') {
+      try { parsed = JSON.parse(raw); } catch { parsed = {}; }
+    }
+    return !!(parsed?.api_key_configured || (parsed?.phone_number_id && parsed?.api_key));
+  },
+
+  openWhatsAppUrl(url) {
+    if (!url) return false;
+    try { window.PanelExitGuard?.suspend?.(20000); } catch (_) { /* ignore */ }
+    try {
+      if (window.Capacitor?.Plugins?.Browser?.open) {
+        window.Capacitor.Plugins.Browser.open({ url });
+        return true;
+      }
+    } catch (_) { /* fall through */ }
+    try {
+      if (window.API?.openExternal) {
+        API.openExternal(url);
+        return true;
+      }
+    } catch (_) { /* fall through */ }
+    try {
+      const a = document.createElement('a');
+      a.href = url;
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      return true;
+    } catch (_) { /* fall through */ }
+    try {
+      window.open(url, '_blank', 'noopener,noreferrer');
+      return true;
+    } catch (_) {
+      return false;
+    }
+  },
+
+  openWhatsApp(phone, message) {
+    const url = Utils.whatsappUrl(phone, message);
+    if (!url) return false;
+    return Utils.openWhatsAppUrl(url);
   },
 
   async deliverWhatsApp(result, fallbackPhone, fallbackMessage) {
@@ -602,14 +763,20 @@ const Utils = {
     return !!(window.__SHOP_POS_MOBILE__ || window.__SHOP_POS_LOCAL_INSTALLER__ || window.Capacitor?.isNativePlatform?.());
   },
 
+  _offlineImageUrls: new Map(),
+
   productImageUrl(product) {
     if (!product?.id) return '';
+    const idKey = String(product.id);
+    if (Utils._offlineImageUrls.has(idKey)) return Utils._offlineImageUrls.get(idKey);
     const path = String(product.picture_path || product.image_path || '');
     if (path.startsWith('data:')) return path;
     if (path.startsWith('mobile-asset://') || path.startsWith('mobile-doc://')) return '';
-    if (Utils.isCloudPos()) return `/api/product-image/${product.id}`;
+    const stamp = product.updated_at || product.picture_updated_at || '';
+    const q = stamp ? `?v=${encodeURIComponent(String(stamp).slice(0, 19))}` : '';
+    if (Utils.isCloudPos()) return `/api/product-image/${product.id}${q}`;
     if (Utils.isNativePos() && typeof navigator !== 'undefined' && navigator.onLine !== false) {
-      return `${Utils.syncBaseUrl()}/api/product-image/${product.id}`;
+      return `${Utils.syncBaseUrl()}/api/product-image/${product.id}${q}`;
     }
     return '';
   },
@@ -651,24 +818,42 @@ const Utils = {
 
   comboImageAttr(combo) {
     if (!combo) return '';
+    const path = combo.image_path || combo.picture_path || '';
+    if (Utils.isCloudPos() && combo.id) {
+      const parts = [`data-combo-id="${combo.id}"`];
+      if (path) parts.push(`data-image-path="${Utils.escHtml(String(path))}"`);
+      return parts.join(' ');
+    }
     const cloudUrl = Utils.comboImageUrl(combo);
     if (cloudUrl) return `src="${cloudUrl}" data-combo-id="${combo.id}" data-image-loaded="1"`;
-    return Utils.cachedImageAttr(combo.image_path || combo.picture_path);
+    return Utils.cachedImageAttr(path);
   },
 
   productImageAttr(product) {
     if (!product) return '';
-    const cloudUrl = Utils.productImageUrl(product);
     const path = product.picture_path || product.image_path || '';
+    const cloudUrl = Utils.productImageUrl(product);
+    const parts = [];
     if (cloudUrl) {
-      return `src="${cloudUrl}" data-product-id="${product.id}" data-image-loaded="1"`;
+      parts.push(`src="${cloudUrl}"`);
+      parts.push('data-image-loaded="1"');
     }
-    if (!path) return '';
-    return `${Utils.cachedImageAttr(path)} data-product-id="${product.id}"`;
+    if (product.id) parts.push(`data-product-id="${product.id}"`);
+    if (path && !String(path).startsWith('data:')) {
+      parts.push(`data-image-path="${Utils.escHtml(String(path))}"`);
+    }
+    parts.push('loading="eager"', 'decoding="async"');
+    return parts.join(' ');
   },
 
   categoryImageAttr(category) {
     if (!category) return '';
+    if (Utils.isCloudPos() && category.id) {
+      const path = category.image_path || '';
+      return path
+        ? `data-category-id="${category.id}" data-image-path="${Utils.escHtml(String(path))}"`
+        : `data-category-id="${category.id}"`;
+    }
     const cloudUrl = Utils.categoryImageUrl(category);
     if (cloudUrl) return `src="${cloudUrl}" data-image-loaded="1"`;
     return Utils.cachedImageAttr(category.image_path);
@@ -713,36 +898,48 @@ const Utils = {
     const scope = root && root.querySelectorAll ? root : document;
     const imgs = [...scope.querySelectorAll('img[data-image-path], img[data-product-id], img[data-combo-id]')];
     const pending = [];
-    for (const img of imgs) {
-      if (img.dataset.imageLoaded === '1') continue;
+    const work = imgs.map(async (img) => {
+      if (img.dataset.imageLoaded === '1' && img.getAttribute('src')) return;
       const comboId = img.dataset.comboId;
+      const productId = img.dataset.productId;
+      if (productId && window.OfflineStore?.imageObjectUrl) {
+        try {
+          const blobUrl = await window.OfflineStore.imageObjectUrl(productId);
+          if (blobUrl) {
+            Utils._offlineImageUrls.set(String(productId), blobUrl);
+            img.src = blobUrl;
+            img.dataset.imageLoaded = '1';
+            return;
+          }
+        } catch (_) { /* use cloud src */ }
+      }
       if (comboId) {
         const cloud = Utils.comboImageUrl({ id: comboId, image_path: img.dataset.imagePath || '' });
         if (cloud) {
           img.src = cloud;
           img.dataset.imageLoaded = '1';
-          continue;
+          return;
         }
       }
-      const productId = img.dataset.productId;
       if (productId) {
         const cloud = Utils.productImageUrl({ id: productId, picture_path: img.dataset.imagePath || '' });
         if (cloud) {
           img.src = cloud;
           img.dataset.imageLoaded = '1';
-          continue;
+          return;
         }
       }
       const path = img.dataset.imagePath;
-      if (!path) continue;
+      if (!path) return;
       if (Utils._imageUrlCache.has(path)) {
         img.src = Utils._imageUrlCache.get(path);
         img.dataset.imageLoaded = '1';
       } else {
         pending.push(img);
       }
-    }
-    const chunkSize = 16;
+    });
+    await Promise.all(work);
+    const chunkSize = 48;
     for (let i = 0; i < pending.length; i += chunkSize) {
       const chunk = pending.slice(i, i + chunkSize);
       await Promise.all(chunk.map(async (img) => {
@@ -1048,20 +1245,41 @@ const Utils = {
   async sendDisciplinaryWhatsApp(app, record, employee) {
     const phone = employee?.phone;
     if (!phone) return { success: false, error: 'No phone number on employee record' };
-    const reason = `${record.record_type}: ${(record.description || '').slice(0, 120)}`;
+    const shop = app.settings?.shop_name || 'Management';
+    const response = record.worker_response
+      ? `\n\nEmployee response (${record.worker_response_at || 'submitted'}):\n"${String(record.worker_response).trim()}"`
+      : '\n\nA written response is required on the Staff Portal.';
+    const message = [
+      `Dear ${employee.full_name},`,
+      '',
+      `This is an official ${String(record.record_type || 'disciplinary').toLowerCase()} notice from ${shop}.`,
+      '',
+      `Incident date: ${record.incident_date || '—'}`,
+      `Reference: ${record.id || '—'}`,
+      '',
+      `Details: ${record.description || 'See the attached / portal copy for full particulars.'}`,
+      record.action_taken ? `Action taken: ${record.action_taken}` : '',
+      response,
+      '',
+      'Please read the official document carefully and keep this message for your records.',
+      '',
+      `Kind regards,`,
+      `${shop} Human Resources`
+    ].filter(line => line !== '').join('\n');
     const waRes = await API.sendWhatsAppMessage({
       phone,
       employee_id: employee.id,
       recipient_type: 'employee',
       recipient_name: employee.full_name,
       employee_name: employee.full_name,
-      branch: app.settings?.shop_name,
+      branch: shop,
       message_type: 'warning',
       template_slug: 'warning',
-      warning_reason: reason,
-      date: record.incident_date
+      warning_reason: message,
+      date: record.incident_date,
+      body: message
     }, app.user);
-    await Utils.deliverWhatsApp(waRes, phone, `Hi ${employee.full_name}, ${reason}\n\n— ${app.settings?.shop_name || 'Management'}`);
+    await Utils.deliverWhatsApp(waRes, phone, message);
     if (waRes?.success !== false || phone) {
       try { await API.markStaffDisciplinaryWa(record.id); } catch (_) { /* ignore */ }
     }
@@ -1077,6 +1295,8 @@ const Utils = {
   },
 
   async captureProofPhoto() {
+    try { window.PanelExitGuard?.suspend?.(60000); } catch (_) { /* ignore */ }
+    try { window.StaffPortalStandalone?.saveSession?.(window.StaffPage?.employee || window.StaffPortalStandalone?.employee); } catch (_) { /* ignore */ }
     const Camera = Utils.getCameraPlugin();
     if (Utils.isNative() && Camera?.getPhoto) {
       try {
@@ -1108,6 +1328,54 @@ const Utils = {
       input.onchange = () => {
         const file = input.files?.[0];
         if (!file) return reject(new Error('No photo selected'));
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(new Error('Could not read photo'));
+        reader.readAsDataURL(file);
+      };
+      // If the OS backgrounds the page without firing change, keep session
+      input.addEventListener('cancel', () => reject(new Error('Photo cancelled')));
+      input.click();
+    });
+  },
+
+  async captureSelfiePhoto() {
+    try { window.PanelExitGuard?.suspend?.(60000); } catch (_) { /* ignore */ }
+    try { window.StaffPortalStandalone?.saveSession?.(window.StaffPage?.employee || window.StaffPortalStandalone?.employee); } catch (_) { /* ignore */ }
+    if (window.StaffSelfieCapture?.captureNativeSelfie && Utils.isNative()) {
+      const data = await StaffSelfieCapture.captureNativeSelfie();
+      if (data) return data;
+    }
+    const Camera = Utils.getCameraPlugin();
+    if (Utils.isNative() && Camera?.getPhoto) {
+      if (Camera.requestPermissions) {
+        const perm = await Camera.requestPermissions({ permissions: ['camera'] });
+        if (perm.camera !== 'granted' && perm.camera !== 'limited') {
+          throw new Error('Camera permission denied');
+        }
+      }
+      const tryDir = async (direction) => Camera.getPhoto({
+        quality: 80,
+        allowEditing: false,
+        resultType: 'dataUrl',
+        source: 'camera',
+        direction,
+        saveToGallery: false,
+        correctOrientation: true,
+        promptLabelPicture: 'Take selfie'
+      });
+      let photo;
+      try { photo = await tryDir('front'); } catch (_) { photo = await tryDir('rear'); }
+      return photo?.dataUrl || (photo?.base64String ? `data:image/jpeg;base64,${photo.base64String}` : null);
+    }
+    return new Promise((resolve, reject) => {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = 'image/*';
+      input.setAttribute('capture', 'user');
+      input.onchange = () => {
+        const file = input.files?.[0];
+        if (!file) return reject(new Error('No selfie taken'));
         const reader = new FileReader();
         reader.onload = () => resolve(reader.result);
         reader.onerror = () => reject(new Error('Could not read photo'));
@@ -1257,6 +1525,104 @@ const Utils = {
         if (k?.startsWith(`spcache_${prefix || ''}`)) sessionStorage.removeItem(k);
       }
     } catch { /* ignore */ }
+  },
+
+  /** Drop embedded base64 images — POS menu snapshot must stay small for sub-second reload. */
+  _stripHeavyMediaField(val) {
+    if (val == null) return val;
+    const s = String(val);
+    return s.startsWith('data:') ? '' : val;
+  },
+
+  slimPosCatalogItem(item, kind = 'product') {
+    if (!item || typeof item !== 'object') return item;
+    const o = { ...item };
+    const rawPath = String(item.picture_path || item.image_path || '');
+    o.picture_path = Utils._stripHeavyMediaField(o.picture_path);
+    o.image_path = Utils._stripHeavyMediaField(o.image_path);
+    if (rawPath && !rawPath.startsWith('data:')) {
+      if (kind === 'product') o.picture_path = rawPath;
+      if (kind === 'combo' || kind === 'category') o.image_path = rawPath;
+    }
+    if (item.id != null && (rawPath || kind === 'product' || kind === 'combo')) o._hasImage = true;
+    if (kind === 'product') {
+      if (Array.isArray(o.options) && o.options.length) o._hasOptions = true;
+      if (Array.isArray(o.extras) && o.extras.length) o._hasOptions = true;
+      if (Array.isArray(o.removals) && o.removals.length) o._hasOptions = true;
+    }
+    return o;
+  },
+
+  slimPosCatalogProducts(products) {
+    return (products || []).map((p) => Utils.slimPosCatalogItem(p, 'product'));
+  },
+
+  slimPosCatalogPayload({ categories = [], products = [], combos = [] } = {}) {
+    return {
+      v: 2,
+      categories: (categories || []).map((c) => Utils.slimPosCatalogItem(c, 'category')),
+      products: Utils.slimPosCatalogProducts(products),
+      combos: (combos || []).map((c) => Utils.slimPosCatalogItem(c, 'combo'))
+    };
+  },
+
+  restorePosCatalogProducts(products) {
+    return (products || []).map((p) => {
+      if (p._hasOptions && !p.requires_options) p.requires_options = true;
+      return p;
+    });
+  },
+
+  posMenuSnapshotKey(branchId) {
+    const bid = branchId != null && branchId !== '' ? Number(branchId) : 0;
+    return `posmenu2_${bid || 'main'}`;
+  },
+
+  /** Remove pre-v2 snapshots that embedded full base64 images (~20MB+). */
+  purgeLegacyPosMenuSnapshots() {
+    try {
+      for (let i = sessionStorage.length - 1; i >= 0; i--) {
+        const k = sessionStorage.key(i);
+        if (k?.startsWith('spcache_posmenu_') && !k.startsWith('spcache_posmenu2_')) {
+          sessionStorage.removeItem(k);
+        }
+      }
+    } catch { /* ignore */ }
+  },
+
+  savePosMenuSnapshot(branchId, payload) {
+    if (!payload?.products?.length) return;
+    const slim = Utils.slimPosCatalogPayload(payload);
+    const save = () => {
+      Utils.sessionCacheSet(Utils.posMenuSnapshotKey(branchId), slim, 86400000);
+      window.OfflineStore?.saveCatalog?.(branchId, payload);
+      window.OfflineStore?.prefetchProductImages?.(payload.products).catch(() => {});
+    };
+    if (typeof requestIdleCallback === 'function') requestIdleCallback(save, { timeout: 400 });
+    else save();
+  },
+
+  loadPosMenuSnapshot(branchId) {
+    const snap = Utils.sessionCacheGet(Utils.posMenuSnapshotKey(branchId));
+    if (snap?.products?.length) {
+      return {
+        categories: snap.categories || [],
+        products: Utils.restorePosCatalogProducts(snap.products),
+        combos: snap.combos || []
+      };
+    }
+    return null;
+  },
+
+  async loadPosMenuSnapshotAsync(branchId) {
+    const mem = Utils.loadPosMenuSnapshot(branchId);
+    if (mem?.products?.length) return mem;
+    if (window.OfflineStore?.loadCatalog) {
+      try {
+        return await window.OfflineStore.loadCatalog(branchId);
+      } catch { /* ignore */ }
+    }
+    return null;
   },
 
   /** Immediate click feedback — disables button until promise settles. */

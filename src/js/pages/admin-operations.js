@@ -6,6 +6,7 @@
     'General Policy', 'Health & Safety', 'Food Safety & Hygiene', 'Cash Handling',
     'Customer Service', 'Dress Code & Appearance', 'Opening Procedures', 'Closing Procedures',
     'Stock & Inventory', 'POS Operations', 'HR & Conduct', 'Disciplinary',
+    'Training', 'Probation', 'Employment Contract',
     'Emergency Procedures', 'Security', 'Cleaning & Maintenance'
   ];
 
@@ -15,13 +16,6 @@
     if (mode === 'print') await Utils.printToA4(r, filename);
     else await Utils.savePdfBuffer(filename, r);
   }
-
-  const origRenderSection = AdminPage.renderSection.bind(AdminPage);
-  AdminPage.renderSection = async function (el) {
-    if (this.section === 'opscompliance') return AdminOpsPage.render(el, this);
-    AdminPage.toggleOpsComplianceLayout?.(false);
-    return origRenderSection(el);
-  };
 
   AdminPage.renderOpsCompliance = function (el) {
     return AdminOpsPage.render(el, this);
@@ -35,6 +29,7 @@
       AdminPage.toggleOpsComplianceLayout?.(true);
       const tabs = [
         ['rules', 'Company Rules'],
+        ['signed', 'Signed acknowledgements'],
         ['opening', 'Morning Opening Routine'],
         ['closing', 'Closing Routine']
       ];
@@ -62,6 +57,7 @@
       const content = document.getElementById('ops-main-content');
       const renderers = {
         rules: () => this.renderRules(content),
+        signed: () => this.renderSigned(content),
         opening: () => this.renderChecklist(content, 'opening'),
         closing: () => this.renderChecklist(content, 'closing')
       };
@@ -71,23 +67,28 @@
     async renderSignaturePanel(el) {
       const sigRes = await API.getAdminSignature();
       const sigPath = sigRes.data?.admin_signature_path || this.admin.settings?.admin_signature_path;
-      const isOwner = this.app.user?.role === 'owner';
+      const isOwner = ['owner', 'manager'].includes(this.app.user?.role);
       el.innerHTML = `<div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">
         <div><strong>Admin Signature</strong><br><small class="muted">Embedded on rules, checklist & compliance PDFs</small></div>
         ${sigPath ? `<img data-image-path="${String(sigPath).replace(/"/g, '')}" alt="Admin signature" style="max-height:48px;border:1px solid var(--border);padding:4px;border-radius:4px">` : '<span class="muted">No signature uploaded</span>'}
         ${isOwner ? `<button class="btn btn-ghost btn-sm" id="ops-upload-sig">Upload Signature</button>
+          <button class="btn btn-ghost btn-sm" id="ops-draw-sig">Write signature</button>
           ${sigPath ? '<button class="btn btn-ghost btn-sm" id="ops-clear-sig">Remove</button>' : ''}` : ''}
       </div>`;
       if (sigPath) Utils.hydrateImages(el);
       if (!isOwner) return;
       document.getElementById('ops-upload-sig')?.addEventListener('click', async () => {
         const r = await API.selectImage('admin-signature');
-        if (!r.success) return;
-        await API.saveAdminSignature(r.path, this.app.user);
-        await API.saveSettings({ admin_signature_path: r.path }, this.app.user);
-        Utils.toast('Admin signature saved', 'success');
-        this.render(document.getElementById('admin-content'), this.admin);
+        if (r.success && r.path) {
+          await API.saveAdminSignature(r.path, this.app.user);
+          await API.saveSettings({ admin_signature_path: r.path }, this.app.user);
+          Utils.toast('Admin signature saved', 'success');
+          this.render(document.getElementById('admin-content'), this.admin);
+          return;
+        }
+        this.openSignaturePad();
       });
+      document.getElementById('ops-draw-sig')?.addEventListener('click', () => this.openSignaturePad());
       document.getElementById('ops-clear-sig')?.addEventListener('click', async () => {
         if (!confirm('Remove admin signature?')) return;
         await API.saveAdminSignature(null, this.app.user);
@@ -100,22 +101,29 @@
     async renderRules(el) {
       this._ruleSearch = this._ruleSearch || '';
       this._ruleCat = this._ruleCat || '';
-      const res = await API.getCompanyRules({ search: this._ruleSearch || undefined, category: this._ruleCat || undefined });
+      const [res, catRes] = await Promise.all([
+        API.getCompanyRules({ search: this._ruleSearch || undefined, category: this._ruleCat || undefined }),
+        API.getRuleCategories()
+      ]);
       const rules = res.data || [];
+      this._cats = catRes.data || RULE_CATEGORIES;
       el.innerHTML = `<div style="margin:12px 0;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
         <button class="btn btn-primary" id="ops-new-rule">+ New Rule</button>
+        <button class="btn btn-ghost" id="ops-add-cat">+ Category</button>
         <button class="btn btn-ghost" id="ops-all-rules-pdf">Export PDF</button>
         <button class="btn btn-ghost" id="ops-all-rules-print">Print</button>
         <input id="ops-rule-search" placeholder="Search rules…" value="${this._ruleSearch}" style="min-width:160px">
         <select id="ops-rule-cat"><option value="">All categories</option>
-          ${RULE_CATEGORIES.map(c => `<option value="${c}" ${this._ruleCat === c ? 'selected' : ''}>${c}</option>`).join('')}
+          ${(this._cats || RULE_CATEGORIES).map(c => `<option value="${c}" ${this._ruleCat === c ? 'selected' : ''}>${c}</option>`).join('')}
         </select>
       </div>
       <div class="table-wrap"><table>
-        <thead><tr><th>Number</th><th>Title</th><th>Category</th><th>Effective</th><th>Version</th><th>Status</th><th></th></tr></thead>
+        <thead><tr><th>Number</th><th>Title</th><th>Category</th><th>Effective</th><th>Portal</th><th>Status</th><th></th></tr></thead>
         <tbody>${rules.map(r => `<tr>
           <td>${r.rule_number}</td><td>${r.title}</td><td>${r.category || '—'}</td>
-          <td>${r.effective_date || '—'}</td><td>v${r.version}</td><td>${r.status}</td>
+          <td>${r.effective_date || '—'}</td>
+          <td>${r.portal_enabled ? 'Staff can sign' : 'Admin only'}</td>
+          <td>${r.status}</td>
           <td style="white-space:nowrap">
             <button class="btn btn-sm btn-ghost ops-rule-view" data-id="${r.id}">View</button>
             <button class="btn btn-sm btn-ghost ops-rule-history" data-id="${r.id}">History</button>
@@ -126,6 +134,15 @@
         </tbody></table></div>`;
 
       document.getElementById('ops-new-rule').addEventListener('click', () => this.showRuleForm());
+      document.getElementById('ops-add-cat')?.addEventListener('click', async () => {
+        const name = prompt('New category name:');
+        if (!name?.trim()) return;
+        const r = await API.saveRuleCategory(name.trim(), this.app.user);
+        if (!r.success) return Utils.toast(r.error, 'error');
+        this._cats = r.data || this._cats;
+        Utils.toast('Category added', 'success');
+        this.renderRules(el);
+      });
       document.getElementById('ops-all-rules-pdf').addEventListener('click', () =>
         pdfAction(() => API.getAllCompanyRulesPdf(), 'company-rules.pdf', 'save'));
       document.getElementById('ops-all-rules-print').addEventListener('click', () =>
@@ -165,23 +182,49 @@
 
     showRuleForm(rule = null) {
       const r = rule || {};
+      const cats = this._cats || RULE_CATEGORIES;
+      const sections = (r.sections || []).length ? r.sections : [{ heading: '', body: '' }];
       Utils.showModal(rule ? `Rule ${r.rule_number}` : 'New Company Rule', `
+        <p class="muted">Write the policy with a heading and sections. It prints with the shop name, phone and letterhead. Staff only see it after you permit the portal.</p>
         <div class="form-grid">
-          <div class="field"><label>Title *</label><input id="rule-title" value="${r.title || ''}"></div>
+          <div class="field"><label>Title / heading *</label><input id="rule-title" value="${Utils.escHtml(r.title || '')}"></div>
           <div class="field"><label>Category</label><select id="rule-cat"><option value="">— Select —</option>
-            ${RULE_CATEGORIES.map(c => `<option value="${c}" ${r.category === c ? 'selected' : ''}>${c}</option>`).join('')}
+            ${cats.map(c => `<option value="${c}" ${r.category === c ? 'selected' : ''}>${c}</option>`).join('')}
           </select></div>
           <div class="field"><label>Effective Date</label><input type="date" id="rule-date" value="${r.effective_date || Utils.today()}"></div>
-          <div class="field full"><label>Description</label><textarea id="rule-desc" rows="5">${r.description || ''}</textarea></div>
+          <div class="field full"><label>Introduction</label><textarea id="rule-desc" rows="4">${Utils.escHtml(r.description || '')}</textarea></div>
+          <div class="field full"><label>Sections (heading + rule text)</label>
+            <div id="rule-sections">${sections.map((s, i) => `
+              <div class="rule-sec" style="margin:8px 0;padding:8px;border:1px solid var(--border);border-radius:8px">
+                <input class="rs-head" placeholder="Section heading e.g. Uniform" value="${Utils.escHtml(s.heading || '')}">
+                <textarea class="rs-body" rows="3" placeholder="Write this section professionally…">${Utils.escHtml(s.body || '')}</textarea>
+              </div>`).join('')}</div>
+            <button type="button" class="btn btn-ghost btn-sm" id="rule-add-sec">+ Add section</button>
+          </div>
+          <div class="field full"><label><input type="checkbox" id="rule-portal" ${r.portal_enabled ? 'checked' : ''}> Permit this rule on the Staff Portal (staff can read and sign)</label></div>
         </div>`,
         `<button class="btn btn-primary" id="rule-save">Save</button>
          ${rule && r.status === 'active' ? '<button class="btn btn-warning" id="rule-archive">Archive</button>' : ''}`);
+      document.getElementById('rule-add-sec')?.addEventListener('click', () => {
+        const wrap = document.getElementById('rule-sections');
+        const div = document.createElement('div');
+        div.className = 'rule-sec';
+        div.style.cssText = 'margin:8px 0;padding:8px;border:1px solid var(--border);border-radius:8px';
+        div.innerHTML = `<input class="rs-head" placeholder="Section heading"><textarea class="rs-body" rows="3" placeholder="Write this section professionally…"></textarea>`;
+        wrap.appendChild(div);
+      });
       document.getElementById('rule-save').addEventListener('click', async () => {
+        const sections = [...document.querySelectorAll('.rule-sec')].map(box => ({
+          heading: box.querySelector('.rs-head')?.value.trim() || '',
+          body: box.querySelector('.rs-body')?.value.trim() || ''
+        })).filter(s => s.heading || s.body);
         const data = {
           id: r.id, title: document.getElementById('rule-title').value.trim(),
           category: document.getElementById('rule-cat').value,
           effective_date: document.getElementById('rule-date').value,
           description: document.getElementById('rule-desc').value.trim(),
+          sections,
+          portal_enabled: !!document.getElementById('rule-portal')?.checked,
           bump_version: !!r.id
         };
         if (!data.title) return Utils.toast('Title required', 'error');
@@ -225,6 +268,16 @@
           }>
           <span class="portal-switch-state">ON</span>
         </label>
+        <label class="portal-switch" style="max-width:520px;margin-top:10px">
+          <span><strong>Notify admin</strong>
+            <small class="muted">Show missed/failed ${type === 'opening' ? 'morning' : 'closing'} routines in admin notifications</small></span>
+          <input type="checkbox" id="chk-notify-admin" ${
+            type === 'opening'
+              ? (this.admin.settings?.staff_portal_settings?.notify_morning_routines !== false ? 'checked' : '')
+              : (this.admin.settings?.staff_portal_settings?.notify_closing_routines !== false ? 'checked' : '')
+          }>
+          <span class="portal-switch-state">ON</span>
+        </label>
         <button class="btn btn-primary btn-sm" id="chk-save-visibility" style="margin-top:8px">Save visibility</button>
       </div></div>
       <div class="card" style="margin-bottom:16px"><div class="card-body">
@@ -260,12 +313,15 @@
 
       document.getElementById('chk-save-visibility')?.addEventListener('click', async () => {
         const on = !!document.getElementById('chk-show-on-portal')?.checked;
+        const notify = !!document.getElementById('chk-notify-admin')?.checked;
         const prev = this.admin.settings?.staff_portal_settings || {};
         const data = {
           ...prev,
           show_routines: on ? true : (type === 'opening' ? prev.show_closing_routines !== false : prev.show_morning_routines !== false),
           show_morning_routines: type === 'opening' ? on : prev.show_morning_routines !== false,
-          show_closing_routines: type === 'closing' ? on : prev.show_closing_routines !== false
+          show_closing_routines: type === 'closing' ? on : prev.show_closing_routines !== false,
+          notify_morning_routines: type === 'opening' ? notify : prev.notify_morning_routines !== false,
+          notify_closing_routines: type === 'closing' ? notify : prev.notify_closing_routines !== false
         };
         if (type === 'opening' && on) data.show_routines = true;
         if (type === 'closing' && on) data.show_routines = true;
@@ -494,6 +550,80 @@
         Utils.toast('Record deleted', 'success');
         this.renderChecklist(el, type);
       }));
+    },
+
+    async renderSigned(el) {
+      const r = await API.getRuleAcknowledgements({});
+      const rows = r.data || [];
+      const signedName = (a) => {
+        try {
+          const raw = a.signature_data;
+          const obj = typeof raw === 'string' ? JSON.parse(raw) : raw;
+          return obj?.signed_name || [obj?.first_name, obj?.last_name].filter(Boolean).join(' ') || '';
+        } catch (_) {
+          return '';
+        }
+      };
+      el.innerHTML = `<h4>Signed company rules</h4>
+        <p class="muted">Management view — staff who read and signed rules released to the Staff Portal.</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Staff</th><th>Signed as</th><th>Rule</th><th>Rule date</th><th>Signed</th><th></th></tr></thead>
+          <tbody>${rows.map(a => {
+            const name = signedName(a);
+            return `<tr>
+            <td><strong>${Utils.escHtml(a.employee_name || '—')}</strong><br><small>${Utils.escHtml(a.employee_code || '')}</small></td>
+            <td>${name ? Utils.escHtml(name) : '<span class="muted">—</span>'}</td>
+            <td>${Utils.escHtml(a.rule_number || '')} — ${Utils.escHtml(a.rule_title || '')}</td>
+            <td>${a.effective_date || '—'}</td>
+            <td>✓ ${a.signed_at ? Utils.formatDateTime(a.signed_at) : (a.signed_date || '—')}</td>
+            <td><span class="tag tag-ok">Acknowledged</span></td>
+          </tr>`;
+          }).join('') || '<tr><td colspan="6" class="muted">No signed rules yet</td></tr>'}
+        </tbody></table></div>`;
+    },
+
+    openSignaturePad() {
+      Utils.showModal('Write admin signature', `
+        <p class="muted">Draw your signature, or upload an image. This appears on company rules and compliance PDFs.</p>
+        <canvas id="ops-sig-canvas" width="480" height="140" style="border:1px solid var(--border);border-radius:8px;touch-action:none;width:100%;max-width:480px;background:#fff"></canvas>
+        <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+          <button type="button" class="btn btn-ghost btn-sm" id="ops-sig-clear">Clear</button>
+          <input type="file" id="ops-sig-file" accept="image/*">
+        </div>`,
+        '<button type="button" class="btn btn-primary" id="ops-sig-save">Save signature</button>');
+      const canvas = document.getElementById('ops-sig-canvas');
+      const ctx = canvas.getContext('2d');
+      ctx.strokeStyle = '#111'; ctx.lineWidth = 2; ctx.lineCap = 'round';
+      let drawing = false;
+      const pos = (e) => {
+        const rec = canvas.getBoundingClientRect();
+        const t = e.touches ? e.touches[0] : e;
+        return { x: (t.clientX - rec.left) * (canvas.width / rec.width), y: (t.clientY - rec.top) * (canvas.height / rec.height) };
+      };
+      const start = (e) => { drawing = true; const p = pos(e); ctx.beginPath(); ctx.moveTo(p.x, p.y); e.preventDefault(); };
+      const move = (e) => { if (!drawing) return; const p = pos(e); ctx.lineTo(p.x, p.y); ctx.stroke(); e.preventDefault(); };
+      const end = () => { drawing = false; };
+      canvas.addEventListener('mousedown', start); canvas.addEventListener('mousemove', move);
+      canvas.addEventListener('mouseup', end); canvas.addEventListener('mouseleave', end);
+      canvas.addEventListener('touchstart', start, { passive: false });
+      canvas.addEventListener('touchmove', move, { passive: false });
+      canvas.addEventListener('touchend', end);
+      document.getElementById('ops-sig-clear')?.addEventListener('click', () => ctx.clearRect(0, 0, canvas.width, canvas.height));
+      document.getElementById('ops-sig-file')?.addEventListener('change', (e) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        const img = new Image();
+        img.onload = () => { ctx.clearRect(0, 0, canvas.width, canvas.height); ctx.drawImage(img, 0, 0, canvas.width, canvas.height); };
+        img.src = URL.createObjectURL(file);
+      });
+      document.getElementById('ops-sig-save')?.addEventListener('click', async () => {
+        const data = canvas.toDataURL('image/png');
+        const r = await API.saveAdminSignatureData(data, this.app.user);
+        if (!r.success) return Utils.toast(r.error || 'Could not save signature', 'error');
+        Utils.hideModal();
+        Utils.toast('Admin signature saved', 'success');
+        this.render(document.getElementById('admin-content'), this.admin);
+      });
     }
   };
 })();

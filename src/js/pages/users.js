@@ -2,7 +2,10 @@ const USER_PERM_KEYS = [
   'sell', 'void_sales', 'refunds', 'discounts', 'change_prices', 'view_reports', 'manage_stock',
   'customers', 'suppliers', 'gift_cards', 'cash_up', 'products', 'reports', 'operations',
   'delete_sales', 'system_settings', 'kitchen', 'quotes', 'layby', 'owner_salary', 'owner_salary_only',
-  'expense_capture'
+  'expense_capture', 'studio_menu_builder', 'studio_promo_video',
+  'radio_studio_access', 'radio_dashboard', 'radio_live_mic', 'radio_music', 'radio_playlists',
+  'radio_announcements', 'radio_mixer', 'radio_sfx', 'radio_calls', 'radio_audience',
+  'radio_broadcast', 'radio_social', 'radio_schedule', 'radio_promotions', 'radio_analytics', 'radio_settings'
 ];
 const USER_PERM_LABELS = {
   sell: 'Make sales on POS', void_sales: 'Void sales (with supervisor code)', refunds: 'Process returns',
@@ -13,8 +16,34 @@ const USER_PERM_LABELS = {
   system_settings: 'System / admin settings', kitchen: 'Kitchen display', quotes: 'Quotes & lay-bye', layby: 'Lay-bye',
   owner_salary: 'Owner salary — pay & view under Staff tab',
   owner_salary_only: 'Staff tab — Owner Salary only (hide employee portal)',
-  expense_capture: 'Capture expenses (mobile Expenses app)'
+  expense_capture: 'Capture expenses (mobile Expenses app)',
+  studio_menu_builder: 'Studio — Menu Builder Access',
+  studio_promo_video: 'Studio — Promo Video Builder Access',
+  radio_studio_access: 'Radio Studio Access',
+  radio_dashboard: 'Radio — Dashboard',
+  radio_live_mic: 'Radio — Live Microphone',
+  radio_music: 'Radio — Music Library',
+  radio_playlists: 'Radio — Playlists',
+  radio_announcements: 'Radio — Voice Announcements',
+  radio_mixer: 'Radio — Audio Mixer',
+  radio_sfx: 'Radio — Sound Effects',
+  radio_calls: 'Radio — Live Calls',
+  radio_audience: 'Radio — Audience Chat',
+  radio_broadcast: 'Radio — Live Broadcast',
+  radio_social: 'Radio — Social Broadcasting',
+  radio_schedule: 'Radio — Schedule',
+  radio_promotions: 'Radio — Promotions',
+  radio_analytics: 'Radio — Analytics',
+  radio_settings: 'Radio — Settings'
 };
+
+const STUDIO_PERM_KEYS = ['studio_menu_builder', 'studio_promo_video'];
+const RADIO_PERM_KEYS = [
+  'radio_studio_access', 'radio_dashboard', 'radio_live_mic', 'radio_music', 'radio_playlists',
+  'radio_announcements', 'radio_mixer', 'radio_sfx', 'radio_calls', 'radio_audience',
+  'radio_broadcast', 'radio_social', 'radio_schedule', 'radio_promotions', 'radio_analytics', 'radio_settings'
+];
+const GENERAL_PERM_KEYS = USER_PERM_KEYS.filter((k) => !STUDIO_PERM_KEYS.includes(k) && !RADIO_PERM_KEYS.includes(k));
 
 function renderUserTableRows(users, app, onAction) {
   return users.map(u => `<tr>
@@ -25,7 +54,7 @@ function renderUserTableRows(users, app, onAction) {
       <button class="btn btn-sm btn-ghost edit-user" data-id="${u.id}">Edit</button>
       ${u.id !== app.user.id && u.is_active ? `<button class="btn btn-sm btn-warning del-user" data-id="${u.id}">Deactivate</button>` : ''}
       ${u.id !== app.user.id && !u.is_active ? `<button class="btn btn-sm btn-primary restore-user" data-id="${u.id}">Restore</button>` : ''}
-      ${u.id !== app.user.id ? `<button class="btn btn-sm btn-danger purge-user" data-id="${u.id}">Delete permanently</button>` : ''}
+      ${u.id !== app.user.id ? `<button class="btn btn-sm btn-danger purge-user" data-id="${u.id}">Delete</button>` : ''}
     </td></tr>`).join('');
 }
 
@@ -34,12 +63,18 @@ const UsersPage = {
     this.app = app;
     el.innerHTML = `
       <div class="page-toolbar"><h3>User Management</h3><button class="btn btn-primary" id="add-user">+ Add User</button></div>
-      <p class="muted" style="margin:-8px 0 12px">Edit the full user profile, deactivate access, or permanently remove a user from the system.</p>
+      <p class="muted" style="margin:-8px 0 12px">Owner and manager can edit users, deactivate access, or delete a user. You cannot delete your own login.</p>
       <div class="card"><div class="table-wrap"><table>
         <thead><tr><th>Name</th><th>Username</th><th>Role</th><th>Status</th><th></th></tr></thead>
         <tbody id="users-tbody"><tr><td colspan="5" class="muted">Loading users…</td></tr></tbody>
       </table></div></div>`;
     document.getElementById('add-user')?.addEventListener('click', () => this.showForm(null, () => this.render(el, app)));
+    if (this.users?.length) {
+      const active = this.users.filter((u) => u.is_active);
+      const inactive = this.users.filter((u) => !u.is_active);
+      const tbody = document.getElementById('users-tbody');
+      if (tbody) tbody.innerHTML = renderUserTableRows(active, app) || '<tr><td colspan="5" class="muted">No active users</td></tr>';
+    }
     const res = await API.getUsers(app.user);
     if (!res.success) {
       document.getElementById('users-tbody').innerHTML = `<tr><td colspan="5" class="error-msg">${Utils.escHtml(res.error || 'Failed to load users')}</td></tr>`;
@@ -51,7 +86,7 @@ const UsersPage = {
 
     el.innerHTML = `
       <div class="page-toolbar"><h3>User Management</h3><button class="btn btn-primary" id="add-user">+ Add User</button></div>
-      <p class="muted" style="margin:-8px 0 12px">Edit the full user profile, deactivate access, or permanently remove a user from the system.</p>
+      <p class="muted" style="margin:-8px 0 12px">Owner and manager can edit users, deactivate access, or delete a user. You cannot delete your own login.</p>
       <h4 style="margin:16px 0 8px">Active Users</h4>
       <div class="card"><div class="table-wrap"><table>
         <thead><tr><th>Name</th><th>Username</th><th>Role</th><th>Status</th><th></th></tr></thead>
@@ -112,23 +147,33 @@ const UsersPage = {
             <option value="manager" ${user?.role === 'manager' ? 'selected' : ''}>Manager</option>
             <option value="assistant_manager" ${user?.role === 'assistant_manager' ? 'selected' : ''}>Assistant Manager</option>
             <option value="supervisor" ${user?.role === 'supervisor' ? 'selected' : ''}>Supervisor</option>
-            <option value="marketing_agent" ${user?.role === 'marketing_agent' ? 'selected' : ''}>Marketing Agent</option>
             <option value="delivery_manager" ${user?.role === 'delivery_manager' ? 'selected' : ''}>Delivery Department</option>
+            <option value="referral_agent" ${user?.role === 'referral_agent' ? 'selected' : ''}>Referral Agent</option>
             <option value="cashier" ${user?.role === 'cashier' ? 'selected' : ''}>Cashier</option>
           </select></div>
         <div class="field"><label>Branch ${['manager', 'supervisor', 'cashier', 'assistant_manager', 'delivery_manager'].includes(user?.role) || !user ? '*' : ''}</label>
           <select id="uf-branch">
-            <option value="">— ${user?.role === 'marketing_agent' || user?.role === 'delivery_manager' || (!user) ? 'All branches / shared' : 'Select branch'} —</option>
+            <option value="">— ${user?.role === 'delivery_manager' || (!user) ? 'All branches / shared' : 'Select branch'} —</option>
             ${branches.map(b => `<option value="${b.id}" ${user?.branch_id == b.id ? 'selected' : ''}>${b.name}</option>`).join('')}
           </select>
-          <small class="muted">1 manager + 1 supervisor per branch. Many cashiers allowed. Marketing agents can be shared.</small>
+          <small class="muted">1 manager + 1 supervisor per branch. Many cashiers allowed.</small>
         </div>
         ${user ? `<div class="field full"><label><input type="checkbox" id="uf-active" ${user.is_active ? 'checked' : ''}> Active — can sign in</label></div>
         ${user.has_pin ? '<div class="field full"><label><input type="checkbox" id="uf-clear-pin"> Clear PIN</label></div>' : ''}` : ''}
         ${showPerms ? `<div class="field full" id="uf-perms-wrap"><label>Permissions <span class="muted">(optional — overrides role defaults)</span></label>
           <div style="max-height:180px;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:8px;margin-top:4px">
-            ${USER_PERM_KEYS.map(k => `<label style="display:block;padding:3px 0;font-size:13px"><input type="checkbox" class="uf-perm" data-key="${k}" ${perms[k] ? 'checked' : ''}> ${USER_PERM_LABELS[k] || k.replace(/_/g, ' ')}</label>`).join('')}
+            ${GENERAL_PERM_KEYS.map(k => `<label style="display:block;padding:3px 0;font-size:13px"><input type="checkbox" class="uf-perm" data-key="${k}" ${perms[k] ? 'checked' : ''}> ${USER_PERM_LABELS[k] || k.replace(/_/g, ' ')}</label>`).join('')}
           </div></div>` : ''}
+        ${showPerms ? `<div class="field full" id="uf-studio-wrap" style="border-top:1px solid var(--border);padding-top:12px;margin-top:4px">
+          <label style="font-weight:600">Studio Access</label>
+          <p class="muted" style="margin:4px 0 8px;font-size:12px">Controls the Windows &amp; Android Menu &amp; Promo Studio app. Owner always has full access. Turning OFF revokes active Studio sessions.</p>
+          ${STUDIO_PERM_KEYS.map(k => `<label style="display:block;padding:4px 0;font-size:13px"><input type="checkbox" class="uf-perm" data-key="${k}" ${perms[k] ? 'checked' : ''}> ${USER_PERM_LABELS[k]}</label>`).join('')}
+        </div>` : ''}
+        ${showPerms ? `<div class="field full" id="uf-radio-wrap" style="border-top:1px solid var(--border);padding-top:12px;margin-top:4px">
+          <label style="font-weight:600">📻 Radio Studio Access</label>
+          <p class="muted" style="margin:4px 0 8px;font-size:12px">Chisanyama Connection Radio — separate from Menu/Promo Studio. Owner always has full access. Turning Radio Studio Access OFF revokes active Radio sessions.</p>
+          ${RADIO_PERM_KEYS.map(k => `<label style="display:block;padding:4px 0;font-size:13px"><input type="checkbox" class="uf-perm" data-key="${k}" ${perms[k] ? 'checked' : ''}> ${USER_PERM_LABELS[k]}</label>`).join('')}
+        </div>` : ''}
         ${canGrantRecipe && editingOwner ? `<div class="field full" style="border-top:1px solid var(--border);padding-top:12px;margin-top:4px">
           <label style="font-weight:600">Recipe &amp; Production Management System</label>
           <p class="muted" style="margin:4px 0 0;font-size:12px">Owner / Admin is not granted access here. Sign in with this username and password on the Recipe login screen.</p>
@@ -148,7 +193,8 @@ const UsersPage = {
           </div>
         </div>` : ''}
       </div>`,
-      '<button class="btn btn-primary" id="save-user">Save User</button>');
+      `${user && user.id !== app.user?.id ? '<button class="btn btn-danger" id="delete-user">Delete user</button>' : ''}
+      <button class="btn btn-primary" id="save-user">Save User</button>`);
 
     const syncRecipeGrantVisibility = () => {
       const wrap = document.getElementById('uf-recipe-wrap');
@@ -159,6 +205,12 @@ const UsersPage = {
     document.getElementById('uf-role')?.addEventListener('change', syncRecipeGrantVisibility);
     syncRecipeGrantVisibility();
 
+    document.getElementById('delete-user')?.addEventListener('click', () => {
+      this.permanentlyDeleteUser(user, () => {
+        Utils.hideModal();
+        if (onSaved) onSaved();
+      });
+    });
     document.getElementById('save-user').addEventListener('click', async () => {
       const data = {
         full_name: document.getElementById('uf-name').value.trim(),

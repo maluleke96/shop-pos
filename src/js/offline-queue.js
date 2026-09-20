@@ -6,7 +6,7 @@
 (function (root) {
   const DB_NAME = 'shoppos-offline';
   const STORE = 'queue';
-  const WRITE_RE = /^(auth_|sales_|stock_|products_|categories_|customers_|suppliers_|po_|returns_|expenses_|shifts_|staff_|recipe_|hr_|payroll_|held_|quotes_|layby_|giftcards_|waste_|cashup_|combos_|flyers_|mkt_|whatsapp_|bookkeeping_|notifications_read|settings_save|settings_complete|settings_saveJson|branches_|tables_|kitchen_status|kitchen_create|stockcount_|credit_|loyalty_|operating_|ownerSalary_|jobs_|donations_|ops_|automation_|customfields_|documentHub_|rewards_|salaryClaims_)/;
+  const WRITE_RE = /^(auth_|sales_|stock_|products_|categories_|customers_|suppliers_|po_|returns_|expenses_|shifts_|staff_|recipe_|hr_|payroll_|held_|quotes_|layby_|giftcards_|waste_|cashup_|combos_|whatsapp_|bookkeeping_|notifications_read|settings_save|settings_complete|settings_saveJson|branches_|tables_|kitchen_status|kitchen_create|stockcount_|credit_|loyalty_|operating_|ownerSalary_|jobs_|donations_|ops_|automation_|customfields_|documentHub_|rewards_|salaryClaims_)/;
 
   function openDb() {
     return new Promise((resolve, reject) => {

@@ -1,0 +1,10 @@
+const fs = require('fs');
+const path = require('path');
+const p = path.join(__dirname, '..', 'src', 'js', 'pages', 'pos.js');
+let s = fs.readFileSync(p, 'utf8');
+const i = s.indexOf('Held Orders');
+console.log('index', i);
+console.log('slice', JSON.stringify(s.slice(Math.max(0, i - 40), i + 50)));
+console.log('has CRLF', s.includes('\r\n'));
+const m = s.match(/\},\r?\n\s+Utils\.showModal\('Held Orders'/);
+console.log('regex match', !!m, m && JSON.stringify(m[0]));

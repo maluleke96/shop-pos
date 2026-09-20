@@ -1,6 +1,6 @@
 /**
  * Customer online ordering — branch-scoped menu, cart validation, orders, web customers.
- * Integrates with existing products, modifiers, branch_stock, loyalty, mkt_coupons, sales/POS.
+ * Integrates with existing products, modifiers, branch_stock, loyalty, sales/POS.
  */
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
@@ -39,6 +39,11 @@ function ensureSchema() {
       if (fs.existsSync(mig)) getDb().exec(fs.readFileSync(mig, 'utf8'));
     }
   }
+  ensureOrderGiftColumns();
+  ensureOrderTrackingColumns();
+  ensureOrderRejectColumns();
+  ensurePasswordResetSchema();
+  ensureIssueSchema();
 }
 
 function getLoyaltyPublicSettings() {
@@ -71,11 +76,12 @@ function buildMethodsFromPaymentSettings(paymentSettings = {}) {
   };
 
   const posToOnline = {
-    card: { id: 'card', label: 'Card (pay now)', status: 'paid', fulfillment: 'any' },
+    card: { id: 'card', label: 'Card (pay now)', status: 'pending_payment', fulfillment: 'any' },
     eft: { id: 'eft', label: 'EFT / Bank transfer', status: 'pending', fulfillment: 'any' },
     mobile: { id: 'mobile', label: 'Mobile payment', status: 'pending', fulfillment: 'any' },
     snapscan: { id: 'snapscan', label: 'SnapScan / QR', status: 'pending', fulfillment: 'any' },
-    other: { id: 'other', label: 'Other payment', status: 'pending', fulfillment: 'any' }
+    other: { id: 'other', label: 'Other payment', status: 'pending', fulfillment: 'any' },
+    pay_online: { id: 'pay_online', label: 'Pay Online', status: 'pending_payment', fulfillment: 'any' }
   };
 
   for (const id of enabled) {
@@ -158,19 +164,31 @@ function getGlobalSettings() {
   const online = parseJson(shop.online_settings_json, null);
   const loyalty = getLoyaltyPublicSettings();
   const defaultPaymentMethods = [
-    { id: 'card', label: 'Card (pay now)', status: 'paid', fulfillment: 'any', enabled: true },
+    { id: 'card', label: 'Card (pay now)', status: 'pending_payment', fulfillment: 'any', enabled: true },
     { id: 'eft', label: 'EFT / Bank transfer', status: 'pending', fulfillment: 'any', enabled: true },
     { id: 'cash_on_collection', label: 'Cash on collection', status: 'pending', fulfillment: 'collection', enabled: true },
     { id: 'cash_on_delivery', label: 'Cash on delivery', status: 'pending', fulfillment: 'delivery', enabled: true },
     { id: 'snapscan', label: 'SnapScan / QR', status: 'pending', fulfillment: 'any', enabled: true }
   ];
   const fromPos = buildOnlineMethodsFromPosSettings();
-  const paymentMethods = fromPos?.length
+  let paymentMethods = fromPos?.length
     ? fromPos
     : (Array.isArray(online?.payment_methods) && online.payment_methods.length
       ? online.payment_methods
       : defaultPaymentMethods);
-  const operatingHours = parseJson(shop.operating_hours_settings, { enabled: false, weekly: [] });
+  try {
+    const gwMethods = require('./payment-gateway').getEnabledOnlineMethods();
+    for (const gm of gwMethods || []) {
+      if (!paymentMethods.some((m) => String(m.id).toLowerCase() === String(gm.id).toLowerCase())) {
+        paymentMethods = [gm, ...paymentMethods];
+      } else {
+        paymentMethods = paymentMethods.map((m) =>
+          String(m.id).toLowerCase() === String(gm.id).toLowerCase() ? { ...m, ...gm, enabled: true } : m
+        );
+      }
+    }
+  } catch (_) { /* optional until schema ready */ }
+  const operatingHours = parseOperatingHours(shop.operating_hours_settings);
   const whatsapp = parseJson(shop.whatsapp_settings_json, {});
   return {
     shop_name: shop.shop_name || 'Shop',
@@ -203,6 +221,65 @@ function getGlobalSettings() {
   };
 }
 
+function parseOperatingHours(raw) {
+  const operatingHours = parseJson(raw, {
+    enabled: false,
+    apply_to_online: true,
+    open_time: '08:00',
+    close_time: '18:00',
+    weekly: []
+  });
+  if (operatingHours.apply_to_online === undefined) operatingHours.apply_to_online = true;
+  if (!operatingHours.open_time) operatingHours.open_time = '08:00';
+  if (!operatingHours.close_time) operatingHours.close_time = '18:00';
+  if (!operatingHours.force_online) operatingHours.force_online = 'auto';
+  if (!operatingHours.force_pos) operatingHours.force_pos = 'auto';
+  if (!operatingHours.hours_revision) operatingHours.hours_revision = 0;
+  return operatingHours;
+}
+
+function parseClockToday(timeStr) {
+  const now = new Date();
+  const [h, m] = String(timeStr || '08:00').split(':').map(Number);
+  const d = new Date(now);
+  d.setHours(h || 0, m || 0, 0, 0);
+  return d;
+}
+
+function isOnlineOpenFromHours(oh) {
+  const hours = oh || {};
+  if (hours.force_online === 'open') return true;
+  if (hours.force_online === 'closed') return false;
+  if (hours.apply_to_online === false || hours.apply_to_online === 0 || hours.apply_to_online === '0') return true;
+  const weekly = Array.isArray(hours.weekly) ? hours.weekly : [];
+  const now = new Date();
+  const day = weekly.find((w) => Number(w.day) === now.getDay())
+    || { open: hours.open_time || '08:00', close: hours.close_time || '18:00', closed: false };
+  if (day.closed) return false;
+  const openAt = parseClockToday(day.open || hours.open_time || '08:00');
+  const closeAt = parseClockToday(day.close || hours.close_time || '18:00');
+  if (closeAt.getTime() <= openAt.getTime()) {
+    return now >= openAt || now < closeAt;
+  }
+  return now >= openAt && now < closeAt;
+}
+
+function getHoursStatus() {
+  ensureSchema();
+  let shop = {};
+  try {
+    shop = dbGet('SELECT operating_hours_settings FROM shop_settings WHERE id = 1') || {};
+  } catch (_) { /* */ }
+  const operating_hours = parseOperatingHours(shop.operating_hours_settings);
+  return {
+    force_online: operating_hours.force_online,
+    force_pos: operating_hours.force_pos,
+    hours_revision: operating_hours.hours_revision || 0,
+    online_open: isOnlineOpenFromHours(operating_hours),
+    operating_hours
+  };
+}
+
 function getOnlinePaymentMethods(fulfillment) {
   const methods = getGlobalSettings().online.payment_methods || [];
   const f = String(fulfillment || 'collection').toLowerCase();
@@ -212,14 +289,127 @@ function getOnlinePaymentMethods(fulfillment) {
   });
 }
 
+const ONLINE_ORDER_TRANSITIONS = {
+  pending: ['accepted', 'rejected', 'cancelled', 'pending_payment', 'preparing'],
+  pending_payment: ['pending', 'accepted', 'cancelled', 'rejected'],
+  paid: ['accepted', 'cancelled', 'preparing'],
+  accepted: ['preparing', 'ready', 'completed', 'cancelled', 'rejected'],
+  preparing: ['ready', 'completed', 'cancelled'],
+  ready: ['completed', 'cancelled'],
+  completed: [],
+  rejected: [],
+  cancelled: []
+};
+
+function assertOnlineOrderTransition(fromStatus, toStatus) {
+  const from = String(fromStatus || 'pending').toLowerCase();
+  const to = String(toStatus || '').toLowerCase();
+  if (from === to) return;
+  const allowed = ONLINE_ORDER_TRANSITIONS[from];
+  if (!allowed || !allowed.includes(to)) {
+    throw new Error(`Invalid online order status change: ${from} → ${to}`);
+  }
+}
+
+function ensurePaymentIntentsSchema() {
+  if (isPgCloud()) {
+    try {
+      const fs = require('fs');
+      const path = require('path');
+      const mig = path.join(__dirname, '../../supabase/migrations/20260910_online_payment_intents.sql');
+      if (fs.existsSync(mig)) {
+        const { splitSqlStatements } = require('../database/ensure-pg-schema');
+        const sql = fs.readFileSync(mig, 'utf8');
+        for (const stmt of splitSqlStatements(sql)) {
+          try { getDb().exec(stmt); } catch (e) {
+            if (!/already exists|duplicate column/i.test(String(e.message || e))) {
+              console.warn('[online-ordering] payment intents:', String(e.message || e).slice(0, 120));
+            }
+          }
+        }
+      }
+    } catch (_) { /* optional */ }
+    return;
+  }
+  try {
+    dbRun(`CREATE TABLE IF NOT EXISTS online_payment_intents (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      intent_token TEXT NOT NULL UNIQUE,
+      amount REAL NOT NULL,
+      branch_id INTEGER,
+      web_customer_id INTEGER,
+      payment_method TEXT,
+      status TEXT DEFAULT 'pending',
+      payment_reference TEXT,
+      verified_at TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    )`);
+  } catch (_) { /* exists */ }
+}
+
+function createCardPaymentIntent(amount, branchId, webCustomerId, paymentMethod = 'card') {
+  ensurePaymentIntentsSchema();
+  const token = crypto.randomBytes(16).toString('hex');
+  dbRun(`INSERT INTO online_payment_intents (intent_token, amount, branch_id, web_customer_id, payment_method, status)
+    VALUES (?,?,?,?,?, 'pending')`, [token, Number(amount) || 0, branchId || null, webCustomerId || null, paymentMethod]);
+  return { intent_token: token, amount: Number(amount) || 0, expires_in: 900 };
+}
+
+function verifyCardPaymentIntent(intentToken, reference) {
+  ensurePaymentIntentsSchema();
+  const row = dbGet('SELECT * FROM online_payment_intents WHERE intent_token=?', [intentToken]);
+  if (!row) throw new Error('Payment intent not found');
+  if (row.status === 'paid') return { verified: true, intent_token: intentToken, payment_reference: row.payment_reference };
+  const ref = String(reference || '').trim();
+  if (!ref) throw new Error('Payment reference required');
+  const gateway = getGlobalSettings().online?.payment_gateway || { mode: 'test' };
+  if (gateway.mode === 'live' && gateway.provider) {
+    if (ref.length < 8) throw new Error('Invalid payment reference');
+  } else if (!/^TEST-[A-Za-z0-9-]{6,}$/.test(ref) && ref.length < 8) {
+    throw new Error('Invalid payment reference — use TEST- prefix in test mode or a gateway reference in live mode');
+  }
+  dbRun(`UPDATE online_payment_intents SET status='paid', payment_reference=?, verified_at=? WHERE intent_token=?`,
+    [ref, nowIso(), intentToken]);
+  return { verified: true, intent_token: intentToken, payment_reference: ref };
+}
+
 function resolvePaymentForOrder(payload = {}, fulfillment) {
   const methods = getOnlinePaymentMethods(fulfillment);
   const methodId = String(payload.payment_method || 'card').toLowerCase();
   const method = methods.find((m) => String(m.id).toLowerCase() === methodId);
   if (!method) throw new Error('Selected payment method is not available');
+  let payment_status = payload.payment_status || method.status || 'pending';
+  const mid = String(method.id).toLowerCase();
+
+  // Gateway-hosted online pay (Yoco etc.) — never mark paid from the browser
+  let gatewayPay = false;
+  try {
+    gatewayPay = require('./payment-gateway').isGatewayPaymentMethod(mid);
+  } catch (_) { /* optional */ }
+  if (gatewayPay || mid === 'pay_online') {
+    return {
+      payment_method: method.id,
+      payment_status: 'PENDING',
+      payment_intent_token: null,
+      gateway_checkout: true
+    };
+  }
+
+  const cardLike = ['card', 'snapscan', 'mobile'].includes(mid);
+  if (cardLike && payload.payment_intent_token) {
+    const intent = dbGet('SELECT * FROM online_payment_intents WHERE intent_token=? AND status=\'paid\'', [payload.payment_intent_token]);
+    if (!intent) throw new Error('Card payment not verified — complete payment first');
+    if (Math.abs(Number(intent.amount) - Number(payload.expected_total || intent.amount)) > 0.02) {
+      throw new Error('Payment amount mismatch');
+    }
+    payment_status = 'paid';
+  } else if (cardLike && String(method.status || '').toLowerCase() === 'pending_payment') {
+    payment_status = 'pending_payment';
+  }
   return {
     payment_method: method.id,
-    payment_status: payload.payment_status || method.status || 'pending'
+    payment_status,
+    payment_intent_token: payload.payment_intent_token || null
   };
 }
 
@@ -239,7 +429,7 @@ function getBranchOnlineSettings(branchId) {
   ensureSchema();
   const global = getGlobalSettings();
   const row = dbGet('SELECT * FROM branch_online_settings WHERE branch_id = ?', [branchId]);
-  const delRow = dbGet('SELECT delivery_fee, free_delivery_above, min_order, delivery_enabled FROM delivery_branch_settings WHERE branch_id = ?', [branchId]);
+  const delRow = dbGet('SELECT delivery_fee, free_delivery_above, min_order, delivery_enabled, zones_json FROM delivery_branch_settings WHERE branch_id = ?', [branchId]);
   let branch = dbGet('SELECT * FROM branches WHERE id = ?', [branchId]);
   if (!branch) {
     branch = {
@@ -270,7 +460,15 @@ function getBranchOnlineSettings(branchId) {
     if (delRow.free_delivery_above != null) base.free_delivery_above = Number(delRow.free_delivery_above) || 0;
     if (delRow.min_order != null) base.min_delivery_order = Number(delRow.min_order) || 0;
     if (delRow.delivery_enabled != null) base.delivery_enabled = delRow.delivery_enabled ? 1 : 0;
+    try {
+      const places = require('./delivery-platform').normalizePlaces(delRow.zones_json);
+      if (places.length) {
+        base.delivery_zones = places;
+        base.delivery_places = places;
+      }
+    } catch (_) { /* optional */ }
   }
+  if (!base.delivery_places) base.delivery_places = Array.isArray(base.delivery_zones) ? base.delivery_zones : [];
   return base;
 }
 
@@ -364,7 +562,13 @@ function getPublicBranches() {
 
   return rows
     .filter((b) => b.online_enabled == null || Number(b.online_enabled) !== 0)
-    .map((b) => ({
+    .map((b) => {
+      let places = [];
+      try {
+        const full = getBranchOnlineSettings(b.id);
+        places = full.delivery_places || full.delivery_zones || [];
+      } catch (_) { places = []; }
+      return {
     id: b.id,
     name: b.name,
     code: b.code,
@@ -379,8 +583,10 @@ function getPublicBranches() {
     delivery_fee: Number(b.delivery_fee) || 0,
     free_delivery_above: Number(b.free_delivery_above) || 0,
     prep_minutes: Number(b.prep_minutes) || 25,
+    delivery_places: places,
     is_open: (b.online_status || 'open') === 'open' && (b.online_enabled == null || Number(b.online_enabled) !== 0)
-  }));
+  };
+    });
 }
 
 function branchStockQty(productId, branchId) {
@@ -397,11 +603,36 @@ function productAvailableAtBranch(product, branchId) {
     const bs = dbGet('SELECT 1 FROM branch_stock WHERE product_id = ? AND branch_id = ?', [product.id, branchId]);
     if (!bs) return false;
   }
+  const hasRecipe = Number(product.has_recipe) === 1;
+  if (hasRecipe && String(product.production_mode || '') !== 'make_to_stock') {
+    try {
+      const snap = require('./production-availability').calculateProductCapacity(product.id, { forOnline: true });
+      return Number(snap?.available_meals) > 0;
+    } catch (_) {
+      const cap = Number(product.production_capacity);
+      if (Number.isFinite(cap)) return cap > 0;
+      return false;
+    }
+  }
   return branchStockQty(product.id, branchId) > 0;
 }
 
 function getModifiersForProduct(productId, branchId) {
   const mods = dbAll('SELECT * FROM product_modifiers WHERE product_id = ? ORDER BY option_group, id', [productId]);
+  const inventory = require('./inventory');
+  let recipeItems = [];
+  try { recipeItems = inventory.getProductRecipe(productId) || []; } catch (_) { recipeItems = []; }
+  const optionOut = (optionName) => {
+    const key = String(optionName || '').trim().toLowerCase();
+    if (!key) return false;
+    for (const item of recipeItems) {
+      const opt = String(item.option_name || '').trim().toLowerCase();
+      if (opt !== key) continue;
+      const rule = inventory.normalizeIncludeRule(item.include_rule);
+      if (rule === 'when_selected' && !(Number(item.ingredient_stock_quantity) > 0)) return true;
+    }
+    return false;
+  };
   const groups = {};
   for (const m of mods) {
     const isRemoval = String(m.modifier_type || '').toLowerCase() === 'removal';
@@ -410,14 +641,13 @@ function getModifiersForProduct(productId, branchId) {
       groups[g] = { name: g, required: false, options: [], type: isRemoval ? 'checkbox' : 'radio' };
     }
     if (m.is_required && !isRemoval) groups[g].required = true;
-    const outOfStock = false;
     groups[g].options.push({
       id: m.id,
       name: m.name,
       extra_price: Number(m.extra_price) || 0,
       modifier_type: m.modifier_type || 'extra',
       is_required: !!m.is_required,
-      out_of_stock: outOfStock
+      out_of_stock: optionOut(m.name)
     });
   }
   return Object.values(groups);
@@ -435,7 +665,7 @@ function mapProductForWeb(p, branchId, promos = [], productPromo = null, modifie
   const qty = branchStockQty(p.id, branchId);
   const available = productAvailableAtBranch(p, branchId);
   const pic = p.picture_path || p.image_path || p.image;
-  const imageUrl = pic ? publicProductImageUrl(p.id, false) : null;
+  const imageUrl = pic ? publicProductImageUrl(p.id, false, p.updated_at || p.picture_updated_at) : null;
   const todayStr = new Date().toLocaleDateString('en-CA');
   const badges = [];
   if (Number(p.available_today) === 1) badges.push({ key: 'available_today', label: 'Available Today', color: '#2dd4bf' });
@@ -499,8 +729,8 @@ function mapComboForWeb(combo, branchId, modifierIds = null) {
   const finalPrice = Number(combo.final_price) || normal;
   const pic = combo.image_path || combo.picture_path;
   const items = combo.items || [];
-  const thumbs = items.map(comboItemImageUrl).filter(Boolean).slice(0, 6);
-  const gallery = (combo.gallery_paths || []).map(publicAssetImageUrl).filter(Boolean).slice(0, 6);
+  const thumbs = items.map(comboItemImageUrl).filter(Boolean);
+  const gallery = (combo.gallery_paths || []).map(publicAssetImageUrl).filter(Boolean);
   let hasModifiers = combo.combo_kind === 'custom' ? false : false;
   for (const ci of items) {
     if (ci.allow_pap_choice || (ci.product_id && (modifierIds ? modifierIds.has(ci.product_id) : dbGet('SELECT 1 FROM product_modifiers WHERE product_id = ? LIMIT 1', [ci.product_id])))) {
@@ -517,7 +747,11 @@ function mapComboForWeb(combo, branchId, modifierIds = null) {
     description: combo.description || '',
     category_id: 'combos',
     image: pic ? publicProductImageUrl(combo.id, true) : (thumbs[0] || gallery[0] || null),
-    combo_thumbs: [...gallery, ...thumbs].filter(Boolean).slice(0, 6),
+    combo_thumbs: [
+      ...(pic ? [publicProductImageUrl(combo.id, true)] : []),
+      ...gallery,
+      ...thumbs
+    ].filter(Boolean).filter((u, i, arr) => arr.indexOf(u) === i).slice(0, 12),
     price: normal,
     sale_price: finalPrice < normal ? finalPrice : null,
     on_sale: finalPrice < normal,
@@ -539,9 +773,13 @@ function mapComboForWeb(combo, branchId, modifierIds = null) {
 function getActiveCombos(branchId) {
   try {
     const combosSvc = require('./combos');
-    return combosSvc.getCombos({
-      active_only: true, branch_id: branchId, approval_status: 'approved', for_online: true
+    let list = combosSvc.getCombos({
+      active_only: true, branch_id: branchId, approval_status: 'approved'
     }, null) || [];
+    if (!list.length) {
+      list = combosSvc.getCombos({ active_only: true, approval_status: 'approved' }, null) || [];
+    }
+    return list.filter((c) => combosSvc.isComboActive(c));
   } catch (_) { return []; }
 }
 
@@ -560,6 +798,17 @@ function ensureOrderGiftColumns() {
 function ensureOrderTrackingColumns() {
   for (const col of ['confirmation_code TEXT', 'tracking_token TEXT']) {
     try { dbRun(`ALTER TABLE online_orders_local ADD COLUMN ${col}`); } catch (_) { /* exists */ }
+  }
+}
+
+function ensureOrderRejectColumns() {
+  if (isPgCloud()) {
+    try { dbRun('ALTER TABLE online_orders_local ADD COLUMN IF NOT EXISTS rejected_by BIGINT'); } catch (_) { /* */ }
+    try { dbRun('ALTER TABLE online_orders_local ADD COLUMN IF NOT EXISTS rejected_at TIMESTAMPTZ'); } catch (_) { /* */ }
+  } else {
+    for (const col of ['rejected_by INTEGER', 'rejected_at TEXT']) {
+      try { dbRun(`ALTER TABLE online_orders_local ADD COLUMN ${col}`); } catch (_) { /* exists */ }
+    }
   }
 }
 
@@ -600,13 +849,9 @@ function buildTrackingSteps(order, deliveryRow) {
   return steps;
 }
 
-function getActivePromotions(branchId) {
-  try {
-    return dbAll(`SELECT * FROM mkt_promotions WHERE status = 'active'
-      AND (branch_id IS NULL OR branch_id = ? OR branch_id = 0)
-      AND (starts_at IS NULL OR starts_at <= ?)
-      AND (ends_at IS NULL OR ends_at >= ?)`, [branchId, nowIso(), nowIso()]);
-  } catch (_) { return []; }
+function getActivePromotions(_branchId) {
+  // Marketing platform promotions removed — use promo-requests only
+  return [];
 }
 
 function getBranchMenu(branchId, filters = {}) {
@@ -620,11 +865,12 @@ function getBranchMenu(branchId, filters = {}) {
   let productPromoMap = {};
   try {
     const promoRequestsSvc = require('./promo-requests');
-    productPromoMap = promoRequestsSvc.getActivePromosMap();
+    productPromoMap = promoRequestsSvc.getActivePromosMap('online');
   } catch (_) { /* optional */ }
   const categories = dbAll('SELECT * FROM categories WHERE is_active = 1 ORDER BY sort_order, name');
   let products = dbAll(`SELECT p.* FROM products p
     WHERE p.is_active = 1 AND COALESCE(p.online_enabled, 1) = 1
+    AND COALESCE(p.item_type, 'retail') != 'ingredient'
     AND (p.branch_id IS NULL OR p.branch_id = ? OR EXISTS (SELECT 1 FROM branch_stock bs WHERE bs.product_id = p.id AND bs.branch_id = ?))
     ORDER BY p.name`, [branchId, branchId]);
   if (filters.category_id) {
@@ -664,6 +910,7 @@ function getBranchMenu(branchId, filters = {}) {
   const catList = categories.map((c) => ({ id: c.id, name: c.name, color: c.color, image: c.image }));
   const allRaw = dbAll(`SELECT p.* FROM products p
     WHERE p.is_active = 1 AND COALESCE(p.online_enabled, 1) = 1
+    AND COALESCE(p.item_type, 'retail') != 'ingredient'
     AND (p.branch_id IS NULL OR p.branch_id = ? OR EXISTS (SELECT 1 FROM branch_stock bs WHERE bs.product_id = p.id AND bs.branch_id = ?))`,
   [branchId, branchId]);
   const menuTabs = menuHl.buildMenuTabs(allRaw, productPromoMap, 'online', store.getSettingsParsed());
@@ -729,7 +976,7 @@ function getProductDetail(branchId, productId) {
   const promos = getActivePromotions(branchId);
   let productPromo = null;
   try {
-    productPromo = require('./promo-requests').getActivePromosMap()[productId] || null;
+    productPromo = require('./promo-requests').getActivePromosMap('online')[productId] || null;
   } catch (_) { /* optional */ }
   return {
     ...mapProductForWeb(p, branchId, promos, productPromo),
@@ -744,7 +991,9 @@ function hashToken(token) {
 function phoneDigits(phone) {
   if (!phone) return '';
   let d = String(phone).replace(/\D/g, '');
+  if (!d) return '';
   if (d.startsWith('27') && d.length >= 11) d = d.slice(2);
+  else if (d.startsWith('27') && d.length === 10) d = d.slice(2);
   if (d.startsWith('0')) d = d.slice(1);
   return d.slice(-9);
 }
@@ -752,7 +1001,13 @@ function phoneDigits(phone) {
 function phonesMatch(a, b) {
   const na = phoneDigits(a);
   const nb = phoneDigits(b);
-  return !!(na && nb && na.length >= 9 && na === nb);
+  if (na && nb && na.length >= 9 && na === nb) return true;
+  const da = String(a || '').replace(/\D/g, '');
+  const db = String(b || '').replace(/\D/g, '');
+  if (da && db && da.length >= 9 && db.length >= 9 && (da === db || da.endsWith(db.slice(-9)) || db.endsWith(da.slice(-9)))) {
+    return true;
+  }
+  return false;
 }
 
 function maskPhone(phone) {
@@ -807,6 +1062,78 @@ function webAccountExists(phone, email) {
   return { exists: false };
 }
 
+function isUniqueViolation(err) {
+  return /duplicate key|unique constraint|UNIQUE constraint/i.test(String(err?.message || err || ''));
+}
+
+function findWebCustomerRow(phone, email, customerId) {
+  if (customerId) {
+    const row = dbGet('SELECT * FROM web_customers WHERE customer_id = ? ORDER BY id DESC LIMIT 1', [Number(customerId)]);
+    if (row) return row;
+  }
+  const emailLower = String(email || '').trim().toLowerCase();
+  if (emailLower) {
+    const row = dbGet('SELECT * FROM web_customers WHERE lower(email) = ? ORDER BY id DESC LIMIT 1', [emailLower]);
+    if (row) return row;
+  }
+  if (phone) {
+    const rows = dbAll("SELECT * FROM web_customers WHERE phone IS NOT NULL AND TRIM(phone) != ''");
+    for (const r of rows) {
+      if (phonesMatch(phone, r.phone)) return r;
+    }
+  }
+  return null;
+}
+
+function isWebRowActive(row) {
+  return !!(row && row.is_active !== 0 && row.is_active !== false);
+}
+
+function upsertWebCustomer({ existing, customerId, first, last, email, phone, hash, referral, loyaltyPoints }) {
+  if (existing) {
+    if (isWebRowActive(existing) && existing.customer_id && Number(existing.customer_id) !== Number(customerId)) {
+      throw new Error('This email or mobile already has an online account. Please sign in.');
+    }
+    let nextEmail = email || existing.email || null;
+    let nextPhone = phone || existing.phone || null;
+    if (nextEmail) {
+      const taken = dbGet('SELECT id FROM web_customers WHERE lower(email) = ? AND id != ?', [String(nextEmail).toLowerCase(), existing.id]);
+      if (taken) nextEmail = existing.email || null;
+    }
+    if (nextPhone) {
+      const others = dbAll("SELECT id, phone FROM web_customers WHERE id != ? AND phone IS NOT NULL AND TRIM(phone) != ''", [existing.id]);
+      if (others.some((r) => phonesMatch(nextPhone, r.phone))) nextPhone = existing.phone || null;
+    }
+    dbRun(`UPDATE web_customers SET
+      customer_id = ?, first_name = ?, last_name = ?, email = ?, phone = ?,
+      password_hash = ?, referred_by_code = COALESCE(?, referred_by_code),
+      loyalty_points = ?, is_active = 1, updated_at = ?
+      WHERE id = ?`, [
+      customerId || existing.customer_id, first, last, nextEmail, nextPhone,
+      hash, referral || null, loyaltyPoints, nowIso(), existing.id
+    ]);
+    return existing.id;
+  }
+  try {
+    const r = dbRun(`INSERT INTO web_customers (customer_id, first_name, last_name, email, phone, password_hash, referred_by_code, loyalty_points)
+      VALUES (?,?,?,?,?,?,?,?)`, [
+      customerId || null, first, last, email || null, phone || null, hash, referral || null, loyaltyPoints
+    ]);
+    return r.lastInsertRowid
+      || dbGet('SELECT id FROM web_customers WHERE customer_id = ? ORDER BY id DESC LIMIT 1', [customerId])?.id
+      || dbGet('SELECT id FROM web_customers ORDER BY id DESC LIMIT 1')?.id;
+  } catch (err) {
+    if (!isUniqueViolation(err)) throw err;
+    const again = findWebCustomerRow(phone, email, customerId)
+      || (email ? dbGet('SELECT * FROM web_customers WHERE lower(email) = ?', [String(email).toLowerCase()]) : null)
+      || (phone ? dbGet('SELECT * FROM web_customers WHERE phone = ?', [phone]) : null);
+    if (!again) throw new Error('Could not activate account — please sign in or try again.');
+    return upsertWebCustomer({
+      existing: again, customerId, first, last, email, phone, hash, referral, loyaltyPoints
+    });
+  }
+}
+
 function checkWebRegistration(data = {}) {
   ensureSchema();
   ensureRegistrationSchema();
@@ -839,7 +1166,7 @@ function checkWebRegistration(data = {}) {
   return { status: 'new' };
 }
 
-function sendWebRegistrationCode(data = {}) {
+async function sendWebRegistrationCode(data = {}) {
   ensureSchema();
   ensureRegistrationSchema();
   const check = checkWebRegistration(data);
@@ -858,28 +1185,43 @@ function sendWebRegistrationCode(data = {}) {
     VALUES (?,?,?,?,?)`, [verifyPhone, String(data.email || '').trim().toLowerCase() || null, pos.id, hash, expires]);
 
   const shopName = dbGet('SELECT shop_name FROM shop_settings WHERE id = 1')?.shop_name || 'Shop';
-  let sent = false;
+  const body = `${shopName} — Your online ordering verification code is: ${code}\n\nEnter this code to activate your account. Valid for 15 minutes.\n\nDo not share this code with anyone.`;
+  let sentViaApi = false;
   let url = null;
   try {
     const whatsapp = require('./whatsapp');
-    const r = whatsapp.sendMessage({
+    const r = await whatsapp.sendMessage({
       phone: verifyPhone,
-      body: `${shopName} — Your online ordering verification code is: ${code}\n\nEnter this code to activate your account. Valid for 15 minutes.\n\nDo not share this code with anyone.`,
+      body,
       message_type: 'verification',
       recipient_type: 'customer',
-      customer_id: pos.id
-    });
-    sent = r?.status === 'sent' || r?.via === 'cloud_api';
-    url = r?.url || null;
-  } catch (_) { /* fallback url below */ }
+      customer_id: pos.id,
+      recipient_name: pos.name,
+      otp_code: code
+    }, { role: 'system' });
+    sentViaApi = r?.status === 'sent' || r?.via === 'cloud_api';
+    if (!sentViaApi) {
+      url = whatsapp.buildWaUrl(verifyPhone, body);
+    }
+  } catch (err) {
+    console.warn('[web-reg] WhatsApp API send skipped', err.message || err);
+    try {
+      const whatsapp = require('./whatsapp');
+      url = whatsapp.buildWaUrl(verifyPhone, body);
+    } catch (_) { /* */ }
+  }
+  if (!sentViaApi && !url) {
+    url = `https://wa.me/?text=${encodeURIComponent(body)}`;
+  }
 
   return {
-    sent,
-    whatsapp_url: url,
+    sent: true,
+    via: sentViaApi ? 'cloud_api' : 'whatsapp_open',
+    whatsapp_url: sentViaApi ? null : url,
     phone_masked: maskPhone(verifyPhone),
-    message: sent
-      ? `Verification code sent to WhatsApp ending ${maskPhone(verifyPhone).slice(-4)}`
-      : `Open WhatsApp to receive your verification code on ${maskPhone(verifyPhone)}`
+    message: sentViaApi
+      ? `Verification code sent to WhatsApp ${maskPhone(verifyPhone)}`
+      : `WhatsApp is ready with your code for ${maskPhone(verifyPhone)}. Tap Send, then enter the 6-digit code here.`
   };
 }
 
@@ -913,6 +1255,20 @@ function resolveWebCustomer(token) {
   return safe;
 }
 
+function tryAttributeReferral(customerId, webCustomerId, referralCode) {
+  if (!referralCode) return;
+  try {
+    require('./referral-commission').attributeCustomer({
+      customerId: customerId || null,
+      webCustomerId: webCustomerId || null,
+      code: referralCode,
+      source: 'online_link'
+    });
+  } catch (err) {
+    console.warn('[referral] register attribute:', err.message);
+  }
+}
+
 function registerWebCustomer(data = {}) {
   ensureSchema();
   ensureRegistrationSchema();
@@ -938,7 +1294,7 @@ function registerWebCustomer(data = {}) {
     const pos = dbGet('SELECT * FROM customers WHERE id = ?', [posMatch.id]);
     const verifyPhone = String(pos.phone || phone || '').trim();
     const hash = bcrypt.hashSync(password, 10);
-    const referral = (data.referral_code || '').trim().toUpperCase() || null;
+    const referral = (data.referral_code || data.referred_by_code || '').trim().toUpperCase() || null;
     const loyaltyPoints = Math.floor(Number(pos.loyalty_points) || 0);
     if (email && pos.email && String(pos.email).trim().toLowerCase() !== email) {
       dbRun('UPDATE customers SET email = ?, updated_at = ? WHERE id = ?', [email, nowIso(), pos.id]);
@@ -946,20 +1302,27 @@ function registerWebCustomer(data = {}) {
     if (verifyPhone && pos.phone !== verifyPhone) {
       dbRun('UPDATE customers SET phone = ?, updated_at = ? WHERE id = ?', [verifyPhone, nowIso(), pos.id]);
     }
-    const r = dbRun(`INSERT INTO web_customers (customer_id, first_name, last_name, email, phone, password_hash, referred_by_code, loyalty_points)
-      VALUES (?,?,?,?,?,?,?,?)`, [
-      pos.id, first, last, email || pos.email || null, verifyPhone || null, hash, referral, loyaltyPoints
-    ]);
-    const session = createWebSession(r.lastInsertRowid);
-    return { customer: resolveWebCustomer(session.token), token: session.token, linked: true, loyalty_points: loyaltyPoints };
+    const existingWeb = findWebCustomerRow(verifyPhone || phone, email || pos.email, pos.id);
+    const webId = upsertWebCustomer({
+      existing: existingWeb,
+      customerId: pos.id,
+      first,
+      last,
+      email: email || pos.email || null,
+      phone: verifyPhone || null,
+      hash,
+      referral,
+      loyaltyPoints
+    });
+    const session = createWebSession(webId);
+    const customer = resolveWebCustomer(session.token);
+    tryAttributeReferral(pos.id, webId, referral);
+    return { customer, token: session.token, linked: true, loyalty_points: loyaltyPoints };
   }
 
-  if (email && dbGet('SELECT id FROM web_customers WHERE lower(email) = ?', [email])) throw new Error('Email already registered');
-  if (phone) {
-    const rows = dbAll('SELECT phone FROM web_customers WHERE phone IS NOT NULL');
-    for (const r of rows) {
-      if (phonesMatch(phone, r.phone)) throw new Error('Phone already registered');
-    }
+  const existingWeb = findWebCustomerRow(phone, email, null);
+  if (existingWeb && isWebRowActive(existingWeb)) {
+    throw new Error('This email or mobile already has an online account. Please sign in.');
   }
 
   let customerId = null;
@@ -967,27 +1330,275 @@ function registerWebCustomer(data = {}) {
     const existing = findPosCustomerByContact(phone, email);
     if (existing) customerId = existing.id;
     else {
-      const ins = dbRun('INSERT INTO customers (name, phone, email) VALUES (?,?,?)', [`${first} ${last}`.trim(), phone, email || null]);
-      customerId = ins.lastInsertRowid;
+      try {
+        const ins = dbRun('INSERT INTO customers (name, phone, email) VALUES (?,?,?)', [`${first} ${last}`.trim(), phone, email || null]);
+        customerId = ins.lastInsertRowid;
+      } catch (err) {
+        if (!isUniqueViolation(err)) throw err;
+        const again = findPosCustomerByContact(phone, email);
+        customerId = again?.id || null;
+      }
     }
   }
 
   const hash = bcrypt.hashSync(password, 10);
-  const referral = (data.referral_code || '').trim().toUpperCase() || null;
-  const r = dbRun(`INSERT INTO web_customers (customer_id, first_name, last_name, email, phone, password_hash, referred_by_code)
-    VALUES (?,?,?,?,?,?,?)`, [customerId, first, last, email || null, phone || null, hash, referral]);
-  const session = createWebSession(r.lastInsertRowid);
-  return { customer: resolveWebCustomer(session.token), token: session.token };
+  const referral = (data.referral_code || data.referred_by_code || '').trim().toUpperCase() || null;
+  const webId = upsertWebCustomer({
+    existing: existingWeb,
+    customerId,
+    first,
+    last,
+    email: email || null,
+    phone: phone || null,
+    hash,
+    referral,
+    loyaltyPoints: 0
+  });
+  const session = createWebSession(webId);
+  const customer = resolveWebCustomer(session.token);
+  tryAttributeReferral(customerId, webId, referral);
+  return { customer, token: session.token };
+}
+
+function findWebCustomerByLogin(login) {
+  ensureSchema();
+  const id = String(login || '').trim();
+  if (!id) return null;
+  const active = (r) => !!(r && r.is_active !== 0 && r.is_active !== false && r.is_active !== '0');
+  if (id.includes('@')) {
+    const byEmail = dbGet('SELECT * FROM web_customers WHERE lower(email) = lower(?) ORDER BY id DESC LIMIT 1', [id]);
+    if (byEmail && active(byEmail)) return byEmail;
+  }
+  // Digits-only match first (handles spaces / +27 / leading 0). Avoid SQL is_active=1 (PG boolean vs int).
+  const digits = id.replace(/\D/g, '');
+  const rows = dbAll("SELECT * FROM web_customers WHERE phone IS NOT NULL AND TRIM(phone) != ''");
+  for (const r of rows) {
+    if (!active(r)) continue;
+    if (phonesMatch(id, r.phone)) return r;
+    if (digits && phonesMatch(digits, r.phone)) return r;
+  }
+  const exact = dbGet('SELECT * FROM web_customers WHERE (lower(email) = lower(?) OR phone = ?) ORDER BY id DESC LIMIT 1', [id, id]);
+  if (exact && active(exact)) return exact;
+  try {
+    const pos = findPosCustomerByContact(id.includes('@') ? '' : id, id.includes('@') ? id : '');
+    if (pos?.id) {
+      const linked = dbGet('SELECT * FROM web_customers WHERE customer_id = ? ORDER BY id DESC LIMIT 1', [pos.id]);
+      if (linked && active(linked)) return linked;
+    }
+  } catch (_) { /* optional POS link */ }
+  return null;
 }
 
 function loginWebCustomer(login, password) {
   ensureSchema();
   const id = String(login || '').trim();
-  const row = dbGet(`SELECT * FROM web_customers WHERE (lower(email) = lower(?) OR phone = ?) AND is_active = 1`, [id, id]);
-  if (!row || !bcrypt.compareSync(String(password), row.password_hash)) throw new Error('Invalid login or password');
+  const pass = String(password || '');
+  if (!id || !pass) throw new Error('Check your email or phone and password');
+  let row = findWebCustomerByLogin(id);
+  // Soft fallback: inactive accounts with a password still get a clear message
+  if (!row) {
+    let inactive = null;
+    if (id.includes('@')) {
+      inactive = dbGet('SELECT * FROM web_customers WHERE lower(email) = lower(?) LIMIT 1', [id]);
+    } else {
+      const digits = id.replace(/\D/g, '');
+      const all = dbAll("SELECT * FROM web_customers WHERE phone IS NOT NULL AND TRIM(phone) != ''");
+      inactive = (all || []).find((r) => phonesMatch(id, r.phone) || (digits && phonesMatch(digits, r.phone))) || null;
+    }
+    if (inactive && Number(inactive.is_active) === 0) {
+      throw new Error('This online account is deactivated — contact the shop');
+    }
+  }
+  if (!row || !row.password_hash || !bcrypt.compareSync(pass, row.password_hash)) {
+    throw new Error('Check your email or phone and password');
+  }
   const session = createWebSession(row.id);
   const { password_hash, ...safe } = row;
   return { customer: safe, token: session.token };
+}
+
+function ensurePasswordResetSchema() {
+  const sqliteSql = `CREATE TABLE IF NOT EXISTS web_password_resets (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      web_customer_id INTEGER NOT NULL,
+      contact TEXT,
+      channel TEXT,
+      code_hash TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      created_at TEXT DEFAULT (datetime('now'))
+    )`;
+  const pgSql = `CREATE TABLE IF NOT EXISTS web_password_resets (
+      id SERIAL PRIMARY KEY,
+      web_customer_id INTEGER NOT NULL,
+      contact TEXT,
+      channel TEXT,
+      code_hash TEXT NOT NULL,
+      expires_at TIMESTAMPTZ NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`;
+  try {
+    dbRun(isPgCloud() ? pgSql : sqliteSql);
+  } catch (err) {
+    const msg = String(err.message || err);
+    if (!/already exists/i.test(msg)) {
+      try { dbRun(isPgCloud() ? sqliteSql : pgSql); } catch (err2) {
+        const msg2 = String(err2.message || err2);
+        if (!/already exists/i.test(msg2)) {
+          console.warn('[online-ordering] web_password_resets:', msg2.slice(0, 200));
+        }
+      }
+    }
+  }
+  try {
+    dbRun('CREATE INDEX IF NOT EXISTS idx_web_password_resets_customer ON web_password_resets(web_customer_id)');
+  } catch (_) { /* index may exist */ }
+}
+
+function maskEmail(email) {
+  const e = String(email || '').trim();
+  const at = e.indexOf('@');
+  if (at < 1) return '***';
+  const name = e.slice(0, at);
+  const domain = e.slice(at);
+  return `${name.slice(0, 2)}***${domain}`;
+}
+
+async function sendCustomerWhatsApp(phone, body, opts = {}) {
+  let sentViaApi = false;
+  let url = null;
+  try {
+    const whatsapp = require('./whatsapp');
+    const r = await whatsapp.sendMessage({
+      phone,
+      body,
+      message_type: opts.message_type || 'verification',
+      recipient_type: 'customer',
+      customer_id: opts.customer_id || null,
+      recipient_name: opts.recipient_name || '',
+      otp_code: opts.otp_code
+    }, { role: 'system' });
+    sentViaApi = r?.status === 'sent' || r?.via === 'cloud_api';
+    // Always keep a wa.me link so the customer can open WhatsApp and send the code to themselves.
+    url = whatsapp.buildWaUrl(phone, body);
+  } catch (_) {
+    try {
+      const whatsapp = require('./whatsapp');
+      url = whatsapp.buildWaUrl(phone, body);
+    } catch (__) { /* */ }
+  }
+  if (!url && phone) {
+    url = `https://wa.me/?text=${encodeURIComponent(body)}`;
+  }
+  return { sentViaApi, url };
+}
+
+async function sendWebPasswordReset(data = {}) {
+  ensureSchema();
+  ensurePasswordResetSchema();
+  const email = String(data.email || '').trim().toLowerCase();
+  const phone = String(data.phone || data.login || '').trim();
+  const login = email || phone;
+  if (!login) throw new Error('Enter the email or phone on your account');
+  const row = findWebCustomerByLogin(login);
+  if (!row) throw new Error('No online account found for that email or phone');
+
+  const code = String(Math.floor(100000 + Math.random() * 900000));
+  const hash = bcrypt.hashSync(code, 10);
+  try { dbRun('DELETE FROM web_password_resets WHERE web_customer_id = ?', [row.id]); } catch (_) { /* */ }
+  const channel = (email || login.includes('@')) ? 'email' : 'phone';
+  dbRun(`INSERT INTO web_password_resets (web_customer_id, contact, channel, code_hash, expires_at)
+    VALUES (?,?,?,?,?)`, [row.id, row.phone || row.email || login, channel, hash, nowPlusMin(15)]);
+
+  const shopName = dbGet('SELECT shop_name FROM shop_settings WHERE id = 1')?.shop_name || 'Shop';
+  const body = `${shopName} — Your password reset code is: ${code}\n\nEnter this code on Order Online, then type your new password. Valid for 15 minutes.\n\nDo not share this code.`;
+  const waPhone = row.phone || (!login.includes('@') ? phone : '');
+  let via = 'none';
+  let whatsappUrl = null;
+  let emailUrl = null;
+  if (waPhone) {
+    const sent = await sendCustomerWhatsApp(waPhone, body, {
+      customer_id: row.customer_id || null,
+      recipient_name: `${row.first_name || ''} ${row.last_name || ''}`.trim(),
+      otp_code: code,
+      message_type: 'password_reset'
+    });
+    via = sent.sentViaApi ? 'whatsapp' : 'whatsapp_open';
+    // Always expose wa.me so the customer can open WhatsApp and send the code to themselves (same as Order Online UX).
+    whatsappUrl = sent.url || null;
+    if (!whatsappUrl && waPhone) {
+      try {
+        const whatsapp = require('./whatsapp');
+        whatsappUrl = whatsapp.buildWaUrl(waPhone, body);
+      } catch (_) { /* */ }
+    }
+  }
+  // Also route through Communication Center using configured recovery channels (SMS/Email/WhatsApp)
+  try {
+    const cc = require('./communication-center');
+    const recovery = cc.getSettings()?.recovery || {};
+    const channels = Array.isArray(recovery.channels) && recovery.channels.length
+      ? recovery.channels
+      : ['whatsapp'];
+    cc.emit('auth.password_recovery', {
+      customer_name: `${row.first_name || ''} ${row.last_name || ''}`.trim(),
+      customer_phone: waPhone || row.phone,
+      customer_email: row.email,
+      phone: waPhone || row.phone,
+      email: row.email,
+      verification_code: code,
+      expiry: 15
+    }, {
+      channels,
+      recipients: ['customer'],
+      body,
+      transactional: true,
+      source_module: 'online-ordering',
+      priority: 5,
+      dedupe_key: `pwdreset:${row.id}:${new Date().toISOString().slice(0, 16)}`
+    });
+  } catch (_) { /* CC optional */ }
+  if (row.email && (channel === 'email' || !waPhone)) {
+    emailUrl = `mailto:${encodeURIComponent(row.email)}?subject=${encodeURIComponent(`${shopName} password reset`)}&body=${encodeURIComponent(body)}`;
+    if (via === 'none') via = 'email_open';
+  }
+  if (via === 'none') throw new Error('This account has no WhatsApp number or email to send a reset code');
+
+  const bits = [];
+  if (waPhone) bits.push(`WhatsApp ${maskPhone(waPhone)}`);
+  if (row.email && (channel === 'email' || !waPhone)) bits.push(maskEmail(row.email));
+  return {
+    sent: true,
+    via,
+    whatsapp_url: whatsappUrl,
+    email_url: emailUrl,
+    phone_masked: waPhone ? maskPhone(waPhone) : '',
+    email_masked: row.email ? maskEmail(row.email) : '',
+    login_hint: login,
+    message: via === 'whatsapp'
+      ? `Reset code sent to ${bits.join(' and ')}`
+      : `Your reset code is ready for ${bits.join(' and ')}. Open the message, then enter the 6-digit code here.`
+  };
+}
+
+function resetWebPassword(data = {}) {
+  ensureSchema();
+  ensurePasswordResetSchema();
+  const login = String(data.email || data.phone || data.login || '').trim();
+  const code = String(data.code || data.verification_code || '').trim();
+  const password = String(data.password || data.new_password || '');
+  if (!login) throw new Error('Enter your email or phone');
+  if (code.length < 4) throw new Error('Enter the reset code');
+  if (password.length < 6) throw new Error('New password must be at least 6 characters');
+  const row = findWebCustomerByLogin(login);
+  if (!row) throw new Error('No online account found for that email or phone');
+  const reset = dbGet('SELECT * FROM web_password_resets WHERE web_customer_id = ? AND expires_at > ? ORDER BY id DESC LIMIT 1',
+    [row.id, nowIso()]);
+  if (!reset) throw new Error('Reset code expired — request a new code');
+  if (!bcrypt.compareSync(code, reset.code_hash)) throw new Error('Incorrect reset code');
+  dbRun('UPDATE web_customers SET password_hash = ?, updated_at = ? WHERE id = ?', [bcrypt.hashSync(password, 10), nowIso(), row.id]);
+  dbRun('DELETE FROM web_password_resets WHERE web_customer_id = ?', [row.id]);
+  try { dbRun('UPDATE web_customer_sessions SET expires_at = ? WHERE web_customer_id = ?', [nowIso(), row.id]); } catch (_) { /* */ }
+  return { success: true, message: 'Password updated. Sign in with your new password.' };
 }
 
 function validateCart(branchId, cart = {}) {
@@ -1049,15 +1660,10 @@ function validateCart(branchId, cart = {}) {
       errors.push(`${product.name} is out of stock at this branch`);
       continue;
     }
-    const stock = branchStockQty(productId, branchId);
-    if (qty > stock) {
-      errors.push(`Only ${stock} of ${product.name} available`);
-      continue;
-    }
     const promos = getActivePromotions(branchId);
     let productPromo = null;
     try {
-      productPromo = require('./promo-requests').getActivePromosMap()[productId] || null;
+      productPromo = require('./promo-requests').getActivePromosMap('online')[productId] || null;
     } catch (_) { /* optional */ }
     const mapped = mapProductForWeb(product, branchId, promos, productPromo);
     const selectedMods = [];
@@ -1075,6 +1681,30 @@ function validateCart(branchId, cart = {}) {
           id: mod.id, name: mod.name, extra_price: mod.extra_price,
           modifier_type: mod.modifier_type, group: g.name
         });
+      }
+    }
+    const hasRecipe = Number(product.has_recipe) === 1;
+    const makeToOrder = hasRecipe && String(product.production_mode || '') !== 'make_to_stock';
+    if (makeToOrder) {
+      try {
+        const snap = require('./production-availability').calculateProductCapacity(productId, {
+          selectedModifiers: selectedMods,
+          forOnline: !selectedMods.length
+        });
+        const meals = Number(snap?.available_meals) || 0;
+        if (qty > meals) {
+          errors.push(meals > 0 ? `Only ${meals} of ${product.name} available` : `${product.name} is out of stock`);
+          continue;
+        }
+      } catch (_) {
+        errors.push(`${product.name} is out of stock at this branch`);
+        continue;
+      }
+    } else {
+      const stock = branchStockQty(productId, branchId);
+      if (qty > stock) {
+        errors.push(`Only ${stock} of ${product.name} available`);
+        continue;
       }
     }
     const unitPrice = promoPricing.calcPromoAwareUnitPrice({
@@ -1101,24 +1731,57 @@ function validateCart(branchId, cart = {}) {
   const fulfillment = cart.fulfillment_type || 'collection';
   const branchSettings = getBranchOnlineSettings(branchId);
   let deliveryFee = 0;
+  let deliveryPlace = null;
   if (fulfillment === 'delivery') {
     if (!branchSettings.delivery_enabled) errors.push('Delivery is not available at this branch');
-    if (subtotal < (branchSettings.min_delivery_order || 0)) {
-      errors.push(`Minimum delivery order is ${branchSettings.min_delivery_order}`);
+    const places = branchSettings.delivery_places || branchSettings.delivery_zones || [];
+    const placeKey = cart.delivery_place_id || cart.delivery_place || cart.delivery_place_name || '';
+    if (places.length) {
+      deliveryPlace = places.find((p) =>
+        String(p.id) === String(placeKey) || String(p.name || '').toLowerCase() === String(placeKey).toLowerCase()
+      ) || null;
+      if (!deliveryPlace && placeKey) {
+        errors.push('Select a valid delivery place');
+      } else if (!deliveryPlace) {
+        errors.push('Choose a delivery place');
+      } else {
+        const minOrd = Number(deliveryPlace.min_order) || 0;
+        if (subtotal < minOrd) errors.push(`Minimum delivery order for ${deliveryPlace.name} is ${minOrd}`);
+        const freeAbove = Number(deliveryPlace.free_delivery_above) || 0;
+        const fee = Number(deliveryPlace.delivery_fee) || 0;
+        deliveryFee = freeAbove > 0 && subtotal >= freeAbove ? 0 : fee;
+      }
+    } else {
+      if (subtotal < (branchSettings.min_delivery_order || 0)) {
+        errors.push(`Minimum delivery order is ${branchSettings.min_delivery_order}`);
+      }
+      deliveryFee = subtotal >= (branchSettings.free_delivery_above || 0) && branchSettings.free_delivery_above > 0
+        ? 0 : Number(branchSettings.delivery_fee) || 0;
     }
-    deliveryFee = subtotal >= (branchSettings.free_delivery_above || 0) && branchSettings.free_delivery_above > 0
-      ? 0 : Number(branchSettings.delivery_fee) || 0;
   }
 
   let discount = 0;
   let couponApplied = null;
   if (cart.coupon_code) {
-    if (getGlobalSettings().online?.coupons_enabled === false) {
-      errors.push('Coupon codes are disabled for online orders');
-    } else {
     const couponResult = validateCoupon(cart.coupon_code, branchId, { subtotal, items: lines }, cart.web_customer_id);
-    if (couponResult.error) errors.push(couponResult.error);
-    else { discount = couponResult.discount; couponApplied = couponResult.coupon; }
+    const isReferral = couponResult && (couponResult.type === 'referral' || couponResult.ok);
+    if (isReferral) {
+      discount = Number(couponResult.discount) || 0;
+      couponApplied = {
+        code: couponResult.code,
+        type: 'referral',
+        discount_type: couponResult.discount_percent ? 'percent' : 'amount',
+        discount_percent: couponResult.discount_percent || 0,
+        agent_id: couponResult.agent_id || null,
+        message: couponResult.message
+      };
+    } else if (getGlobalSettings().online?.coupons_enabled === false) {
+      errors.push('Coupon codes are disabled for online orders');
+    } else if (couponResult.error) {
+      errors.push(couponResult.error);
+    } else {
+      discount = Number(couponResult.discount) || 0;
+      couponApplied = couponResult.coupon || couponResult;
     }
   }
 
@@ -1178,6 +1841,10 @@ function validateCart(branchId, cart = {}) {
     try {
       const features = require('./features');
       const card = features.checkGiftCardBalance(String(cart.gift_card_code).trim().toUpperCase());
+      if (cart.web_customer_id) {
+        const wc = dbGet('SELECT * FROM web_customers WHERE id = ?', [cart.web_customer_id]);
+        if (wc) require('./first-online-gift').assertGiftOwnedByWebCustomer(card.code, wc);
+      }
       giftCardAmount = round2(Math.min(Number(card.balance) || 0, totalBeforeGift));
       giftCardCode = card.code;
       if (!giftCardAmount) errors.push('Gift card has no balance to apply');
@@ -1200,6 +1867,9 @@ function validateCart(branchId, cart = {}) {
     gift_card_code: giftCardCode,
     gift_card_amount: giftCardAmount,
     delivery_fee: deliveryFee,
+    delivery_place: deliveryPlace ? deliveryPlace.name : null,
+    delivery_place_id: deliveryPlace ? deliveryPlace.id : null,
+    delivery_place_fee: deliveryPlace ? Number(deliveryPlace.delivery_fee) || 0 : null,
     tax_amount: taxTotals.tax_amount,
     total,
     total_before_gift: totalBeforeGift,
@@ -1212,26 +1882,68 @@ function validateCoupon(code, branchId, cartCtx = {}, webCustomerId = null) {
   const value = String(code || '').trim();
   if (!value) return { error: 'Coupon code required', discount: 0 };
   try {
-    const coupon = dbGet(`SELECT * FROM mkt_coupons WHERE UPPER(code) = UPPER(?) AND status IN ('active','issued','generated')`, [value]);
-    if (!coupon) return { error: 'Invalid coupon code', discount: 0 };
-    if (coupon.expires_at && new Date(coupon.expires_at) < new Date()) return { error: 'Coupon expired', discount: 0 };
-    if (coupon.branch_id && Number(coupon.branch_id) !== Number(branchId)) return { error: 'Coupon not valid at this branch', discount: 0 };
-    const maxUses = Number(coupon.max_uses) || 0;
-    const used = Number(coupon.used_count) || 0;
-    if (maxUses > 0 && used >= maxUses) return { error: 'Coupon usage limit reached', discount: 0 };
-    const minSpend = Number(coupon.min_order_amount) || 0;
-    if (cartCtx.subtotal < minSpend) return { error: `Minimum order ${minSpend} required`, discount: 0 };
-    let discount = 0;
-    const subtotal = Number(cartCtx.subtotal) || 0;
-    if (coupon.discount_type === 'percent' || coupon.discount_type === 'percentage') {
-      discount = round2(subtotal * (Number(coupon.discount_value) || 0) / 100);
-    } else {
-      discount = round2(Number(coupon.discount_value) || 0);
+    const ref = require('./referral-commission').validateReferralCode(value);
+    if (ref && ref.type === 'referral') {
+      // Attribute if we know the web customer / linked POS customer
+      try {
+        const wc = webCustomerId ? dbGet('SELECT * FROM web_customers WHERE id = ?', [webCustomerId]) : null;
+        if (wc?.customer_id || webCustomerId) {
+          require('./referral-commission').attributeCustomer({
+            customerId: wc?.customer_id || null,
+            webCustomerId: webCustomerId || null,
+            code: value,
+            source: 'online_code'
+          });
+        }
+      } catch (_) { /* first-referrer-wins or self-ref */ }
+      const discount = Number(ref.discount_amount) || 0;
+      const pct = Number(ref.discount_percent) || 0;
+      let disc = discount;
+      if (!disc && pct > 0 && cartCtx.subtotal) disc = Math.round((Number(cartCtx.subtotal) * pct) / 100 * 100) / 100;
+      return {
+        ok: true,
+        type: 'referral',
+        code: ref.code,
+        agent_id: ref.agent_id,
+        discount: disc,
+        discount_percent: pct,
+        message: `Referral code ${ref.code} applied`
+      };
     }
-    return { discount: Math.min(discount, subtotal), coupon: { code: coupon.code, id: coupon.id, discount_type: coupon.discount_type, discount_value: coupon.discount_value } };
-  } catch (_) {
-    return { error: 'Coupon validation unavailable', discount: 0 };
-  }
+  } catch (_) { /* not a referral code */ }
+  try {
+    const vouchers = require('./discount-vouchers');
+    let customerId = null;
+    try {
+      if (webCustomerId) {
+        const wc = dbGet('SELECT customer_id FROM web_customers WHERE id = ?', [webCustomerId]);
+        customerId = wc?.customer_id || null;
+      }
+    } catch (_) { /* */ }
+    const v = vouchers.validateVoucher(value, {
+      subtotal: Number(cartCtx.subtotal) || 0,
+      items: cartCtx.items || [],
+      customerId,
+      requireCustomer: false
+    });
+    if (v.ok) {
+      if (v.customer_id && customerId && Number(v.customer_id) !== Number(customerId)) {
+        return { error: 'This voucher is for a different customer', discount: 0 };
+      }
+      return {
+        ok: true,
+        type: 'discount_voucher',
+        code: v.code,
+        discount: v.discount,
+        discount_percent: v.discount_type === 'percent' ? v.discount_value : 0,
+        voucher_id: v.voucher_id,
+        product_id: v.product_id,
+        message: v.message || `Voucher ${v.code} applied`
+      };
+    }
+    if (v.error && v.error !== 'Invalid voucher code') return { error: v.error, discount: 0 };
+  } catch (_) { /* no voucher table yet */ }
+  return { error: 'Invalid coupon code', discount: 0 };
 }
 
 function nextOnlineOrderNumber() {
@@ -1281,18 +1993,31 @@ function submitOrder(branchId, payload = {}, webToken = null, idempotencyKey = n
     ...payload,
     web_customer_id: customer.id,
     fulfillment_type: payload.fulfillment_type || 'collection',
-    coupon_code: payload.coupon_code,
+    coupon_code: payload.coupon_code || payload.referral_code || null,
     loyalty_points_used: payload.loyalty_points_used,
     gift_card_code: payload.gift_card_code
   });
   if (!cart.valid) throw new Error(cart.errors.join('; '));
   if (!cart.lines.length) throw new Error('Your cart is empty — add at least one item');
 
+  const referralCodeUsed = String(
+    payload.referral_code || payload.coupon_code || cart.coupon?.code || ''
+  ).trim().toUpperCase() || null;
+  if (referralCodeUsed) {
+    tryAttributeReferral(customer.customer_id, customer.id, referralCodeUsed);
+  }
+
   ensureOrderGiftColumns();
   ensureOrderTrackingColumns();
   const orderNumber = nextOnlineOrderNumber();
   const fulfillment = payload.fulfillment_type || 'collection';
-  const payment = resolvePaymentForOrder(payload, fulfillment);
+  const payment = resolvePaymentForOrder({ ...payload, expected_total: cart.total }, fulfillment);
+  const payNorm = String(payment.payment_status || '').toLowerCase();
+  const initialStatus = (payNorm === 'paid')
+    ? 'pending'
+    : ((payNorm === 'pending_payment' || payNorm === 'pending' || payment.gateway_checkout)
+      ? 'pending_payment'
+      : 'pending');
   const itemsJson = JSON.stringify(cart.lines);
   let confirmationCode = null;
   let trackingToken = null;
@@ -1314,12 +2039,23 @@ function submitOrder(branchId, payload = {}, webToken = null, idempotencyKey = n
     `${customer.first_name} ${customer.last_name || ''}`.trim(),
     customer.phone, customer.email, itemsJson,
     cart.subtotal, cart.discount, cart.delivery_fee, cart.tax_amount, cart.total,
-    payload.coupon_code || null, cart.loyalty_points_used || 0,
+    referralCodeUsed || payload.coupon_code || null, cart.loyalty_points_used || 0,
     cart.gift_card_code || null, cart.gift_card_amount || 0,
     payment.payment_method, payment.payment_status,
     fulfillment, fulfillment,
-    payload.delivery_address || null, payload.scheduled_for || null,
-    payload.notes || null, 'pending', idempotencyKey || null,
+    (() => {
+      const place = cart.delivery_place || payload.delivery_place || null;
+      const addr = String(payload.delivery_address || '').trim();
+      if (place && addr) return `${place} — ${addr}`;
+      return addr || place || null;
+    })(),
+    payload.scheduled_for || null,
+    [
+      payload.notes || null,
+      cart.delivery_place ? `Delivery place: ${cart.delivery_place}` : null,
+      cart.delivery_place_id ? `Place ID: ${cart.delivery_place_id}` : null
+    ].filter(Boolean).join(' · ') || null,
+    initialStatus, idempotencyKey || null,
     confirmationCode, trackingToken
   ]);
 
@@ -1348,11 +2084,21 @@ function submitOrder(branchId, payload = {}, webToken = null, idempotencyKey = n
     } catch (_) { /* */ }
   }
 
-  if (payload.coupon_code) {
+  if (referralCodeUsed || payload.coupon_code) {
     try {
       dbRun('INSERT INTO web_coupon_redemptions (order_id, coupon_code, web_customer_id, branch_id, discount_amount) VALUES (?,?,?,?,?)',
-        [orderId, payload.coupon_code, customer.id, branchId, cart.discount]);
+        [orderId, referralCodeUsed || payload.coupon_code, customer.id, branchId, cart.discount]);
     } catch (_) { /* */ }
+    try {
+      if (cart.coupon?.type === 'discount_voucher' || cart.coupon?.voucher_id) {
+        require('./discount-vouchers').redeemVoucher(cart.coupon.code || payload.coupon_code, {
+          subtotal: cart.subtotal,
+          items: cart.lines || cart.items || [],
+          channel: 'order_online',
+          customerId: customer?.customer_id || null
+        });
+      }
+    } catch (_) { /* voucher already used or missing */ }
   }
 
   if (cart.loyalty_points_used > 0 && customer.customer_id) {
@@ -1397,10 +2143,34 @@ function submitOrder(branchId, payload = {}, webToken = null, idempotencyKey = n
   }
   try { require('./store').notifyPosOnlineOrder(order); } catch (_) { /* */ }
   try { require('./mobile-manager').notifyOnlineOrder(orderId); } catch (_) { /* */ }
-  return formatOrder(order);
+  try {
+    const cc = require('./communication-center');
+    const total = order.total != null ? order.total : order.grand_total;
+    cc.emit('order.new', {
+      customer_name: `${customer.first_name || ''} ${customer.last_name || ''}`.trim() || 'Customer',
+      customer_phone: customer.phone,
+      customer_email: customer.email,
+      customer_id: customer.customer_id || customer.id,
+      order_number: orderNumber,
+      order_total: total,
+      branch: order.branch_name || '',
+      branch_id: branchId,
+      announcement: `New order ${orderNumber}`
+    }, {
+      template_slug: 'cc_order_new_customer',
+      source_module: 'online-ordering',
+      transactional: true,
+      dedupe_key: `order.new:${orderId}`
+    });
+  } catch (_) { /* CC optional */ }
+  let firstGift = null;
+  try {
+    firstGift = require('./first-online-gift').maybeAwardFromSubmit(order, customer);
+  } catch (_) { /* optional */ }
+  return formatOrder(order, firstGift);
 }
 
-function formatOrder(row) {
+function formatOrder(row, firstGiftAward = null) {
   if (!row) return null;
   const events = dbAll('SELECT * FROM online_order_events WHERE order_id = ? ORDER BY id', [row.id]);
   let confirmationCode = row.confirmation_code || null;
@@ -1451,7 +2221,16 @@ function formatOrder(row) {
     status_label: activeStep?.label || String(row.status || 'pending'),
     driver,
     accepted_by: acceptedBy,
-    cashier: acceptedBy
+    cashier: acceptedBy,
+    first_online_gift: (() => {
+      if (firstGiftAward && firstGiftAward.gift_card_code) {
+        return require('./first-online-gift').publicAwardView(firstGiftAward);
+      }
+      try {
+        const award = require('./first-online-gift').awardForOrder(row.id);
+        return award ? require('./first-online-gift').publicAwardView(award) : null;
+      } catch (_) { return null; }
+    })()
   };
 }
 
@@ -1472,17 +2251,95 @@ function listCustomerOrders(webToken, limit = 50) {
   return rows.map(formatOrder);
 }
 
-function listAdminOrders(filters = {}) {
+function listAdminOrders(filters = {}, actor) {
   ensureSchema();
+  const { applyActorBranchScope } = require('./authz');
+  filters = applyActorBranchScope(actor, filters || {});
   let sql = 'SELECT * FROM online_orders_local WHERE 1=1';
   const p = [];
   if (filters.branch_id) { sql += ' AND branch_id = ?'; p.push(filters.branch_id); }
   if (filters.status) { sql += ' AND status = ?'; p.push(filters.status); }
-  if (filters.from) { sql += ' AND created_at >= ?'; p.push(filters.from); }
-  if (filters.to) { sql += ' AND created_at <= ?'; p.push(filters.to); }
+  if (filters.from) { sql += " AND date(created_at, 'localtime') >= date(?)"; p.push(filters.from); }
+  if (filters.to) { sql += " AND date(created_at, 'localtime') <= date(?)"; p.push(filters.to); }
   sql += ' ORDER BY id DESC LIMIT ?';
   p.push(Math.min(Number(filters.limit) || 200, 500));
   return dbAll(sql, p).map(formatOrder);
+}
+
+function assertAdminOrderAccess(actor, order) {
+  if (!order) throw new Error('Order not found');
+  const { applyActorBranchScope } = require('./authz');
+  const scoped = applyActorBranchScope(actor, { branch_id: order.branch_id });
+  if (scoped.branch_id != null && Number(scoped.branch_id) !== Number(order.branch_id)) {
+    throw new Error('Not authorized for this branch');
+  }
+}
+
+function getAdminOrderDetail(orderId, actor) {
+  const order = resolveOrderRef(orderId);
+  assertAdminOrderAccess(actor, order);
+  const branch = dbGet('SELECT name FROM branches WHERE id = ?', [order.branch_id]);
+  const formatted = formatOrder(order);
+  return { ...formatted, branch_name: branch?.name || `Branch ${order.branch_id}` };
+}
+
+function updateAdminOrder(orderId, patch = {}, actor) {
+  const order = resolveOrderRef(orderId);
+  assertAdminOrderAccess(actor, order);
+  const allowed = ['customer_name', 'customer_phone', 'customer_email', 'delivery_address', 'notes', 'scheduled_for', 'fulfillment_type', 'payment_method'];
+  const updates = {};
+  for (const key of allowed) {
+    if (patch[key] !== undefined) updates[key] = patch[key];
+  }
+  if (patch.fulfillment_type != null) {
+    updates.fulfillment = patch.fulfillment_type;
+  }
+  if (patch.items != null) {
+    updates.items_json = JSON.stringify(Array.isArray(patch.items) ? patch.items : parseJson(patch.items, []));
+  }
+  if (patch.total != null) updates.total = round2(patch.total);
+  if (patch.subtotal != null) updates.subtotal = round2(patch.subtotal);
+  if (patch.discount != null) updates.discount = round2(patch.discount);
+  if (patch.status && String(patch.status) !== String(order.status)) {
+    return updateOrderStatus(orderId, patch.status, actor, {
+      reject_reason: patch.reject_reason || patch.status_note || null,
+      note: patch.status_note || `Status changed to ${patch.status} by admin`
+    });
+  }
+  if (Object.keys(updates).length) {
+    const cols = Object.keys(updates).map((k) => `${k} = ?`).join(', ');
+    dbRun(`UPDATE online_orders_local SET ${cols}, updated_at = ? WHERE id = ?`,
+      [...Object.values(updates), nowIso(), order.id]);
+    logOrderEvent(order.id, order.status, `Admin updated: ${Object.keys(updates).join(', ')}`, 'staff', actor?.id || null);
+  }
+  return getAdminOrderDetail(order.id, actor);
+}
+
+function deleteAdminOrder(orderId, reason, actor) {
+  const order = resolveOrderRef(orderId);
+  assertAdminOrderAccess(actor, order);
+  const status = String(order.status || '').toLowerCase();
+  if (!['rejected', 'cancelled'].includes(status)) {
+    restoreOrderLoyaltyPoints(order);
+    restoreOrderGiftCard(order);
+  }
+  dbRun(`UPDATE web_stock_reservations SET status = 'released' WHERE order_id = ?`, [order.id]);
+  try { require('./first-online-gift').maybeRevokeFromStatus({ ...order, status: 'cancelled' }); } catch (_) { /* */ }
+  try { dbRun('DELETE FROM online_order_events WHERE order_id = ?', [order.id]); } catch (_) { /* */ }
+  dbRun('DELETE FROM online_orders_local WHERE id = ?', [order.id]);
+  try {
+    const mobileMgr = require('./mobile-manager');
+    mobileMgr.purgeAlertsForOnlineOrder(order.id);
+    if (order.sale_id) mobileMgr.purgeAlertsForSale(order.sale_id);
+  } catch (_) { /* optional */ }
+  try {
+    const store = require('./store');
+    store.purgeNotificationsForEntity?.('online_order', order.id);
+    if (order.sale_id) store.purgeNotificationsForEntity?.('sale', order.sale_id);
+    store.audit(actor?.id, actor?.full_name || actor?.username || 'admin', 'delete_online_order', 'online_order', order.id,
+      JSON.stringify({ order_number: order.order_number, reason: reason || null, total: order.total, sale_id: order.sale_id || null, status: order.status }));
+  } catch (_) { /* */ }
+  return { success: true, order_number: order.order_number };
 }
 
 function resolveOrderRef(orderRef) {
@@ -1497,6 +2354,7 @@ function resolveOrderRef(orderRef) {
 function updateOrderStatus(orderId, status, actor, opts = {}) {
   const order = resolveOrderRef(orderId);
   const localId = order.id;
+  if (opts.skipFsm !== true) assertOnlineOrderTransition(order.status, status);
   const rejectExtras = status === 'rejected' && actor?.id
     ? `, rejected_by = ${Number(actor.id)}, rejected_at = '${nowIso()}'`
     : '';
@@ -1505,8 +2363,36 @@ function updateOrderStatus(orderId, status, actor, opts = {}) {
   logOrderEvent(localId, status, opts.note || opts.reject_reason || '', actor ? 'staff' : 'system', actor?.id || null);
   if (status === 'rejected' || status === 'cancelled') {
     dbRun(`UPDATE web_stock_reservations SET status = 'released' WHERE order_id = ?`, [localId]);
-  } else if (status === 'accepted' || status === 'completed') {
+    try { require('./first-online-gift').maybeRevokeFromStatus({ ...order, status }); } catch (_) { /* */ }
+    try {
+      const saleId = order.sale_id;
+      if (saleId) {
+        require('./referral-commission').reverseCommissionForSale(
+          saleId, 1, status === 'rejected' ? 'Order rejected' : 'Order cancelled', actor
+        );
+      }
+    } catch (err) {
+      console.warn('[online] referral commission reverse:', err?.message || err);
+    }
+  } else if (status === 'accepted' || status === 'completed' || status === 'pending') {
     dbRun(`UPDATE web_stock_reservations SET status = 'fulfilled' WHERE order_id = ? AND status = 'reserved'`, [localId]);
+    if (String(order.status).toLowerCase() === 'pending_payment') {
+      try {
+        const wc = order.web_customer_id ? dbGet('SELECT * FROM web_customers WHERE id = ?', [order.web_customer_id]) : null;
+        if (wc) require('./first-online-gift').maybeAwardFromSubmit({ ...order, status }, wc);
+      } catch (_) { /* */ }
+    }
+    if (status === 'completed' && order.sale_id) {
+      try {
+        const ot = String(order.order_type || order.fulfillment || '').toLowerCase();
+        const isDelivery = ot === 'delivery' || Number(order.delivery_fee) > 0;
+        if (!isDelivery) {
+          require('./referral-commission').confirmCommissionOnDelivery(order.sale_id);
+        }
+      } catch (err) {
+        console.warn('[online] referral commission confirm:', err?.message || err);
+      }
+    }
   }
   return formatOrder(dbGet('SELECT * FROM online_orders_local WHERE id = ?', [localId]));
 }
@@ -1557,12 +2443,19 @@ function getCustomerGiftCards(customer) {
     rows.push(...dbAll(`SELECT code, balance, status, expires_at FROM gift_cards
       WHERE customer_phone = ? AND COALESCE(balance, 0) > 0 ORDER BY expires_at ASC NULLS LAST`, [customer.phone]));
   }
+  try {
+    rows.push(...require('./first-online-gift').walletCardsForWebCustomer(customer));
+  } catch (_) { /* */ }
   const seen = new Set();
   return rows.filter((c) => {
     if (seen.has(c.code)) return false;
     seen.add(c.code);
     if (c.status === 'cancelled') return false;
-    if (c.expires_at && String(c.expires_at).slice(0, 10) < new Date().toISOString().slice(0, 10)) return false;
+    try {
+      if (require('./features').giftCardIsExpired(c)) return false;
+    } catch (_) {
+      if (c.expires_at && String(c.expires_at).slice(0, 10) < new Date().toISOString().slice(0, 10)) return false;
+    }
     return Number(c.balance) > 0;
   }).map((c) => ({
     code: c.code,
@@ -1572,9 +2465,13 @@ function getCustomerGiftCards(customer) {
   }));
 }
 
-function checkGiftCardForWeb(code) {
+function checkGiftCardForWeb(code, webToken) {
   const features = require('./features');
   const card = features.checkGiftCardBalance(String(code || '').trim().toUpperCase());
+  if (webToken) {
+    const customer = resolveWebCustomer(webToken);
+    if (customer) require('./first-online-gift').assertGiftOwnedByWebCustomer(card.code, customer);
+  }
   return {
     code: card.code,
     balance: round2(card.balance),
@@ -1583,9 +2480,15 @@ function checkGiftCardForWeb(code) {
   };
 }
 
-function deleteWebCustomerAccount(webToken) {
+function deleteWebCustomerAccount(webToken, password) {
   const customer = resolveWebCustomer(webToken);
   if (!customer) throw new Error('Not signed in');
+  const pass = String(password || '').trim();
+  if (!pass) throw new Error('Enter your password to delete this account');
+  const row = dbGet('SELECT password_hash FROM web_customers WHERE id = ?', [customer.id]);
+  if (!row?.password_hash || !bcrypt.compareSync(pass, row.password_hash)) {
+    throw new Error('Password is incorrect');
+  }
   dbRun('UPDATE web_customer_sessions SET expires_at = ? WHERE web_customer_id = ?', [nowIso(), customer.id]);
   dbRun('UPDATE web_customers SET is_active = 0, updated_at = ? WHERE id = ?', [nowIso(), customer.id]);
   return { success: true, message: 'Your online account has been deleted. In-store purchase history remains linked to your phone number.' };
@@ -1616,8 +2519,8 @@ function getCustomerAccount(webToken) {
       last_name: customer.last_name,
       email: customer.email,
       phone: customer.phone,
-      referral_code: customer.referral_code,
-      customer_id: customer.customer_id || null
+      customer_id: customer.customer_id || null,
+      marketing_opt_in: customer.marketing_opt_in !== 0 && customer.marketing_opt_in !== false && customer.marketing_opt_in !== '0'
     },
     pos_profile: posProfile,
     loyalty: { balance: loyaltyBalance, value: pointsValue },
@@ -1703,8 +2606,210 @@ function getOnlineAnalytics(filters = {}) {
   };
 }
 
+function syncOnlineOrderFromKitchenStatus(kitchenOrderId, kitchenStatus) {
+  try {
+    ensureSchema();
+    const ko = dbGet('SELECT id, sale_id FROM kitchen_orders WHERE id=?', [kitchenOrderId]);
+    if (!ko?.sale_id) return null;
+    let online = dbGet('SELECT * FROM online_orders_local WHERE sale_id=?', [ko.sale_id]);
+    if (!online) {
+      const sale = dbGet('SELECT order_number FROM sales WHERE id=?', [ko.sale_id]);
+      if (sale?.order_number) online = dbGet('SELECT * FROM online_orders_local WHERE order_number=?', [sale.order_number]);
+    }
+    if (!online) return null;
+    const map = { preparing: 'preparing', ready: 'ready', completed: 'ready', collection: 'ready' };
+    const target = map[String(kitchenStatus || '').toLowerCase()];
+    if (!target || String(online.status).toLowerCase() === target) return null;
+    return updateOrderStatus(online.id, target, { id: 0, role: 'system', full_name: 'Kitchen' }, { note: 'Synced from kitchen display' });
+  } catch (_) {
+    return null;
+  }
+}
+
+function ensureIssueSchema() {
+  const sqliteSql = `CREATE TABLE IF NOT EXISTS customer_issue_reports (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      web_customer_id INTEGER,
+      order_id INTEGER,
+      sale_id INTEGER,
+      name TEXT,
+      phone TEXT,
+      message TEXT NOT NULL,
+      photo_data TEXT,
+      photo_name TEXT,
+      status TEXT DEFAULT 'new',
+      pos_cashier_name TEXT,
+      pos_user_id INTEGER,
+      admin_reply TEXT,
+      replied_by INTEGER,
+      replied_at TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    )`;
+  const pgSql = `CREATE TABLE IF NOT EXISTS customer_issue_reports (
+      id SERIAL PRIMARY KEY,
+      web_customer_id INTEGER,
+      order_id INTEGER,
+      sale_id INTEGER,
+      name TEXT,
+      phone TEXT,
+      message TEXT NOT NULL,
+      photo_data TEXT,
+      photo_name TEXT,
+      status TEXT DEFAULT 'new',
+      pos_cashier_name TEXT,
+      pos_user_id INTEGER,
+      admin_reply TEXT,
+      replied_by INTEGER,
+      replied_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`;
+  try {
+    getDb().exec(isPgCloud() ? pgSql : sqliteSql);
+  } catch (err) {
+    const msg = String(err.message || err);
+    if (!/already exists/i.test(msg)) {
+      try { getDb().exec(isPgCloud() ? sqliteSql : pgSql); } catch (err2) {
+        const msg2 = String(err2.message || err2);
+        if (!/already exists/i.test(msg2)) {
+          console.warn('[online-ordering] customer_issue_reports:', msg2.slice(0, 200));
+        }
+      }
+    }
+  }
+}
+
+function cashierFromSale(saleId) {
+  if (!saleId) return { sale_id: null, pos_user_id: null, pos_cashier_name: null };
+  try {
+    const row = dbGet(`SELECT s.id, s.user_id, u.full_name, u.username
+      FROM sales s LEFT JOIN users u ON u.id = s.user_id WHERE s.id = ?`, [saleId]);
+    if (!row) return { sale_id: saleId, pos_user_id: null, pos_cashier_name: null };
+    return {
+      sale_id: row.id,
+      pos_user_id: row.user_id || null,
+      pos_cashier_name: row.full_name || row.username || null
+    };
+  } catch (_) {
+    return { sale_id: saleId, pos_user_id: null, pos_cashier_name: null };
+  }
+}
+
+function resolveIssueCashier(webCustomerId, orderId) {
+  let order = null;
+  if (orderId) {
+    order = dbGet('SELECT * FROM online_orders_local WHERE id = ? OR order_number = ?', [orderId, orderId]);
+  }
+  if (!order && webCustomerId) {
+    order = dbGet(`SELECT * FROM online_orders_local WHERE web_customer_id = ? ORDER BY id DESC LIMIT 1`, [webCustomerId]);
+  }
+  if (!order) return { order_id: null, ...cashierFromSale(null) };
+  const fromSale = cashierFromSale(order.sale_id);
+  return {
+    order_id: order.id,
+    sale_id: fromSale.sale_id || order.sale_id || null,
+    pos_user_id: fromSale.pos_user_id,
+    pos_cashier_name: fromSale.pos_cashier_name || order.accepted_by || null
+  };
+}
+
+function publicIssueView(row, { includePhoto = false } = {}) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    name: row.name,
+    phone: row.phone,
+    message: row.message,
+    photo_name: row.photo_name || null,
+    has_photo: !!(row.photo_data),
+    photo_data: includePhoto ? row.photo_data : undefined,
+    status: row.status,
+    order_id: row.order_id,
+    pos_cashier_name: row.pos_cashier_name || null,
+    admin_reply: row.admin_reply || null,
+    replied_at: row.replied_at || null,
+    created_at: row.created_at,
+    updated_at: row.updated_at
+  };
+}
+
+function submitCustomerIssue(data = {}, token = null) {
+  ensureIssueSchema();
+  const message = String(data.message || '').trim();
+  if (!message) throw new Error('Please describe the problem');
+  let customer = null;
+  try { if (token) customer = resolveWebCustomer(token); } catch (_) { customer = null; }
+  const name = String(data.name || customer?.first_name || '').trim();
+  const phone = String(data.phone || customer?.phone || '').trim();
+  if (!name) throw new Error('Your name is required');
+  let photoData = null;
+  let photoName = null;
+  if (data.photo_data) {
+    const raw = String(data.photo_data);
+    if (raw.length > 6 * 1024 * 1024) throw new Error('Photo must be under 4MB');
+    if (!raw.startsWith('data:image/')) throw new Error('Please attach a photo, not another file type');
+    photoData = raw;
+    photoName = data.photo_name || 'issue.jpg';
+  }
+  const cashier = resolveIssueCashier(customer?.id, data.order_id);
+  const r = dbRun(`INSERT INTO customer_issue_reports
+    (web_customer_id, order_id, sale_id, name, phone, message, photo_data, photo_name, status, pos_cashier_name, pos_user_id)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+    [customer?.id || null, cashier.order_id, cashier.sale_id, name, phone || null, message,
+      photoData, photoName, 'new', cashier.pos_cashier_name, cashier.pos_user_id]);
+  const id = r.lastInsertRowid;
+  try {
+    getDb().prepare(`INSERT INTO notifications (type, title, message, entity_type, entity_id, action_page, audience_roles)
+      VALUES (?,?,?,?,?,?,?)`)
+      .run('customer_issue', 'Customer report',
+        `${name} reported a problem${cashier.pos_cashier_name ? ` · POS: ${cashier.pos_cashier_name}` : ''}`,
+        'customer_issue', id, 'admin:customer-reports', 'owner,manager');
+  } catch (_) { /* ignore */ }
+  return publicIssueView(dbGet('SELECT * FROM customer_issue_reports WHERE id = ?', [id]));
+}
+
+function listMyCustomerIssues(token) {
+  ensureIssueSchema();
+  const customer = resolveWebCustomer(token);
+  if (!customer) throw new Error('Sign in to see your reports');
+  return dbAll(`SELECT * FROM customer_issue_reports WHERE web_customer_id = ? ORDER BY id DESC LIMIT 50`, [customer.id])
+    .map((row) => publicIssueView(row));
+}
+
+function listCustomerIssues(filters = {}, actor) {
+  ensureIssueSchema();
+  require('./authz').assertUserActor(actor, ['owner', 'manager', 'supervisor', 'assistant_manager']);
+  let sql = 'SELECT * FROM customer_issue_reports WHERE 1=1';
+  const params = [];
+  if (filters.status) { sql += ' AND status = ?'; params.push(filters.status); }
+  sql += ' ORDER BY CASE status WHEN \'new\' THEN 0 WHEN \'in_progress\' THEN 1 ELSE 2 END, id DESC LIMIT 200';
+  return dbAll(sql, params).map((row) => publicIssueView(row));
+}
+
+function getCustomerIssue(id, actor) {
+  ensureIssueSchema();
+  require('./authz').assertUserActor(actor, ['owner', 'manager', 'supervisor', 'assistant_manager']);
+  const row = dbGet('SELECT * FROM customer_issue_reports WHERE id = ?', [id]);
+  if (!row) throw new Error('Report not found');
+  return publicIssueView(row, { includePhoto: true });
+}
+
+function replyCustomerIssue(id, reply, actor) {
+  ensureIssueSchema();
+  const user = require('./authz').assertUserActor(actor, ['owner', 'manager']);
+  const text = String(reply || '').trim();
+  if (!text) throw new Error('Reply is required');
+  const row = dbGet('SELECT * FROM customer_issue_reports WHERE id = ?', [id]);
+  if (!row) throw new Error('Report not found');
+  dbRun(`UPDATE customer_issue_reports SET admin_reply=?, replied_by=?, replied_at=datetime('now'),
+    status='resolved', updated_at=datetime('now') WHERE id=?`, [text, user.id, id]);
+  return publicIssueView(dbGet('SELECT * FROM customer_issue_reports WHERE id = ?', [id]));
+}
+
 module.exports = {
   getGlobalSettings,
+  getHoursStatus,
   getOnlinePaymentMethods,
   syncPaymentMethodsFromPos,
   saveGlobalOnlineSettings,
@@ -1717,6 +2822,8 @@ module.exports = {
   sendWebRegistrationCode,
   registerWebCustomer,
   loginWebCustomer,
+  sendWebPasswordReset,
+  resetWebPassword,
   resolveWebCustomer,
   validateCart,
   validateCoupon,
@@ -1724,6 +2831,9 @@ module.exports = {
   getOrder,
   listCustomerOrders,
   listAdminOrders,
+  getAdminOrderDetail,
+  updateAdminOrder,
+  deleteAdminOrder,
   updateOrderStatus,
   rejectOrder,
   getCustomerAccount,
@@ -1734,5 +2844,13 @@ module.exports = {
   listRejectedOrdersReport,
   formatOrder,
   logOrderEvent,
-  resolvePaymentForOrder
+  resolvePaymentForOrder,
+  createCardPaymentIntent,
+  verifyCardPaymentIntent,
+  syncOnlineOrderFromKitchenStatus,
+  submitCustomerIssue,
+  listMyCustomerIssues,
+  listCustomerIssues,
+  getCustomerIssue,
+  replyCustomerIssue
 };

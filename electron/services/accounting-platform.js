@@ -522,8 +522,31 @@ function tenderAccount(method) {
   const d = defaults();
   if (m === 'card') return d.card;
   if (m === 'eft' || m === 'bank' || m === 'transfer') return d.bank;
-  if (m === 'on_account' || m === 'credit' || m === 'account') return d.ar;
+  if (m === 'on_account' || m === 'credit' || m === 'account' || m === 'taken' || m === 'pay_later') return d.ar;
   return d.cash;
+}
+
+/** When a Taken order is paid, move AR → cash/card/bank. */
+function postTakenOrderPayment(saleId, method, amount, actor) {
+  ensureReady();
+  const amt = Math.round((Number(amount) || 0) * 100) / 100;
+  if (!(amt > 0)) return null;
+  const sale = dbGet(`SELECT * FROM sales WHERE id=?`, [saleId]);
+  const ref = sale?.receipt_number || String(saleId);
+  const lines = [
+    { account_id: tenderAccount(method), debit: amt, credit: 0, description: `Taken order paid ${ref}` },
+    { account_id: defaults().ar, debit: 0, credit: amt, description: `Clear taken AR ${ref}` }
+  ];
+  // Integration posts often run without an accounting session — use draft-friendly path via data.status
+  return postJournal({
+    date: new Date().toISOString().slice(0, 10),
+    memo: `Taken order payment — ${ref}`,
+    source_type: 'taken_order',
+    source_id: saleId,
+    event_key: `taken_pay_${saleId}_${method}_${amt}`,
+    status: 'posted',
+    lines
+  }, actor || { id: 0, username: 'system', role: 'owner' });
 }
 
 function queueIntegrationError(system, type, id, err, payload) {
@@ -2997,6 +3020,7 @@ module.exports = {
   runYearEnd,
   postFromSale,
   postFromSaleSnapshot,
+  postTakenOrderPayment,
   reverseSaleAccounting,
   reverseSaleAccountingSnapshot,
   postFromExpense,

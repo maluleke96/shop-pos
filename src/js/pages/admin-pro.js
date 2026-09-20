@@ -4,33 +4,240 @@
 
   const extraSections = [
     { id: 'database', label: '🗄️ Database Manager' },
+    { id: 'system-health', label: '🩺 System Health · Database & Storage' },
     { id: 'automation', label: '⚡ Automation Rules' },
     { id: 'customfields', label: '📝 Custom Fields' },
     { id: 'formats', label: '📅 Formats & Numbering' },
     { id: 'developer', label: '🔧 Developer Mode' }
   ];
 
-  if (!AdminPage.sections.some((s) => extraSections.some((e) => e.id === s.id))) {
-    AdminPage.sections.push(...extraSections);
+  for (const e of extraSections) {
+    if (!AdminPage.sections.some((s) => s.id === e.id)) {
+      if (e.id === 'system-health') {
+        const dbIdx = AdminPage.sections.findIndex((s) => s.id === 'database');
+        if (dbIdx >= 0) AdminPage.sections.splice(dbIdx + 1, 0, e);
+        else AdminPage.sections.push(e);
+      } else {
+        AdminPage.sections.push(e);
+      }
+    }
   }
 
-  const origRenderSection = AdminPage.renderSection.bind(AdminPage);
-  AdminPage.renderSection = async function (el) {
-    const extras = {
-      database: () => this.renderDatabase(el),
-      automation: () => this.renderAutomation(el),
-      customfields: () => this.renderCustomFields(el),
-      formats: () => this.renderFormats(el),
-      developer: () => this.renderDeveloper(el)
-    };
-    if (extras[this.section]) {
-      el.innerHTML = '<p class="muted">Loading…</p>';
-      return extras[this.section]();
+  function _storageBarHtml(percent, statusLevel) {
+    const pct = percent == null || Number.isNaN(Number(percent)) ? null : Math.max(0, Math.min(100, Number(percent)));
+    const fill = pct == null ? 0 : pct;
+    const color = statusLevel === 'critical' || statusLevel === 'high' ? '#dc2626'
+      : statusLevel === 'warning' ? '#ea580c' : '#16a34a';
+    const label = pct == null ? 'Unavailable' : `${pct}%`;
+    return `<div class="storage-bar" style="margin:10px 0 4px">
+      <div style="height:18px;background:#e2e8f0;border-radius:999px;overflow:hidden;position:relative">
+        <div style="height:100%;width:${fill}%;background:${color};transition:width .25s"></div>
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:13px;margin-top:4px">
+        <span class="muted">Storage usage</span><strong>${label}</strong>
+      </div>
+    </div>`;
+  }
+
+  function _growthSvg(history) {
+    const pts = (history || []).filter((h) => h.database_size_bytes != null);
+    if (pts.length < 2) {
+      return '<p class="muted">Not enough historical measurements yet for a growth graph. Use Refresh Now over several days to build history.</p>';
     }
-    return origRenderSection(el);
+    const w = 560;
+    const h = 140;
+    const pad = 16;
+    const xs = pts.map((_, i) => pad + (i * (w - pad * 2)) / Math.max(1, pts.length - 1));
+    const vals = pts.map((p) => Number(p.database_size_bytes) || 0);
+    const min = Math.min(...vals);
+    const max = Math.max(...vals);
+    const span = Math.max(1, max - min);
+    const ys = vals.map((v) => h - pad - ((v - min) / span) * (h - pad * 2));
+    const poly = xs.map((x, i) => `${x},${ys[i]}`).join(' ');
+    const first = pts[0];
+    const last = pts[pts.length - 1];
+    return `<svg viewBox="0 0 ${w} ${h}" width="100%" height="140" role="img" aria-label="Database growth">
+      <polyline fill="none" stroke="#2563eb" stroke-width="2.5" points="${poly}" />
+      ${xs.map((x, i) => `<circle cx="${x}" cy="${ys[i]}" r="3" fill="#1d4ed8" />`).join('')}
+      <text x="${pad}" y="${h - 2}" font-size="10" fill="#64748b">${Utils.escHtml(String(first.recorded_at || '').slice(0, 10))}</text>
+      <text x="${w - pad}" y="${h - 2}" font-size="10" fill="#64748b" text-anchor="end">${Utils.escHtml(String(last.recorded_at || '').slice(0, 10))}</text>
+    </svg>
+    <p class="muted" style="margin:4px 0 0;font-size:12px">${Utils.escHtml(first.database_size_pretty)} → ${Utils.escHtml(last.database_size_pretty)}</p>`;
+  }
+
+  AdminPage.renderSystemHealthStorage = async function (el, opts = {}) {
+    const page = Number(opts.page) || 1;
+    el.innerHTML = `<div class="admin-section"><h3>System Health · Database &amp; Storage</h3>
+      <p class="muted">Loading storage metrics…</p></div>`;
+
+    const res = await API.getStorageMonitor({ refresh: !!opts.refresh, page, pageSize: 25 }, this.app?.user);
+    const data = res?.data;
+    if (!res?.success || !data || data.success === false) {
+      el.innerHTML = `<div class="admin-section"><h3>System Health · Database &amp; Storage</h3>
+        <div class="card"><div class="card-body">
+          <p><strong>Storage information temporarily unavailable.</strong></p>
+          <p class="muted">${Utils.escHtml(data?.detail || data?.error || res?.error || 'Could not read database statistics.')}</p>
+          <button type="button" class="btn btn-primary" id="sh-retry">Retry</button>
+        </div></div></div>`;
+      document.getElementById('sh-retry')?.addEventListener('click', () => this.renderSystemHealthStorage(el, { refresh: true }));
+      return;
+    }
+
+    const s = data.summary || {};
+    const status = s.status || {};
+    const vol = data.railway_volume || {};
+    const bar = data.storage_bar || {};
+    const pg = data.postgres || {};
+    const tables = data.tables || { rows: [], total: 0, page: 1, page_size: 25 };
+    const growth = data.growth || {};
+    const alerts = data.alerts || [];
+    const notes = data.notes || [];
+    const totalPages = Math.max(1, Math.ceil((tables.total || 0) / (tables.page_size || 25)));
+
+    const volCard = vol.available
+      ? `${Utils.escHtml(vol.used_pretty)} / ${Utils.escHtml(vol.total_pretty)}`
+      : 'Unavailable';
+    const freeCard = s.free_pretty || 'Unavailable';
+    const usageCard = s.percent_used != null ? `${s.percent_used}%` : 'Unavailable';
+
+    el.innerHTML = `<div class="admin-section storage-monitor">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
+        <div>
+          <h3 style="margin:0 0 4px">System Health · Database &amp; Storage</h3>
+          <p class="muted" style="margin:0">Live PostgreSQL / Railway storage monitoring. No automatic data deletion.</p>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button type="button" class="btn btn-primary" id="sh-refresh">Refresh Now</button>
+          <button type="button" class="btn btn-ghost" id="sh-snapshot">Save snapshot</button>
+        </div>
+      </div>
+
+      <div class="stats-grid" style="margin-top:16px">
+        <div class="stat-card"><div class="label">PostgreSQL</div><div class="value" style="font-size:20px">${Utils.escHtml(s.database_size_pretty || '—')}</div></div>
+        <div class="stat-card"><div class="label">Railway Volume</div><div class="value" style="font-size:18px">${volCard}</div></div>
+        <div class="stat-card"><div class="label">Free Space</div><div class="value" style="font-size:20px">${Utils.escHtml(freeCard)}</div></div>
+        <div class="stat-card"><div class="label">Usage</div><div class="value" style="font-size:20px">${Utils.escHtml(usageCard)}</div></div>
+        <div class="stat-card"><div class="label">Database Tables</div><div class="value">${s.table_count ?? '—'}</div></div>
+        <div class="stat-card"><div class="label">Status</div><div class="value" style="font-size:18px">${Utils.escHtml((status.emoji || '') + ' ' + (status.label || '—'))}</div></div>
+      </div>
+
+      ${alerts.length ? `<div style="margin-top:14px;display:grid;gap:8px">${alerts.map((a) => `
+        <div class="card" style="border-left:4px solid ${a.level === 'warning' ? '#ea580c' : '#dc2626'}"><div class="card-body">
+          <strong>${Utils.escHtml(a.title)}</strong>
+          <p style="margin:6px 0 0">${Utils.escHtml(a.message)}</p>
+        </div></div>`).join('')}</div>` : ''}
+
+      <div class="card" style="margin-top:16px"><div class="card-body">
+        <h4 style="margin:0 0 8px">PostgreSQL Database</h4>
+        <p>Current usage: <strong>${Utils.escHtml(pg.size_pretty || s.database_size_pretty || '—')}</strong></p>
+        <p class="muted" style="margin:0">Database: <strong>${Utils.escHtml(pg.database_name || '—')}</strong>
+          · Tables: <strong>${pg.table_count ?? '—'}</strong>
+          · Indexes: <strong>${pg.index_count ?? '—'}</strong></p>
+        <p class="muted" style="margin:8px 0 0">Last checked: <strong>${Utils.escHtml(Utils.formatDateTime?.(data.checked_at) || data.checked_at || '—')}</strong>
+          · Engine: ${Utils.escHtml(data.engine || '—')}</p>
+      </div></div>
+
+      <div class="card" style="margin-top:16px"><div class="card-body">
+        <h4 style="margin:0 0 8px">Railway Volume</h4>
+        ${vol.available ? `
+          <p>Used: <strong>${Utils.escHtml(vol.used_pretty)}</strong>
+            · Allocated: <strong>${Utils.escHtml(vol.total_pretty)}</strong>
+            · Free: <strong>${Utils.escHtml(vol.free_pretty)}</strong>
+            · Usage: <strong>${vol.percent_used != null ? Math.round(vol.percent_used * 10) / 10 : '—'}%</strong></p>
+          <p class="muted" style="margin:0">Source: Railway API (separate from PostgreSQL database size).</p>
+        ` : `
+          <p><strong>Railway volume metrics unavailable from application</strong></p>
+          <p class="muted" style="margin:0">${Utils.escHtml(vol.detail || vol.reason || '')}</p>
+        `}
+        ${_storageBarHtml(bar.percent_used, bar.status?.level || status.level)}
+        <p class="muted" style="font-size:12px;margin:8px 0 0">
+          Used ${Utils.escHtml(bar.used_pretty || '—')}
+          · Free ${Utils.escHtml(bar.free_pretty || '—')}
+          · Total ${Utils.escHtml(bar.total_pretty || '—')}
+          ${s.capacity_source ? ` · Capacity source: ${Utils.escHtml(s.capacity_source)}` : ''}
+        </p>
+      </div></div>
+
+      <div class="card" style="margin-top:16px"><div class="card-body">
+        <h4 style="margin:0 0 8px">Database Storage Breakdown</h4>
+        <div class="stats-grid">
+          <div class="stat-card"><div class="label">Tables</div><div class="value" style="font-size:16px">${Utils.escHtml(data.breakdown?.tables_pretty || 'Unavailable')}</div></div>
+          <div class="stat-card"><div class="label">Indexes</div><div class="value" style="font-size:16px">${Utils.escHtml(data.breakdown?.indexes_pretty || 'Unavailable')}</div></div>
+          <div class="stat-card"><div class="label">Other</div><div class="value" style="font-size:16px">${Utils.escHtml(data.breakdown?.other_pretty || 'Unavailable')}</div></div>
+        </div>
+      </div></div>
+
+      <div class="card" style="margin-top:16px"><div class="card-header" style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+        <h3 style="margin:0">Largest tables</h3>
+        <span class="muted" style="font-size:12px">Page ${tables.page} / ${totalPages} · ${tables.total} tables</span>
+      </div>
+      <div class="card-body" style="padding:0">
+        <div class="table-wrap"><table>
+          <thead><tr><th>Table</th><th>Table size</th><th>Index size</th><th>Total</th></tr></thead>
+          <tbody>
+            ${(tables.rows || []).map((t) => `<tr>
+              <td><strong>${Utils.escHtml(t.table_name)}</strong>${t.row_count != null ? `<div class="muted" style="font-size:11px">${t.row_count} rows</div>` : ''}</td>
+              <td>${Utils.escHtml(t.table_pretty || '—')}</td>
+              <td>${Utils.escHtml(t.index_pretty || '—')}</td>
+              <td>${Utils.escHtml(t.total_pretty || '—')}</td>
+            </tr>`).join('') || '<tr><td colspan="4" class="muted">No tables</td></tr>'}
+          </tbody>
+        </table></div>
+        <div style="display:flex;gap:8px;padding:12px;flex-wrap:wrap">
+          <button type="button" class="btn btn-ghost btn-sm" id="sh-prev" ${tables.page <= 1 ? 'disabled' : ''}>Previous</button>
+          <button type="button" class="btn btn-ghost btn-sm" id="sh-next" ${tables.page >= totalPages ? 'disabled' : ''}>Next</button>
+        </div>
+      </div></div>
+
+      <div class="card" style="margin-top:16px"><div class="card-body">
+        <h4 style="margin:0 0 8px">Database Growth</h4>
+        <div class="stats-grid" style="margin-bottom:12px">
+          <div class="stat-card"><div class="label">Current</div><div class="value" style="font-size:16px">${Utils.escHtml(s.database_size_pretty || '—')}</div></div>
+          <div class="stat-card"><div class="label">Previous snapshot</div><div class="value" style="font-size:16px">${Utils.escHtml(growth.previous_size_pretty || '—')}</div></div>
+          <div class="stat-card"><div class="label">Growth 7 days</div><div class="value" style="font-size:16px">${Utils.escHtml(growth.growth_7d_pretty || 'Unavailable')}</div></div>
+          <div class="stat-card"><div class="label">Growth 30 days</div><div class="value" style="font-size:16px">${Utils.escHtml(growth.growth_30d_pretty || 'Unavailable')}</div></div>
+          <div class="stat-card"><div class="label">Avg daily growth</div><div class="value" style="font-size:16px">${Utils.escHtml(growth.avg_daily_growth_pretty || 'Unavailable')}</div></div>
+        </div>
+        ${_growthSvg(data.history)}
+        ${growth.insufficient_data ? '<p class="muted">Insufficient historical data for reliable averages.</p>' : ''}
+      </div></div>
+
+      ${notes.length ? `<div class="card" style="margin-top:16px"><div class="card-body"><h4 style="margin:0 0 8px">Notes</h4>
+        <ul style="margin:0;padding-left:18px">${notes.map((n) => `<li class="muted">${Utils.escHtml(n)}</li>`).join('')}</ul>
+      </div></div>` : ''}
+
+      <p class="muted" style="margin-top:16px;font-size:12px">Thresholds: warning ${data.thresholds?.warning ?? 70}% · high ${data.thresholds?.high ?? 80}% · critical ${data.thresholds?.critical ?? 90}%. Auto-refresh while this page is open: every 3 minutes.</p>
+    </div>`;
+
+    document.getElementById('sh-refresh')?.addEventListener('click', () => {
+      this.renderSystemHealthStorage(el, { refresh: true, page: tables.page });
+    });
+    document.getElementById('sh-snapshot')?.addEventListener('click', async () => {
+      const r = await API.recordStorageSnapshot(this.app?.user);
+      if (!r?.success) return Utils.toast(r?.error || 'Snapshot failed', 'error');
+      Utils.toast(`Snapshot saved · ${r.data?.database_size_pretty || ''}`, 'success');
+      this.renderSystemHealthStorage(el, { page: tables.page });
+    });
+    document.getElementById('sh-prev')?.addEventListener('click', () => {
+      this.renderSystemHealthStorage(el, { page: Math.max(1, tables.page - 1) });
+    });
+    document.getElementById('sh-next')?.addEventListener('click', () => {
+      this.renderSystemHealthStorage(el, { page: tables.page + 1 });
+    });
+
+    if (this._storageMonitorTimer) clearInterval(this._storageMonitorTimer);
+    this._storageMonitorTimer = setInterval(() => {
+      if (this.section !== 'system-health') {
+        clearInterval(this._storageMonitorTimer);
+        this._storageMonitorTimer = null;
+        return;
+      }
+      this.renderSystemHealthStorage(el, { page: tables.page });
+    }, 3 * 60 * 1000);
   };
 
   AdminPage.renderDatabase = async function (el) {
+    el.innerHTML = `<div class="admin-section"><h3>Database Manager</h3><p class="muted">Opening…</p></div>`;
     const res = await API.getDatabaseHealth();
     const health = res.data || {};
     el.innerHTML = `<div class="admin-section"><h3>Database Manager</h3>
@@ -70,6 +277,12 @@
   };
 
   AdminPage.renderAutomation = async function (el) {
+    el.innerHTML = `<div class="admin-section"><h3>Automation Rules</h3>
+      <p class="muted">Before Sale prompts for a manager PIN. Low Stock and Shift Close create notifications (and a backup reminder on close).</p>
+      <button class="btn btn-primary" id="add-rule" style="margin:12px 0" disabled>+ Add Rule</button>
+      <div class="card"><div class="table-wrap"><table>
+        <thead><tr><th>Name</th><th>Trigger</th><th>Active</th><th></th></tr></thead>
+        <tbody><tr><td colspan="4" class="muted">Opening…</td></tr></tbody></table></div></div></div>`;
     const res = await API.getAutomationRules();
     const rules = res.data || [];
     el.innerHTML = `<div class="admin-section"><h3>Automation Rules</h3>
@@ -151,6 +364,7 @@
   };
 
   AdminPage.renderCustomFields = async function (el) {
+    el.innerHTML = `<div class="admin-section"><h3>Custom Fields</h3><p class="muted">Opening…</p></div>`;
     const res = await API.getCustomFields('product');
     const fields = res.data || [];
     el.innerHTML = `<div class="admin-section"><h3>Custom Fields</h3>
@@ -213,6 +427,9 @@
   };
 
   AdminPage.renderDeveloper = async function (el) {
+    if (!el.querySelector('#dev-activate')) {
+      el.innerHTML = `<div class="admin-section"><h3>Developer Mode</h3><p class="muted">Opening…</p></div>`;
+    }
     const res = await API.getDeveloperInfo(this.app.user);
     const info = res.data || {};
     el.innerHTML = `<div class="admin-section"><h3>Developer Mode</h3>

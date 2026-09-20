@@ -2,7 +2,29 @@
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const { getDb } = require('../database/db');
-const { assertUserActor } = require('./authz');
+const { assertUserActor, applyActorBranchScope } = require('./authz');
+
+const DELIVERY_TRANSITIONS = {
+  pending: ['awaiting_driver', 'assigned', 'cancelled', 'failed'],
+  awaiting_driver: ['assigned', 'cancelled', 'pending'],
+  assigned: ['driver_accepted', 'awaiting_driver', 'cancelled', 'pending'],
+  driver_accepted: ['picked_up', 'awaiting_driver', 'cancelled'],
+  picked_up: ['on_way', 'delivered', 'failed'],
+  on_way: ['delivered', 'failed'],
+  delivered: [],
+  failed: ['awaiting_driver', 'cancelled'],
+  cancelled: []
+};
+
+function assertDeliveryTransition(fromStatus, toStatus) {
+  const from = String(fromStatus || 'pending').toLowerCase();
+  const to = String(toStatus || '').toLowerCase();
+  if (from === to) return;
+  const allowed = DELIVERY_TRANSITIONS[from];
+  if (!allowed || !allowed.includes(to)) {
+    throw new Error(`Invalid delivery status change: ${from} → ${to}`);
+  }
+}
 
 function dbGet(sql, p = []) { return getDb().prepare(sql).get(...p); }
 function dbAll(sql, p = []) { return getDb().prepare(sql).all(...p); }
@@ -213,6 +235,34 @@ function notifyCustomer(row, event, extra = {}) {
     ).catch((err) => {
       console.warn('[delivery] notifyCustomer:', err?.message || err);
     });
+    // Mirror into Communication Center (queue + history) without replacing existing WA send
+    try {
+      const eventMap = {
+        assigned: 'order.driver_assigned',
+        driver_accepted: 'order.driver_assigned',
+        on_way: 'order.on_the_way',
+        delivered: 'order.delivered',
+        pickup_at_store: 'order.ready'
+      };
+      const ccKey = eventMap[event];
+      if (ccKey) {
+        require('./communication-center').emit(ccKey, {
+          customer_name: row.customer_name,
+          customer_phone: phone,
+          order_number: row.order_number || row.confirmation_code,
+          driver_name: extra.driver_name || row.driver_name || '',
+          delivery_address: row.delivery_address || '',
+          branch_id: row.branch_id
+        }, {
+          channels: ['whatsapp'],
+          recipients: ['customer'],
+          body,
+          transactional: true,
+          source_module: 'delivery',
+          dedupe_key: `delivery:${row.id || row.order_number}:${event}`
+        });
+      }
+    } catch (_) { /* CC optional */ }
   } catch (err) {
     console.warn('[delivery] notifyCustomer:', err?.message || err);
   }
@@ -249,10 +299,31 @@ function upsertDelivery(data) {
     data.source_label || data.source_type, nowIso(), nowIso()
   ]);
   recordHistory(r.lastInsertRowid, null, 'pending', { type: 'system' });
+  const created = getDelivery(r.lastInsertRowid);
+  notifyDeliveryDepartment(created, 'New delivery order',
+    `${created.order_number || created.confirmation_code || 'Delivery'} — ${created.customer_name || 'Customer'} · ${created.delivery_address || 'no address'}`);
   if (data.source_type !== 'online_order') {
     releaseToDriverPoolIfAuto(r.lastInsertRowid);
   }
-  return getDelivery(r.lastInsertRowid);
+  return created;
+}
+
+function notifyDeliveryDepartment(row, title, message) {
+  if (!row) return;
+  try {
+    const store = require('./store');
+    store.addNotification?.(
+      'delivery_order',
+      title || 'New delivery order',
+      message || `${row.order_number || row.confirmation_code || 'Delivery'} — ${row.customer_name || 'Customer'}`,
+      {
+        entity_type: 'delivery_assignment',
+        entity_id: row.id,
+        action_page: 'admin:delivery-dept',
+        audience_roles: 'owner,manager,supervisor,delivery_manager'
+      }
+    );
+  } catch (_) { /* optional */ }
 }
 
 function releaseToDriverPoolIfAuto(deliveryId) {
@@ -260,7 +331,11 @@ function releaseToDriverPoolIfAuto(deliveryId) {
   if (settings.default_assignment_mode !== 'auto') return;
   dbRun("UPDATE delivery_assignments SET status='awaiting_driver', driver_id=NULL, driver_name=NULL, updated_at=? WHERE id=? AND driver_id IS NULL", [nowIso(), deliveryId]);
   const row = dbGet('SELECT * FROM delivery_assignments WHERE id=?', [deliveryId]);
-  if (row?.status === 'awaiting_driver') notifyOnlineDriversPoolOrder(row);
+  if (row?.status === 'awaiting_driver') {
+    notifyOnlineDriversPoolOrder(row);
+    notifyDeliveryDepartment(row, 'Delivery ready for drivers',
+      `${row.order_number || row.confirmation_code || 'Order'} is in the driver pool`);
+  }
 }
 
 function releaseToDriverPool(id, actor) {
@@ -268,7 +343,10 @@ function releaseToDriverPool(id, actor) {
   if (!row) throw new Error('Delivery not found');
   dbRun("UPDATE delivery_assignments SET status='awaiting_driver', driver_id=NULL, driver_name=NULL, updated_at=? WHERE id=?", [nowIso(), id]);
   recordHistory(id, row.status, 'awaiting_driver', actor, 'Released to driver pool');
-  notifyOnlineDriversPoolOrder(row);
+  const updated = dbGet('SELECT * FROM delivery_assignments WHERE id=?', [id]);
+  notifyOnlineDriversPoolOrder(updated || row);
+  notifyDeliveryDepartment(updated || row, 'Delivery sent to drivers',
+    `${row.order_number || row.confirmation_code || 'Order'} released to the driver pool`);
   return getDelivery(id);
 }
 
@@ -279,12 +357,22 @@ function upsertFromSale(sale) {
   const items = dbAll('SELECT product_name, quantity FROM sale_items WHERE sale_id=?', [sale.id]).map((i) => ({
     name: i.product_name, quantity: i.quantity
   }));
+  const place = sale.delivery_place ? String(sale.delivery_place).trim() : '';
+  const addr = String(sale.delivery_address || sale.notes || '').trim();
+  const addressWithPlace = place
+    ? (addr.toLowerCase().includes(place.toLowerCase()) ? addr : `${addr}${addr ? ' · ' : ''}Place: ${place}`)
+    : addr;
+  const noteParts = [
+    place ? `Delivery place: ${place}` : null,
+    sale.notes && !String(sale.notes).includes('Delivery place:') ? String(sale.notes).trim() : null
+  ].filter(Boolean);
   return upsertDelivery({
     source_type: 'sale', source_id: sale.id, sale_id: sale.id, order_number: sale.receipt_number || sale.invoice_number,
-    branch_id: sale.branch_id, delivery_address: sale.delivery_address || sale.notes,
+    branch_id: sale.branch_id, delivery_address: addressWithPlace,
     customer_name: sale.customer_name, customer_phone: sale.customer_phone,
     total: sale.total, delivery_fee: sale.delivery_fee ?? branchFee(sale.branch_id),
-    payment_method: sale.payment_method, items, source_label: sale.source === 'online' ? 'online' : 'pos'
+    payment_method: sale.payment_method, items, source_label: sale.source === 'online' ? 'online' : 'pos',
+    special_instructions: noteParts.join(' · ') || sale.notes || null
   });
 }
 
@@ -292,12 +380,21 @@ function upsertFromOnlineOrder(order) {
   const fulfillment = order.fulfillment_type || order.fulfillment || order.fulfilment || order.order_type;
   if (!order || fulfillment !== 'delivery') return null;
   const items = parseJson(order.items_json, order.items || []);
+  const place = order.delivery_place ? String(order.delivery_place).trim() : '';
+  const addr = String(order.delivery_address || '').trim();
+  const addressWithPlace = place
+    ? (addr.toLowerCase().includes(place.toLowerCase()) ? addr : `${addr}${addr ? ' · ' : ''}Place: ${place}`)
+    : addr;
+  const noteParts = [
+    place ? `Delivery place: ${place}` : null,
+    order.notes || null
+  ].filter(Boolean);
   return upsertDelivery({
     source_type: 'online_order', source_id: order.id, order_number: order.order_number,
-    branch_id: order.branch_id, delivery_address: order.delivery_address,
+    branch_id: order.branch_id, delivery_address: addressWithPlace,
     customer_name: order.customer_name, customer_phone: order.customer_phone,
     total: order.total, delivery_fee: order.delivery_fee ?? branchFee(order.branch_id),
-    payment_method: order.payment_method, special_instructions: order.notes, items,
+    payment_method: order.payment_method, special_instructions: noteParts.join(' · '), items,
     source_label: 'online', confirmation_code: order.confirmation_code || null,
     tracking_token: order.tracking_token || null
   });
@@ -311,6 +408,7 @@ function getDelivery(id) {
 
 function listDeliveries(filters = {}, actor) {
   ensureSchema();
+  filters = applyActorBranchScope(actor, filters || {});
   const where = [];
   const params = [];
   if (filters.history) {
@@ -324,14 +422,16 @@ function listDeliveries(filters = {}, actor) {
   if (filters.branch_id) { where.push('da.branch_id=?'); params.push(filters.branch_id); }
   where.push("(da.source_type IN ('sale','online_order') AND (da.delivery_address IS NOT NULL AND da.delivery_address != ''))");
   const limit = Math.min(Number(filters.limit) || 100, 500);
+  const offset = Math.max(Number(filters.offset) || 0, 0);
   const rows = dbAll(`SELECT da.*, b.name AS branch_name, s.receipt_number FROM delivery_assignments da
     LEFT JOIN branches b ON b.id = da.branch_id
     LEFT JOIN sales s ON s.id = da.sale_id
-    WHERE ${where.join(' AND ')} ORDER BY da.id DESC LIMIT ${limit}`, params);
+    WHERE ${where.join(' AND ')} ORDER BY da.id DESC LIMIT ${limit} OFFSET ${offset}`, params);
   return rows.map((r) => formatRow(r, { admin: true }));
 }
 
 function deliveryDashboard(filters = {}, actor) {
+  filters = applyActorBranchScope(actor, filters || {});
   const branchId = filters.branch_id || null;
   const p = branchId ? [branchId] : [];
   const b = branchId ? ' AND branch_id=?' : '';
@@ -495,8 +595,18 @@ function rejectDriver(id, reason, actor) {
   return getDriver(id);
 }
 
-function driversForBranch(branchId) {
-  return listDrivers({ status: 'active', branch_id: branchId }).filter((d) => d.availability === 'online' || d.availability === 'busy');
+function driverActiveDeliveryCount(driverId) {
+  return dbGet(`SELECT COUNT(*) AS c FROM delivery_assignments WHERE driver_id=? AND status IN ('assigned','driver_accepted','picked_up','on_way')`, [driverId])?.c || 0;
+}
+
+function driversForBranch(branchId, opts = {}) {
+  const settings = getSettings();
+  const radiusKm = Number(settings.auto_assign_radius_km) || 15;
+  const maxConcurrent = Math.max(1, Math.ceil(radiusKm / 5));
+  return listDrivers({ status: 'active', branch_id: branchId })
+    .filter((d) => d.availability === 'online' || d.availability === 'busy')
+    .filter((d) => !opts.respectRadius || driverActiveDeliveryCount(d.id) < maxConcurrent)
+    .sort((a, b) => driverActiveDeliveryCount(a.id) - driverActiveDeliveryCount(b.id));
 }
 
 function assignDriver(id, driverId, actor, opts = {}) {
@@ -524,8 +634,8 @@ function autoAssignDriver(id, actor) {
   }
   const row = dbGet('SELECT * FROM delivery_assignments WHERE id=?', [id]);
   if (!row) throw new Error('Delivery not found');
-  const candidates = driversForBranch(row.branch_id);
-  if (!candidates.length) throw new Error('No online drivers for this branch');
+  const candidates = driversForBranch(row.branch_id, { respectRadius: true });
+  if (!candidates.length) throw new Error('No online drivers for this branch (within assignment radius / capacity)');
   return assignDriver(id, candidates[0].id, actor);
 }
 
@@ -538,6 +648,8 @@ function assignMultipleOrders(orderIds, driverId, actor, opts = {}) {
 function updateDeliveryStatus(id, status, actor, opts = {}) {
   const row = dbGet('SELECT * FROM delivery_assignments WHERE id=?', [id]);
   if (!row) throw new Error('Delivery not found');
+  const nextStatus = String(status || '').toLowerCase();
+  if (opts.skipFsm !== true) assertDeliveryTransition(row.status, nextStatus);
   const ts = nowIso();
   const patch = { status, updated_at: ts };
   if (status === 'picked_up') patch.picked_up_at = ts;
@@ -553,7 +665,54 @@ function updateDeliveryStatus(id, status, actor, opts = {}) {
   if (status === 'delivered' && row.driver_id) {
     dbRun('UPDATE delivery_drivers SET total_deliveries=total_deliveries+1 WHERE id=?', [row.driver_id]);
   }
+  if (status === 'delivered') {
+    try { completeLinkedOnlineOrder(row); } catch (err) {
+      console.warn('[delivery] complete online order:', err?.message || err);
+    }
+    try {
+      const saleId = saleIdFromDeliveryRow(row);
+      if (saleId) require('./referral-commission').confirmCommissionOnDelivery(saleId);
+    } catch (err) {
+      console.warn('[delivery] referral commission release:', err?.message || err);
+    }
+  }
+  if (status === 'cancelled' || status === 'failed') {
+    try {
+      const saleId = saleIdFromDeliveryRow(row);
+      if (saleId) {
+        const reason = status === 'failed' ? 'Delivery failed' : 'Delivery cancelled';
+        require('./referral-commission').reverseCommissionForSale(saleId, 1, reason, actor);
+      }
+    } catch (err) {
+      console.warn('[delivery] referral commission reverse:', err?.message || err);
+    }
+  }
   return getDelivery(id);
+}
+
+function saleIdFromDeliveryRow(row) {
+  if (!row) return null;
+  if (row.sale_id) return row.sale_id;
+  if (row.source_type === 'sale' && row.source_id) return row.source_id;
+  if (row.source_type === 'online_order' && row.source_id) {
+    try {
+      return dbGet('SELECT sale_id FROM online_orders_local WHERE id=?', [row.source_id])?.sale_id || null;
+    } catch (_) { return null; }
+  }
+  return null;
+}
+
+function completeLinkedOnlineOrder(row) {
+  if (!row || row.source_type !== 'online_order' || !row.source_id) return;
+  const order = dbGet('SELECT id, status FROM online_orders_local WHERE id=?', [row.source_id]);
+  if (!order) return;
+  const current = String(order.status || '').toLowerCase();
+  if (['completed', 'cancelled', 'rejected'].includes(current)) return;
+  dbRun(`UPDATE online_orders_local SET status='completed', updated_at=? WHERE id=?`, [nowIso(), order.id]);
+  try {
+    dbRun('INSERT INTO online_order_events (order_id, status, note, actor_type, actor_id) VALUES (?,?,?,?,?)',
+      [order.id, 'completed', 'Marked completed when driver delivered', 'system', null]);
+  } catch (_) { /* optional */ }
 }
 
 function updateDeliveryAdmin(id, data, actor) {
@@ -652,7 +811,53 @@ function saveSettings(data, actor) {
 
 function getBranchSettings(branchId) {
   ensureSchema();
-  return dbGet('SELECT * FROM delivery_branch_settings WHERE branch_id=?', [branchId]) || { branch_id: branchId, delivery_fee: 0 };
+  const row = dbGet('SELECT * FROM delivery_branch_settings WHERE branch_id=?', [branchId])
+    || { branch_id: branchId, delivery_fee: 0, free_delivery_above: 0, min_order: 0, zones_json: '[]' };
+  const places = normalizePlaces(row.zones_json);
+  return {
+    ...row,
+    places,
+    zones: places
+  };
+}
+
+function normalizePlaces(raw) {
+  let arr = [];
+  try {
+    arr = typeof raw === 'string' ? JSON.parse(raw || '[]') : (Array.isArray(raw) ? raw : []);
+  } catch (_) { arr = []; }
+  if (!Array.isArray(arr)) arr = [];
+  return arr.map((p, i) => ({
+    id: String(p.id || `place_${i + 1}_${Date.now().toString(36)}`),
+    name: String(p.name || '').trim(),
+    delivery_fee: Number(p.delivery_fee) || 0,
+    free_delivery_above: Number(p.free_delivery_above) || 0,
+    min_order: Number(p.min_order) || 0
+  })).filter((p) => p.name);
+}
+
+/** Same delivery fee rules as online checkout (free above threshold, else flat fee). */
+function calcDeliveryFeeForSubtotal(subtotal, settings = {}) {
+  const sub = Number(subtotal) || 0;
+  const freeAbove = Number(settings.free_delivery_above) || 0;
+  const fee = Number(settings.delivery_fee) || 0;
+  if (freeAbove > 0 && sub >= freeAbove) return 0;
+  return fee;
+}
+
+function findDeliveryPlace(branchIdOrSettings, placeIdOrName) {
+  const settings = typeof branchIdOrSettings === 'object' && branchIdOrSettings
+    ? branchIdOrSettings
+    : getBranchSettings(branchIdOrSettings);
+  const places = settings.places || normalizePlaces(settings.zones_json);
+  const key = String(placeIdOrName || '').trim().toLowerCase();
+  if (!key) return null;
+  return places.find((p) => String(p.id).toLowerCase() === key || String(p.name).toLowerCase() === key) || null;
+}
+
+function calcPlaceDeliveryFee(subtotal, place) {
+  if (!place) return 0;
+  return calcDeliveryFeeForSubtotal(subtotal, place);
 }
 
 function syncBranchFeesToOnline(branchId, data) {
@@ -662,13 +867,14 @@ function syncBranchFeesToOnline(branchId, data) {
     const fee = Number(data.delivery_fee) || 0;
     const freeAbove = Number(data.free_delivery_above) || 0;
     const minOrder = Number(data.min_order) || 0;
+    const places = normalizePlaces(data.places || data.zones || data.zones_json);
     const existing = dbGet('SELECT branch_id FROM branch_online_settings WHERE branch_id=?', [branchId]);
     if (existing) {
-      dbRun(`UPDATE branch_online_settings SET delivery_fee=?, free_delivery_above=?, min_delivery_order=?, delivery_enabled=1, updated_at=datetime('now') WHERE branch_id=?`,
-        [fee, freeAbove, minOrder, branchId]);
+      dbRun(`UPDATE branch_online_settings SET delivery_fee=?, free_delivery_above=?, min_delivery_order=?, delivery_enabled=1, delivery_zones_json=?, updated_at=datetime('now') WHERE branch_id=?`,
+        [fee, freeAbove, minOrder, JSON.stringify(places), branchId]);
     } else {
-      dbRun(`INSERT INTO branch_online_settings (branch_id, online_enabled, delivery_enabled, collection_enabled, status, min_delivery_order, delivery_fee, free_delivery_above, prep_minutes)
-        VALUES (?,?,1,1,'open',?,?,?,25)`, [branchId, 1, minOrder, fee, freeAbove]);
+      dbRun(`INSERT INTO branch_online_settings (branch_id, online_enabled, delivery_enabled, collection_enabled, status, min_delivery_order, delivery_fee, free_delivery_above, prep_minutes, delivery_zones_json)
+        VALUES (?,?,1,1,'open',?,?,?,?,?)`, [branchId, 1, minOrder, fee, freeAbove, 25, JSON.stringify(places)]);
     }
   } catch (_) { /* optional */ }
 }
@@ -676,7 +882,10 @@ function syncBranchFeesToOnline(branchId, data) {
 function listAllBranchSettings() {
   ensureSchema();
   return dbAll(`SELECT dbs.*, b.name AS branch_name FROM delivery_branch_settings dbs
-    LEFT JOIN branches b ON b.id = dbs.branch_id ORDER BY b.name`);
+    LEFT JOIN branches b ON b.id = dbs.branch_id ORDER BY b.name`).map((row) => ({
+    ...row,
+    places: normalizePlaces(row.zones_json)
+  }));
 }
 
 function deleteBranchSettings(branchId, actor) {
@@ -687,13 +896,27 @@ function deleteBranchSettings(branchId, actor) {
 
 function saveBranchSettings(branchId, data, actor) {
   assertUserActor(actor, ['owner', 'manager', 'supervisor']);
-  dbRun(`INSERT INTO delivery_branch_settings (branch_id, delivery_enabled, assignment_mode, delivery_fee, free_delivery_above, min_order, updated_at)
-    VALUES (?,?,?,?,?,?,?) ON CONFLICT(branch_id) DO UPDATE SET delivery_enabled=excluded.delivery_enabled, assignment_mode=excluded.assignment_mode,
-    delivery_fee=excluded.delivery_fee, free_delivery_above=excluded.free_delivery_above, min_order=excluded.min_order, updated_at=excluded.updated_at`, [
+  const places = normalizePlaces(data.places != null ? data.places : (data.zones != null ? data.zones : data.zones_json));
+  // Keep legacy flat fee as default/fallback = first place or explicit fields
+  let fee = Number(data.delivery_fee);
+  let freeAbove = Number(data.free_delivery_above);
+  let minOrder = Number(data.min_order);
+  if (places.length && (data.delivery_fee == null || data.delivery_fee === '')) {
+    fee = places[0].delivery_fee;
+    freeAbove = places[0].free_delivery_above;
+    minOrder = places[0].min_order;
+  }
+  if (!Number.isFinite(fee)) fee = 0;
+  if (!Number.isFinite(freeAbove)) freeAbove = 0;
+  if (!Number.isFinite(minOrder)) minOrder = 0;
+
+  dbRun(`INSERT INTO delivery_branch_settings (branch_id, delivery_enabled, assignment_mode, delivery_fee, free_delivery_above, min_order, zones_json, updated_at)
+    VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(branch_id) DO UPDATE SET delivery_enabled=excluded.delivery_enabled, assignment_mode=excluded.assignment_mode,
+    delivery_fee=excluded.delivery_fee, free_delivery_above=excluded.free_delivery_above, min_order=excluded.min_order, zones_json=excluded.zones_json, updated_at=excluded.updated_at`, [
     branchId, data.delivery_enabled != null ? (data.delivery_enabled ? 1 : 0) : 1, data.assignment_mode || 'manual',
-    Number(data.delivery_fee) || 0, Number(data.free_delivery_above) || 0, Number(data.min_order) || 0, nowIso()
+    fee, freeAbove, minOrder, JSON.stringify(places), nowIso()
   ]);
-  syncBranchFeesToOnline(branchId, data);
+  syncBranchFeesToOnline(branchId, { delivery_fee: fee, free_delivery_above: freeAbove, min_order: minOrder, places });
   return getBranchSettings(branchId);
 }
 
@@ -839,7 +1062,7 @@ function getDeliveryByOnlineOrder(onlineOrderId) {
   return dbGet('SELECT * FROM delivery_assignments WHERE source_type=? AND source_id=?', ['online_order', onlineOrderId]);
 }
 
-/** After POS accepts an online delivery order, release to driver pool. */
+/** After POS accepts an online delivery order, release to driver pool (auto) or alert department (manual). */
 function releaseOnlineDeliveryAfterPosAccept(onlineOrderId, saleId) {
   ensureSchema();
   const row = getDeliveryByOnlineOrder(onlineOrderId);
@@ -847,14 +1070,23 @@ function releaseOnlineDeliveryAfterPosAccept(onlineOrderId, saleId) {
   if (saleId) {
     dbRun('UPDATE delivery_assignments SET sale_id=?, updated_at=? WHERE id=?', [saleId, nowIso(), row.id]);
   }
+  const refreshed = dbGet('SELECT * FROM delivery_assignments WHERE id=?', [row.id]) || row;
   if (getSettings().default_assignment_mode !== 'auto') {
+    notifyDeliveryDepartment(refreshed, 'Delivery ready to assign',
+      `${refreshed.order_number || refreshed.confirmation_code || 'Order'} accepted on POS — assign a driver`);
     return getDelivery(row.id);
   }
-  if (row.status === 'pending' || row.status === 'assigned') {
+  if (refreshed.status === 'pending' || refreshed.status === 'assigned') {
     dbRun("UPDATE delivery_assignments SET status='awaiting_driver', driver_id=NULL, driver_name=NULL, updated_at=? WHERE id=?", [nowIso(), row.id]);
-    recordHistory(row.id, row.status, 'awaiting_driver', { type: 'system', role: 'system', full_name: 'POS accept' }, 'Released after POS accepted online order');
-  } else if (row.status !== 'awaiting_driver') {
+    recordHistory(row.id, refreshed.status, 'awaiting_driver', { type: 'system', role: 'system', full_name: 'POS accept' }, 'Released after POS accepted online order');
+    const poolRow = dbGet('SELECT * FROM delivery_assignments WHERE id=?', [row.id]);
+    notifyOnlineDriversPoolOrder(poolRow || refreshed);
+    notifyDeliveryDepartment(poolRow || refreshed, 'Delivery in driver pool',
+      `${refreshed.order_number || refreshed.confirmation_code || 'Order'} is waiting for a driver`);
+  } else if (refreshed.status !== 'awaiting_driver') {
     releaseToDriverPoolIfAuto(row.id);
+  } else {
+    notifyOnlineDriversPoolOrder(refreshed);
   }
   return getDelivery(row.id);
 }
@@ -1307,8 +1539,13 @@ function recordDriverPayout(driverId, data, actor) {
 }
 
 function driverListOrders(token, filters = {}) {
-  driverFromToken(token);
-  return [];
+  const dash = driverDashboard(token);
+  const statusFilter = filters.status ? String(filters.status).toLowerCase() : '';
+  let rows = [...(dash.assigned || []), ...(dash.available || [])];
+  if (statusFilter) rows = rows.filter((r) => String(r.status || '').toLowerCase() === statusFilter);
+  const limit = Math.min(Number(filters.limit) || 50, 200);
+  const offset = Math.max(Number(filters.offset) || 0, 0);
+  return rows.slice(offset, offset + limit);
 }
 
 function driverAcceptDelivery(token, id) {
@@ -1337,8 +1574,12 @@ function driverAcceptDelivery(token, id) {
     recordHistory(id, 'awaiting_driver', 'assigned', { type: 'driver', id: driver.id, full_name: driver.full_name }, 'Driver claimed from pool');
     notifyCustomer(row, 'assigned');
   }
+  const prevStatus = row.status;
   dbRun("UPDATE delivery_assignments SET status='driver_accepted', driver_accepted_at=?, updated_at=? WHERE id=?", [nowIso(), nowIso(), id]);
-  recordHistory(id, row.status, 'driver_accepted', { type: 'driver', id: driver.id, full_name: driver.full_name });
+  if (prevStatus !== 'driver_accepted') {
+    assertDeliveryTransition(prevStatus, 'driver_accepted');
+    recordHistory(id, prevStatus, 'driver_accepted', { type: 'driver', id: driver.id, full_name: driver.full_name });
+  }
   notifyCustomer(row, 'driver_accepted');
   return getDelivery(id);
 }
@@ -1460,7 +1701,7 @@ module.exports = {
   listDrivers, getDriver, saveDriver, registerDriver, adminRegisterDriver, approveDriver, rejectDriver, suspendDriver, deleteDriver,
   assignDriver, assignMultipleOrders, autoAssignDriver, releaseToDriverPool, updateDeliveryStatus, updateDeliveryAdmin, cancelDeliveryAdmin,
   getSettings, saveSettings,
-  getBranchSettings, saveBranchSettings, listAllBranchSettings, deleteBranchSettings, deliveryReports, driverEarningsReport,
+  getBranchSettings, calcDeliveryFeeForSubtotal, calcPlaceDeliveryFee, findDeliveryPlace, normalizePlaces, saveBranchSettings, listAllBranchSettings, deleteBranchSettings, deliveryReports, driverEarningsReport,
   getDeliveryByTracking, driverLogin, driverLogout, driverDashboard, driverListOrders, driverHistory, driverEarnings, driverPayments,
   driverGetProfile, driverUpdateProfile,
   listDriverPaymentSummary, recordDriverPayout, getDriverPayoutHistory, previewDriverPayout, getDriverPayoutDetail, buildDriverPayoutHtml, buildDriverPayoutWhatsAppText, buildDriverPayoutPdf, buildDriverPayoutPdfForDriver, driverPayoutDetailForDriver, submitPayoutClaim, listPayoutClaims, approvePayoutClaim, rejectPayoutClaim,

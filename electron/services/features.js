@@ -506,13 +506,33 @@ function saveGiftCardSettings(data, actorId, actorName) {
   return next;
 }
 
+function giftCardExpiresAtMs(expiresAt) {
+  if (!expiresAt) return null;
+  const raw = String(expiresAt).trim();
+  if (!raw) return null;
+  // Date-only (YYYY-MM-DD) → end of that calendar day UTC-ish local parse
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    const d = new Date(`${raw}T23:59:59`);
+    const t = d.getTime();
+    return Number.isFinite(t) ? t : null;
+  }
+  const t = new Date(raw.replace(' ', 'T')).getTime();
+  return Number.isFinite(t) ? t : null;
+}
+
+function giftCardIsExpired(card) {
+  const ms = giftCardExpiresAtMs(card?.expires_at);
+  if (ms == null) return false;
+  return Date.now() > ms;
+}
+
 function giftCardEffectiveStatus(card) {
   if (!card) return 'unknown';
   const approval = card.approval_status || 'approved';
   if (approval === 'pending') return 'pending';
   if (approval === 'rejected') return 'rejected';
   if (card.status === 'cancelled') return 'cancelled';
-  if (card.expires_at && String(card.expires_at).slice(0, 10) < new Date().toISOString().slice(0, 10)) return 'expired';
+  if (giftCardIsExpired(card)) return 'expired';
   if (Number(card.balance) <= 0) return 'used';
   return 'active';
 }
@@ -702,6 +722,8 @@ function getLoyaltySettings() {
     points_earned: s.points_earned,
     min_sale_total: s.min_sale_total,
     point_value: s.point_value,
+    expiry_period_value: s.expiry_period_value,
+    expiry_period_unit: s.expiry_period_unit,
     points_expiry_days: s.points_expiry_days,
     reminder_interval_days: s.reminder_interval_days,
     expiry_enabled: s.expiry_enabled,
@@ -753,7 +775,213 @@ function redeemLoyaltyPoints(customerId, points, saleId) {
 }
 
 function getLoyaltyHistory(customerId) {
-  return getDb().prepare('SELECT * FROM loyalty_transactions WHERE customer_id = ? ORDER BY created_at DESC').all(customerId);
+  return getDb().prepare(`
+    SELECT lt.*,
+      CASE
+        WHEN s.id IS NOT NULL AND (
+          UPPER(COALESCE(s.order_source, '')) IN ('ONLINE', 'WEB')
+          OR LOWER(COALESCE(s.order_type, '')) IN ('online', 'delivery')
+        ) THEN 'Online'
+        WHEN s.id IS NOT NULL THEN 'POS'
+        WHEN LOWER(COALESCE(lt.notes, '')) LIKE 'online%' THEN 'Online'
+        ELSE 'Manual'
+      END AS source
+    FROM loyalty_transactions lt
+    LEFT JOIN sales s ON s.id = lt.sale_id
+    WHERE lt.customer_id = ?
+    ORDER BY lt.created_at DESC
+  `).all(customerId);
+}
+
+/** Backfill missing earn transactions and link online customers to POS profiles. */
+function syncMissingLoyaltyPoints(opts = {}) {
+  const loyaltyPts = require('./loyalty-points');
+  loyaltyPts.ensureSchema();
+  const db = getDb();
+  const settings = getLoyaltySettings();
+  if (!settings.enabled) return { synced: 0, linked: 0, reconciled: 0, skipped: true, message: 'Loyalty program disabled' };
+
+  let synced = 0;
+  let linked = 0;
+  const limit = Math.min(Number(opts.limit) || 500, 2000);
+
+  const linkCustomerByPhone = (phone) => {
+    const p = String(phone || '').trim();
+    if (!p) return null;
+    return db.prepare(`
+      SELECT id FROM customers
+      WHERE phone = ? OR REPLACE(REPLACE(REPLACE(COALESCE(phone, ''), ' ', ''), '-', ''), '+', '') =
+        REPLACE(REPLACE(REPLACE(?, ' ', ''), '-', ''), '+', '')
+      LIMIT 1
+    `).get(p, p)?.id || null;
+  };
+
+  try {
+    const webRows = db.prepare(`
+      SELECT id, phone, email FROM web_customers
+      WHERE customer_id IS NULL AND COALESCE(is_active, 1) = 1
+    `).all();
+    for (const wc of webRows) {
+      let cid = linkCustomerByPhone(wc.phone);
+      if (!cid && wc.email) {
+        cid = db.prepare(`SELECT id FROM customers WHERE lower(trim(email)) = lower(trim(?)) LIMIT 1`).get(wc.email)?.id || null;
+      }
+      if (cid) {
+        db.prepare('UPDATE web_customers SET customer_id = ? WHERE id = ?').run(cid, wc.id);
+        linked += 1;
+      }
+    }
+  } catch (_) { /* optional */ }
+
+  try {
+    const orders = db.prepare(`
+      SELECT id, web_customer_id, customer_phone, customer_email FROM online_orders_local
+      WHERE customer_id IS NULL
+    `).all();
+    for (const o of orders) {
+      let cid = null;
+      if (o.web_customer_id) {
+        cid = db.prepare('SELECT customer_id FROM web_customers WHERE id = ?').get(o.web_customer_id)?.customer_id || null;
+      }
+      if (!cid) cid = linkCustomerByPhone(o.customer_phone);
+      if (!cid && o.customer_email) {
+        cid = db.prepare(`SELECT id FROM customers WHERE lower(trim(email)) = lower(trim(?)) LIMIT 1`).get(o.customer_email)?.id || null;
+      }
+      if (cid) {
+        db.prepare('UPDATE online_orders_local SET customer_id = ? WHERE id = ?').run(cid, o.id);
+        linked += 1;
+      }
+    }
+  } catch (_) { /* optional */ }
+
+  try {
+    const salesMissingCustomer = db.prepare(`
+      SELECT s.id, o.customer_id FROM sales s
+      JOIN online_orders_local o ON o.sale_id = s.id
+      WHERE s.customer_id IS NULL AND o.customer_id IS NOT NULL
+    `).all();
+    for (const row of salesMissingCustomer) {
+      db.prepare('UPDATE sales SET customer_id = ? WHERE id = ?').run(row.customer_id, row.id);
+    }
+  } catch (_) { /* optional */ }
+
+  try {
+    const fromLoyalty = db.prepare(`
+      SELECT s.id, lt.customer_id FROM sales s
+      JOIN loyalty_transactions lt ON lt.sale_id = s.id AND lt.type = 'earn'
+      WHERE s.customer_id IS NULL AND lt.customer_id IS NOT NULL
+    `).all();
+    for (const row of fromLoyalty) {
+      db.prepare('UPDATE sales SET customer_id = ? WHERE id = ?').run(row.customer_id, row.id);
+    }
+  } catch (_) { /* optional */ }
+
+  try {
+    const byName = db.prepare(`
+      SELECT s.id, c.id AS customer_id FROM sales s
+      JOIN online_orders_local o ON o.sale_id = s.id
+      JOIN customers c ON lower(trim(c.name)) = lower(trim(o.customer_name))
+      WHERE s.customer_id IS NULL AND o.customer_name IS NOT NULL AND trim(o.customer_name) != ''
+    `).all();
+    for (const row of byName) {
+      db.prepare('UPDATE sales SET customer_id = ? WHERE id = ?').run(row.customer_id, row.id);
+    }
+  } catch (_) { /* optional */ }
+
+  const missing = db.prepare(`
+    SELECT s.id, s.customer_id, s.total
+    FROM sales s
+    LEFT JOIN loyalty_transactions lt ON lt.sale_id = s.id AND lt.type = 'earn'
+    WHERE s.status = 'completed'
+      AND s.customer_id IS NOT NULL
+      AND lt.id IS NULL
+    ORDER BY s.id ASC
+    LIMIT ?
+  `).all(limit);
+
+  for (const sale of missing) {
+    try {
+      const pts = earnLoyaltyPoints(sale.customer_id, sale.total, sale.id);
+      if (pts > 0) synced += 1;
+    } catch (_) { /* skip row */ }
+  }
+
+  let restored = 0;
+  try {
+    restored = restorePrematureExpirations(db);
+  } catch (_) { /* optional */ }
+
+  const reconciled = reconcileAllCustomerLoyaltyBalances(db);
+
+  return { synced, linked, restored, reconciled, checked: missing.length };
+}
+
+/** Re-credit points that were expired too soon after earning (same-day expiry bug). */
+function restorePrematureExpirations(dbIn) {
+  const loyaltyPts = require('./loyalty-points');
+  loyaltyPts.ensureSchema();
+  const db = dbIn || getDb();
+  let restored = 0;
+  const expires = db.prepare(`
+    SELECT e.id, e.customer_id, ABS(e.points) AS pts, e.created_at AS expired_at
+    FROM loyalty_transactions e
+    WHERE e.type = 'expire' AND e.points < 0
+  `).all();
+  for (const ex of expires) {
+    const pts = Math.floor(Number(ex.pts) || 0);
+    if (!pts) continue;
+    const already = db.prepare(`
+      SELECT id FROM loyalty_transactions
+      WHERE customer_id = ? AND type = 'adjust' AND notes = 'Restored points after premature expiry'
+        AND points = ? AND created_at >= ?
+      LIMIT 1
+    `).get(ex.customer_id, pts, ex.expired_at);
+    if (already) continue;
+
+    const earn = db.prepare(`
+      SELECT id, sale_id, points, created_at FROM loyalty_transactions
+      WHERE customer_id = ? AND type = 'earn' AND points = ?
+        AND created_at <= ?
+      ORDER BY created_at DESC LIMIT 1
+    `).get(ex.customer_id, pts, ex.expired_at);
+    if (!earn) continue;
+
+    const earnMs = new Date(earn.created_at).getTime();
+    const expMs = new Date(ex.expired_at).getTime();
+    if (Number.isNaN(earnMs) || Number.isNaN(expMs) || expMs < earnMs) continue;
+    const hoursAfterEarn = (expMs - earnMs) / 3600000;
+    const settings = getLoyaltySettings();
+    const expiryDays = Number(settings.points_expiry_days) || 30;
+    const minExpiryHours = Math.max(24, expiryDays * 24 - 1);
+    if (hoursAfterEarn >= minExpiryHours) continue;
+
+    try {
+      adjustLoyaltyPoints(ex.customer_id, pts, 'Restored points after premature expiry', null);
+      restored += 1;
+    } catch (_) { /* skip */ }
+  }
+  return restored;
+}
+
+function reconcileAllCustomerLoyaltyBalances(dbIn) {
+  const db = dbIn || getDb();
+  let reconciled = 0;
+  try {
+    const rows = db.prepare(`
+      SELECT lt.customer_id AS id, COALESCE(SUM(lt.points), 0) AS ledger
+      FROM loyalty_transactions lt
+      GROUP BY lt.customer_id
+    `).all();
+    for (const row of rows) {
+      const bal = Math.max(0, Math.floor(Number(row.ledger) || 0));
+      db.prepare('UPDATE customers SET loyalty_points = ? WHERE id = ?').run(bal, row.id);
+      try {
+        db.prepare('UPDATE web_customers SET loyalty_points = ? WHERE customer_id = ?').run(bal, row.id);
+      } catch (_) { /* optional */ }
+      reconciled += 1;
+    }
+  } catch (_) { /* optional */ }
+  return reconciled;
 }
 
 function adjustLoyaltyPoints(customerId, pointsDelta, notes, actorId) {
@@ -989,37 +1217,140 @@ function getStockCount(id) {
 
 // ─── Waste ──────────────────────────────────────────────────────────────────
 
-function recordWaste(data, adjustStockFn, actorId) {
-  const db = getDb();
-  const product = db.prepare('SELECT buying_price, name, item_type FROM products WHERE id = ?').get(data.product_id);
-  if (!product) throw new Error('Product not found');
-  if (product.item_type !== 'ingredient') {
-    throw new Error('Waste / damage is for ingredients only — select an ingredient from inventory');
+function saveWastePhoto(photoSrc, wasteId) {
+  if (!photoSrc) return null;
+  const fs = require('fs');
+  const path = require('path');
+  const src = String(photoSrc);
+  if (!src.startsWith('data:') && src.length < 800 && !src.includes(',') && (fs.existsSync(src) || src.startsWith('/') || /^[A-Za-z]:\\/.test(src))) {
+    return src;
   }
-  const qty = Number(data.quantity) || 0;
-  if (qty <= 0) throw new Error('Quantity must be greater than zero');
-  const photos = [data.photo_path_1, data.photo_path_2].filter(Boolean);
+  let dir;
+  try {
+    const dbPath = require('../database/db').getDb?.() && require('../database/db').getDbPath?.();
+    if (dbPath) dir = path.join(path.dirname(dbPath), 'assets', 'waste');
+  } catch (_) { /* */ }
+  if (!dir) {
+    try {
+      const { app } = require('electron');
+      dir = path.join(app.getPath('userData'), 'data', 'assets', 'waste');
+    } catch (_) {
+      dir = path.join(process.cwd(), 'assets', 'waste');
+    }
+  }
+  try { fs.mkdirSync(dir, { recursive: true }); } catch (_) { /* */ }
+  let ext = '.jpg';
+  let raw = src;
+  const match = src.match(/^data:image\/(\w+);base64,(.+)$/);
+  if (match) {
+    ext = match[1] === 'png' ? '.png' : '.jpg';
+    raw = match[2];
+  } else if (src.includes(',')) {
+    raw = src.split(',')[1];
+  }
+  if (!raw) return null;
+  const file = path.join(dir, `waste-${wasteId || 'new'}-${Date.now()}${ext}`);
+  fs.writeFileSync(file, Buffer.from(raw, 'base64'));
+  return file;
+}
+
+function ensureWastePropertySchema() {
+  const db = getDb();
+  for (const col of [
+    ["damage_kind", "TEXT DEFAULT 'ingredient'"],
+    ['property_name', 'TEXT']
+  ]) {
+    try { db.prepare(`SELECT ${col[0]} FROM waste_records LIMIT 1`).get(); }
+    catch (_) {
+      try { db.exec(`ALTER TABLE waste_records ADD COLUMN ${col[0]} ${col[1]}`); } catch (__) { /* */ }
+    }
+  }
+}
+
+function ensurePropertyPlaceholderProduct() {
+  const db = getDb();
+  let row = db.prepare("SELECT id FROM products WHERE name = '__Property Damage__' LIMIT 1").get();
+  if (row) return row.id;
+  try {
+    const r = db.prepare(`
+      INSERT INTO products (name, selling_price, buying_price, stock_quantity, min_stock, unit, item_type, is_active)
+      VALUES ('__Property Damage__', 0, 0, 0, 0, 'ea', 'other', 0)
+    `).run();
+    return r.lastInsertRowid;
+  } catch (_) {
+    return db.prepare('SELECT id FROM products ORDER BY id LIMIT 1').get()?.id || 1;
+  }
+}
+
+function recordWaste(data, adjustStockFn, actorId) {
+  ensureWastePropertySchema();
+  const db = getDb();
+  const kindRaw = (data.damage_kind || data.kind || '').toLowerCase();
+  const isProperty = kindRaw === 'property' || kindRaw === 'company_property'
+    || (!data.product_id && !!(data.property_name || data.description));
+
+  const photos = [data.photo_path_1, data.photo_path_2, data.photo_image, data.photo_image_1, data.proof_image]
+    .filter(Boolean);
   if (!photos.length) throw new Error('Upload at least one photo of the damaged/waste item');
   if (photos.length > 2) throw new Error('Maximum two photos allowed');
-  const cost = (product.buying_price || 0) * qty;
-  // Never honor client-approved status — stock only moves via approveWaste
-  const status = 'pending';
+
+  let productId = data.product_id ? Number(data.product_id) : null;
+  let qty = Number(data.quantity) || 0;
+  let cost = 0;
+  let propertyName = null;
+  let damageKind = 'ingredient';
+  let reason = data.reason || 'Damaged';
+
+  if (isProperty) {
+    propertyName = String(data.property_name || data.description || data.notes || '').trim();
+    if (!propertyName) throw new Error('Describe the damaged property');
+    if (qty <= 0) qty = 1;
+    productId = ensurePropertyPlaceholderProduct();
+    damageKind = 'property';
+    reason = data.reason || 'Property damage';
+  } else {
+    if (!productId) throw new Error('Select a product or ingredient');
+    const product = db.prepare('SELECT id, buying_price, name FROM products WHERE id = ?').get(productId);
+    if (!product) throw new Error('Product not found');
+    if (qty <= 0) throw new Error('Quantity must be greater than zero');
+    cost = (product.buying_price || 0) * qty;
+    damageKind = 'ingredient';
+  }
+
   const r = db.prepare(`
     INSERT INTO waste_records (product_id, quantity, reason, employee_id, branch_id, notes, cost_value,
-      status, photo_path_1, photo_path_2)
-    VALUES (?,?,?,?,?,?,?,?,?,?)
+      status, photo_path_1, photo_path_2, damage_kind, property_name)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
   `).run(
-    data.product_id, qty, data.reason || 'Damaged', data.employee_id || actorId, getBranchId(),
-    data.notes || null, cost, status, photos[0] || null, photos[1] || null
+    productId, qty, reason, data.employee_id || actorId, getBranchId(),
+    data.notes || null, cost, 'pending', null, null, damageKind, propertyName
   );
-  return r.lastInsertRowid;
+  const wasteId = r.lastInsertRowid;
+  let photoPath = null;
+  try { photoPath = saveWastePhoto(photos[0], wasteId); }
+  catch (e) {
+    db.prepare('DELETE FROM waste_records WHERE id = ?').run(wasteId);
+    throw new Error(e.message || 'Could not save photo');
+  }
+  if (!photoPath) {
+    db.prepare('DELETE FROM waste_records WHERE id = ?').run(wasteId);
+    throw new Error('Upload at least one photo of the damaged/waste item');
+  }
+  const photo2 = photos[1] ? saveWastePhoto(photos[1], wasteId) : null;
+  db.prepare('UPDATE waste_records SET photo_path_1=?, photo_path_2=? WHERE id=?').run(photoPath, photo2, wasteId);
+  return wasteId;
 }
 
 function getWasteRecords(from, to, filters = {}) {
-  let sql = `SELECT w.*, p.name as product_name, u.full_name as employee_name,
+  ensureWastePropertySchema();
+  let sql = `SELECT w.*,
+      CASE WHEN COALESCE(w.damage_kind,'ingredient') = 'property'
+        THEN COALESCE(w.property_name, 'Property damage')
+        ELSE COALESCE(NULLIF(p.name, '__Property Damage__'), p.name, 'Item') END as product_name,
+      u.full_name as employee_name,
       au.full_name as approved_by_name
     FROM waste_records w
-    JOIN products p ON w.product_id = p.id
+    LEFT JOIN products p ON w.product_id = p.id
     LEFT JOIN users u ON w.employee_id = u.id
     LEFT JOIN users au ON w.approved_by = au.id
     WHERE 1=1`;
@@ -1027,6 +1358,7 @@ function getWasteRecords(from, to, filters = {}) {
   if (from) { sql += ' AND date(w.created_at) >= date(?)'; params.push(from); }
   if (to) { sql += ' AND date(w.created_at) <= date(?)'; params.push(to); }
   if (filters.status) { sql += ' AND COALESCE(w.status, \'pending\') = ?'; params.push(filters.status); }
+  if (filters.employee_id) { sql += ' AND w.employee_id = ?'; params.push(filters.employee_id); }
   sql += ' ORDER BY w.created_at DESC';
   return getDb().prepare(sql).all(...params);
 }
@@ -1042,7 +1374,7 @@ function approveWaste(id, actorId, notes) {
     UPDATE waste_records SET status='approved', approved_by=?, approved_at=datetime('now'),
       rejection_notes=COALESCE(?, rejection_notes) WHERE id=?
   `).run(actorId, notes || null, id);
-  return row;
+  return db.prepare('SELECT * FROM waste_records WHERE id = ?').get(id);
 }
 
 function rejectWaste(id, actorId, notes) {
@@ -1444,15 +1776,33 @@ function saveCustomFieldValues(entityType, entityId, values) {
 
 // ─── Restaurant ─────────────────────────────────────────────────────────────
 
+let _restaurantTablesUpdatedAtOk = false;
+function ensureRestaurantTablesUpdatedAt() {
+  if (_restaurantTablesUpdatedAtOk) return;
+  try {
+    getDb().prepare('ALTER TABLE restaurant_tables ADD COLUMN updated_at TEXT').run();
+  } catch (_) { /* already exists */ }
+  _restaurantTablesUpdatedAtOk = true;
+}
+
 function getTables() {
   const db = getDb();
-  const tables = db.prepare(`SELECT t.*, u.full_name as waiter_name FROM restaurant_tables t LEFT JOIN users u ON t.waiter_id = u.id ORDER BY t.table_number`).all();
+  // One query — no per-table kitchen_orders round-trips (was making Free Table slow).
+  const tables = db.prepare(`
+    SELECT t.id, t.table_number, t.seats, t.status, t.waiter_id, t.branch_id, t.notes,
+      u.full_name AS waiter_name,
+      CASE WHEN EXISTS (
+        SELECT 1 FROM kitchen_orders ko
+        WHERE ko.table_id = t.id
+          AND ko.status NOT IN ('done', 'completed', 'cancelled')
+      ) THEN 1 ELSE 0 END AS has_open_order
+    FROM restaurant_tables t
+    LEFT JOIN users u ON t.waiter_id = u.id
+    ORDER BY t.table_number
+  `).all();
   for (const t of tables) {
-    const openKo = db.prepare(`
-      SELECT 1 FROM kitchen_orders WHERE table_id = ? AND status NOT IN ('done', 'completed', 'cancelled') LIMIT 1
-    `).get(t.id);
-    t.has_open_order = !!openKo;
-    t.is_occupied = t.status === 'occupied' || t.has_open_order;
+    t.has_open_order = !!Number(t.has_open_order);
+    t.is_occupied = String(t.status) === 'occupied' || t.has_open_order;
   }
   return tables;
 }
@@ -1487,6 +1837,31 @@ function getOrderTypeReport(from, to) {
     }
     throw err;
   }
+}
+
+/** Mark sit-in table available and close stale kitchen orders blocking occupancy. */
+function releaseRestaurantTable(tableId) {
+  const id = Number(tableId);
+  if (!id) throw new Error('Table required');
+  ensureRestaurantTablesUpdatedAt();
+  const db = getDb();
+  const t = db.prepare('SELECT id, table_number, status FROM restaurant_tables WHERE id = ?').get(id);
+  if (!t) throw new Error('Table not found');
+  try {
+    db.prepare(`UPDATE kitchen_orders SET status = 'completed', updated_at = datetime('now')
+      WHERE table_id = ? AND status NOT IN ('done', 'completed', 'cancelled')`).run(id);
+  } catch (_) {
+    try {
+      db.prepare(`UPDATE kitchen_orders SET status = 'completed'
+        WHERE table_id = ? AND status NOT IN ('done', 'completed', 'cancelled')`).run(id);
+    } catch (__) { /* ignore */ }
+  }
+  try {
+    db.prepare(`UPDATE restaurant_tables SET status = 'available', waiter_id = NULL, updated_at = datetime('now') WHERE id = ?`).run(id);
+  } catch (_) {
+    db.prepare(`UPDATE restaurant_tables SET status = 'available', waiter_id = NULL WHERE id = ?`).run(id);
+  }
+  return { id, table_number: t.table_number, status: 'available' };
 }
 
 function saveTable(data) {
@@ -1539,6 +1914,10 @@ function updateKitchenOrderStatus(id, status) {
   const allowed = ['pending', 'preparing', 'ready', 'collection', 'completed', 'cancelled'];
   if (!allowed.includes(st)) st = 'pending';
   getDb().prepare(`UPDATE kitchen_orders SET status=?, updated_at=datetime('now') WHERE id=?`).run(st, id);
+  try {
+    const online = require('./online-ordering');
+    online.syncOnlineOrderFromKitchenStatus(id, st);
+  } catch (_) { /* optional */ }
   return { id, status: st };
 }
 
@@ -1666,16 +2045,20 @@ function getStockMovementReport(from, to) {
     WHERE date(sm.created_at) BETWEEN date(?) AND date(?) ORDER BY sm.created_at DESC`).all(from, to);
 }
 
-function getProfitDashboard(from, to) {
+function getProfitDashboard(from, to, branchId = null) {
   const db = getDb();
-  const revenue = db.prepare(`SELECT COALESCE(SUM(total),0) as v FROM sales WHERE date(created_at) BETWEEN date(?) AND date(?) AND status='completed'`).get(from, to)?.v || 0;
-  const cost = db.prepare(`
+  const branchClause = branchId != null ? ' AND branch_id = ?' : '';
+  const revParams = branchId != null ? [from, to, branchId] : [from, to];
+  const revenue = db.prepare(`SELECT COALESCE(SUM(total),0) as v FROM sales WHERE date(created_at) BETWEEN date(?) AND date(?) AND status='completed'${branchClause}`).get(...revParams)?.v || 0;
+  const costSql = `
     SELECT COALESCE(SUM(si.quantity * si.buying_price),0) as v FROM sale_items si
-    JOIN sales s ON si.sale_id=s.id WHERE date(s.created_at) BETWEEN date(?) AND date(?) AND s.status='completed'`).get(from, to)?.v || 0;
-  const expenses = db.prepare(`SELECT COALESCE(SUM(amount),0) as v FROM expenses WHERE date(expense_date) BETWEEN date(?) AND date(?)`).get(from, to)?.v || 0;
+    JOIN sales s ON si.sale_id=s.id WHERE date(s.created_at) BETWEEN date(?) AND date(?) AND s.status='completed'${branchClause}`;
+  const cost = db.prepare(costSql).get(...revParams)?.v || 0;
+  const expParams = branchId != null ? [from, to, branchId] : [from, to];
+  const expenses = db.prepare(`SELECT COALESCE(SUM(amount),0) as v FROM expenses WHERE date(expense_date) BETWEEN date(?) AND date(?)${branchClause}`).get(...expParams)?.v || 0;
   const profit = revenue - cost - expenses;
   const margin = revenue > 0 ? (profit / revenue * 100) : 0;
-  return { revenue, cost, expenses, profit, margin };
+  return { revenue, cost, expenses, profit, margin, branch_id: branchId != null ? Number(branchId) : null };
 }
 
 // ─── Developer / License ────────────────────────────────────────────────────
@@ -1856,9 +2239,12 @@ module.exports = {
   getLaybyes, getLayby, createLayby, addLaybyPayment, refundLayby, getLaybySettings, saveLaybySettings,
   getGiftCards, createGiftCard, updateGiftCard, deleteGiftCard, redeemGiftCard, checkGiftCardBalance,
   approveGiftCard, rejectGiftCard, getGiftCardSettings, saveGiftCardSettings,
-  earnLoyaltyPoints, redeemLoyaltyPoints, reverseSaleBenefits, getLoyaltyHistory, getLoyaltySettings, calcLoyaltyRedemption, adjustLoyaltyPoints,
+  giftCardEffectiveStatus, giftCardIsExpired, giftCardExpiresAtMs,
+  earnLoyaltyPoints, redeemLoyaltyPoints, reverseSaleBenefits, getLoyaltyHistory, syncMissingLoyaltyPoints, restorePrematureExpirations, reconcileAllCustomerLoyaltyBalances, getLoyaltySettings, calcLoyaltyRedemption, adjustLoyaltyPoints,
   getCustomerPointsSummary: (...args) => require('./loyalty-points').getCustomerPointsSummary(...args),
   listLoyaltyReminders: () => require('./loyalty-points').listCustomersNeedingReminder(),
+  listRestorableExpiredPoints: (opts) => require('./loyalty-points').listRestorableExpiredPoints(opts),
+  restoreExpiredLoyaltyPoints: (expireTxnId, actorName) => require('./loyalty-points').restoreExpiredPoints(expireTxnId, actorName),
   getLoyaltyReminderWhatsApp: (customerId, lotId) => require('./loyalty-points').getReminderWhatsAppPayload(customerId, lotId),
   markLoyaltyReminderSent: (lotId) => require('./loyalty-points').markLotReminderSent(lotId),
   expireLoyaltyPoints: () => require('./loyalty-points').expireDueLots(),
@@ -1872,7 +2258,7 @@ module.exports = {
   createCashUp, hasCashUpForShift, getCashUp, getCashUpByShift, getCashUps, getCashUpSummary, buildCashUpPdf, approveCashUp, updateCashUp, deleteCashUp,
   getAutomationRules, saveAutomationRule, deleteAutomationRule, evaluateAutomation,
   getCustomFields, saveCustomField, deleteCustomField, getCustomFieldValues, saveCustomFieldValues,
-  getTables, saveTable, getKitchenOrders, updateKitchenOrderStatus, createKitchenOrder,
+  getTables, saveTable, releaseRestaurantTable, getKitchenOrders, updateKitchenOrderStatus, createKitchenOrder,
   getHourlySalesReport, getCategorySalesReport, getBrandSalesReport, getPaymentMethodReport,
   getEmployeePerformanceReport, getDiscountReport, getVoidReport, getStockMovementReport, getProfitDashboard,
   getOrderTypeReport, deleteTable,

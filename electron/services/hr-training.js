@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
-const { getDb, getDbPathForBackup } = require('../database/db');
+const { getDb } = require('../database/db');
+const { assetsDir } = require('./local-assets');
 const { assertUserActor } = require('./authz');
 
 function parseJson(val, fallback = {}) {
@@ -26,9 +27,7 @@ function requireAdminRole(actor) {
 }
 
 function getHrAssetsDir(sub) {
-  const dir = path.join(path.dirname(getDbPathForBackup()), 'assets', 'hr', sub || 'submissions');
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  return dir;
+  return assetsDir('hr', sub || 'submissions');
 }
 
 function isHrAdmin(actor) {
@@ -74,8 +73,26 @@ function deleteHrContractTemplate(id, actor) {
   return { success: true };
 }
 
+function normalizeTrainingEvals(raw) {
+  const parsed = parseJson(raw, []);
+  if (Array.isArray(parsed)) return { form: {}, items: parsed };
+  return { form: parsed.form || {}, items: parsed.items || parsed.evaluations || [] };
+}
+
 function getTrainingRecords(filters = {}, actor) {
-  requireHrRole(actor);
+  const session = require('./session');
+  const empSess = session.getEmployeeSession?.();
+  const userSess = session.getUserSession?.();
+  const hrRoles = ['owner', 'manager', 'supervisor', 'assistant_manager'];
+  if (userSess && hrRoles.includes(userSess.role)) {
+    requireHrRole(actor);
+  } else if (empSess?.employee_id != null) {
+    filters = { ...filters, employee_id: empSess.employee_id };
+  } else if (actor?.employee_id != null && (actor.role === 'employee' || !hrRoles.includes(actor.role))) {
+    filters = { ...filters, employee_id: Number(actor.employee_id) };
+  } else {
+    requireHrRole(actor);
+  }
   let sql = `SELECT tr.*, e.full_name AS employee_name, e.employee_code, t.title AS template_title
     FROM hr_training_records tr
     JOIN employees e ON e.id = tr.employee_id
@@ -84,16 +101,23 @@ function getTrainingRecords(filters = {}, actor) {
   if (filters.employee_id) { sql += ' AND tr.employee_id = ?'; params.push(filters.employee_id); }
   if (filters.status) { sql += ' AND tr.status = ?'; params.push(filters.status); }
   sql += ' ORDER BY tr.expiry_date ASC, tr.start_date DESC';
-  return getDb().prepare(sql).all(...params).map(r => ({
-    ...r,
-    evaluations: parseJson(r.evaluations_json, [])
-  }));
+  return getDb().prepare(sql).all(...params).map(r => {
+    const norm = normalizeTrainingEvals(r.evaluations_json);
+    return { ...r, form: norm.form, evaluations: norm.items };
+  });
 }
 
 function saveTrainingRecord(data, actor) {
   requireHrRole(actor);
   const db = getDb();
-  const evals = JSON.stringify(data.evaluations || data.evaluations_json || []);
+  let prev = { form: {}, items: [] };
+  if (data.id) {
+    const existing = db.prepare('SELECT evaluations_json FROM hr_training_records WHERE id = ?').get(data.id);
+    prev = normalizeTrainingEvals(existing?.evaluations_json);
+  }
+  const form = { ...prev.form, ...(data.form || {}) };
+  const items = Array.isArray(data.evaluations) ? data.evaluations : prev.items;
+  const evals = JSON.stringify({ form, items });
   if (data.id) {
     db.prepare(`UPDATE hr_training_records SET employee_id=?, start_date=?, expiry_date=?, status=?, evaluations_json=?, template_id=?, updated_at=datetime('now') WHERE id=?`)
       .run(data.employee_id, data.start_date, data.expiry_date || null, data.status || 'active', evals, data.template_id || null, data.id);
@@ -135,29 +159,90 @@ function updateStaffSubmission(id, data, actor) {
 }
 
 function buildTrainingEvalPdf(recordId, actor) {
-  requireHrRole(actor);
+  const session = require('./session');
+  const empSess = session.getEmployeeSession?.();
+  if (!empSess?.employee_id) requireHrRole(actor);
   const { jsPDF } = require('jspdf');
+  require('jspdf-autotable');
   const rows = getTrainingRecords({}, actor);
   const rec = rows.find(r => r.id === Number(recordId)) || getDb().prepare(`
     SELECT tr.*, e.full_name AS employee_name FROM hr_training_records tr
     JOIN employees e ON e.id = tr.employee_id WHERE tr.id = ?`).get(recordId);
   if (!rec) throw new Error('Training record not found');
-  const evals = rec.evaluations || parseJson(rec.evaluations_json, []);
+  if (empSess?.employee_id && Number(rec.employee_id) !== Number(empSess.employee_id)) {
+    throw new Error('Not authorised');
+  }
+  const parsed = rec.evaluations ? { form: rec.form || {}, items: rec.evaluations } : normalizeTrainingEvals(rec.evaluations_json);
+  const form = rec.form || parsed.form || {};
+  const evals = rec.evaluations || parsed.items || [];
+  const shop = getDb().prepare('SELECT shop_name, address, phone, email FROM shop_settings WHERE id = 1').get() || {};
   const doc = new jsPDF();
+  doc.setFillColor(30, 58, 95);
+  doc.rect(0, 0, 210, 28, 'F');
+  doc.setTextColor(255, 255, 255);
+  doc.setFont('helvetica', 'bold');
   doc.setFontSize(16);
-  doc.text('Training Evaluation Report', 14, 20);
-  doc.setFontSize(11);
-  let y = 32;
-  [`Employee: ${rec.employee_name || ''}`, `Start: ${rec.start_date || ''}`, `Expiry: ${rec.expiry_date || '—'}`, `Status: ${rec.status || ''}`, ''].forEach(line => {
-    doc.text(line, 14, y); y += 7;
+  doc.text(shop.shop_name || 'Training agreement', 105, 12, { align: 'center' });
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(10);
+  doc.text('Training contract / evaluation record', 105, 20, { align: 'center' });
+  doc.setTextColor(0, 0, 0);
+  doc.autoTable({
+    startY: 36,
+    theme: 'plain',
+    styles: { fontSize: 10, cellPadding: 2 },
+    columnStyles: { 0: { fontStyle: 'bold', cellWidth: 46 }, 1: { cellWidth: 50 }, 2: { fontStyle: 'bold', cellWidth: 40 }, 3: { cellWidth: 50 } },
+    body: [
+      ['Employee', rec.employee_name || '—', 'Status', rec.status || '—'],
+      ['Course', form.course_title || rec.template_title || 'Training', 'Trainer', form.trainer || '—'],
+      ['Start', rec.start_date || '—', 'End / expiry', rec.expiry_date || '—'],
+      ['Venue', form.venue || '—', 'Hours', form.hours || '—'],
+      ['ID / passport', form.id_number || '—', 'Phone', form.phone || '—']
+    ]
   });
+  let y = (doc.lastAutoTable?.finalY || 70) + 8;
+  const checks = [
+    [form.safety_briefed, 'Safety briefing completed'],
+    [form.ppe_issued, 'PPE issued and explained'],
+    [form.confidentiality, 'Confidentiality agreed'],
+    [form.equipment_return, 'Company equipment must be returned'],
+    [form.photo_consent, 'Photo / CCTV consent'],
+    [form.trainee_rights, 'Trainee told how to raise concerns']
+  ].filter(([on]) => on);
+  if (checks.length) {
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(12);
+    doc.text('Agreed protections', 14, y);
+    y += 6;
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(10);
+    checks.forEach(([, label]) => { doc.text(`• ${label}`, 16, y); y += 5; });
+    y += 3;
+  }
+  if (form.duties) {
+    doc.setFont('helvetica', 'bold');
+    doc.text('Duties / skills', 14, y);
+    y += 6;
+    doc.setFont('helvetica', 'normal');
+    const lines = doc.splitTextToSize(String(form.duties), 180);
+    doc.text(lines, 14, y);
+    y += lines.length * 5 + 6;
+  }
   evals.forEach((ev, i) => {
-    if (y > 270) { doc.addPage(); y = 20; }
-    doc.text(`Evaluation ${i + 1} — ${ev.date || ''}`, 14, y); y += 7;
-    doc.text(`Notes: ${(ev.notes || '').slice(0, 90)}`, 14, y); y += 7;
-    (ev.items || []).slice(0, 8).forEach(it => {
+    if (y > 250) { doc.addPage(); y = 20; }
+    doc.setFont('helvetica', 'bold');
+    doc.text(`Evaluation ${i + 1} — ${ev.date || ''}`, 14, y);
+    y += 6;
+    doc.setFont('helvetica', 'normal');
+    if (ev.notes) {
+      const n = doc.splitTextToSize(`Notes: ${ev.notes}`, 180);
+      doc.text(n, 14, y);
+      y += n.length * 5 + 2;
+    }
+    (ev.items || []).forEach((it) => {
+      if (y > 275) { doc.addPage(); y = 20; }
       doc.text(`• ${typeof it === 'string' ? it : (it.task || JSON.stringify(it))}`, 18, y);
-      y += 6;
+      y += 5;
     });
     y += 4;
   });
@@ -168,15 +253,15 @@ function saveTrainingEvaluation(recordId, evalEntry, actor) {
   requireHrRole(actor);
   const rec = getDb().prepare('SELECT * FROM hr_training_records WHERE id = ?').get(recordId);
   if (!rec) throw new Error('Training record not found');
-  const evals = parseJson(rec.evaluations_json, []);
-  evals.push({
+  const { form, items } = normalizeTrainingEvals(rec.evaluations_json);
+  items.push({
     date: evalEntry.date || today(),
     items: evalEntry.items || [],
     notes: evalEntry.notes || '',
     evaluator: actor?.full_name || actor?.username || 'Manager'
   });
   getDb().prepare(`UPDATE hr_training_records SET evaluations_json=?, updated_at=datetime('now') WHERE id=?`)
-    .run(JSON.stringify(evals), recordId);
+    .run(JSON.stringify({ form, items }), recordId);
   return getDb().prepare('SELECT * FROM hr_training_records WHERE id = ?').get(recordId);
 }
 

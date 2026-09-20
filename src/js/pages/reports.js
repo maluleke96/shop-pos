@@ -5,12 +5,18 @@ const ReportsPage = {
 
   async render(el, app) {
     this.app = app;
+    this._host = el;
     this.from = Utils.monthStart();
     this.to = Utils.today();
     el.innerHTML = `
-      <div class="page-toolbar"><h3>Reports</h3></div>
+      <div class="page-toolbar" style="align-items:flex-start">
+        <div>
+          <h3 style="margin:0">Reports</h3>
+          <p class="muted" style="margin:4px 0 0;font-size:13px">Pick a report, set the date range, then export PDF / Excel or print</p>
+        </div>
+      </div>
       ${Utils.dateFilterHTML('report-filter', this.from, this.to)}
-      <div class="stats-grid" style="grid-template-columns:repeat(auto-fill,minmax(200px,1fr));margin-top:16px">
+      <div class="stats-grid" style="grid-template-columns:repeat(auto-fill,minmax(168px,1fr));margin-top:16px;gap:10px">
         ${[
           { id: 'sales', label: 'Sales', icon: '💰' },
           { id: 'profit', label: 'Profit', icon: '📈' },
@@ -38,8 +44,8 @@ const ReportsPage = {
           { id: 'payroll', label: 'Payroll Summary', icon: '💼' },
           { id: 'shifts', label: 'Shift Schedule', icon: '📅' },
           { id: 'bookkeeping', label: 'Accounting', icon: '📒' }
-        ].map(r => `<div class="card report-card" style="cursor:pointer;padding:20px;text-align:center" data-report="${r.id}">
-          <div style="font-size:28px;margin-bottom:6px">${r.icon}</div><strong>${r.label}</strong></div>`).join('')}
+        ].map(r => `<div class="card report-card" style="cursor:pointer;padding:16px 12px;text-align:center;transition:border-color .15s,box-shadow .15s" data-report="${r.id}">
+          <div style="font-size:26px;margin-bottom:6px">${r.icon}</div><strong style="font-size:13px">${r.label}</strong></div>`).join('')}
       </div>
       <div id="report-output" style="margin-top:24px"></div>`;
 
@@ -49,7 +55,15 @@ const ReportsPage = {
     });
 
     el.querySelectorAll('[data-report]').forEach(card => {
-      card.addEventListener('click', () => this.runReport(card.dataset.report));
+      card.addEventListener('click', () => {
+        el.querySelectorAll('[data-report]').forEach((c) => {
+          c.style.borderColor = '';
+          c.style.boxShadow = '';
+        });
+        card.style.borderColor = 'var(--primary)';
+        card.style.boxShadow = '0 0 0 1px var(--primary)';
+        this.runReport(card.dataset.report);
+      });
     });
   },
 
@@ -62,7 +76,8 @@ const ReportsPage = {
     const from = this.from;
     const to = this.to;
     const currency = this.app.settings?.currency || 'R';
-    const output = document.getElementById('report-output');
+    const output = this._host?.querySelector?.('#report-output') || document.getElementById('report-output');
+    if (!output) return;
     output.innerHTML = '<p>Loading…</p>';
 
     let data, headers, rows, title, filename;
@@ -293,7 +308,7 @@ const ReportsPage = {
         break;
       }
       case 'bookkeeping': {
-        this.app.openAccounting({ fromApp: true, skipLogin: true });
+        this.app.navigate('bookkeeping');
         output.innerHTML = '<p class="muted">Opened Accounting Command Centre — official financial reports live there.</p>';
         return;
       }

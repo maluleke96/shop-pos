@@ -8,7 +8,7 @@ Editable source for **Web (Netlify)**, **Windows (Electron)**, and **Android (Ca
 
 ## Features
 
-POS, products, stock, sales, receipts, returns, customers, suppliers, purchase orders, dashboard, reports, profit, staff/HR, recipe & production, marketing tools, branches, shifts, offline queue + sync to cloud RPC, and more — served through the existing handler map against Supabase Postgres.
+POS, products, stock, sales, receipts, returns, customers, suppliers, purchase orders, dashboard, reports, profit, staff/HR, recipe & production, branches, shifts, offline queue + sync to cloud RPC, and more — served through the existing handler map against Supabase Postgres.
 
 ## Quick start (development)
 

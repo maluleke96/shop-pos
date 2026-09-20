@@ -20,6 +20,16 @@ const DisplayAuth = {
           }
         } catch (_) { /* cross-origin */ }
       }
+      const storedToken = sessionStorage.getItem('shoppos_rpc_session') || localStorage.getItem('shoppos_rpc_session');
+      if (storedToken && window.API?.getSession) {
+        const r = await API.getSession();
+        const user = r?.user || r?.data?.user;
+        if (user && r?.success !== false) {
+          window.App = window.App || {};
+          window.App.user = user;
+          return user;
+        }
+      }
       if (!window.API?.getSession) return null;
       const r = await API.getSession();
       const user = r?.user || r?.data?.user;

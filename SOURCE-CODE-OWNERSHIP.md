@@ -12,7 +12,7 @@ Private keys are **not** included. Use [`.env.example`](.env.example) only.
 
 | Area | Path |
 |------|------|
-| Web UI (POS, Admin, Staff, Recipe, Marketing, …) | [`src/`](src/) |
+| Web UI (POS, Admin, Staff, Recipe, …) | [`src/`](src/) |
 | Windows Electron shell + services | [`electron/`](electron/) |
 | Android / Capacitor bridge | [`mobile/`](mobile/), [`android/`](android/) |
 | Supabase SQL (paste into SQL Editor) | [`supabase/`](supabase/) especially `COMPLETE_SUPABASE_SETUP.sql` |

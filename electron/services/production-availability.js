@@ -145,6 +145,12 @@ function calculateProductCapacity(productId, opts = {}) {
   const items = allItems.filter((item) => {
     if (selectedNames) return inventory.recipeItemApplies(item, selectedNames);
     const rule = inventory.normalizeIncludeRule(item.include_rule);
+    if (opts.forOnline) {
+      // Default plate for Order Online: required lines plus sides that stay on
+      // unless the customer taps Without Pap / Without Chakalaka.
+      if (rule === 'when_selected') return false;
+      return true;
+    }
     return rule === 'always' || !String(item.option_name || '').trim();
   });
 

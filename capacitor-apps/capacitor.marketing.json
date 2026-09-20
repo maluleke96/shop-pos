@@ -1,8 +1,0 @@
-{
-  "appId": "com.shoppos.marketing",
-  "appName": "Marketing Agent",
-  "webDir": "www",
-  "android": {
-    "allowMixedContent": true
-  }
-}

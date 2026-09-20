@@ -391,6 +391,7 @@ const PromoPoster = {
         <button class="btn btn-primary" id="pp-save">Save picture</button>
         ${shareMsg ? '<button class="btn btn-primary" id="pp-copy">Copy message</button>' : ''}
         <button class="btn btn-success" id="pp-wa" ${groupLink ? '' : 'disabled'}>Send to WhatsApp Group</button>
+        <button class="btn btn-primary" id="pp-cc-share">📤 Share / Publish</button>
       </div>`,
       '<button class="btn btn-ghost" id="pp-close">Close</button>');
     document.getElementById('pp-close')?.addEventListener('click', () => Utils.hideModal());
@@ -409,6 +410,27 @@ const PromoPoster = {
       if (text) { try { await navigator.clipboard.writeText(text); } catch (_) { /* */ } }
       window.open(groupLink, '_blank', 'noopener');
       Utils.toast('Group opened — attach the saved flyer and paste the message', 'success');
+    });
+    document.getElementById('pp-cc-share')?.addEventListener('click', async () => {
+      if (typeof opts.onSharePublish === 'function') {
+        await opts.onSharePublish(dataUrl);
+        return;
+      }
+      if (!window.CCSharePublish?.open) {
+        try {
+          if (typeof Utils?.loadScript === 'function') await Utils.loadScript('js/pages/admin-communication-center.js');
+        } catch (_) { /* */ }
+      }
+      if (!window.CCSharePublish?.open) {
+        return Utils.toast('Open Admin → Communication Center once, then retry', 'error');
+      }
+      window.CCSharePublish.open({
+        title: opts.title || 'Promo',
+        body: shareMsg || opts.title || 'New promotion',
+        mediaUrl: dataUrl,
+        sourceModule: 'promo-poster',
+        app: window.App
+      });
     });
   }
 };

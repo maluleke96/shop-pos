@@ -5,7 +5,7 @@ const ManagerApp = {
   token: sessionStorage.getItem('manager_token') || '',
   user: null,
   shop: null,
-  period: 'today',
+  period: 'month',
   customFrom: '',
   customTo: '',
   dashboard: null,
@@ -47,6 +47,13 @@ const ManagerApp = {
   orderEventKey(o) {
     const id = o?.online_order_id || (String(o?.id || '').startsWith('online:') ? String(o.id).slice(7) : o?.id);
     return `online_pending:${id}`;
+  },
+
+  alertEventKey(alert) {
+    const p = alert?.payload || {};
+    if (p.online_order_id) return `online_pending:${p.online_order_id}`;
+    if (p.sale_id) return `pos_sale:${p.sale_id}`;
+    return `mgr_alert:${alert?.id || Date.now()}`;
   },
 
   isOrderMuted(orderId) {
@@ -271,6 +278,7 @@ const ManagerApp = {
         this.shop = p.shop || null;
         this.prefs = p.notification_prefs;
         this.initNotify();
+        PanelNotify?.requestPermission?.();
         PanelSound?.setPanel('manager');
         PanelSound?.setEnabled(PanelNotify?.isSoundEnabled('manager') !== false);
         this.view = 'main';
@@ -289,7 +297,90 @@ const ManagerApp = {
     if (window.PanelBrand) window.PanelBrand.apply();
     this.startPolling();
     this.scheduleMidnightRefresh();
+    this.bindVisibilityAlerts();
     window.addEventListener('online', () => this.refresh());
+    const unlock = () => { try { window.PanelSound?.startLoop?.(); window.PanelSound?.stop?.(); } catch (_) { /* */ } };
+    document.addEventListener('touchstart', unlock, { once: true });
+    document.addEventListener('click', unlock, { once: true });
+  },
+
+  isForeground() {
+    return document.visibilityState === 'visible' && this.view === 'main';
+  },
+
+  bindVisibilityAlerts() {
+    if (this._visBound) return;
+    this._visBound = true;
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        this.pollAlerts();
+        if (this._popupOrderId) this.startAlertRing();
+      }
+    });
+    try {
+      window.Capacitor?.Plugins?.App?.addListener?.('appStateChange', (state) => {
+        if (state?.isActive) {
+          this.pollAlerts();
+          if (this._popupOrderId) this.startAlertRing();
+        }
+      });
+      window.Capacitor?.Plugins?.LocalNotifications?.addListener?.('localNotificationActionPerformed', () => {
+        try { window.focus(); } catch (_) { /* */ }
+      });
+    } catch (_) { /* web */ }
+  },
+
+  startAlertRing() {
+    if (!this.soundEnabled()) return;
+    if (this._popupOrderId && this.isOrderMuted(this._popupOrderId)) return;
+    if (window.PanelSound) {
+      PanelSound.setPanel('manager');
+      PanelSound.setEnabled(true);
+      PanelSound.syncPending(true);
+    } else {
+      this.playAlertSound();
+    }
+  },
+
+  showHeadsUp(title, body, onTap) {
+    let el = document.getElementById('mgr-heads-up');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'mgr-heads-up';
+      el.className = 'mgr-heads-up';
+      document.body.appendChild(el);
+    }
+    el.innerHTML = `<strong>${this.esc(title || 'New order')}</strong>
+      <span>${this.esc(String(body || '').split('\n')[0] || '')}</span>
+      <small>Tap to open</small>`;
+    el.classList.remove('hidden');
+    el.onclick = () => {
+      el.classList.add('hidden');
+      this.startAlertRing();
+      if (typeof onTap === 'function') onTap();
+    };
+    this.startAlertRing();
+    if (navigator.vibrate) {
+      try { navigator.vibrate([180, 80, 180, 80, 180]); } catch (_) { /* */ }
+    }
+  },
+
+  notifySystem(title, body, tag) {
+    const url = `${location.origin}/manager/`;
+    PanelNotify?.notifyBrowser(title, body, tag, { url });
+    const LN = window.Capacitor?.Plugins?.LocalNotifications;
+    if (!LN) return;
+    const id = Math.abs(String(tag || title || Date.now()).split('').reduce((s, c) => ((s * 31) + c.charCodeAt(0)) | 0, 0)) || Date.now();
+    Promise.resolve(LN.requestPermissions?.())
+      .then(() => LN.schedule({
+        notifications: [{
+          title: title || 'New order',
+          body: String(body || '').slice(0, 180),
+          id: id % 2147483647,
+          extra: { url }
+        }]
+      }))
+      .catch(() => {});
   },
 
   scheduleMidnightRefresh() {
@@ -307,12 +398,20 @@ const ManagerApp = {
     }, Math.max(1000, next - now));
   },
 
+  isEditingDates() {
+    const ae = document.activeElement;
+    return !!(ae && (ae.id === 'custom-from' || ae.id === 'custom-to' || ae.closest?.('.period-toolbar')));
+  },
+
   startDashboardPolling() {
     if (this._dashTimer) clearInterval(this._dashTimer);
     this._dashTimer = setInterval(() => {
       if (!this.token || this.view !== 'main') return;
-      if (this.tab === 'home' || this._pendingOnlineOrders?.length) this.refresh({ silent: true });
-    }, 30000);
+      if (this.isEditingDates()) return;
+      if (this.tab === 'home' || this.tab === 'branches' || this._pendingOnlineOrders?.length) {
+        this.refresh({ silent: true });
+      }
+    }, 8000);
   },
 
   stopDashboardPolling() {
@@ -321,7 +420,8 @@ const ManagerApp = {
 
   startPolling() {
     if (this._pollTimer) clearInterval(this._pollTimer);
-    this._pollTimer = setInterval(() => this.pollAlerts(), 12000);
+    this._pollTimer = setInterval(() => this.pollAlerts(), 4000);
+    this.pollAlerts();
     this.startDashboardPolling();
   },
 
@@ -332,13 +432,19 @@ const ManagerApp = {
       if (fresh?.length) {
         this.lastAlertId = Math.max(...fresh.map((a) => a.id));
         this.saveAlertCursor();
-        const latest = fresh[fresh.length - 1];
-        const p = latest.payload || {};
-        const ackKey = p.online_order_id ? `online_pending:${p.online_order_id}` : `mgr_alert:${latest.id}`;
-        if ((latest.type === 'new_order' || latest.type === 'large_order') && !PanelNotify?.isAcked(ackKey)) {
-          if (this.soundEnabled()) this.playAlertSound();
-          this.toast(`${latest.title}: ${latest.body?.split('\n')[0] || ''}`, 'success');
-          PanelNotify?.notifyBrowser(latest.title, latest.body, `order-${latest.id}`);
+        for (const alert of fresh) {
+          if (!alert.payload && alert.payload_json) {
+            try { alert.payload = JSON.parse(alert.payload_json); } catch (_) { alert.payload = {}; }
+          }
+          const ackKey = this.alertEventKey(alert);
+          if ((alert.type === 'new_order' || alert.type === 'large_order') && !PanelNotify?.isAcked(ackKey)) {
+            this.showAlertPopup(alert);
+            this.startAlertRing();
+            this.showHeadsUp(alert.title || 'New order', alert.body, () => this.showAlertPopup(alert));
+            if (!this.isForeground()) {
+              this.notifySystem(alert.title || 'New order', alert.body, ackKey);
+            }
+          }
         }
         await this.refresh({ silent: true });
       }
@@ -381,7 +487,19 @@ const ManagerApp = {
         PanelSound.syncPending(this._pendingOrderAlert && this.soundEnabled());
       }
       if (this.tab === 'staff') await this.loadStaffActivity();
-      if (this.view === 'main') this.render();
+      if (this.view === 'main') {
+        // Silent polls must not wipe the logo or mid-edit date pickers
+        if (silent && this.isEditingDates()) return;
+        if (silent) {
+          const logoHtml = document.querySelector('.shop-header [data-shop-logo]')?.innerHTML || '';
+          this.render();
+          const slot = document.querySelector('.shop-header [data-shop-logo]');
+          if (slot && logoHtml) slot.innerHTML = logoHtml;
+          else if (window.PanelBrand?.refreshSlots) PanelBrand.refreshSlots();
+          return;
+        }
+        this.render();
+      }
     } catch (err) {
       if (/session|revoked|not authenticated/i.test(err.message)) {
         this.token = '';
@@ -396,20 +514,80 @@ const ManagerApp = {
       const st = String(o.status || '').toLowerCase();
       return st === 'pending' && !o.sale_id;
     });
-    const pendingIds = new Set(pending.map((o) => String(o.online_order_id || o.id)));
-    if (this._popupOrderId && !pendingIds.has(String(this._popupOrderId))) {
-      this.closeOrderPopup(true);
-    }
     pending.forEach((o) => {
       const oid = String(o.online_order_id || o.id);
       if (window.PanelNotify?.isAcked(this.orderEventKey(o))) return;
-      if (this.isOrderMuted(oid)) return;
       if (this._popupOrderId === oid) return;
+      if (this._popupOrderId) return;
       this.showOrderPopup(o);
+      this.startAlertRing();
+      this.showHeadsUp('New online order', `${o.order_number || ''} · ${this.money(o.total)}`, () => this.showOrderPopup(o));
+      if (!this.isForeground()) {
+        this.notifySystem(`New online order`, `${o.order_number || ''} · ${this.money(o.total)}`, this.orderEventKey(o));
+      }
     });
   },
 
-  showOrderPopup(order) {
+  showAlertPopup(alert) {
+    if (!alert) return;
+    const p = alert.payload || {};
+    if (p.online_order_id) {
+      const order = (this._pendingOnlineOrders || []).find((o) =>
+        String(o.online_order_id || o.id) === String(p.online_order_id));
+      if (order) {
+        this.showOrderPopup(order, alert);
+        return;
+      }
+    }
+    this.showGenericAlertPopup(alert);
+  },
+
+  showGenericAlertPopup(alert) {
+    const p = alert.payload || {};
+    const ackKey = this.alertEventKey(alert);
+    this._popupOrderId = ackKey;
+    let root = document.getElementById('mgr-order-popup');
+    if (!root) {
+      root = document.createElement('div');
+      root.id = 'mgr-order-popup';
+      root.className = 'mgr-order-popup';
+      document.body.appendChild(root);
+    }
+    const lines = String(alert.body || '').split('\n').filter(Boolean);
+    const isPos = !!p.sale_id;
+    root.innerHTML = `<div class="mgr-popup-card" role="dialog" aria-live="assertive">
+      <div class="mgr-popup-head">
+        <strong>${isPos ? '🛒 New POS sale' : '🛒 New order'}</strong>
+        <span class="pill unread">${this.esc(alert.title || 'Alert')}</span>
+      </div>
+      ${lines.map((line) => `<p style="margin:4px 0">${this.esc(line)}</p>`).join('')}
+      <p class="meta" style="margin-top:8px">This stays on screen until you dismiss it.</p>
+      <div class="mgr-popup-actions">
+        <button type="button" class="btn-sm btn-ghost" data-act="popup-dismiss" data-key="${this.esc(ackKey)}">Dismiss</button>
+        <button type="button" class="btn-sm btn-primary" data-act="popup-goto-orders">View orders</button>
+      </div>
+    </div>`;
+    root.classList.remove('hidden');
+    root.onclick = async (e) => {
+      const btn = e.target.closest('[data-act]');
+      if (!btn) return;
+      if (btn.dataset.act === 'popup-dismiss') {
+        window.PanelNotify?.ack(btn.dataset.key, 'dismissed');
+        window.PanelSound?.stop();
+        this.closeOrderPopup(true);
+        return;
+      }
+      if (btn.dataset.act === 'popup-goto-orders') {
+        this.closeOrderPopup();
+        this.tab = p.sale_id ? 'orders' : 'online';
+        this.view = 'main';
+        await this.refresh();
+      }
+    };
+    this.startAlertRing();
+  },
+
+  showOrderPopup(order, alert) {
     if (!order) return;
     const oid = String(order.online_order_id || order.id);
     this._popupOrderId = oid;
@@ -433,9 +611,10 @@ const ManagerApp = {
       ${order.delivery_address ? `<p class="meta">${this.esc(order.delivery_address)}</p>` : ''}
       <ul class="mgr-popup-items">${items.map((i) =>
         `<li>${this.esc(i.name)} ×${i.quantity || 1}</li>`).join('')}</ul>
-      <p class="meta" style="margin:0">Popup stays until this order is accepted on POS.</p>
+      <p class="meta" style="margin:0">This stays on screen until you dismiss it.</p>
       <div class="mgr-popup-actions">
-        <button type="button" class="btn-sm btn-ghost" data-act="popup-mute" data-id="${this.esc(oid)}">🔇 Mute alert</button>
+        <button type="button" class="btn-sm btn-ghost" data-act="popup-dismiss" data-id="${this.esc(oid)}">Dismiss</button>
+        <button type="button" class="btn-sm btn-ghost" data-act="popup-mute" data-id="${this.esc(oid)}">🔇 Mute sound</button>
         <button type="button" class="btn-sm btn-ghost" data-act="popup-view" data-id="online:${this.esc(oid)}">View order</button>
         <button type="button" class="btn-sm btn-primary" data-act="popup-online">Open POS Online</button>
       </div>
@@ -445,17 +624,24 @@ const ManagerApp = {
       const btn = e.target.closest('[data-act]');
       if (!btn) return;
       const act = btn.dataset.act;
+      if (act === 'popup-dismiss') {
+        window.PanelNotify?.ack(this.orderEventKey(order), 'dismissed');
+        this.closeOrderPopup();
+        return;
+      }
       if (act === 'popup-mute') {
         this.snoozeOrderPopup(btn.dataset.id, 60);
         window.PanelSound?.stop();
-        this.toast('Alert muted for 1 hour — popup stays until POS accepts', 'info');
+        this.toast('Sound muted — popup stays until you dismiss it', 'info');
         return;
       }
       if (act === 'popup-view') {
+        this.closeOrderPopup();
         await this.openOrder(btn.dataset.id);
         return;
       }
       if (act === 'popup-online') {
+        this.closeOrderPopup();
         this.tab = 'online';
         this.onlineTab = 'pending';
         this.view = 'main';
@@ -464,16 +650,12 @@ const ManagerApp = {
         return;
       }
     };
-    if (this.soundEnabled() && !this.isOrderMuted(oid)) this.playAlertSound();
+    this.startAlertRing();
   },
 
-  closeOrderPopup(accepted = false) {
-    const oid = this._popupOrderId;
-    if (accepted && oid) {
-      window.PanelNotify?.ack(`online_pending:${oid}`, 'accepted');
-      window.PanelSound?.stop();
-    }
+  closeOrderPopup() {
     this._popupOrderId = null;
+    window.PanelSound?.stop();
     document.getElementById('mgr-order-popup')?.classList.add('hidden');
   },
 
@@ -497,7 +679,13 @@ const ManagerApp = {
   },
 
   periodToolbarHtml() {
-    return `${this.branchSelectorHtml()}<div class="toolbar">
+    const from = this.period === 'custom' && this.customFrom
+      ? this.customFrom
+      : (this.dashboard?.period_from || this.localTodayStr());
+    const to = this.period === 'custom' && this.customTo
+      ? this.customTo
+      : (this.dashboard?.period_to || this.localTodayStr());
+    return `${this.branchSelectorHtml()}<div class="toolbar period-toolbar" style="flex-wrap:wrap">
       <select id="period-select" class="filter-select">
         <option value="today" ${this.period === 'today' ? 'selected' : ''}>Today</option>
         <option value="yesterday" ${this.period === 'yesterday' ? 'selected' : ''}>Yesterday</option>
@@ -505,9 +693,13 @@ const ManagerApp = {
         <option value="month" ${this.period === 'month' ? 'selected' : ''}>This month</option>
         <option value="custom" ${this.period === 'custom' ? 'selected' : ''}>Custom range</option>
       </select>
-      ${this.period === 'custom' ? `<input type="date" id="custom-from" value="${this.esc(this.customFrom)}" style="margin-left:8px;padding:8px;border-radius:8px;border:1px solid var(--border)">
-        <input type="date" id="custom-to" value="${this.esc(this.customTo)}" style="margin-left:4px;padding:8px;border-radius:8px;border:1px solid var(--border)">
-        <button type="button" class="btn-primary btn-sm" data-act="apply-custom" style="margin-left:8px">Apply</button>` : ''}
+      <label class="meta" style="display:flex;align-items:center;gap:6px">From
+        <input type="date" id="custom-from" value="${this.esc(from)}" style="padding:8px;border-radius:8px;border:1px solid var(--border);background:var(--bg);color:var(--text)">
+      </label>
+      <label class="meta" style="display:flex;align-items:center;gap:6px">To
+        <input type="date" id="custom-to" value="${this.esc(to)}" style="padding:8px;border-radius:8px;border:1px solid var(--border);background:var(--bg);color:var(--text)">
+      </label>
+      <button type="button" class="btn-primary btn-sm" data-act="apply-custom">Apply dates</button>
     </div>`;
   },
 
@@ -520,7 +712,6 @@ const ManagerApp = {
   },
 
   navTabs() {
-    const multi = (this.user?.branches?.length > 1) || this.user?.permissions?.view_all_branches;
     const canStaff = this.user?.permissions?.view_staff_activity !== false
       && ['owner', 'manager', 'assistant_manager'].includes(this.user?.role);
     const tabs = [
@@ -528,7 +719,7 @@ const ManagerApp = {
       { id: 'orders', icon: '📋', label: 'Orders' },
       { id: 'online', icon: '🛒', label: 'POS Online' },
       ...(canStaff ? [{ id: 'staff', icon: '👥', label: 'Staff' }] : []),
-      ...(multi ? [{ id: 'branches', icon: '🏢', label: 'Branches' }] : []),
+      { id: 'branches', icon: '🏢', label: 'Branches' },
       { id: 'alerts', icon: '🔔', label: 'Alerts' },
       { id: 'more', icon: '⋯', label: 'More' }
     ];
@@ -649,17 +840,19 @@ const ManagerApp = {
       }
       if (e.target.id === 'period-select') {
         this.period = e.target.value;
-        if (this.period !== 'custom') {
+        if (this.period === 'custom') {
+          this.customFrom = document.getElementById('custom-from')?.value || this.customFrom || this.localTodayStr();
+          this.customTo = document.getElementById('custom-to')?.value || this.customTo || this.localTodayStr();
+          this.render();
+        } else {
           this.orders = [];
           this.alerts = [];
-          this.render();
-          this.refresh();
-        } else {
-          this.render();
+          await this.refresh();
         }
       }
     };
-    this.afterRenderBrand();
+    if (window.PanelBrand?.refreshSlots) PanelBrand.refreshSlots();
+    else this.afterRenderBrand();
   },
 
   shell(body) {
@@ -744,12 +937,12 @@ const ManagerApp = {
           <div class="stat-card wide"><div class="label">Average order</div><div class="value">${this.money(d.average_order)}</div></div>
         </div>
         <div class="stat-grid">
-          <div class="stat-card"><div class="label">POS orders</div><div class="value">${d.pos_orders ?? 0}</div></div>
-          <div class="stat-card"><div class="label">Online orders</div><div class="value">${d.online_orders ?? 0}</div></div>
+          <div class="stat-card"><div class="label">POS orders</div><div class="value">${d.pos_orders ?? 0}</div><small>${this.money(d.pos_sales)} sales</small></div>
+          <div class="stat-card"><div class="label">Online orders</div><div class="value">${d.online_orders ?? 0}</div><small>${d.online_orders_pending ?? 0} pending · ${d.online_orders_accepted ?? 0} accepted</small></div>
         </div>
         <div class="stat-grid">
           <div class="stat-card"><div class="label">Alerts</div><div class="value">${d.alerts_count ?? 0}</div></div>
-          <div class="stat-card"><div class="label">POS tills online</div><div class="value">${d.branches_online ?? 0}/${d.branches_total ?? 0}</div></div>
+          <div class="stat-card"><div class="label">POS tills online</div><div class="value">${d.tills_online ?? d.branches_online ?? 0}/${d.tills_registered ?? d.branches_total ?? 0}</div><small>${(d.tills_registered ?? 0) > 0 ? `${d.tills_registered} registered till(s)` : `${d.branches_total_count ?? d.branches_total ?? 0} branch(es)`}</small></div>
         </div>
         ${this._pendingOnlineOrders?.length ? `<p class="meta" style="margin:0 0 8px;color:var(--warn)">${this._pendingOnlineOrders.length} online order(s) waiting for POS acceptance</p>` : ''}
         <div class="list-card"><h3>Recent orders</h3>
@@ -785,14 +978,13 @@ const ManagerApp = {
           </div></div>`);
         this.bind();
       };
-      if (!this.orders.length) {
-        app.innerHTML = this.shell(`<div class="mgr-header"><h1>Orders</h1></div><div class="mgr-main"><p class="muted">Loading orders…</p></div>`);
+      if (this.orders.length) renderOrders();
+      else {
+        renderOrders();
         this.loadOrders().then(renderOrders).catch((err) => {
           this.toast(err.message, 'error');
           renderOrders();
         });
-      } else {
-        renderOrders();
       }
       return;
     }
@@ -825,14 +1017,13 @@ const ManagerApp = {
         </div>`);
         this.bind();
       };
-      if (!this.onlineOrders.length) {
-        app.innerHTML = this.shell(`<div class="mgr-header"><h1>POS Online</h1></div><div class="mgr-main"><p class="muted">Loading online orders…</p></div>`);
+      if (this.onlineOrders.length) renderOnline();
+      else {
+        renderOnline();
         this.loadOnlineOrders().then(renderOnline).catch((err) => {
           this.toast(err.message, 'error');
           renderOnline();
         });
-      } else {
-        renderOnline();
       }
       return;
     }
@@ -851,18 +1042,54 @@ const ManagerApp = {
     }
     if (this.tab === 'branches') {
       const branches = this.dashboard?.branches || [];
-      app.innerHTML = this.shell(`<div class="mgr-header"><h1>Branches</h1></div><div class="mgr-main">
+      const rangeFrom = this.dashboard?.period_from || this.localTodayStr();
+      const rangeTo = this.dashboard?.period_to || rangeFrom;
+      const rangeLabel = rangeFrom === rangeTo ? rangeFrom : `${rangeFrom} → ${rangeTo}`;
+      const totals = branches.reduce((acc, b) => {
+        acc.money_in += Number(b.money_in ?? b.sales) || 0;
+        acc.money_out += Number(b.money_out ?? b.expenses) || 0;
+        acc.orders += Number(b.orders) || 0;
+        return acc;
+      }, { money_in: 0, money_out: 0, orders: 0 });
+      totals.profit = Math.round((totals.money_in - totals.money_out) * 100) / 100;
+      app.innerHTML = this.shell(`<div class="mgr-header"><h1>Branches</h1>
+        <div class="sub">${this.esc(rangeLabel)} · live money in, money out and profit</div></div><div class="mgr-main">
+        ${this.periodToolbarHtml()}
         ${branches.map((b) => {
           const pos = (this.posStatus || []).find((p) => p.branch_id === b.id);
-          return `<div class="list-card" style="margin-bottom:12px;padding:14px">
+          const days = b.days || [];
+          const showDays = days.length > 1;
+          return `<div class="list-card branch-card" style="margin-bottom:12px;padding:14px">
             <strong>${this.esc(b.name)}</strong>
-            <div class="meta" style="margin-top:8px">Orders: ${b.orders} · Sales: ${this.money(b.sales)}</div>
             <div style="margin-top:8px"><span class="pill ${pos?.status === 'online' ? 'ok' : 'off'}">POS ${pos?.status || 'unknown'}</span>
             ${pos?.last_seen ? `<span class="meta"> Last seen ${this.esc(String(pos.last_seen).slice(11, 16))}</span>` : ''}</div>
+            ${showDays ? days.map((day) => `
+              <div class="branch-day">
+                <div class="branch-day-date">${this.esc(day.date)}</div>
+                <div class="row"><span>Money in</span><span>${this.money(day.money_in)}</span></div>
+                <div class="row"><span>Money out / expenses</span><span>${this.money(day.money_out)}</span></div>
+                <div class="row"><span>Profit</span><span>${this.money(day.profit)}</span></div>
+                <div class="meta">${day.orders || 0} orders</div>
+              </div>`).join('') : ''}
+            <div class="branch-day branch-day-total">
+              <div class="branch-day-date">${showDays ? `Total · ${this.esc(rangeLabel)}` : this.esc(rangeLabel)}</div>
+              <div class="row"><span>Money in</span><span>${this.money(b.money_in ?? b.sales)}</span></div>
+              <div class="row"><span>Money out / expenses</span><span>${this.money(b.money_out ?? b.expenses)}</span></div>
+              <div class="row" style="font-weight:800"><span>Profit</span><span>${this.money(b.profit)}</span></div>
+              <div class="meta">${b.orders || 0} orders</div>
+            </div>
           </div>`;
         }).join('') || '<div class="empty">No branches</div>'}
+        ${branches.length ? `<div class="list-card branch-card" style="padding:14px">
+          <strong>All branches · ${this.esc(rangeLabel)}</strong>
+          <div class="row" style="margin-top:8px"><span>Total money in</span><span>${this.money(totals.money_in)}</span></div>
+          <div class="row"><span>Total money out</span><span>${this.money(totals.money_out)}</span></div>
+          <div class="row" style="font-weight:800"><span>Final profit</span><span>${this.money(totals.profit)}</span></div>
+          <div class="meta">${totals.orders} orders</div>
+        </div>` : ''}
       </div>`);
       this.bind();
+      this.afterRenderBrand();
       return;
     }
     if (this.tab === 'alerts') {

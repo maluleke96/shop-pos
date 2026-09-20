@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash TEXT NOT NULL,
   pin TEXT,
   full_name TEXT NOT NULL,
-  role TEXT NOT NULL CHECK (role IN ('owner', 'manager', 'assistant_manager', 'supervisor', 'marketing_agent', 'cashier')),
+  role TEXT NOT NULL CHECK (role IN ('owner', 'manager', 'assistant_manager', 'supervisor', 'cashier', 'delivery_manager', 'referral_agent')),
   is_active INTEGER DEFAULT 1,
   permissions TEXT DEFAULT '{}',
   created_at TEXT DEFAULT (datetime('now')),

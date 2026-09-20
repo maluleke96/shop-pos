@@ -1,0 +1,47 @@
+{
+  "appId": "com.shoppos.studio",
+  "productName": "Menu & Promo Studio",
+  "executableName": "ShopPOS-Studio",
+  "directories": {
+    "output": "dist\\cloud-apps\\studio",
+    "buildResources": "build"
+  },
+  "files": [
+    "electron/studio-shell.js",
+    "electron/cloud-shell-config-studio.js",
+    "package.json"
+  ],
+  "extraMetadata": {
+    "main": "electron/cloud-shell-config-studio.js",
+    "name": "com.shoppos.studio"
+  },
+  "win": {
+    "target": [
+      {
+        "target": "nsis",
+        "arch": [
+          "x64"
+        ]
+      },
+      {
+        "target": "portable",
+        "arch": [
+          "x64"
+        ]
+      }
+    ]
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "allowElevation": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "runAfterFinish": false,
+    "artifactName": "ShopPOS-Studio-Setup.${ext}",
+    "shortcutName": "Menu & Promo Studio"
+  },
+  "portable": {
+    "artifactName": "ShopPOS-Studio-Portable.${ext}"
+  }
+}

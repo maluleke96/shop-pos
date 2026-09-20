@@ -14,7 +14,6 @@ const apps = [
   { mode: 'admin', appId: 'com.shoppos.admin', appName: 'Shop POS Admin', entry: 'admin-app.html' },
   { mode: 'pos', appId: 'com.shoppos.pos', appName: 'Shop POS', entry: 'pos-app.html' },
   { mode: 'staff', appId: 'com.shoppos.staff', appName: 'Staff Portal', entry: 'staff-app.html' },
-  { mode: 'marketing', appId: 'com.shoppos.marketing', appName: 'Marketing Agent', entry: 'marketing-app.html' },
   { mode: 'recipe', appId: 'com.shoppos.recipe', appName: 'Recipe Production', entry: 'recipe-app.html' }
 ];
 

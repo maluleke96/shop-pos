@@ -8,7 +8,7 @@
   const DEFAULT_CLOUD = 'https://chisafood.up.railway.app';
   const TOKEN_KEY = 'shoppos_sync_session';
   const RPC_TIMEOUT_MS = 5000;
-  const WRITE_RE = /^(auth_|sales_|stock_|products_|categories_|customers_|suppliers_|po_|returns_|expenses_|shifts_|staff_|recipe_|hr_|payroll_|held_|quotes_|layby_|giftcards_|waste_|cashup_|combos_|settings_save|settings_saveJson|ops_|salaryClaims_|mkt_|whatsapp_|flyers_|bookkeeping_|acc_|web_|mobile_)/;
+  const WRITE_RE = /^(auth_|sales_|stock_|products_|categories_|customers_|suppliers_|po_|returns_|expenses_|shifts_|staff_|recipe_|hr_|payroll_|held_|quotes_|layby_|giftcards_|waste_|cashup_|combos_|settings_save|settings_saveJson|ops_|salaryClaims_|whatsapp_|bookkeeping_|acc_|web_|mobile_)/;
 
   function isBrowserCloud() {
     return !!(window.__SHOP_POS_CLOUD__);
@@ -365,10 +365,12 @@
     async heartbeat(actor) {
       if (navigator.onLine === false) return;
       try {
-        const uid = localStorage.getItem('shoppos_device_uid') || `pos-${Date.now()}`;
+        const uid = (window.Utils?.getDeviceId?.() || localStorage.getItem('shoppos_device_uid') || `pos-${Date.now()}`);
         localStorage.setItem('shoppos_device_uid', uid);
-        const branchId = actor?.branch_id || actor?.branchId || 1;
-        await sendRpc('mobile_heartbeat', [branchId, uid, 'POS Till'], 4000);
+        const local = window.Utils?.getLocalDeviceSettings?.() || {};
+        const branchId = Number(local.branch_id) || Number(actor?.branch_id) || Number(actor?.branchId) || 1;
+        const label = local.device_name || window.Utils?.mergeDeviceSettings?.()?.device_name || 'POS Till';
+        await sendRpc('mobile_heartbeat', [branchId, uid, label], 4000);
         await sendRpc('acc_flushIntegrations', [], 8000);
       } catch (_) { /* ignore */ }
     }

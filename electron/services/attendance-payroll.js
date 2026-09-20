@@ -19,11 +19,17 @@ function defaultWorkSchedule() {
     hours_per_month: 173,
     period_type: 'day',
     bonus_rate: 0,
+    bonus_orders_threshold: 0,
+    bonus_orders_amount: 0,
     max_payment: 0,
     allow_overtime_pay: true,
     allow_hours_beyond_limit: true,
     shift_start: '08:00',
     shift_end: '17:00',
+    /** When missed clock-out is auto-closed (defaults to shift_end). */
+    auto_close_at: '',
+    /** Time used for payroll "counted" out (defaults to shift_end). */
+    counted_end_time: '',
     grace_minutes: 5,
     overtime_rate_multiplier: 1.5,
     weekend_rate_multiplier: 2,
@@ -307,6 +313,12 @@ function getPayrollDashboard(filters = {}) {
   if (filters.branch) emps = emps.filter(e => (e.branch || '') === filters.branch);
   return emps.map(emp => {
     const calc = calculateEmployeePeriodPayroll(emp.id, from, to);
+    const sched = calc.work_schedule || {};
+    const basicRef = sched.pay_type === 'monthly'
+      ? (Number(sched.monthly_salary) || Number(emp.basic_salary) || 0)
+      : (Number(emp.basic_salary) || 0);
+    const attendanceGross = Number(calc.totals.gross) || 0;
+    const exceedsBasic = basicRef > 0 && attendanceGross > basicRef + 0.009;
     return {
       employee_id: emp.id,
       full_name: emp.full_name,
@@ -317,10 +329,14 @@ function getPayrollDashboard(filters = {}) {
       late_minutes: calc.totals.late_minutes,
       overtime_hours: calc.totals.overtime_hours,
       gross_pay: calc.payroll.gross,
+      attendance_gross: attendanceGross,
+      basic_salary: basicRef,
+      hourly_rate: calc.hourly_rate,
+      exceeds_basic: exceedsBasic,
+      max_payment_applied: calc.totals.max_payment_applied || null,
       attendance_deductions: calc.totals.attendance_deductions,
       total_deductions: calc.payroll.totalDeductions,
-      net_salary: calc.net_salary,
-      hourly_rate: calc.hourly_rate
+      net_salary: calc.net_salary
     };
   });
 }

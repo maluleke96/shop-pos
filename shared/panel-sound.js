@@ -8,7 +8,8 @@ window.PanelSound = {
 
   DEMO_FREQ: {
     pos: 880, admin: 660, driver: 520, manager: 740,
-    online: 990, delivery: 600, staff: 700, recipe: 800
+    online: 990, delivery: 600, staff: 700, recipe: 800,
+    referral: 640, 'referral-commission': 720
   },
 
   setPanel(panel) {
