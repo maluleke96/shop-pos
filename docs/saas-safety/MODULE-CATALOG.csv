@@ -1,0 +1,137 @@
+id,kind,name,sellable_addon,default_status,admin_menu,appears_in,dependencies,related_apis,related_jobs,database_tables,notes
+core.auth,shared_core,Authentication & Sessions,false,enabled_in_full_product,,All apps,,auth:*|RPC /rpc,,users|mobile_sessions,Required for every package.
+core.users_permissions,shared_core,Users & Permissions,false,enabled_in_full_product,permissions / cashiers,Admin Panel|main-nav users,,auth:getUsers|auth:createUser|auth:updateUser,,users,
+core.branches,shared_core,Branches & Tills,false,enabled_in_full_product,branches,Admin → Branches,,branches:*,,branches|branch_settings|branch_stock,
+core.catalog,shared_core,Products / Categories / Stock,false,enabled_in_full_product,,main-nav products/categories/stock,,products:*|categories:*|stock:*|inventory:*,,products|categories|branch_stock|product_modifiers|product_variants,Base commerce data.
+core.customers_suppliers,shared_core,Customers & Suppliers masters,false,enabled_in_full_product,,main-nav customers/suppliers,,customers:*|suppliers:*,,customers|suppliers,
+core.payments,shared_core,Payment methods & gateways,false,enabled_in_full_product,payments,Admin → Payment Methods,,settings payment gateways|HTTP /api/webhooks/payments/*,payment webhook ingest,payment_gateways|payment_transactions|payment_webhook_events,
+core.device_print,shared_core,"Device, Printer, Receipt",false,enabled_in_full_product,device / printer / receipt / cashdrawer,Admin device/printer/receipt,,print:*|printers:*|settings device,,pos_heartbeats,
+core.settings,shared_core,Shop settings & setup,false,enabled_in_full_product,tax / formats / operating / shifts / customize / approvals,Admin tax/formats/operating/shifts/customize,,settings:*,,shop_settings|bookkeeping_settings,
+core.audit_security,shared_core,"Audit, Security, Backup, DB tools",false,enabled_in_full_product,security / backup / database / system-health / developer,Admin + main-nav audit,,audit:*|backup:*|db:*|dev:*,storage snapshot every 6h,audit_log|pg_schema_migrations,
+core.sync_notify,shared_core,Sync & notifications hub,false,enabled_in_full_product,,All cloud clients,,sync:*|notifications:*,,notifications|notification_acks|legacy_sync_outbox,
+core.rpc_server,shared_core,HTTP RPC & static portal host,false,enabled_in_full_product,,Railway/cloud,,POST /rpc|GET /health,,,Infrastructure; not a customer SKU.
+core.portals_hub,shared_core,Portals hub & shop profiles,false,enabled_in_full_product,,/portals.html|shop-profiles.js,,,,,
+app.admin,major,Admin Panel,true,enabled_in_full_product,(host for all admin sections),/admin-app.html|mode admin|Windows/Android admin shells,core.auth|core.users_permissions|core.settings,settings:*|auth:*|many module APIs,,,Usually included; can be sold light vs full via admin_* submodules.
+app.pos,major,POS Till,true,enabled_in_full_product,pos-menu + sales sections,/pos-app.html|mode pos|main-nav POS,core.catalog|core.payments|core.auth,sales:*|shifts:*|held:*|print:receipt,,sales|sale_items|held_orders|shifts|cash_drops,
+app.staff,major,Staff Portal,true,enabled_in_full_product,staffportal / staffhr,/staff-app.html|mode staff|main-nav Staff Portal,core.auth|mod.hr,staff:*,,employees|employee_attendance|employee_leave|employee_portal_feed,
+app.manager,major,Business Manager (mobile),true,enabled_in_full_product,business-manager / mobile-app,/manager/|manager shells,core.auth|app.admin,mobile:*,,mobile_app_users|mobile_devices|mobile_notifications|mobile_sessions,
+app.mgr_hr,major,Mgr / Supervisor HR Portal,true,enabled_in_full_product,staffhr → mgr-* tabs,/mgr-hr-app.html|mode mgr-hr,mod.hr|app.staff,mgrHr:*,,manager_hr_*,
+app.recipe,major,Recipe & Production,true,enabled_in_full_product,recipe,/recipe-app.html|mode recipe|main-nav recipe,core.catalog,recipe:*|waste:*,,product_recipe_items|production_batches|production_batch_items,
+app.hr,major,"HR, Payroll & Documents",true,enabled_in_full_product,hr-workspace / hr-approvals / hrcontracts / payroll,mode hr|HR shells,app.staff|core.auth,hr:*|payroll:*|jobs:*,,hr_*|employee_*|payroll_compliance_submissions,Overlaps Staff Portal; decide bundle vs separate SKUs.
+app.accounting,major,Business Accounting,true,enabled_in_full_product,accounting-workspace,/accounting-app.html|mode accounting|main-nav bookkeeping,core.catalog|core.payments,acc:*|bookkeeping:*,,acc_*|ledger_entries,
+app.delivery,major,Delivery Department,true,enabled_in_full_product,delivery-dept,/delivery-app.html|mode delivery,mod.online|app.driver,delivery:*,,delivery_*,
+app.driver,major,Driver App,true,enabled_in_full_product,delivery-dept,/driver/|/driver/register.html|/driver/track.html,app.delivery,driver:*|HTTP /api/driver-doc/*,,delivery_drivers|delivery_driver_sessions|delivery_assignments,
+mod.online,major,Online Ordering,true,enabled_in_full_product,online-orders / customer-reports,/order/|customer-web|order shells,core.catalog|core.payments,web:*|HTTP /order/*|online payment intents,order notifications via cc/whatsapp if enabled,web_*|online_*|branch_online_settings,
+mod.branding,major,Online / App Branding,true,enabled_in_full_product,customize / online-orders / menu-builder,Admin customize + online settings + menu builder,mod.online,settings:save|HTTP /api/logo|settings:getMenuHighlights,,shop_settings|branch_online_settings,Candidate add-on; partially exists today without a single dedicated editor SKU.
+app.expenses,major,Expense Capture,true,enabled_in_full_product,(expenses via accounting/nav),/expenses/|main-nav expenses,core.auth|app.accounting,expenses:*|HTTP /api/expense-*,,expenses|expense_*|owner_fundings,
+app.studio,major,Menu & Promo Studio,true,enabled_in_full_product,menu-builder / promo-video-builder,/studio/|studio-builder mode,core.catalog|mod.combos,studio platform APIs via RPC/settings,,flyer_templates|promotion_flyers|signage media overlap,
+app.referral_agent,major,Referral Agent App,true,enabled_in_full_product,referral-dept,/referral-app.html|mode referral,mod.referral,referral:*,,mkt_referral_*|mkt_agent_*|marketing_*,
+app.referral_commission,major,Referral & Commission Desk,true,enabled_in_full_product,referral-dept,/referral-commission-app.html|mode referral-commission,mod.referral,referral:*,,mkt_commissions|mkt_commission_*|mkt_agent_wallets,
+mod.referral,major,Referral & Commission (platform),true,enabled_in_full_product,referral-dept,Admin referral-dept|both referral apps,,referral:*,,mkt_*|marketing_*,
+mod.signage,major,Digital Signage Centre,true,enabled_in_full_product,digital-signage / business-modules overview,/signage/,core.auth,signage:*|HTTP /signage-media/*|/signage-sse/*,signage SSE push|schedule matching,signage_*,
+mod.signage_player,major,Signage TV Player,true,enabled_in_full_product,digital-signage (approve pairing),/signage-player/,mod.signage,signage:requestPairing|signage:pairingStatus|SSE,,signage_devices|signage_device_pairings,Usually bundled with Signage Centre.
+mod.kiosk,major,Self-Service Kiosk,true,enabled_in_full_product,business-modules → kiosk,/kiosk/,core.catalog|mod.online,kiosk:*|HTTP /kiosk-media/*,,kiosk_*,
+mod.drive_thru,major,Drive-Thru Station,true,enabled_in_full_product,business-modules → drive-thru,/drive-thru/,core.catalog|app.pos,drive-thru platform (biz modules),,drive_thru_*,
+mod.investor,major,Investor Portal,true,enabled_in_full_product,business-modules → investors,/investor/,core.auth,investor:*,,investors|investor_*|investment_*,
+mod.release,major,App Release Centre,true,enabled_in_full_product,business-modules → release-users,/release/,,release:*|HTTP /api/mobile-releases.json,,release_* (centre users),
+mod.meeting,major,AI Meeting Centre,true,enabled_in_full_product,business-modules → meeting-users,/meeting/,,meeting:*,optional AI transcription if API key set,meetings|meeting_*,
+mod.radio,major,Connection Radio (public),true,enabled_in_full_product,radio,/radio/|/radio/:slug/,mod.radio_studio,radio:*|HTTP /radio-media/*,scheduled adverts (radio_advert_jobs),radio_*,
+mod.radio_studio,major,Radio Studio,true,enabled_in_full_product,radio,/radio-studio/,,radio:*,,radio_broadcast_state|radio_media_files|radio_playlists,
+mod.kds,major,Kitchen Display (KDS),true,enabled_in_full_product,restaurant (main-nav),/kitchen-display.html|Restaurant → Kitchen,app.pos|mod.restaurant,kitchen:*|tables:*,,kitchen_orders|kitchen_order_items,
+mod.customer_display,major,Customer Display,true,enabled_in_full_product,,/customer-display.html|Restaurant → Customer,mod.kds|app.pos,customer:openDisplay,,kitchen_orders,
+mod.restaurant,major,Restaurant / Tables,true,enabled_in_full_product,,main-nav restaurant,app.pos,tables:*,,kitchen_orders,
+mod.communication,major,Communication Center,true,enabled_in_full_product,communication-center / whatsapp,Admin communication-center|main-nav whatsapp,,cc:*|whatsapp:*|HTTP /api/webhooks/whatsapp,cc_queue processing|whatsapp webhook ingest|scheduled campaigns,cc_*|comm_*|whatsapp_*,
+mod.loyalty,major,Loyalty & Gift Cards,true,enabled_in_full_product,loyalty,Admin loyalty|main-nav giftcards|POS checkout,app.pos|mod.online,loyalty:*|giftcards:*|rewards:*,,loyalty_*|gift_cards|gift_card_transactions|first_online_gift_*|customer_reward_*,
+mod.combos,major,Combos & Promos,true,enabled_in_full_product,combos,Admin combos,core.catalog|app.pos,combos:*|vouchers:*,,combos|combo_items|combo_sale_log|product_promo_requests,
+mod.careers,major,Careers / Job Apply,true,enabled_in_full_product,recruitment,/apply|mode apply,mod.hr,jobs:*,,job_postings|job_candidates,
+mod.document_hub,major,Document Hub,true,enabled_in_full_product,,main-nav document-hub,,file:*|document hub service,,document_assets|financial_documents,
+mod.ops_compliance,major,Operations & Compliance,true,enabled_in_full_product,opscompliance,Admin opscompliance|main-nav operations,,ops:*|cashup:*,,daily_checklist_*|opening_checklist_templates|closing_checklist_templates|compliance_*,
+mod.automation,major,Automation Rules,true,enabled_in_full_product,automation,Admin automation,,automation:*,rule evaluation (event-driven),automation_rules,
+mod.donations,feature,Donations,true,enabled_in_full_product,,Admin/ops surfaces,,donations:*,,donations|donation_documents,Feature-sized; confirm if sold separately.
+mod.employee_of_month,feature,Employee of the Month,true,enabled_in_full_product,employee-of-month,Admin employee-of-month,mod.hr,hr/employee-of-month,,employee_of_month|employee_of_month_scores,
+mod.on_account,feature,On Account & Taken Orders,true,enabled_in_full_product,onaccount / taken-orders,Admin onaccount / taken-orders,app.pos|core.customers_suppliers,credit:*|taken:*,,customer_credit_ledger,
+mod.layby_quotes,feature,Lay-Bye & Quotes,true,enabled_in_full_product,,main-nav layby/quotes,app.pos,layby:*|quotes:*,,laybyes|layby_*|quotes|quote_items,
+mod.purchase_orders,feature,Purchase Orders,true,enabled_in_full_product,,main-nav purchase-orders,core.customers_suppliers|core.catalog,po:*,,purchase_orders|purchase_order_items|po_receipts,
+mod.reports,feature,Reports suite,true,enabled_in_full_product,analytics / saleexplorer / discount-report,main-nav reports|Admin analytics,app.pos,reports:*|analytics:*,,,Often bundled with Admin+POS.
+mod.web_analytics,feature,Web / Customer analytics,true,enabled_in_full_product,customer-reports,Admin customer-reports,mod.online,web:*,,web_visitor_*|customer_issue_reports,
+mod.biz_modules_pack,major,Business Modules (pack host),false,enabled_in_full_product,business-modules,Admin business-modules,mod.investor|mod.release|mod.meeting|mod.kiosk|mod.drive_thru,biz module settings,,biz_module_settings,Host UI; sell children individually or as a pack.
+admin.overview,admin_submodule,Business Dashboard,false,enabled_in_full_product,overview,Admin Panel sidebar,shared with app.admin,Admin UI section overview,,,Treat as part of core Admin / shared; do not sell alone.
+admin.salesmgmt,admin_submodule,Sales Management,true,enabled_in_full_product,salesmgmt,Admin Panel sidebar,app.pos,Admin UI section salesmgmt,,,Candidate to hide/show via package.
+admin.pos-menu,admin_submodule,POS Menu & Promos,true,enabled_in_full_product,pos-menu,Admin Panel sidebar,app.pos|mod.combos,Admin UI section pos-menu,,,Candidate to hide/show via package.
+admin.saleexplorer,admin_submodule,Sales Explorer,true,enabled_in_full_product,saleexplorer,Admin Panel sidebar,app.pos|mod.reports,Admin UI section saleexplorer,,,Candidate to hide/show via package.
+admin.soldproducts,admin_submodule,Sold Products,true,enabled_in_full_product,soldproducts,Admin Panel sidebar,mod.reports,Admin UI section soldproducts,,,Candidate to hide/show via package.
+admin.returnsmgmt,admin_submodule,Returns,true,enabled_in_full_product,returnsmgmt,Admin Panel sidebar,app.pos,Admin UI section returnsmgmt,,,Candidate to hide/show via package.
+admin.activity,admin_submodule,Activity Log,false,enabled_in_full_product,activity,Admin Panel sidebar,core.audit_security,Admin UI section activity,,,Treat as part of core Admin / shared; do not sell alone.
+admin.exceptions,admin_submodule,Exceptions,true,enabled_in_full_product,exceptions,Admin Panel sidebar,app.pos,Admin UI section exceptions,,,Candidate to hide/show via package.
+admin.alerts,admin_submodule,Alerts Center,false,enabled_in_full_product,alerts,Admin Panel sidebar,core.sync_notify,Admin UI section alerts,,,Treat as part of core Admin / shared; do not sell alone.
+admin.dailyclose,admin_submodule,Daily Closing,true,enabled_in_full_product,dailyclose,Admin Panel sidebar,mod.ops_compliance,Admin UI section dailyclose,,,Candidate to hide/show via package.
+admin.discount-report,admin_submodule,Discount Report,true,enabled_in_full_product,discount-report,Admin Panel sidebar,mod.reports,Admin UI section discount-report,,,Candidate to hide/show via package.
+admin.printer,admin_submodule,Printer Setup,false,enabled_in_full_product,printer,Admin Panel sidebar,core.device_print,Admin UI section printer,,,Treat as part of core Admin / shared; do not sell alone.
+admin.payments,admin_submodule,Payment Methods,false,enabled_in_full_product,payments,Admin Panel sidebar,core.payments,Admin UI section payments,,,Treat as part of core Admin / shared; do not sell alone.
+admin.receipt,admin_submodule,Receipt Designer,false,enabled_in_full_product,receipt,Admin Panel sidebar,core.device_print,Admin UI section receipt,,,Treat as part of core Admin / shared; do not sell alone.
+admin.security,admin_submodule,Security,false,enabled_in_full_product,security,Admin Panel sidebar,core.audit_security,Admin UI section security,,,Treat as part of core Admin / shared; do not sell alone.
+admin.quotes,admin_submodule,Quotes,true,enabled_in_full_product,quotes,Admin Panel sidebar,mod.layby_quotes,Admin UI section quotes,,,Candidate to hide/show via package.
+admin.permissions,admin_submodule,Permissions,false,enabled_in_full_product,permissions,Admin Panel sidebar,core.users_permissions,Admin UI section permissions,,,Treat as part of core Admin / shared; do not sell alone.
+admin.sales-targets,admin_submodule,Sales Targets,true,enabled_in_full_product,sales-targets,Admin Panel sidebar,app.pos,Admin UI section sales-targets,,,Candidate to hide/show via package.
+admin.top-customers,admin_submodule,Top Customers,true,enabled_in_full_product,top-customers,Admin Panel sidebar,core.customers_suppliers,Admin UI section top-customers,,,Candidate to hide/show via package.
+admin.approvals,admin_submodule,Settings Approvals,false,enabled_in_full_product,approvals,Admin Panel sidebar,core.settings,Admin UI section approvals,,,Treat as part of core Admin / shared; do not sell alone.
+admin.tax,admin_submodule,Tax & Currency,false,enabled_in_full_product,tax,Admin Panel sidebar,core.settings,Admin UI section tax,,,Treat as part of core Admin / shared; do not sell alone.
+admin.tax-hub,admin_submodule,Tax Calculations,true,enabled_in_full_product,tax-hub,Admin Panel sidebar,app.accounting,Admin UI section tax-hub,,,Candidate to hide/show via package.
+admin.cashiers,admin_submodule,Cashiers & Managers,false,enabled_in_full_product,cashiers,Admin Panel sidebar,core.users_permissions,Admin UI section cashiers,,,Treat as part of core Admin / shared; do not sell alone.
+admin.shifts,admin_submodule,Shift Management,false,enabled_in_full_product,shifts,Admin Panel sidebar,core.settings|app.pos,Admin UI section shifts,,,Treat as part of core Admin / shared; do not sell alone.
+admin.operating,admin_submodule,Operating Hours,false,enabled_in_full_product,operating,Admin Panel sidebar,core.settings,Admin UI section operating,,,Treat as part of core Admin / shared; do not sell alone.
+admin.cashdrawer,admin_submodule,Cash Drawer,false,enabled_in_full_product,cashdrawer,Admin Panel sidebar,core.device_print,Admin UI section cashdrawer,,,Treat as part of core Admin / shared; do not sell alone.
+admin.analytics,admin_submodule,Sales Analytics,true,enabled_in_full_product,analytics,Admin Panel sidebar,mod.reports,Admin UI section analytics,,,Candidate to hide/show via package.
+admin.inventory,admin_submodule,Inventory,false,enabled_in_full_product,inventory,Admin Panel sidebar,core.catalog,Admin UI section inventory,,,Treat as part of core Admin / shared; do not sell alone.
+admin.discounts,admin_submodule,Discounts,true,enabled_in_full_product,discounts,Admin Panel sidebar,app.pos,Admin UI section discounts,,,Candidate to hide/show via package.
+admin.loyalty,admin_submodule,Loyalty & Gift Cards,true,enabled_in_full_product,loyalty,Admin Panel sidebar,mod.loyalty,Admin UI section loyalty,,,Candidate to hide/show via package.
+admin.importexport,admin_submodule,Import & Export,false,enabled_in_full_product,importexport,Admin Panel sidebar,core.catalog,Admin UI section importexport,,,Treat as part of core Admin / shared; do not sell alone.
+admin.customize,admin_submodule,Customization,true,enabled_in_full_product,customize,Admin Panel sidebar,mod.branding|core.settings,Admin UI section customize,,,Candidate to hide/show via package.
+admin.branches,admin_submodule,Branches,false,enabled_in_full_product,branches,Admin Panel sidebar,core.branches,Admin UI section branches,,,Treat as part of core Admin / shared; do not sell alone.
+admin.online-orders,admin_submodule,Online Orders,true,enabled_in_full_product,online-orders,Admin Panel sidebar,mod.online,Admin UI section online-orders,,,Candidate to hide/show via package.
+admin.referral-dept,admin_submodule,Referral & Commission,true,enabled_in_full_product,referral-dept,Admin Panel sidebar,mod.referral,Admin UI section referral-dept,,,Candidate to hide/show via package.
+admin.customer-reports,admin_submodule,Customer Reports,true,enabled_in_full_product,customer-reports,Admin Panel sidebar,mod.web_analytics,Admin UI section customer-reports,,,Candidate to hide/show via package.
+admin.business-modules,admin_submodule,Business Modules,true,enabled_in_full_product,business-modules,Admin Panel sidebar,mod.biz_modules_pack,Admin UI section business-modules,,,Candidate to hide/show via package.
+admin.digital-signage,admin_submodule,Digital Signage,true,enabled_in_full_product,digital-signage,Admin Panel sidebar,mod.signage,Admin UI section digital-signage,,,Candidate to hide/show via package.
+admin.mobile-app,admin_submodule,Mobile App Users,true,enabled_in_full_product,mobile-app,Admin Panel sidebar,app.manager,Admin UI section mobile-app,,,Candidate to hide/show via package.
+admin.business-manager,admin_submodule,Business Manager,true,enabled_in_full_product,business-manager,Admin Panel sidebar,app.manager,Admin UI section business-manager,,,Candidate to hide/show via package.
+admin.device,admin_submodule,Device Settings,false,enabled_in_full_product,device,Admin Panel sidebar,core.device_print,Admin UI section device,,,Treat as part of core Admin / shared; do not sell alone.
+admin.backup,admin_submodule,Backup & Restore,false,enabled_in_full_product,backup,Admin Panel sidebar,core.audit_security,Admin UI section backup,,,Treat as part of core Admin / shared; do not sell alone.
+admin.opscompliance,admin_submodule,Operations & Compliance,true,enabled_in_full_product,opscompliance,Admin Panel sidebar,mod.ops_compliance,Admin UI section opscompliance,,,Candidate to hide/show via package.
+admin.combos,admin_submodule,Combos & Promos,true,enabled_in_full_product,combos,Admin Panel sidebar,mod.combos,Admin UI section combos,,,Candidate to hide/show via package.
+admin.menu-builder,admin_submodule,Menu Builder,true,enabled_in_full_product,menu-builder,Admin Panel sidebar,app.studio,Admin UI section menu-builder,,,Candidate to hide/show via package.
+admin.promo-video-builder,admin_submodule,Promo Video Builder,true,enabled_in_full_product,promo-video-builder,Admin Panel sidebar,app.studio,Admin UI section promo-video-builder,,,Candidate to hide/show via package.
+admin.communication-center,admin_submodule,Communication Center,true,enabled_in_full_product,communication-center,Admin Panel sidebar,mod.communication,Admin UI section communication-center,,,Candidate to hide/show via package.
+admin.radio,admin_submodule,Radio,true,enabled_in_full_product,radio,Admin Panel sidebar,mod.radio,Admin UI section radio,,,Candidate to hide/show via package.
+admin.recipe,admin_submodule,Recipe & Production,true,enabled_in_full_product,recipe,Admin Panel sidebar,app.recipe,Admin UI section recipe,,,Candidate to hide/show via package.
+admin.staffhr,admin_submodule,Staff & HR,true,enabled_in_full_product,staffhr,Admin Panel sidebar,app.staff|mod.hr,Admin UI section staffhr,,,Candidate to hide/show via package.
+admin.hr-workspace,admin_submodule,"HR, Payroll & Documents",true,enabled_in_full_product,hr-workspace,Admin Panel sidebar,mod.hr|app.hr,Admin UI section hr-workspace,,,Candidate to hide/show via package.
+admin.hr-approvals,admin_submodule,HR Approvals,true,enabled_in_full_product,hr-approvals,Admin Panel sidebar,mod.hr,Admin UI section hr-approvals,,,Candidate to hide/show via package.
+admin.accounting-workspace,admin_submodule,Bookkeeping & Accounting,true,enabled_in_full_product,accounting-workspace,Admin Panel sidebar,app.accounting,Admin UI section accounting-workspace,,,Candidate to hide/show via package.
+admin.staffportal,admin_submodule,Staff Portal,true,enabled_in_full_product,staffportal,Admin Panel sidebar,app.staff,Admin UI section staffportal,,,Candidate to hide/show via package.
+admin.onaccount,admin_submodule,On Account,true,enabled_in_full_product,onaccount,Admin Panel sidebar,mod.on_account,Admin UI section onaccount,,,Candidate to hide/show via package.
+admin.taken-orders,admin_submodule,Taken / Unpaid Orders,true,enabled_in_full_product,taken-orders,Admin Panel sidebar,mod.on_account,Admin UI section taken-orders,,,Candidate to hide/show via package.
+admin.hrcontracts,admin_submodule,Contracts & Probation,true,enabled_in_full_product,hrcontracts,Admin Panel sidebar,mod.hr,Admin UI section hrcontracts,,,Candidate to hide/show via package.
+admin.recruitment,admin_submodule,Recruitment,true,enabled_in_full_product,recruitment,Admin Panel sidebar,mod.careers,Admin UI section recruitment,,,Candidate to hide/show via package.
+admin.delivery-dept,admin_submodule,Deliveries,true,enabled_in_full_product,delivery-dept,Admin Panel sidebar,app.delivery,Admin UI section delivery-dept,,,Candidate to hide/show via package.
+admin.payroll,admin_submodule,Payroll & Compliance,true,enabled_in_full_product,payroll,Admin Panel sidebar,mod.hr|app.hr,Admin UI section payroll,,,Candidate to hide/show via package.
+admin.employee-of-month,admin_submodule,Employee of Month,true,enabled_in_full_product,employee-of-month,Admin Panel sidebar,mod.employee_of_month,Admin UI section employee-of-month,,,Candidate to hide/show via package.
+admin.database,admin_submodule,Database Manager,false,enabled_in_full_product,database,Admin Panel sidebar,core.audit_security,Admin UI section database,,,Treat as part of core Admin / shared; do not sell alone.
+admin.system-health,admin_submodule,System Health,false,enabled_in_full_product,system-health,Admin Panel sidebar,core.audit_security,Admin UI section system-health,,,Treat as part of core Admin / shared; do not sell alone.
+admin.automation,admin_submodule,Automation Rules,true,enabled_in_full_product,automation,Admin Panel sidebar,mod.automation,Admin UI section automation,,,Candidate to hide/show via package.
+admin.customfields,admin_submodule,Custom Fields,false,enabled_in_full_product,customfields,Admin Panel sidebar,core.settings,Admin UI section customfields,,,Treat as part of core Admin / shared; do not sell alone.
+admin.formats,admin_submodule,Formats & Numbering,false,enabled_in_full_product,formats,Admin Panel sidebar,core.settings,Admin UI section formats,,,Treat as part of core Admin / shared; do not sell alone.
+admin.developer,admin_submodule,Developer Mode,false,enabled_in_full_product,developer,Admin Panel sidebar,core.audit_security,Admin UI section developer,,,Treat as part of core Admin / shared; do not sell alone.
+feat.loyalty.points,feature,Loyalty Points,false,enabled_in_full_product,loyalty/points,Admin loyalty → points,mod.loyalty,,,,Sub-feature of loyalty.
+feat.loyalty.first_gift,feature,First Online Customer Gift,true,enabled_in_full_product,,Admin loyalty → first-gift,mod.loyalty|mod.online,,,,
+feat.delivery.drivers,feature,Driver pool & payouts,false,enabled_in_full_product,,Admin delivery tabs,app.delivery|app.driver,,,,
+feat.hr.payroll_sars,feature,Payroll SARS compliance (UIF/PAYE/SDL/COIDA),true,enabled_in_full_product,,Admin payroll,app.hr,,,,May be sold as HR Compliance add-on.
+feat.signage.schedules,feature,Signage schedules & emergency,false,enabled_in_full_product,,Signage Centre,mod.signage,,,,
+feat.meeting.ai_transcript,feature,AI transcription,true,enabled_in_full_product,,Meeting Centre,mod.meeting,,external AI API if keyed,,Requires server API key; confirm packaging.
+feat.accounting.ocr,feature,Document OCR,true,enabled_in_full_product,,Accounting,app.accounting,ocr-engine|bank-statement-parser,,,
+feat.expenses.recurring_budgets,feature,Expense budgets & recurring,false,enabled_in_full_product,,Expenses,app.expenses,expenses:budgets|expenses:recurring|expenses:ownerFundings,,,
+feat.biz.investor_toggle,feature,investor_enabled toggle,false,enabled_in_full_product,,Business Modules overview,mod.investor,,,biz_module_settings,
+feat.biz.release_toggle,feature,release_enabled toggle,false,enabled_in_full_product,,,mod.release,,,biz_module_settings,
+feat.biz.meeting_toggle,feature,meeting_enabled toggle,false,enabled_in_full_product,,,mod.meeting,,,biz_module_settings,
+feat.marketing_legacy,feature,Legacy marketing_* tables,false,enabled_in_full_product,,,,,,marketing_*,UNCERTAIN: confirm if still used vs mkt_* referral platform.
+feat.owner_salary,feature,Owner salary,true,enabled_in_full_product,,,app.staff,owner-salary service,,owner_salary_*,

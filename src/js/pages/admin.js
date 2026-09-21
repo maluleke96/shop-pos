@@ -106,6 +106,9 @@ const AdminPage = {
     const navSections = this.sections.filter((s) =>
       Utils.canAccessAdminSection(app.user, s.id) && (!studioLock || studioLock.has(s.id))
     );
+    if (!navSections.find((s) => s.id === this.section) && navSections.length) {
+      this.section = navSections[0].id;
+    }
 
     el.innerHTML = `<div class="admin-layout${studioLock ? ' is-studio-lock' : ''}">
       <div class="admin-sidebar-col">

@@ -1138,6 +1138,22 @@ function parseSettingsFromStore() {
 function saveSettings(data, actorId, actorName) {
   getSettingsParsed._onlineCache = null;
   const normalized = { ...data };
+  // Branding fields require mod.branding when entitlements enforced (data preserved if blocked)
+  const brandingFields = ['logo_path', 'theme', 'button_color', 'accent_color', 'customization', 'app_display_name'];
+  const touchesBranding = brandingFields.some((f) => f in normalized);
+  if (touchesBranding) {
+    try {
+      const entitlements = require('./entitlements');
+      if (entitlements.enforcementEnabled() && !entitlements.isModuleEnabled('mod.branding')) {
+        throw Object.assign(
+          new Error('FEATURE_NOT_INCLUDED: Online branding is not in this shop\'s plan'),
+          { code: 'FEATURE_NOT_INCLUDED', status: 403, module_id: 'mod.branding' }
+        );
+      }
+    } catch (e) {
+      if (e.code === 'FEATURE_NOT_INCLUDED') throw e;
+    }
+  }
   if ('tax_enabled' in normalized) normalized.tax_enabled = normalized.tax_enabled ? 1 : 0;
   if ('tax_inclusive' in normalized) normalized.tax_inclusive = normalized.tax_inclusive ? 1 : 0;
   if ('tax_show_on_pos' in normalized) normalized.tax_show_on_pos = normalized.tax_show_on_pos ? 1 : 0;
@@ -5792,5 +5808,118 @@ module.exports = {
   ...employeeOfMonthSvc,
   ...hrTrainingSvc,
   ...recruitmentSvc,
-  ...require('./recipe-production')
+  ...require('./recipe-production'),
+  ...(() => {
+    const platform = require('./platform-control');
+    const entitlements = require('./entitlements');
+    const shops = require('./platform-shops');
+    return {
+      platformStatus: () => platform.status(),
+      platformIsEnabled: () => platform.isEnabled(),
+      platformSyncCatalog: () => platform.syncCatalogFromFile(),
+      platformListModules: (f) => platform.listModules(f || {}),
+      platformValidateModules: (ids) => platform.validateModuleSelection(ids || []),
+      platformLogin: (u, p) => platform.login(u, p),
+      platformLogout: (tok) => platform.logout(tok),
+      platformRequireSession: (tok) => platform.requireSession(tok),
+      platformListPackages: () => platform.listPackages(),
+      platformGetPackage: (id) => platform.getPackage(id),
+      platformSavePackage: (d, a) => platform.savePackage(d || {}, a),
+      platformSetPackageActive: (id, active, a) => platform.setPackageActive(id, active, a),
+      platformDeletePackage: (id, a) => platform.deletePackage(id, a),
+      platformListAddons: () => platform.listAddons(),
+      platformSaveAddon: (d, a) => platform.saveAddon(d || {}, a),
+      platformDeleteAddon: (id, a) => platform.deleteAddon(id, a),
+      platformBootstrapLabSamples: (a) => platform.bootstrapLabSamples(a),
+      platformGetShopAssignment: (key) => {
+        const r = entitlements.getShopAssignment(key);
+        return r?.data != null ? r.data : r;
+      },
+      platformSaveShopAssignment: (d, a) => {
+        const r = entitlements.saveShopAssignment(d || {}, a);
+        return r?.data != null ? r.data : r;
+      },
+      platformGetEntitlements: () => entitlements.getEntitlements(true),
+      entitlementsStatus: () => {
+        const r = entitlements.status();
+        const { success, ...rest } = r;
+        return rest;
+      },
+      entitlementsGet: () => entitlements.getEntitlements(true),
+      entitlementsIsModuleEnabled: (id) => entitlements.isModuleEnabled(id),
+      entitlementsIsAdminSectionAllowed: (id) => entitlements.isAdminSectionAllowed(id),
+      entitlementsIsNavPageAllowed: (id) => entitlements.isNavPageAllowed(id),
+      // Phase 5 shops
+      platformListShops: (f) => {
+        const r = shops.listShops(f || {});
+        return { shops: r.data || [], total: r.total || 0 };
+      },
+      platformGetShop: (id) => {
+        const r = shops.getShop(id);
+        return r?.data != null ? r.data : r;
+      },
+      platformCreateShop: (d, a) => {
+        const r = shops.createShop(d || {}, a);
+        return r?.data != null ? r.data : r;
+      },
+      platformUpdateShop: (id, d, a) => {
+        const r = shops.updateShopMeta(id, d || {}, a);
+        return r?.data != null ? r.data : r;
+      },
+      platformAssignShop: (id, d, a) => {
+        const r = shops.assignPackageAndAddons(id, d || {}, a);
+        return r?.data != null ? r.data : r;
+      },
+      platformSetShopOverrides: (id, overrides, a) => {
+        const r = shops.setOverrides(id, overrides || [], a);
+        return r?.data != null ? r.data : r;
+      },
+      platformSetShopStatus: (id, status, a) => {
+        const r = shops.setSubscriptionStatus(id, status, a);
+        return r?.data != null ? r.data : r;
+      },
+      platformShopHealth: async (id) => {
+        const shop = shops.getShop(id).data;
+        const { checkShopHealth } = require('./platform-health');
+        return checkShopHealth(shop);
+      },
+      platformSyncCustomerEntitlements: async (id) => {
+        return shops.syncCustomerEntitlements(id);
+      },
+      platformShopAudit: (id, limit) => {
+        const r = shops.listAuditForShop(id, limit);
+        return r?.data != null ? r.data : r;
+      },
+      platformBootstrapLabCustomers: (a) => {
+        const r = shops.bootstrapLabCustomers(a);
+        return r?.data != null ? r.data : r;
+      },
+      platformShopSuspension: () => shops.getCurrentShopSuspension(),
+      // Phase 6 provisioning
+      platformProvisionStatus: () => {
+        const p = require('./provisioner');
+        const r = p.status();
+        const { success, ...rest } = r;
+        return rest;
+      },
+      platformProvisionDryRun: (shopId, a) => {
+        const p = require('./provisioner');
+        const r = p.dryRun(shopId, a);
+        return r?.data != null ? r.data : r;
+      },
+      platformProvisionRun: async (shopId, a) => {
+        const p = require('./provisioner');
+        const r = await p.provision(shopId, a);
+        return r?.data != null ? r.data : r;
+      },
+      platformProvisionJob: (id) => {
+        const p = require('./provisioner');
+        return p.getJob(id);
+      },
+      platformProvisionJobs: (shopId) => {
+        const p = require('./provisioner');
+        return p.listJobs(shopId);
+      }
+    };
+  })()
 };

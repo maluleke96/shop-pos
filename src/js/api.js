@@ -196,6 +196,13 @@ const API = {
 
   getSettings: () => invoke('settings:get'),
   getSettingsParsed: () => invoke('settings:getParsed'),
+  getEntitlements: async () => {
+    const res = await invoke('entitlements:get');
+    if (res?.data?.flags || res?.data?.modules) return res;
+    if (res?.data?.data?.flags) return { success: true, data: res.data.data };
+    return res;
+  },
+  getEntitlementsStatus: () => invoke('entitlements:status'),
   getOperatingHours: () => invoke('settings:getOperatingHours'),
   getMobileApkStatus: async () => {
     const base = String((typeof Utils !== 'undefined' && Utils.syncBaseUrl?.()) || window.location.origin).replace(/\/$/, '');

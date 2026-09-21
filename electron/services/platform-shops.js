@@ -1,0 +1,605 @@
+/**
+ * Platform Shop Management (Phase 5) — SaaS customer records (lab only).
+ * Creates PLATFORM records only — no Railway provisioning.
+ * Uses Phase 4 entitlements engine for package/add-on/overrides.
+ * Never registers or targets Chisa Food.
+ */
+const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
+const { getDb } = require('../database/db');
+
+let entitlements;
+try { entitlements = require('./entitlements'); } catch (_) { entitlements = null; }
+let platform;
+try { platform = require('./platform-control'); } catch (_) { platform = null; }
+
+const SUB_STATUSES = new Set(['TRIAL', 'ACTIVE', 'OVERDUE', 'SUSPENDED']);
+const DEPLOY_STATUSES = new Set([
+  'not_provisioned', 'pending', 'provisioning', 'online', 'offline', 'error', 'unknown',
+  'NOT_STARTED', 'DRY_RUN', 'PROVISIONING', 'DATABASE_CREATING', 'DEPLOYING', 'HEALTH_CHECK', 'READY', 'FAILED'
+]);
+
+function dbGet(sql, p = []) { return getDb().prepare(sql).get(...p); }
+function dbAll(sql, p = []) { return getDb().prepare(sql).all(...p); }
+function dbRun(sql, p = []) { return getDb().prepare(sql).run(...p); }
+function nowIso() { return new Date().toISOString(); }
+function uid(prefix = 'shop') {
+  return `${prefix}_${Date.now().toString(36)}_${crypto.randomBytes(4).toString('hex')}`;
+}
+
+function ensureSchema() {
+  try {
+    dbGet('SELECT 1 FROM platform_shops LIMIT 1');
+    return;
+  } catch (_) { /* */ }
+  const files = [
+    path.join(__dirname, '../database/migrations-v125.sql'),
+    path.join(__dirname, '../../supabase/migrations/20260921_platform_shops.sql')
+  ];
+  for (const f of files) {
+    if (!fs.existsSync(f)) continue;
+    try {
+      getDb().exec(fs.readFileSync(f, 'utf8'));
+      console.log('[platform-shops] schema from', path.basename(f));
+      return;
+    } catch (e) {
+      console.warn('[platform-shops] schema:', e.message || e);
+    }
+  }
+}
+
+function audit(actor, action, shopId, detail) {
+  try {
+    dbRun(
+      `INSERT INTO platform_audit_logs (actor, action, entity_type, entity_id, detail_json, created_at)
+       VALUES (?,?,?,?,?,?)`,
+      [actor || 'system', action, 'shop', shopId || '', JSON.stringify(detail || {}), nowIso()]
+    );
+  } catch (_) { /* */ }
+}
+
+/** Reject Chisa Food / reserved production identities. */
+function assertNotChisaFood(data = {}) {
+  if (entitlements?.isChisaFoodProtected?.()) {
+    throw new Error('Cannot manage SaaS shops on protected Chisa Food production');
+  }
+  const hay = [
+    data.id, data.shop_name, data.owner_name, data.owner_email,
+    data.shop_url, data.railway_project_id, data.notes
+  ].filter(Boolean).join(' ').toLowerCase();
+  if (/\bchisa\b|chisafood|chisa.?food/.test(hay)) {
+    throw new Error('Chisa Food is protected and cannot be registered as a SaaS customer');
+  }
+  if (String(data.railway_project_id || '') === '0296f469-4b4e-4b3f-99fb-063b03535e39') {
+    throw new Error('Chisa Food Railway project is protected — cannot link as SaaS shop');
+  }
+}
+
+function requireEnabled() {
+  if (!platform?.isEnabled?.()) throw new Error('Platform Control is disabled on this deployment');
+}
+
+function mapShop(row) {
+  if (!row) return null;
+  const addon_ids = dbAll('SELECT addon_id FROM platform_shop_addons WHERE shop_key = ?', [row.id])
+    .map((r) => r.addon_id);
+  const overrides = dbAll('SELECT * FROM platform_shop_overrides WHERE shop_key = ?', [row.id]);
+  let package_name = null;
+  if (row.package_id) {
+    try {
+      package_name = dbGet('SELECT name FROM platform_packages WHERE id = ?', [row.package_id])?.name || null;
+    } catch (_) { /* */ }
+  }
+  const addon_names = [];
+  for (const aid of addon_ids) {
+    try {
+      const n = dbGet('SELECT name FROM platform_addons WHERE id = ?', [aid])?.name;
+      if (n) addon_names.push(n);
+    } catch (_) { /* */ }
+  }
+  return {
+    id: row.id,
+    shop_name: row.shop_name,
+    owner_name: row.owner_name || '',
+    owner_email: row.owner_email || '',
+    contact_phone: row.contact_phone || '',
+    shop_url: row.shop_url || '',
+    railway_project_id: row.railway_project_id || '',
+    railway_service_id: row.railway_service_id || '',
+    railway_environment_id: row.railway_environment_id || '',
+    railway_deployment_id: row.railway_deployment_id || '',
+    deployment_status: row.deployment_status || 'not_provisioned',
+    package_id: row.package_id || null,
+    package_name,
+    addon_ids,
+    addon_names,
+    overrides,
+    subscription_status: row.subscription_status || 'TRIAL',
+    trial_start: row.trial_start || null,
+    trial_end: row.trial_end || null,
+    is_active: Number(row.is_active) !== 0,
+    notes: row.notes || '',
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    created_by: row.created_by || '',
+    updated_by: row.updated_by || ''
+  };
+}
+
+function listShops(filter = {}) {
+  requireEnabled();
+  ensureSchema();
+  let rows = dbAll('SELECT * FROM platform_shops ORDER BY created_at DESC');
+  const q = String(filter.q || '').trim().toLowerCase();
+  if (q) {
+    rows = rows.filter((r) =>
+      `${r.shop_name} ${r.owner_name} ${r.owner_email} ${r.id} ${r.shop_url} ${r.subscription_status}`
+        .toLowerCase().includes(q));
+  }
+  if (filter.subscription_status) {
+    rows = rows.filter((r) => r.subscription_status === filter.subscription_status);
+  }
+  if (filter.deployment_status) {
+    rows = rows.filter((r) => r.deployment_status === filter.deployment_status);
+  }
+  if (filter.active_only) {
+    rows = rows.filter((r) => Number(r.is_active) !== 0 && r.subscription_status !== 'SUSPENDED');
+  }
+  return { success: true, data: rows.map(mapShop), total: rows.length };
+}
+
+function getShop(id) {
+  requireEnabled();
+  ensureSchema();
+  const row = dbGet('SELECT * FROM platform_shops WHERE id = ?', [String(id)]);
+  if (!row) throw new Error('Shop not found');
+  const shop = mapShop(row);
+  let entitlementsPayload = null;
+  if (entitlements?.computeEffectiveEntitlements) {
+    entitlementsPayload = entitlements.computeEffectiveEntitlements(row.id);
+  }
+  return { success: true, data: { ...shop, entitlements: entitlementsPayload } };
+}
+
+function createShop(data, actor) {
+  requireEnabled();
+  ensureSchema();
+  assertNotChisaFood(data || {});
+  const name = String(data.shop_name || '').trim();
+  if (!name) throw new Error('Shop name is required');
+  if (/chisa/i.test(name)) throw new Error('Chisa Food is protected and cannot be registered as a SaaS customer');
+
+  const id = String(data.id || uid('shop')).trim();
+  assertNotChisaFood({ ...data, id });
+  if (dbGet('SELECT id FROM platform_shops WHERE id = ?', [id])) {
+    throw new Error('Shop ID already exists');
+  }
+
+  const status = String(data.subscription_status || 'TRIAL').toUpperCase();
+  if (!SUB_STATUSES.has(status)) throw new Error('Invalid subscription status');
+  const packageId = data.package_id || null;
+  const addonIds = Array.isArray(data.addon_ids) ? data.addon_ids : [];
+  const now = nowIso();
+  const trialStart = data.trial_start || (status === 'TRIAL' ? now : null);
+  const trialEnd = data.trial_end || null;
+  const by = actor?.username || 'platform';
+
+  dbRun(
+    `INSERT INTO platform_shops (
+      id, shop_name, owner_name, owner_email, contact_phone, shop_url,
+      railway_project_id, railway_service_id, railway_environment_id, railway_deployment_id,
+      deployment_status, package_id, subscription_status, trial_start, trial_end,
+      is_active, notes, created_at, updated_at, created_by, updated_by
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    [
+      id, name, data.owner_name || '', data.owner_email || '', data.contact_phone || '', data.shop_url || '',
+      data.railway_project_id || '', data.railway_service_id || '', data.railway_environment_id || '',
+      data.railway_deployment_id || '',
+      DEPLOY_STATUSES.has(data.deployment_status) ? data.deployment_status : 'not_provisioned',
+      packageId, status, trialStart, trialEnd,
+      data.is_active === false || data.is_active === 0 ? 0 : 1,
+      data.notes || '', now, now, by, by
+    ]
+  );
+
+  // Sync Phase 4 assignment tables (same shop id = shop_key)
+  if (entitlements?.saveShopAssignment) {
+    entitlements.saveShopAssignment({
+      shop_key: id,
+      package_id: packageId,
+      addon_ids: addonIds,
+      overrides: Array.isArray(data.overrides) ? data.overrides : [],
+      notes: data.notes || ''
+    }, actor);
+  } else {
+    // minimal assignment row if engine unavailable
+    dbRun(
+      `INSERT INTO platform_shop_assignments (shop_key, package_id, notes, updated_at, updated_by) VALUES (?,?,?,?,?)`,
+      [id, packageId, data.notes || '', now, by]
+    );
+  }
+
+  // Keep package_id on shop row in sync
+  dbRun('UPDATE platform_shops SET package_id = ?, updated_at = ? WHERE id = ?', [packageId, now, id]);
+
+  audit(by, 'shop_created', id, {
+    shop_name: name,
+    owner_email: data.owner_email || '',
+    package_id: packageId,
+    addon_ids: addonIds,
+    subscription_status: status
+  });
+
+  return getShop(id);
+}
+
+function updateShopMeta(id, data, actor) {
+  requireEnabled();
+  ensureSchema();
+  const row = dbGet('SELECT * FROM platform_shops WHERE id = ?', [String(id)]);
+  if (!row) throw new Error('Shop not found');
+  assertNotChisaFood({ ...row, ...data, id });
+  const by = actor?.username || 'platform';
+  const next = {
+    shop_name: data.shop_name != null ? String(data.shop_name).trim() : row.shop_name,
+    owner_name: data.owner_name != null ? data.owner_name : row.owner_name,
+    owner_email: data.owner_email != null ? data.owner_email : row.owner_email,
+    contact_phone: data.contact_phone != null ? data.contact_phone : row.contact_phone,
+    shop_url: data.shop_url != null ? data.shop_url : row.shop_url,
+    railway_project_id: data.railway_project_id != null ? data.railway_project_id : row.railway_project_id,
+    railway_service_id: data.railway_service_id != null ? data.railway_service_id : row.railway_service_id,
+    railway_environment_id: data.railway_environment_id != null ? data.railway_environment_id : row.railway_environment_id,
+    railway_deployment_id: data.railway_deployment_id != null ? data.railway_deployment_id : row.railway_deployment_id,
+    deployment_status: data.deployment_status && DEPLOY_STATUSES.has(data.deployment_status)
+      ? data.deployment_status : row.deployment_status,
+    trial_start: data.trial_start !== undefined ? data.trial_start : row.trial_start,
+    trial_end: data.trial_end !== undefined ? data.trial_end : row.trial_end,
+    notes: data.notes != null ? data.notes : row.notes,
+    is_active: data.is_active === false || data.is_active === 0 ? 0
+      : (data.is_active === true || data.is_active === 1 ? 1 : row.is_active)
+  };
+  if (!next.shop_name) throw new Error('Shop name is required');
+  assertNotChisaFood(next);
+
+  dbRun(
+    `UPDATE platform_shops SET
+      shop_name=?, owner_name=?, owner_email=?, contact_phone=?, shop_url=?,
+      railway_project_id=?, railway_service_id=?, railway_environment_id=?, railway_deployment_id=?,
+      deployment_status=?, trial_start=?, trial_end=?, notes=?, is_active=?,
+      updated_at=?, updated_by=?
+     WHERE id=?`,
+    [
+      next.shop_name, next.owner_name, next.owner_email, next.contact_phone, next.shop_url,
+      next.railway_project_id, next.railway_service_id, next.railway_environment_id, next.railway_deployment_id,
+      next.deployment_status, next.trial_start, next.trial_end, next.notes, next.is_active,
+      nowIso(), by, id
+    ]
+  );
+  audit(by, 'shop_updated', id, { previous: mapShop(row), next: getShop(id).data });
+  return getShop(id);
+}
+
+function assignPackageAndAddons(id, data, actor) {
+  requireEnabled();
+  ensureSchema();
+  const row = dbGet('SELECT * FROM platform_shops WHERE id = ?', [String(id)]);
+  if (!row) throw new Error('Shop not found');
+  assertNotChisaFood(row);
+  const by = actor?.username || 'platform';
+  const prev = entitlements?.getShopAssignment?.(id);
+
+  const packageId = data.package_id !== undefined ? (data.package_id || null) : row.package_id;
+  const addonIds = Array.isArray(data.addon_ids)
+    ? data.addon_ids
+    : (prev?.data?.addon_ids || []);
+  const overrides = Array.isArray(data.overrides)
+    ? data.overrides
+    : (prev?.data?.overrides || []).map((o) => ({
+      module_id: o.module_id, enabled: o.enabled, reason: o.reason
+    }));
+
+  if (!entitlements?.saveShopAssignment) throw new Error('Entitlement engine unavailable');
+  const saved = entitlements.saveShopAssignment({
+    shop_key: id,
+    package_id: packageId,
+    addon_ids: addonIds,
+    overrides,
+    notes: data.notes != null ? data.notes : row.notes
+  }, actor);
+
+  dbRun(
+    `UPDATE platform_shops SET package_id=?, updated_at=?, updated_by=? WHERE id=?`,
+    [packageId, nowIso(), by, id]
+  );
+
+  const prevPkg = prev?.data?.package_id;
+  const prevAddons = prev?.data?.addon_ids || [];
+  if (prevPkg !== packageId) {
+    audit(by, prevPkg ? 'package_changed' : 'package_assigned', id, {
+      previous: prevPkg, next: packageId
+    });
+  }
+  const added = addonIds.filter((a) => !prevAddons.includes(a));
+  const removed = prevAddons.filter((a) => !addonIds.includes(a));
+  for (const a of added) audit(by, 'addon_added', id, { addon_id: a });
+  for (const a of removed) audit(by, 'addon_removed', id, { addon_id: a });
+
+  const sync = queueCustomerEntitlementSync(id);
+  return {
+    success: true,
+    data: { ...getShop(id).data, assignment: saved.data, customer_sync: sync }
+  };
+}
+
+function setOverrides(id, overrides, actor) {
+  requireEnabled();
+  ensureSchema();
+  const row = dbGet('SELECT * FROM platform_shops WHERE id = ?', [String(id)]);
+  if (!row) throw new Error('Shop not found');
+  assertNotChisaFood(row);
+  const by = actor?.username || 'platform';
+  const prev = entitlements?.getShopAssignment?.(id);
+  const prevOv = prev?.data?.overrides || [];
+  const nextOv = Array.isArray(overrides) ? overrides : [];
+  const asg = entitlements.saveShopAssignment({
+    shop_key: id,
+    package_id: row.package_id,
+    addon_ids: (prev?.data?.addon_ids) || [],
+    overrides: nextOv,
+    notes: row.notes || ''
+  }, actor);
+
+  const prevMap = new Map(prevOv.map((o) => [o.module_id, o]));
+  const nextMap = new Map(nextOv.map((o) => [o.module_id, o]));
+  for (const [mid, o] of nextMap) {
+    const p = prevMap.get(mid);
+    if (!p) audit(by, 'module_override_added', id, { module_id: mid, enabled: o.enabled, reason: o.reason });
+    else if (Number(p.enabled) !== Number(o.enabled)) {
+      audit(by, 'module_override_changed', id, {
+        module_id: mid, previous: p.enabled, next: o.enabled, reason: o.reason
+      });
+    }
+  }
+  for (const [mid, o] of prevMap) {
+    if (!nextMap.has(mid)) {
+      audit(by, 'module_override_removed', id, { module_id: mid, previous: o.enabled });
+    }
+  }
+
+  return { success: true, data: { ...getShop(id).data, assignment: asg.data, customer_sync: queueCustomerEntitlementSync(id) } };
+}
+
+function setSubscriptionStatus(id, status, actor) {
+  requireEnabled();
+  ensureSchema();
+  const row = dbGet('SELECT * FROM platform_shops WHERE id = ?', [String(id)]);
+  if (!row) throw new Error('Shop not found');
+  assertNotChisaFood(row);
+  const next = String(status || '').toUpperCase();
+  if (!SUB_STATUSES.has(next)) throw new Error('Invalid subscription status. Use TRIAL|ACTIVE|OVERDUE|SUSPENDED');
+  const by = actor?.username || 'platform';
+  const prev = row.subscription_status;
+  const isActive = next === 'SUSPENDED' ? 0 : 1;
+  dbRun(
+    `UPDATE platform_shops SET subscription_status=?, is_active=?, updated_at=?, updated_by=? WHERE id=?`,
+    [next, isActive, nowIso(), by, id]
+  );
+  audit(by, 'subscription_status_changed', id, { previous: prev, next });
+  if (next === 'SUSPENDED' && prev !== 'SUSPENDED') {
+    audit(by, 'shop_suspended', id, { previous: prev, next });
+  }
+  if (prev === 'SUSPENDED' && next !== 'SUSPENDED') {
+    audit(by, 'shop_reactivated', id, { previous: prev, next });
+  }
+  const sync = queueCustomerEntitlementSync(id);
+  const result = getShop(id);
+  result.data = { ...result.data, customer_sync: sync };
+  return result;
+}
+
+/**
+ * Push package/subscription snapshot to the customer Railway app (server-side only).
+ * Never exposes SAAS_SYNC_SECRET to the browser.
+ */
+async function syncCustomerEntitlements(shopId) {
+  const shop = getShop(shopId).data;
+  if (!shop?.shop_url) return { ok: false, skipped: true, reason: 'no_shop_url' };
+  if (!shop.railway_project_id || !shop.railway_service_id || !shop.railway_environment_id) {
+    return { ok: false, skipped: true, reason: 'not_provisioned' };
+  }
+  const sync = require('./saas-customer-sync');
+  const railway = require('./railway-client');
+  const snapshot = sync.buildSnapshotForShop(shopId);
+  let secret = '';
+  try {
+    const vars = await railway.getVariables({
+      projectId: shop.railway_project_id,
+      environmentId: shop.railway_environment_id,
+      serviceId: shop.railway_service_id
+    });
+    secret = String(vars.SAAS_SYNC_SECRET || '').trim();
+  } catch (e) {
+    return { ok: false, error: String(e.message || e).slice(0, 200) };
+  }
+  if (!secret) {
+    secret = crypto.randomBytes(24).toString('base64url');
+    await railway.upsertVariables({
+      projectId: shop.railway_project_id,
+      environmentId: shop.railway_environment_id,
+      serviceId: shop.railway_service_id,
+      variables: {
+        SAAS_SYNC_SECRET: secret,
+        SHOP_PACKAGE_ID: snapshot.package_id || '',
+        SHOP_ADDON_IDS: (snapshot.addon_ids || []).join(','),
+        SHOP_SUBSCRIPTION_STATUS: snapshot.subscription_status || 'TRIAL',
+        SHOP_ENTITLEMENT_KEY: shop.id,
+        ENTITLEMENTS_ENFORCE: 'true'
+      },
+      skipDeploys: true
+    });
+  } else {
+    await railway.upsertVariables({
+      projectId: shop.railway_project_id,
+      environmentId: shop.railway_environment_id,
+      serviceId: shop.railway_service_id,
+      variables: {
+        SHOP_PACKAGE_ID: snapshot.package_id || '',
+        SHOP_ADDON_IDS: (snapshot.addon_ids || []).join(','),
+        SHOP_SUBSCRIPTION_STATUS: snapshot.subscription_status || 'TRIAL',
+        SHOP_ENTITLEMENT_KEY: shop.id,
+        ENTITLEMENTS_ENFORCE: 'true'
+      },
+      skipDeploys: true
+    });
+  }
+  const pushed = await sync.pushSnapshotToCustomerUrl(shop.shop_url, secret, snapshot);
+  audit('system', 'customer_entitlement_synced', shopId, {
+    package_id: snapshot.package_id,
+    addon_ids: snapshot.addon_ids,
+    subscription_status: snapshot.subscription_status
+  });
+  return { ok: true, pushed: railway.redact ? require('./railway-client').redact(pushed) : pushed };
+}
+
+function queueCustomerEntitlementSync(shopId) {
+  const job = { queued: true, shop_id: shopId, at: nowIso() };
+  Promise.resolve()
+    .then(() => syncCustomerEntitlements(shopId))
+    .then((r) => { job.result = r; job.queued = false; })
+    .catch((e) => {
+      job.queued = false;
+      job.error = String(e.message || e).slice(0, 200);
+      audit('system', 'customer_entitlement_sync_failed', shopId, { error: job.error });
+    });
+  return job;
+}
+
+/** Current deployment shop suspension check (lab instance). */
+function getCurrentShopSuspension() {
+  ensureSchema();
+  if (entitlements?.isChisaFoodProtected?.()) {
+    return { suspended: false, protected_production: true };
+  }
+  // Env override for customer deploys (synced from Platform)
+  const envStatus = String(process.env.SHOP_SUBSCRIPTION_STATUS || '').toUpperCase();
+  if (envStatus === 'SUSPENDED') {
+    return {
+      suspended: true,
+      shop_id: entitlements?.shopKey?.() || process.env.SHOP_ENTITLEMENT_KEY || null,
+      subscription_status: 'SUSPENDED',
+      has_record: true,
+      source: 'env'
+    };
+  }
+  const key = entitlements?.shopKey?.() || process.env.SHOP_ENTITLEMENT_KEY || 'lab';
+  try {
+    const row = dbGet('SELECT id, shop_name, subscription_status, is_active FROM platform_shops WHERE id = ?', [key]);
+    if (!row) return { suspended: false, shop_id: key, has_record: false };
+    const suspended = row.subscription_status === 'SUSPENDED' || Number(row.is_active) === 0;
+    return {
+      suspended,
+      shop_id: row.id,
+      shop_name: row.shop_name,
+      subscription_status: row.subscription_status,
+      has_record: true,
+      source: 'db'
+    };
+  } catch (_) {
+    return { suspended: false, shop_id: key, has_record: false };
+  }
+}
+
+function assertShopNotSuspended() {
+  if (entitlements?.isChisaFoodProtected?.()) return { allowed: true };
+  const s = getCurrentShopSuspension();
+  if (s.suspended) {
+    const err = new Error('SHOP_SUSPENDED: This shop subscription is suspended. Contact support.');
+    err.code = 'SHOP_SUSPENDED';
+    err.status = 403;
+    throw err;
+  }
+  return { allowed: true };
+}
+
+function listAuditForShop(shopId, limit = 50) {
+  requireEnabled();
+  ensureSchema();
+  const rows = dbAll(
+    `SELECT * FROM platform_audit_logs
+     WHERE entity_type = 'shop' AND entity_id = ?
+     ORDER BY created_at DESC LIMIT ?`,
+    [String(shopId), Math.min(Number(limit) || 50, 200)]
+  );
+  return {
+    success: true,
+    data: rows.map((r) => ({
+      ...r,
+      detail: (() => { try { return JSON.parse(r.detail_json || '{}'); } catch (_) { return {}; } })()
+    }))
+  };
+}
+
+function bootstrapLabCustomers(actor) {
+  requireEnabled();
+  ensureSchema();
+  if (platform?.bootstrapLabSamples) platform.bootstrapLabSamples(actor);
+
+  const pkgs = dbAll('SELECT id, name FROM platform_packages');
+  const floor = pkgs.find((p) => /Shop Floor/i.test(p.name)) || pkgs[0];
+  const starter = pkgs.find((p) => /Starter/i.test(p.name)) || pkgs.find((p) => p.id !== floor?.id) || floor;
+  const addons = dbAll('SELECT id, name FROM platform_addons');
+  const online = addons.find((a) => /Online Ordering/i.test(a.name));
+
+  const created = [];
+  const ensure = (wantedName, payload) => {
+    const existing = dbGet('SELECT id FROM platform_shops WHERE shop_name = ?', [wantedName]);
+    if (existing) {
+      created.push(getShop(existing.id).data);
+      return;
+    }
+    const r = createShop({ ...payload, shop_name: wantedName }, actor);
+    created.push(r.data);
+  };
+
+  ensure('LAB CUSTOMER A', {
+    owner_name: 'Lab Owner A',
+    owner_email: 'lab-a@example.test',
+    contact_phone: '+27000000001',
+    package_id: floor?.id || null,
+    addon_ids: online ? [online.id] : [],
+    subscription_status: 'ACTIVE',
+    notes: 'Phase 5 isolation test A — Shop Floor + Online'
+  });
+  ensure('LAB CUSTOMER B', {
+    owner_name: 'Lab Owner B',
+    owner_email: 'lab-b@example.test',
+    contact_phone: '+27000000002',
+    // Starter-like: Shop Floor base only (no Online). Avoid Lab Starter Online which embeds mod.online.
+    package_id: floor?.id || starter?.id || null,
+    addon_ids: [],
+    subscription_status: 'TRIAL',
+    notes: 'Phase 5 isolation test B — floor only, no Online add-on'
+  });
+
+  return { success: true, data: created };
+}
+
+module.exports = {
+  SUB_STATUSES,
+  ensureSchema,
+  listShops,
+  getShop,
+  createShop,
+  updateShopMeta,
+  assignPackageAndAddons,
+  setOverrides,
+  setSubscriptionStatus,
+  syncCustomerEntitlements,
+  queueCustomerEntitlementSync,
+  getCurrentShopSuspension,
+  assertShopNotSuspended,
+  listAuditForShop,
+  bootstrapLabCustomers,
+  assertNotChisaFood
+};

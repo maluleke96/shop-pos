@@ -36,6 +36,7 @@ const SIGNAGE_WEB = path.join(ROOT, 'signage-web');
 const SIGNAGE_PLAYER = path.join(ROOT, 'signage-player');
 const KIOSK_WEB = path.join(ROOT, 'kiosk-web');
 const DRIVE_THRU_WEB = path.join(ROOT, 'drive-thru-web');
+const PLATFORM_WEB = path.join(ROOT, 'platform-web');
 const { loadProjectEnv } = require('./lib/load-env');
 loadProjectEnv(ROOT);
 
@@ -543,6 +544,37 @@ function syncDriveThruWebConfig() {
   } catch (e) { console.warn('[drive-thru-web] config write failed:', e.message); }
 }
 
+function syncPlatformWebConfig() {
+  try {
+    fs.mkdirSync(path.join(PLATFORM_WEB, 'js'), { recursive: true });
+    fs.writeFileSync(path.join(PLATFORM_WEB, 'js', 'config.js'), portalConfig('__PLATFORM_CONFIG__', '/platform/'), 'utf8');
+  } catch (e) { console.warn('[platform-web] config write failed:', e.message); }
+}
+
+function platformControlEnabled() {
+  const s = String(process.env.PLATFORM_CONTROL_ENABLED || '').trim().toLowerCase();
+  return s === '1' || s === 'true' || s === 'yes' || s === 'on';
+}
+
+/** Phase 4: reject portal/API mounts when module entitlement is OFF (lab only). */
+function denyIfNotEntitled(res, urlPath) {
+  try {
+    const entitlements = require('./electron/services/entitlements');
+    const gate = entitlements.assertHttpMountAllowed(urlPath);
+    if (gate && gate.allowed === false) {
+      const err = gate.error || {};
+      writeJson(res, err.status || 403, {
+        success: false,
+        error: err.message || 'FEATURE_NOT_INCLUDED',
+        code: err.code || 'FEATURE_NOT_INCLUDED',
+        module_id: err.module_id || null
+      });
+      return true;
+    }
+  } catch (_) { /* */ }
+  return false;
+}
+
 function servePortalWeb(req, res, baseDir, mount) {
   let urlPath = (req.url || '/').split('?')[0];
   if (urlPath === mount) urlPath = '/';
@@ -848,6 +880,7 @@ async function main() {
   syncSignageWebConfig();
   syncKioskWebConfig();
   syncDriveThruWebConfig();
+  syncPlatformWebConfig();
   syncPublicEnvJs();
 
   console.log('Connecting to Supabase Postgres…');
@@ -910,6 +943,7 @@ async function main() {
         service: 'shop-pos-railway',
         backend: 'postgres',
         public_url: base,
+        shop_key: process.env.SHOP_ENTITLEMENT_KEY || null,
         handlers: Object.keys(rpc.handlers).length,
         customer_ordering: `${base}/order/`,
         portals: `${base}/portals.html`,
@@ -919,6 +953,12 @@ async function main() {
 
     // Meta WhatsApp Cloud API webhooks (GET verify + POST events)
     if (urlPath === '/api/webhooks/whatsapp') {
+      try {
+        const entitlements = require('./electron/services/entitlements');
+        if (entitlements.enforcementEnabled() && !entitlements.isModuleEnabled('mod.communication')) {
+          return writeJson(res, 403, { success: false, error: 'FEATURE_NOT_INCLUDED', code: 'FEATURE_NOT_INCLUDED' });
+        }
+      } catch (_) { /* */ }
       const waHook = require('./electron/services/whatsapp-webhook');
       if (req.method === 'GET') {
         const q = Object.fromEntries(new URL(req.url || '/', 'http://localhost').searchParams.entries());
@@ -1185,6 +1225,7 @@ async function main() {
     }
 
     if (urlPath.startsWith('/signage-media/')) {
+      if (denyIfNotEntitled(res, '/signage-media')) return;
       const mediaId = urlPath.replace('/signage-media/', '').split('?')[0];
       const q = (req.url || '').split('?')[1] || '';
       const token = new URLSearchParams(q).get('token');
@@ -1274,6 +1315,7 @@ async function main() {
     }
 
     if (urlPath.startsWith('/signage-sse/')) {
+      if (denyIfNotEntitled(res, '/signage-sse')) return;
       const deviceToken = decodeURIComponent(urlPath.replace('/signage-sse/', '').split('?')[0]);
       try {
         const signage = require('./electron/services/signage-platform');
@@ -1345,63 +1387,86 @@ async function main() {
 
     // Customer ordering website (PWA)
     if (urlPath === '/order') {
+      if (denyIfNotEntitled(res, '/order')) return;
       res.writeHead(301, { Location: '/order/', ...corsHeaders() });
       return res.end();
     }
     if (urlPath.startsWith('/order/')) {
+      if (denyIfNotEntitled(res, '/order')) return;
       return serveCustomerWeb(req, res);
     }
 
     if (urlPath === '/manager' || urlPath.startsWith('/manager/')) {
+      if (denyIfNotEntitled(res, '/manager')) return;
       return serveManagerWeb(req, res);
     }
 
     if (urlPath === '/driver' || urlPath.startsWith('/driver/')) {
+      if (denyIfNotEntitled(res, '/driver')) return;
       return serveDriverWeb(req, res);
     }
 
     if (urlPath === '/expenses' || urlPath.startsWith('/expenses/')) {
+      if (denyIfNotEntitled(res, '/expenses')) return;
       return serveExpenseWeb(req, res);
     }
 
     if (urlPath === '/studio' || urlPath.startsWith('/studio/')) {
+      if (denyIfNotEntitled(res, '/studio')) return;
       return serveStudioWeb(req, res);
     }
 
     if (urlPath === '/radio-studio' || urlPath.startsWith('/radio-studio/')) {
+      if (denyIfNotEntitled(res, '/radio-studio')) return;
       return serveRadioStudioWeb(req, res);
     }
 
     if (urlPath === '/radio' || urlPath.startsWith('/radio/')) {
+      if (denyIfNotEntitled(res, '/radio')) return;
       return serveRadioWeb(req, res);
     }
 
     if (urlPath === '/investor' || urlPath.startsWith('/investor/')) {
+      if (denyIfNotEntitled(res, '/investor')) return;
       return servePortalWeb(req, res, INVESTOR_WEB, '/investor');
     }
 
     if (urlPath === '/release' || urlPath.startsWith('/release/')) {
+      if (denyIfNotEntitled(res, '/release')) return;
       return servePortalWeb(req, res, RELEASE_WEB, '/release');
     }
 
     if (urlPath === '/meeting' || urlPath.startsWith('/meeting/')) {
+      if (denyIfNotEntitled(res, '/meeting')) return;
       return servePortalWeb(req, res, MEETING_WEB, '/meeting');
     }
 
     if (urlPath === '/signage' || urlPath.startsWith('/signage/')) {
+      if (denyIfNotEntitled(res, '/signage')) return;
       return servePortalWeb(req, res, SIGNAGE_WEB, '/signage');
     }
 
     if (urlPath === '/signage-player' || urlPath.startsWith('/signage-player/')) {
+      if (denyIfNotEntitled(res, '/signage-player')) return;
       return servePortalWeb(req, res, SIGNAGE_PLAYER, '/signage-player');
     }
 
     if (urlPath === '/kiosk' || urlPath.startsWith('/kiosk/')) {
+      if (denyIfNotEntitled(res, '/kiosk')) return;
       return servePortalWeb(req, res, KIOSK_WEB, '/kiosk');
     }
 
     if (urlPath === '/drive-thru' || urlPath.startsWith('/drive-thru/')) {
+      if (denyIfNotEntitled(res, '/drive-thru')) return;
       return servePortalWeb(req, res, DRIVE_THRU_WEB, '/drive-thru');
+    }
+
+    if (urlPath === '/platform' || urlPath.startsWith('/platform/')) {
+      if (!platformControlEnabled()) {
+        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8', ...corsHeaders() });
+        return res.end('Platform Control is not enabled on this deployment');
+      }
+      return servePortalWeb(req, res, PLATFORM_WEB, '/platform');
     }
 
     if (urlPath === '/track' || urlPath.startsWith('/track/')) {

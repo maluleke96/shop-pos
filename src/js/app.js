@@ -1,6 +1,8 @@
 const App = {
   user: null,
   settings: null,
+  entitlements: null,
+  entitlementsLoaded: false,
   currentPage: 'dashboard',
   navHistory: [],
   _suppressHistory: false,
@@ -2181,6 +2183,20 @@ const App = {
     }
   },
 
+  async loadEntitlements() {
+    try {
+      const res = await API.getEntitlements();
+      const data = res?.data || res || null;
+      this.entitlements = data;
+      this.entitlementsLoaded = true;
+      try { window.__SHOP_POS_ENTITLEMENTS__ = data; } catch (_) { /* */ }
+    } catch (_) {
+      this.entitlements = { enforcement: false };
+      this.entitlementsLoaded = true;
+      try { window.__SHOP_POS_ENTITLEMENTS__ = this.entitlements; } catch (_) { /* */ }
+    }
+  },
+
   async ensureAdminSectionScripts(sectionId) {
     const map = this._adminSectionScripts || {};
     const scripts = map[sectionId] || [];
@@ -2320,10 +2336,13 @@ const App = {
 
     this.showScreen('app');
     if (!this.isPosKiosk()) {
+      await this.loadEntitlements();
       this.renderNav();
       document.getElementById('sidebar-user-role').textContent =
         this.formatSidebarUserRole(this.user);
       this.refreshBranchSwitcher().catch(() => {});
+    } else {
+      this.loadEntitlements().catch(() => {});
     }
 
     const savedNav = opts.restored ? (this._restoredNav || this._loadNavState()) : null;
@@ -2487,7 +2506,12 @@ const App = {
     // Immediate UI feedback ? never block navigation on session/network
     this.closeSidebar();
     if (!this.user) return;
-    if (!Utils.canAccess(this.user, page)) return;
+    if (!Utils.canAccess(this.user, page)) {
+      if (!Utils.isPageEntitled(page)) {
+        Utils.toast('FEATURE_NOT_INCLUDED: this page is not in your plan', 'error');
+      }
+      return;
+    }
     if (!this._suppressHistory && this.currentPage && this.currentPage !== page) {
       this.navHistory.push(this.currentPage);
       if (this.navHistory.length > 40) this.navHistory.shift();

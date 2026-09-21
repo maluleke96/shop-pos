@@ -1,0 +1,3308 @@
+{
+  "schema_version": 1,
+  "phase": 2,
+  "generated_at": "2026-09-20T21:40:30.319Z",
+  "source": "shop-pos codebase inventory (admin.js, app.js, app-mode.js, server.js, mobile/handlers.js, electron/services, portals, backup table index)",
+  "protection_note": "Catalog only. No entitlement checks deployed. Chisa Food production not modified. Intended for shoppos-saas-lab packaging work.",
+  "counts": {
+    "major": 37,
+    "admin_submodule": 67,
+    "feature": 20,
+    "shared_core": 12,
+    "total_catalog_entries": 136,
+    "rpc_namespaces": 73,
+    "http_routes": 37,
+    "background_jobs": 11
+  },
+  "gating_apis_jobs": {
+    "rpc_namespaces": [
+      "acc",
+      "analytics",
+      "app",
+      "audit",
+      "auth",
+      "automation",
+      "backup",
+      "bookkeeping",
+      "branches",
+      "cashup",
+      "categories",
+      "cc",
+      "combos",
+      "credit",
+      "customer",
+      "customers",
+      "customfields",
+      "dashboard",
+      "db",
+      "delivery",
+      "dev",
+      "donations",
+      "driver",
+      "expenses",
+      "export",
+      "file",
+      "giftcards",
+      "held",
+      "hr",
+      "inventory",
+      "investor",
+      "jobs",
+      "kiosk",
+      "kitchen",
+      "layby",
+      "loyalty",
+      "meeting",
+      "mobile",
+      "mgrHr",
+      "notifications",
+      "operating",
+      "ops",
+      "payroll",
+      "po",
+      "print",
+      "printers",
+      "products",
+      "quotes",
+      "radio",
+      "recipe",
+      "referral",
+      "release",
+      "reports",
+      "returns",
+      "rewards",
+      "sales",
+      "search",
+      "security",
+      "settings",
+      "shifts",
+      "signage",
+      "staff",
+      "stock",
+      "stockcount",
+      "store",
+      "suppliers",
+      "sync",
+      "tables",
+      "taken",
+      "vouchers",
+      "waste",
+      "web",
+      "whatsapp"
+    ],
+    "http_routes": [
+      "POST /rpc",
+      "GET /health",
+      "GET|POST /api/webhooks/whatsapp",
+      "POST /api/webhooks/payments/:provider",
+      "GET /api/mobile-releases.json",
+      "GET /api/mobile-apk-status",
+      "POST /api/admin/mobile-apk-upload",
+      "GET /api/logo",
+      "GET /api/notification-sound",
+      "GET /api/product-image/:id",
+      "GET /api/combo-image/:id",
+      "GET /api/driver-doc/*",
+      "GET /api/expense-invoice/*",
+      "GET /api/expense-grant-photo/*",
+      "GET /api/expense-grant-recording/*",
+      "GET /signage-media/*",
+      "GET /signage-sse/*",
+      "GET /radio-media/*",
+      "GET /kiosk-media/product/*",
+      "STATIC /order/",
+      "/manager/",
+      "/driver/",
+      "/expenses/",
+      "/studio/",
+      "/radio/",
+      "/radio-studio/",
+      "/investor/",
+      "/release/",
+      "/meeting/",
+      "/signage/",
+      "/signage-player/",
+      "/kiosk/",
+      "/drive-thru/",
+      "/kitchen-display.html",
+      "/customer-display.html",
+      "/apply",
+      "/portals.html"
+    ],
+    "background_jobs": [
+      "server: storage.recordStorageSnapshot every 6 hours",
+      "signage: SSE fan-out to players; schedule matching on poll/publish",
+      "radio: radio_advert_jobs / scheduled announcements runner",
+      "communication: cc_queue send workers; WhatsApp webhook ingest",
+      "whatsapp: scheduled campaign sends",
+      "payments: webhook ingest → payment_transactions",
+      "shifts: enforceShiftCashoutDeadlines (callable)",
+      "notifications: refreshPaymentDueNotifications (callable)",
+      "expenses: postRecurring (callable)",
+      "meeting: optional AI transcription (external)",
+      "mgr-hr shell: applyLiveUpdate poll ~45s (client)"
+    ]
+  },
+  "modules": [
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": false,
+      "related_apis": [
+        "auth:*",
+        "RPC /rpc"
+      ],
+      "related_jobs": [],
+      "database_tables": [
+        "users",
+        "mobile_sessions"
+      ],
+      "dependencies": [],
+      "admin_menu": null,
+      "appears_in": [
+        "All apps"
+      ],
+      "notes": "Required for every package.",
+      "id": "core.auth",
+      "kind": "shared_core",
+      "name": "Authentication & Sessions",
+      "description": "Login, logout, PIN, recovery, session verify, installer seed."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": false,
+      "related_apis": [
+        "auth:getUsers",
+        "auth:createUser",
+        "auth:updateUser"
+      ],
+      "related_jobs": [],
+      "database_tables": [
+        "users"
+      ],
+      "dependencies": [],
+      "admin_menu": "permissions / cashiers",
+      "appears_in": [
+        "Admin Panel",
+        "main-nav users"
+      ],
+      "notes": "",
+      "id": "core.users_permissions",
+      "kind": "shared_core",
+      "name": "Users & Permissions",
+      "description": "User CRUD, roles, cashier/manager permissions."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": false,
+      "related_apis": [
+        "branches:*"
+      ],
+      "related_jobs": [],
+      "database_tables": [
+        "branches",
+        "branch_settings",
+        "branch_stock"
+      ],
+      "dependencies": [],
+      "admin_menu": "branches",
+      "appears_in": [
+        "Admin → Branches"
+      ],
+      "notes": "",
+      "id": "core.branches",
+      "kind": "shared_core",
+      "name": "Branches & Tills",
+      "description": "Multi-branch and till device binding."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": false,
+      "related_apis": [
+        "products:*",
+        "categories:*",
+        "stock:*",
+        "inventory:*"
+      ],
+      "related_jobs": [],
+      "database_tables": [
+        "products",
+        "categories",
+        "branch_stock",
+        "product_modifiers",
+        "product_variants"
+      ],
+      "dependencies": [],
+      "admin_menu": null,
+      "appears_in": [
+        "main-nav products/categories/stock"
+      ],
+      "notes": "Base commerce data.",
+      "id": "core.catalog",
+      "kind": "shared_core",
+      "name": "Products / Categories / Stock",
+      "description": "Core catalogue and inventory movements used by POS, Online, Recipe, etc."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": false,
+      "related_apis": [
+        "customers:*",
+        "suppliers:*"
+      ],
+      "related_jobs": [],
+      "database_tables": [
+        "customers",
+        "suppliers"
+      ],
+      "dependencies": [],
+      "admin_menu": null,
+      "appears_in": [
+        "main-nav customers/suppliers"
+      ],
+      "notes": "",
+      "id": "core.customers_suppliers",
+      "kind": "shared_core",
+      "name": "Customers & Suppliers masters",
+      "description": "Party master data shared across sales, PO, delivery, loyalty."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": false,
+      "related_apis": [
+        "settings payment gateways",
+        "HTTP /api/webhooks/payments/*"
+      ],
+      "related_jobs": [
+        "payment webhook ingest"
+      ],
+      "database_tables": [
+        "payment_gateways",
+        "payment_transactions",
+        "payment_webhook_events"
+      ],
+      "dependencies": [],
+      "admin_menu": "payments",
+      "appears_in": [
+        "Admin → Payment Methods"
+      ],
+      "notes": "",
+      "id": "core.payments",
+      "kind": "shared_core",
+      "name": "Payment methods & gateways",
+      "description": "POS tender types and online payment gateway config/webhooks."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": false,
+      "related_apis": [
+        "print:*",
+        "printers:*",
+        "settings device"
+      ],
+      "related_jobs": [],
+      "database_tables": [
+        "pos_heartbeats"
+      ],
+      "dependencies": [],
+      "admin_menu": "device / printer / receipt / cashdrawer",
+      "appears_in": [
+        "Admin device/printer/receipt"
+      ],
+      "notes": "",
+      "id": "core.device_print",
+      "kind": "shared_core",
+      "name": "Device, Printer, Receipt",
+      "description": "Device settings, printers, receipt designer, cash drawer."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": false,
+      "related_apis": [
+        "settings:*"
+      ],
+      "related_jobs": [],
+      "database_tables": [
+        "shop_settings",
+        "bookkeeping_settings"
+      ],
+      "dependencies": [],
+      "admin_menu": "tax / formats / operating / shifts / customize / approvals",
+      "appears_in": [
+        "Admin tax/formats/operating/shifts/customize"
+      ],
+      "notes": "",
+      "id": "core.settings",
+      "kind": "shared_core",
+      "name": "Shop settings & setup",
+      "description": "Shop settings, setup wizard, tax/currency, formats, operating hours, shifts config."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": false,
+      "related_apis": [
+        "audit:*",
+        "backup:*",
+        "db:*",
+        "dev:*"
+      ],
+      "related_jobs": [
+        "storage snapshot every 6h"
+      ],
+      "database_tables": [
+        "audit_log",
+        "pg_schema_migrations"
+      ],
+      "dependencies": [],
+      "admin_menu": "security / backup / database / system-health / developer",
+      "appears_in": [
+        "Admin + main-nav audit"
+      ],
+      "notes": "",
+      "id": "core.audit_security",
+      "kind": "shared_core",
+      "name": "Audit, Security, Backup, DB tools",
+      "description": "Audit log, security, backup/restore, database manager, system health, developer."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": false,
+      "related_apis": [
+        "sync:*",
+        "notifications:*"
+      ],
+      "related_jobs": [],
+      "database_tables": [
+        "notifications",
+        "notification_acks",
+        "legacy_sync_outbox"
+      ],
+      "dependencies": [],
+      "admin_menu": null,
+      "appears_in": [
+        "All cloud clients"
+      ],
+      "notes": "",
+      "id": "core.sync_notify",
+      "kind": "shared_core",
+      "name": "Sync & notifications hub",
+      "description": "Cloud sync substrate and in-app notification ack hub."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": false,
+      "related_apis": [
+        "POST /rpc",
+        "GET /health"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [],
+      "admin_menu": null,
+      "appears_in": [
+        "Railway/cloud"
+      ],
+      "notes": "Infrastructure; not a customer SKU.",
+      "id": "core.rpc_server",
+      "kind": "shared_core",
+      "name": "HTTP RPC & static portal host",
+      "description": "server.js hosts /rpc, /health, portal static mounts."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": false,
+      "related_apis": [],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [],
+      "admin_menu": null,
+      "appears_in": [
+        "/portals.html",
+        "shop-profiles.js"
+      ],
+      "notes": "",
+      "id": "core.portals_hub",
+      "kind": "shared_core",
+      "name": "Portals hub & shop profiles",
+      "description": "Bookmark hub and multi-shop local profiles."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "settings:*",
+        "auth:*",
+        "many module APIs"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "core.auth",
+        "core.users_permissions",
+        "core.settings"
+      ],
+      "admin_menu": "(host for all admin sections)",
+      "appears_in": [
+        "/admin-app.html",
+        "mode admin",
+        "Windows/Android admin shells"
+      ],
+      "notes": "Usually included; can be sold light vs full via admin_* submodules.",
+      "id": "app.admin",
+      "kind": "major",
+      "name": "Admin Panel",
+      "description": "Owner/manager configuration shell hosting all Admin sidebar sections."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "sales:*",
+        "shifts:*",
+        "held:*",
+        "print:receipt"
+      ],
+      "related_jobs": [],
+      "database_tables": [
+        "sales",
+        "sale_items",
+        "held_orders",
+        "shifts",
+        "cash_drops"
+      ],
+      "dependencies": [
+        "core.catalog",
+        "core.payments",
+        "core.auth"
+      ],
+      "admin_menu": "pos-menu + sales sections",
+      "appears_in": [
+        "/pos-app.html",
+        "mode pos",
+        "main-nav POS"
+      ],
+      "notes": "",
+      "id": "app.pos",
+      "kind": "major",
+      "name": "POS Till",
+      "description": "Cashier sales, payments, held orders, shifts at till."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "staff:*"
+      ],
+      "related_jobs": [],
+      "database_tables": [
+        "employees",
+        "employee_attendance",
+        "employee_leave",
+        "employee_portal_feed"
+      ],
+      "dependencies": [
+        "core.auth",
+        "mod.hr"
+      ],
+      "admin_menu": "staffportal / staffhr",
+      "appears_in": [
+        "/staff-app.html",
+        "mode staff",
+        "main-nav Staff Portal"
+      ],
+      "notes": "",
+      "id": "app.staff",
+      "kind": "major",
+      "name": "Staff Portal",
+      "description": "Employee clocking, leave, payslips, self-service HR views."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "mobile:*"
+      ],
+      "related_jobs": [],
+      "database_tables": [
+        "mobile_app_users",
+        "mobile_devices",
+        "mobile_notifications",
+        "mobile_sessions"
+      ],
+      "dependencies": [
+        "core.auth",
+        "app.admin"
+      ],
+      "admin_menu": "business-manager / mobile-app",
+      "appears_in": [
+        "/manager/",
+        "manager shells"
+      ],
+      "notes": "",
+      "id": "app.manager",
+      "kind": "major",
+      "name": "Business Manager (mobile)",
+      "description": "Mobile manager dashboard PWA for ops overview."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "mgrHr:*"
+      ],
+      "related_jobs": [],
+      "database_tables": [
+        "manager_hr_*"
+      ],
+      "dependencies": [
+        "mod.hr",
+        "app.staff"
+      ],
+      "admin_menu": "staffhr → mgr-* tabs",
+      "appears_in": [
+        "/mgr-hr-app.html",
+        "mode mgr-hr"
+      ],
+      "notes": "",
+      "id": "app.mgr_hr",
+      "kind": "major",
+      "name": "Mgr / Supervisor HR Portal",
+      "description": "Manager/supervisor cases, recordings, staff HR ops portal."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "recipe:*",
+        "waste:*"
+      ],
+      "related_jobs": [],
+      "database_tables": [
+        "product_recipe_items",
+        "production_batches",
+        "production_batch_items"
+      ],
+      "dependencies": [
+        "core.catalog"
+      ],
+      "admin_menu": "recipe",
+      "appears_in": [
+        "/recipe-app.html",
+        "mode recipe",
+        "main-nav recipe"
+      ],
+      "notes": "",
+      "id": "app.recipe",
+      "kind": "major",
+      "name": "Recipe & Production",
+      "description": "Recipes, prep, production planning, waste, costing."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "hr:*",
+        "payroll:*",
+        "jobs:*"
+      ],
+      "related_jobs": [],
+      "database_tables": [
+        "hr_*",
+        "employee_*",
+        "payroll_compliance_submissions"
+      ],
+      "dependencies": [
+        "app.staff",
+        "core.auth"
+      ],
+      "admin_menu": "hr-workspace / hr-approvals / hrcontracts / payroll",
+      "appears_in": [
+        "mode hr",
+        "HR shells"
+      ],
+      "notes": "Overlaps Staff Portal; decide bundle vs separate SKUs.",
+      "id": "app.hr",
+      "kind": "major",
+      "name": "HR, Payroll & Documents",
+      "description": "Full HR workspace: payroll, contracts, training, compliance."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "acc:*",
+        "bookkeeping:*"
+      ],
+      "related_jobs": [],
+      "database_tables": [
+        "acc_*",
+        "ledger_entries"
+      ],
+      "dependencies": [
+        "core.catalog",
+        "core.payments"
+      ],
+      "admin_menu": "accounting-workspace",
+      "appears_in": [
+        "/accounting-app.html",
+        "mode accounting",
+        "main-nav bookkeeping"
+      ],
+      "notes": "",
+      "id": "app.accounting",
+      "kind": "major",
+      "name": "Business Accounting",
+      "description": "Ledgers, journals, banking, AR/AP, financial reports."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "delivery:*"
+      ],
+      "related_jobs": [],
+      "database_tables": [
+        "delivery_*"
+      ],
+      "dependencies": [
+        "mod.online",
+        "app.driver"
+      ],
+      "admin_menu": "delivery-dept",
+      "appears_in": [
+        "/delivery-app.html",
+        "mode delivery"
+      ],
+      "notes": "",
+      "id": "app.delivery",
+      "kind": "major",
+      "name": "Delivery Department",
+      "description": "Dispatch desk for delivery orders, drivers, payouts."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "driver:*",
+        "HTTP /api/driver-doc/*"
+      ],
+      "related_jobs": [],
+      "database_tables": [
+        "delivery_drivers",
+        "delivery_driver_sessions",
+        "delivery_assignments"
+      ],
+      "dependencies": [
+        "app.delivery"
+      ],
+      "admin_menu": "delivery-dept",
+      "appears_in": [
+        "/driver/",
+        "/driver/register.html",
+        "/driver/track.html"
+      ],
+      "notes": "",
+      "id": "app.driver",
+      "kind": "major",
+      "name": "Driver App",
+      "description": "Driver login, jobs, earnings, register/track pages."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "web:*",
+        "HTTP /order/*",
+        "online payment intents"
+      ],
+      "related_jobs": [
+        "order notifications via cc/whatsapp if enabled"
+      ],
+      "database_tables": [
+        "web_*",
+        "online_*",
+        "branch_online_settings"
+      ],
+      "dependencies": [
+        "core.catalog",
+        "core.payments"
+      ],
+      "admin_menu": "online-orders / customer-reports",
+      "appears_in": [
+        "/order/",
+        "customer-web",
+        "order shells"
+      ],
+      "notes": "",
+      "id": "mod.online",
+      "kind": "major",
+      "name": "Online Ordering",
+      "description": "Customer web shop for delivery/collection."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "settings:save",
+        "HTTP /api/logo",
+        "settings:getMenuHighlights"
+      ],
+      "related_jobs": [],
+      "database_tables": [
+        "shop_settings",
+        "branch_online_settings"
+      ],
+      "dependencies": [
+        "mod.online"
+      ],
+      "admin_menu": "customize / online-orders / menu-builder",
+      "appears_in": [
+        "Admin customize + online settings + menu builder"
+      ],
+      "notes": "Candidate add-on; partially exists today without a single dedicated editor SKU.",
+      "id": "mod.branding",
+      "kind": "major",
+      "name": "Online / App Branding",
+      "description": "Logo, theme colors, banners, menu highlights for customer-facing surfaces."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "expenses:*",
+        "HTTP /api/expense-*"
+      ],
+      "related_jobs": [],
+      "database_tables": [
+        "expenses",
+        "expense_*",
+        "owner_fundings"
+      ],
+      "dependencies": [
+        "core.auth",
+        "app.accounting"
+      ],
+      "admin_menu": "(expenses via accounting/nav)",
+      "appears_in": [
+        "/expenses/",
+        "main-nav expenses"
+      ],
+      "notes": "",
+      "id": "app.expenses",
+      "kind": "major",
+      "name": "Expense Capture",
+      "description": "Mobile expense/waste submission portal + Admin expenses."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "studio platform APIs via RPC/settings"
+      ],
+      "related_jobs": [],
+      "database_tables": [
+        "flyer_templates",
+        "promotion_flyers",
+        "signage media overlap"
+      ],
+      "dependencies": [
+        "core.catalog",
+        "mod.combos"
+      ],
+      "admin_menu": "menu-builder / promo-video-builder",
+      "appears_in": [
+        "/studio/",
+        "studio-builder mode"
+      ],
+      "notes": "",
+      "id": "app.studio",
+      "kind": "major",
+      "name": "Menu & Promo Studio",
+      "description": "Staff studio login into menu builder and promo video tools."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "referral:*"
+      ],
+      "related_jobs": [],
+      "database_tables": [
+        "mkt_referral_*",
+        "mkt_agent_*",
+        "marketing_*"
+      ],
+      "dependencies": [
+        "mod.referral"
+      ],
+      "admin_menu": "referral-dept",
+      "appears_in": [
+        "/referral-app.html",
+        "mode referral"
+      ],
+      "notes": "",
+      "id": "app.referral_agent",
+      "kind": "major",
+      "name": "Referral Agent App",
+      "description": "Agent-facing referral registration and earnings."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "referral:*"
+      ],
+      "related_jobs": [],
+      "database_tables": [
+        "mkt_commissions",
+        "mkt_commission_*",
+        "mkt_agent_wallets"
+      ],
+      "dependencies": [
+        "mod.referral"
+      ],
+      "admin_menu": "referral-dept",
+      "appears_in": [
+        "/referral-commission-app.html",
+        "mode referral-commission"
+      ],
+      "notes": "",
+      "id": "app.referral_commission",
+      "kind": "major",
+      "name": "Referral & Commission Desk",
+      "description": "Owner/manager commission department app."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "referral:*"
+      ],
+      "related_jobs": [],
+      "database_tables": [
+        "mkt_*",
+        "marketing_*"
+      ],
+      "dependencies": [],
+      "admin_menu": "referral-dept",
+      "appears_in": [
+        "Admin referral-dept",
+        "both referral apps"
+      ],
+      "notes": "",
+      "id": "mod.referral",
+      "kind": "major",
+      "name": "Referral & Commission (platform)",
+      "description": "Referral rules, agents, wallets, fraud, audits — Admin + apps."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "signage:*",
+        "HTTP /signage-media/*",
+        "/signage-sse/*"
+      ],
+      "related_jobs": [
+        "signage SSE push",
+        "schedule matching"
+      ],
+      "database_tables": [
+        "signage_*"
+      ],
+      "dependencies": [
+        "core.auth"
+      ],
+      "admin_menu": "digital-signage / business-modules overview",
+      "appears_in": [
+        "/signage/"
+      ],
+      "notes": "",
+      "id": "mod.signage",
+      "kind": "major",
+      "name": "Digital Signage Centre",
+      "description": "Manage screens, media, playlists, schedules, pairing."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "signage:requestPairing",
+        "signage:pairingStatus",
+        "SSE"
+      ],
+      "related_jobs": [],
+      "database_tables": [
+        "signage_devices",
+        "signage_device_pairings"
+      ],
+      "dependencies": [
+        "mod.signage"
+      ],
+      "admin_menu": "digital-signage (approve pairing)",
+      "appears_in": [
+        "/signage-player/"
+      ],
+      "notes": "Usually bundled with Signage Centre.",
+      "id": "mod.signage_player",
+      "kind": "major",
+      "name": "Signage TV Player",
+      "description": "Full-screen player; pairing code UX."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "kiosk:*",
+        "HTTP /kiosk-media/*"
+      ],
+      "related_jobs": [],
+      "database_tables": [
+        "kiosk_*"
+      ],
+      "dependencies": [
+        "core.catalog",
+        "mod.online"
+      ],
+      "admin_menu": "business-modules → kiosk",
+      "appears_in": [
+        "/kiosk/"
+      ],
+      "notes": "",
+      "id": "mod.kiosk",
+      "kind": "major",
+      "name": "Self-Service Kiosk",
+      "description": "In-store customer kiosk ordering with pairing."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "drive-thru platform (biz modules)"
+      ],
+      "related_jobs": [],
+      "database_tables": [
+        "drive_thru_*"
+      ],
+      "dependencies": [
+        "core.catalog",
+        "app.pos"
+      ],
+      "admin_menu": "business-modules → drive-thru",
+      "appears_in": [
+        "/drive-thru/"
+      ],
+      "notes": "",
+      "id": "mod.drive_thru",
+      "kind": "major",
+      "name": "Drive-Thru Station",
+      "description": "Lane station UI, tokens, audio signals."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "investor:*"
+      ],
+      "related_jobs": [],
+      "database_tables": [
+        "investors",
+        "investor_*",
+        "investment_*"
+      ],
+      "dependencies": [
+        "core.auth"
+      ],
+      "admin_menu": "business-modules → investors",
+      "appears_in": [
+        "/investor/"
+      ],
+      "notes": "",
+      "id": "mod.investor",
+      "kind": "major",
+      "name": "Investor Portal",
+      "description": "Investor login and equity/investment views."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "release:*",
+        "HTTP /api/mobile-releases.json"
+      ],
+      "related_jobs": [],
+      "database_tables": [
+        "release_* (centre users)"
+      ],
+      "dependencies": [],
+      "admin_menu": "business-modules → release-users",
+      "appears_in": [
+        "/release/"
+      ],
+      "notes": "",
+      "id": "mod.release",
+      "kind": "major",
+      "name": "App Release Centre",
+      "description": "Release notes / rollout centre portal."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "meeting:*"
+      ],
+      "related_jobs": [
+        "optional AI transcription if API key set"
+      ],
+      "database_tables": [
+        "meetings",
+        "meeting_*"
+      ],
+      "dependencies": [],
+      "admin_menu": "business-modules → meeting-users",
+      "appears_in": [
+        "/meeting/"
+      ],
+      "notes": "",
+      "id": "mod.meeting",
+      "kind": "major",
+      "name": "AI Meeting Centre",
+      "description": "Meeting recording, notes, transcripts portal."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "radio:*",
+        "HTTP /radio-media/*"
+      ],
+      "related_jobs": [
+        "scheduled adverts (radio_advert_jobs)"
+      ],
+      "database_tables": [
+        "radio_*"
+      ],
+      "dependencies": [
+        "mod.radio_studio"
+      ],
+      "admin_menu": "radio",
+      "appears_in": [
+        "/radio/",
+        "/radio/:slug/"
+      ],
+      "notes": "",
+      "id": "mod.radio",
+      "kind": "major",
+      "name": "Connection Radio (public)",
+      "description": "Public listen/chat/call/order radio site."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "radio:*"
+      ],
+      "related_jobs": [],
+      "database_tables": [
+        "radio_broadcast_state",
+        "radio_media_files",
+        "radio_playlists"
+      ],
+      "dependencies": [],
+      "admin_menu": "radio",
+      "appears_in": [
+        "/radio-studio/"
+      ],
+      "notes": "",
+      "id": "mod.radio_studio",
+      "kind": "major",
+      "name": "Radio Studio",
+      "description": "Live mic, music, announcements, GO LIVE."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "kitchen:*",
+        "tables:*"
+      ],
+      "related_jobs": [],
+      "database_tables": [
+        "kitchen_orders",
+        "kitchen_order_items"
+      ],
+      "dependencies": [
+        "app.pos",
+        "mod.restaurant"
+      ],
+      "admin_menu": "restaurant (main-nav)",
+      "appears_in": [
+        "/kitchen-display.html",
+        "Restaurant → Kitchen"
+      ],
+      "notes": "",
+      "id": "mod.kds",
+      "kind": "major",
+      "name": "Kitchen Display (KDS)",
+      "description": "Full-screen kitchen order queue."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "customer:openDisplay"
+      ],
+      "related_jobs": [],
+      "database_tables": [
+        "kitchen_orders"
+      ],
+      "dependencies": [
+        "mod.kds",
+        "app.pos"
+      ],
+      "admin_menu": null,
+      "appears_in": [
+        "/customer-display.html",
+        "Restaurant → Customer"
+      ],
+      "notes": "",
+      "id": "mod.customer_display",
+      "kind": "major",
+      "name": "Customer Display",
+      "description": "Guest-facing order progress board."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "tables:*"
+      ],
+      "related_jobs": [],
+      "database_tables": [
+        "kitchen_orders"
+      ],
+      "dependencies": [
+        "app.pos"
+      ],
+      "admin_menu": null,
+      "appears_in": [
+        "main-nav restaurant"
+      ],
+      "notes": "",
+      "id": "mod.restaurant",
+      "kind": "major",
+      "name": "Restaurant / Tables",
+      "description": "Table service, in-app KDS/customer tabs."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "cc:*",
+        "whatsapp:*",
+        "HTTP /api/webhooks/whatsapp"
+      ],
+      "related_jobs": [
+        "cc_queue processing",
+        "whatsapp webhook ingest",
+        "scheduled campaigns"
+      ],
+      "database_tables": [
+        "cc_*",
+        "comm_*",
+        "whatsapp_*"
+      ],
+      "dependencies": [],
+      "admin_menu": "communication-center / whatsapp",
+      "appears_in": [
+        "Admin communication-center",
+        "main-nav whatsapp"
+      ],
+      "notes": "",
+      "id": "mod.communication",
+      "kind": "major",
+      "name": "Communication Center",
+      "description": "Multi-channel messaging: WhatsApp, SMS, email, social, campaigns."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "loyalty:*",
+        "giftcards:*",
+        "rewards:*"
+      ],
+      "related_jobs": [],
+      "database_tables": [
+        "loyalty_*",
+        "gift_cards",
+        "gift_card_transactions",
+        "first_online_gift_*",
+        "customer_reward_*"
+      ],
+      "dependencies": [
+        "app.pos",
+        "mod.online"
+      ],
+      "admin_menu": "loyalty",
+      "appears_in": [
+        "Admin loyalty",
+        "main-nav giftcards",
+        "POS checkout"
+      ],
+      "notes": "",
+      "id": "mod.loyalty",
+      "kind": "major",
+      "name": "Loyalty & Gift Cards",
+      "description": "Points, gift cards, first-online gift, rewards."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "combos:*",
+        "vouchers:*"
+      ],
+      "related_jobs": [],
+      "database_tables": [
+        "combos",
+        "combo_items",
+        "combo_sale_log",
+        "product_promo_requests"
+      ],
+      "dependencies": [
+        "core.catalog",
+        "app.pos"
+      ],
+      "admin_menu": "combos",
+      "appears_in": [
+        "Admin combos"
+      ],
+      "notes": "",
+      "id": "mod.combos",
+      "kind": "major",
+      "name": "Combos & Promos",
+      "description": "Combo deals, promo approvals, recipe promos."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "jobs:*"
+      ],
+      "related_jobs": [],
+      "database_tables": [
+        "job_postings",
+        "job_candidates"
+      ],
+      "dependencies": [
+        "mod.hr"
+      ],
+      "admin_menu": "recruitment",
+      "appears_in": [
+        "/apply",
+        "mode apply"
+      ],
+      "notes": "",
+      "id": "mod.careers",
+      "kind": "major",
+      "name": "Careers / Job Apply",
+      "description": "Public job application + recruitment pipeline."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "file:*",
+        "document hub service"
+      ],
+      "related_jobs": [],
+      "database_tables": [
+        "document_assets",
+        "financial_documents"
+      ],
+      "dependencies": [],
+      "admin_menu": null,
+      "appears_in": [
+        "main-nav document-hub"
+      ],
+      "notes": "",
+      "id": "mod.document_hub",
+      "kind": "major",
+      "name": "Document Hub",
+      "description": "Central documents store for shop ops."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "ops:*",
+        "cashup:*"
+      ],
+      "related_jobs": [],
+      "database_tables": [
+        "daily_checklist_*",
+        "opening_checklist_templates",
+        "closing_checklist_templates",
+        "compliance_*"
+      ],
+      "dependencies": [],
+      "admin_menu": "opscompliance",
+      "appears_in": [
+        "Admin opscompliance",
+        "main-nav operations"
+      ],
+      "notes": "",
+      "id": "mod.ops_compliance",
+      "kind": "major",
+      "name": "Operations & Compliance",
+      "description": "Opening/closing checklists, signed rules, ops compliance."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "automation:*"
+      ],
+      "related_jobs": [
+        "rule evaluation (event-driven)"
+      ],
+      "database_tables": [
+        "automation_rules"
+      ],
+      "dependencies": [],
+      "admin_menu": "automation",
+      "appears_in": [
+        "Admin automation"
+      ],
+      "notes": "",
+      "id": "mod.automation",
+      "kind": "major",
+      "name": "Automation Rules",
+      "description": "Configurable automation rules engine."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "donations:*"
+      ],
+      "related_jobs": [],
+      "database_tables": [
+        "donations",
+        "donation_documents"
+      ],
+      "dependencies": [],
+      "admin_menu": null,
+      "appears_in": [
+        "Admin/ops surfaces"
+      ],
+      "notes": "Feature-sized; confirm if sold separately.",
+      "id": "mod.donations",
+      "kind": "feature",
+      "name": "Donations",
+      "description": "Donation recording/approvals feature."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "hr/employee-of-month"
+      ],
+      "related_jobs": [],
+      "database_tables": [
+        "employee_of_month",
+        "employee_of_month_scores"
+      ],
+      "dependencies": [
+        "mod.hr"
+      ],
+      "admin_menu": "employee-of-month",
+      "appears_in": [
+        "Admin employee-of-month"
+      ],
+      "notes": "",
+      "id": "mod.employee_of_month",
+      "kind": "feature",
+      "name": "Employee of the Month",
+      "description": "Awards and scoring."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "credit:*",
+        "taken:*"
+      ],
+      "related_jobs": [],
+      "database_tables": [
+        "customer_credit_ledger"
+      ],
+      "dependencies": [
+        "app.pos",
+        "core.customers_suppliers"
+      ],
+      "admin_menu": "onaccount / taken-orders",
+      "appears_in": [
+        "Admin onaccount / taken-orders"
+      ],
+      "notes": "",
+      "id": "mod.on_account",
+      "kind": "feature",
+      "name": "On Account & Taken Orders",
+      "description": "Customer credit accounts and unpaid/taken orders."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "layby:*",
+        "quotes:*"
+      ],
+      "related_jobs": [],
+      "database_tables": [
+        "laybyes",
+        "layby_*",
+        "quotes",
+        "quote_items"
+      ],
+      "dependencies": [
+        "app.pos"
+      ],
+      "admin_menu": null,
+      "appears_in": [
+        "main-nav layby/quotes"
+      ],
+      "notes": "",
+      "id": "mod.layby_quotes",
+      "kind": "feature",
+      "name": "Lay-Bye & Quotes",
+      "description": "Lay-bye plans and quotes conversion."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "po:*"
+      ],
+      "related_jobs": [],
+      "database_tables": [
+        "purchase_orders",
+        "purchase_order_items",
+        "po_receipts"
+      ],
+      "dependencies": [
+        "core.customers_suppliers",
+        "core.catalog"
+      ],
+      "admin_menu": null,
+      "appears_in": [
+        "main-nav purchase-orders"
+      ],
+      "notes": "",
+      "id": "mod.purchase_orders",
+      "kind": "feature",
+      "name": "Purchase Orders",
+      "description": "PO create/receive flows."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "reports:*",
+        "analytics:*"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "app.pos"
+      ],
+      "admin_menu": "analytics / saleexplorer / discount-report",
+      "appears_in": [
+        "main-nav reports",
+        "Admin analytics"
+      ],
+      "notes": "Often bundled with Admin+POS.",
+      "id": "mod.reports",
+      "kind": "feature",
+      "name": "Reports suite",
+      "description": "Sales/profit/stock and many operational reports."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "web:*"
+      ],
+      "related_jobs": [],
+      "database_tables": [
+        "web_visitor_*",
+        "customer_issue_reports"
+      ],
+      "dependencies": [
+        "mod.online"
+      ],
+      "admin_menu": "customer-reports",
+      "appears_in": [
+        "Admin customer-reports"
+      ],
+      "notes": "",
+      "id": "mod.web_analytics",
+      "kind": "feature",
+      "name": "Web / Customer analytics",
+      "description": "Visitor events and customer issue reports for online."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": false,
+      "related_apis": [
+        "biz module settings"
+      ],
+      "related_jobs": [],
+      "database_tables": [
+        "biz_module_settings"
+      ],
+      "dependencies": [
+        "mod.investor",
+        "mod.release",
+        "mod.meeting",
+        "mod.kiosk",
+        "mod.drive_thru"
+      ],
+      "admin_menu": "business-modules",
+      "appears_in": [
+        "Admin business-modules"
+      ],
+      "notes": "Host UI; sell children individually or as a pack.",
+      "id": "mod.biz_modules_pack",
+      "kind": "major",
+      "name": "Business Modules (pack host)",
+      "description": "Admin host for Investor/Release/Meeting/Kiosk/Drive-Thru toggles."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": false,
+      "related_apis": [
+        "Admin UI section overview"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "shared with app.admin"
+      ],
+      "admin_menu": "overview",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Treat as part of core Admin / shared; do not sell alone.",
+      "id": "admin.overview",
+      "kind": "admin_submodule",
+      "name": "Business Dashboard",
+      "description": "Hub dashboard; links into modules."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "Admin UI section salesmgmt"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "app.pos"
+      ],
+      "admin_menu": "salesmgmt",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Candidate to hide/show via package.",
+      "id": "admin.salesmgmt",
+      "kind": "admin_submodule",
+      "name": "Sales Management",
+      "description": "Sales ops configuration and management."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "Admin UI section pos-menu"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "app.pos",
+        "mod.combos"
+      ],
+      "admin_menu": "pos-menu",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Candidate to hide/show via package.",
+      "id": "admin.pos-menu",
+      "kind": "admin_submodule",
+      "name": "POS Menu & Promos",
+      "description": "POS menu/promo configuration."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "Admin UI section saleexplorer"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "app.pos",
+        "mod.reports"
+      ],
+      "admin_menu": "saleexplorer",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Candidate to hide/show via package.",
+      "id": "admin.saleexplorer",
+      "kind": "admin_submodule",
+      "name": "Sales Explorer",
+      "description": "Explore historical sales."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "Admin UI section soldproducts"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "mod.reports"
+      ],
+      "admin_menu": "soldproducts",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Candidate to hide/show via package.",
+      "id": "admin.soldproducts",
+      "kind": "admin_submodule",
+      "name": "Sold Products",
+      "description": "Sold product analytics."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "Admin UI section returnsmgmt"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "app.pos"
+      ],
+      "admin_menu": "returnsmgmt",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Candidate to hide/show via package.",
+      "id": "admin.returnsmgmt",
+      "kind": "admin_submodule",
+      "name": "Returns",
+      "description": "Returns management admin."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": false,
+      "related_apis": [
+        "Admin UI section activity"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "core.audit_security"
+      ],
+      "admin_menu": "activity",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Treat as part of core Admin / shared; do not sell alone.",
+      "id": "admin.activity",
+      "kind": "admin_submodule",
+      "name": "Activity Log",
+      "description": "Operational activity view."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "Admin UI section exceptions"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "app.pos"
+      ],
+      "admin_menu": "exceptions",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Candidate to hide/show via package.",
+      "id": "admin.exceptions",
+      "kind": "admin_submodule",
+      "name": "Exceptions",
+      "description": "Exception monitoring."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": false,
+      "related_apis": [
+        "Admin UI section alerts"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "core.sync_notify"
+      ],
+      "admin_menu": "alerts",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Treat as part of core Admin / shared; do not sell alone.",
+      "id": "admin.alerts",
+      "kind": "admin_submodule",
+      "name": "Alerts Center",
+      "description": "Alert centre configuration/view."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "Admin UI section dailyclose"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "mod.ops_compliance"
+      ],
+      "admin_menu": "dailyclose",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Candidate to hide/show via package.",
+      "id": "admin.dailyclose",
+      "kind": "admin_submodule",
+      "name": "Daily Closing",
+      "description": "Daily closing workflows."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "Admin UI section discount-report"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "mod.reports"
+      ],
+      "admin_menu": "discount-report",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Candidate to hide/show via package.",
+      "id": "admin.discount-report",
+      "kind": "admin_submodule",
+      "name": "Discount Report",
+      "description": "Discount reporting."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": false,
+      "related_apis": [
+        "Admin UI section printer"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "core.device_print"
+      ],
+      "admin_menu": "printer",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Treat as part of core Admin / shared; do not sell alone.",
+      "id": "admin.printer",
+      "kind": "admin_submodule",
+      "name": "Printer Setup",
+      "description": "Printer configuration."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": false,
+      "related_apis": [
+        "Admin UI section payments"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "core.payments"
+      ],
+      "admin_menu": "payments",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Treat as part of core Admin / shared; do not sell alone.",
+      "id": "admin.payments",
+      "kind": "admin_submodule",
+      "name": "Payment Methods",
+      "description": "Tenders and gateways."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": false,
+      "related_apis": [
+        "Admin UI section receipt"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "core.device_print"
+      ],
+      "admin_menu": "receipt",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Treat as part of core Admin / shared; do not sell alone.",
+      "id": "admin.receipt",
+      "kind": "admin_submodule",
+      "name": "Receipt Designer",
+      "description": "Receipt layout."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": false,
+      "related_apis": [
+        "Admin UI section security"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "core.audit_security"
+      ],
+      "admin_menu": "security",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Treat as part of core Admin / shared; do not sell alone.",
+      "id": "admin.security",
+      "kind": "admin_submodule",
+      "name": "Security",
+      "description": "Security settings."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "Admin UI section quotes"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "mod.layby_quotes"
+      ],
+      "admin_menu": "quotes",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Candidate to hide/show via package.",
+      "id": "admin.quotes",
+      "kind": "admin_submodule",
+      "name": "Quotes",
+      "description": "Quotes admin."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": false,
+      "related_apis": [
+        "Admin UI section permissions"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "core.users_permissions"
+      ],
+      "admin_menu": "permissions",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Treat as part of core Admin / shared; do not sell alone.",
+      "id": "admin.permissions",
+      "kind": "admin_submodule",
+      "name": "Permissions",
+      "description": "Role permissions."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "Admin UI section sales-targets"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "app.pos"
+      ],
+      "admin_menu": "sales-targets",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Candidate to hide/show via package.",
+      "id": "admin.sales-targets",
+      "kind": "admin_submodule",
+      "name": "Sales Targets",
+      "description": "Target setting."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "Admin UI section top-customers"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "core.customers_suppliers"
+      ],
+      "admin_menu": "top-customers",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Candidate to hide/show via package.",
+      "id": "admin.top-customers",
+      "kind": "admin_submodule",
+      "name": "Top Customers",
+      "description": "Customer ranking."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": false,
+      "related_apis": [
+        "Admin UI section approvals"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "core.settings"
+      ],
+      "admin_menu": "approvals",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Treat as part of core Admin / shared; do not sell alone.",
+      "id": "admin.approvals",
+      "kind": "admin_submodule",
+      "name": "Settings Approvals",
+      "description": "Pending settings change approvals."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": false,
+      "related_apis": [
+        "Admin UI section tax"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "core.settings"
+      ],
+      "admin_menu": "tax",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Treat as part of core Admin / shared; do not sell alone.",
+      "id": "admin.tax",
+      "kind": "admin_submodule",
+      "name": "Tax & Currency",
+      "description": "Tax/currency settings."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "Admin UI section tax-hub"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "app.accounting"
+      ],
+      "admin_menu": "tax-hub",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Candidate to hide/show via package.",
+      "id": "admin.tax-hub",
+      "kind": "admin_submodule",
+      "name": "Tax Calculations",
+      "description": "Tax calculation hub."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": false,
+      "related_apis": [
+        "Admin UI section cashiers"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "core.users_permissions"
+      ],
+      "admin_menu": "cashiers",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Treat as part of core Admin / shared; do not sell alone.",
+      "id": "admin.cashiers",
+      "kind": "admin_submodule",
+      "name": "Cashiers & Managers",
+      "description": "Cashier/manager user ops."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": false,
+      "related_apis": [
+        "Admin UI section shifts"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "core.settings",
+        "app.pos"
+      ],
+      "admin_menu": "shifts",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Treat as part of core Admin / shared; do not sell alone.",
+      "id": "admin.shifts",
+      "kind": "admin_submodule",
+      "name": "Shift Management",
+      "description": "Shift rules and management."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": false,
+      "related_apis": [
+        "Admin UI section operating"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "core.settings"
+      ],
+      "admin_menu": "operating",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Treat as part of core Admin / shared; do not sell alone.",
+      "id": "admin.operating",
+      "kind": "admin_submodule",
+      "name": "Operating Hours",
+      "description": "Store hours."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": false,
+      "related_apis": [
+        "Admin UI section cashdrawer"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "core.device_print"
+      ],
+      "admin_menu": "cashdrawer",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Treat as part of core Admin / shared; do not sell alone.",
+      "id": "admin.cashdrawer",
+      "kind": "admin_submodule",
+      "name": "Cash Drawer",
+      "description": "Cash drawer settings."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "Admin UI section analytics"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "mod.reports"
+      ],
+      "admin_menu": "analytics",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Candidate to hide/show via package.",
+      "id": "admin.analytics",
+      "kind": "admin_submodule",
+      "name": "Sales Analytics",
+      "description": "Sales analytics dashboards."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": false,
+      "related_apis": [
+        "Admin UI section inventory"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "core.catalog"
+      ],
+      "admin_menu": "inventory",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Treat as part of core Admin / shared; do not sell alone.",
+      "id": "admin.inventory",
+      "kind": "admin_submodule",
+      "name": "Inventory",
+      "description": "Inventory admin."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "Admin UI section discounts"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "app.pos"
+      ],
+      "admin_menu": "discounts",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Candidate to hide/show via package.",
+      "id": "admin.discounts",
+      "kind": "admin_submodule",
+      "name": "Discounts",
+      "description": "Discount rules."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "Admin UI section loyalty"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "mod.loyalty"
+      ],
+      "admin_menu": "loyalty",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Candidate to hide/show via package.",
+      "id": "admin.loyalty",
+      "kind": "admin_submodule",
+      "name": "Loyalty & Gift Cards",
+      "description": "Loyalty admin."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": false,
+      "related_apis": [
+        "Admin UI section importexport"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "core.catalog"
+      ],
+      "admin_menu": "importexport",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Treat as part of core Admin / shared; do not sell alone.",
+      "id": "admin.importexport",
+      "kind": "admin_submodule",
+      "name": "Import & Export",
+      "description": "Data import/export."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "Admin UI section customize"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "mod.branding",
+        "core.settings"
+      ],
+      "admin_menu": "customize",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Candidate to hide/show via package.",
+      "id": "admin.customize",
+      "kind": "admin_submodule",
+      "name": "Customization",
+      "description": "Theme/branding basics."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": false,
+      "related_apis": [
+        "Admin UI section branches"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "core.branches"
+      ],
+      "admin_menu": "branches",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Treat as part of core Admin / shared; do not sell alone.",
+      "id": "admin.branches",
+      "kind": "admin_submodule",
+      "name": "Branches",
+      "description": "Branch setup."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "Admin UI section online-orders"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "mod.online"
+      ],
+      "admin_menu": "online-orders",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Candidate to hide/show via package.",
+      "id": "admin.online-orders",
+      "kind": "admin_submodule",
+      "name": "Online Orders",
+      "description": "Online ordering config."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "Admin UI section referral-dept"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "mod.referral"
+      ],
+      "admin_menu": "referral-dept",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Candidate to hide/show via package.",
+      "id": "admin.referral-dept",
+      "kind": "admin_submodule",
+      "name": "Referral & Commission",
+      "description": "Referral department admin."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "Admin UI section customer-reports"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "mod.web_analytics"
+      ],
+      "admin_menu": "customer-reports",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Candidate to hide/show via package.",
+      "id": "admin.customer-reports",
+      "kind": "admin_submodule",
+      "name": "Customer Reports",
+      "description": "Online customer reports."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "Admin UI section business-modules"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "mod.biz_modules_pack"
+      ],
+      "admin_menu": "business-modules",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Candidate to hide/show via package.",
+      "id": "admin.business-modules",
+      "kind": "admin_submodule",
+      "name": "Business Modules",
+      "description": "Biz modules host."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "Admin UI section digital-signage"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "mod.signage"
+      ],
+      "admin_menu": "digital-signage",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Candidate to hide/show via package.",
+      "id": "admin.digital-signage",
+      "kind": "admin_submodule",
+      "name": "Digital Signage",
+      "description": "Signage admin."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "Admin UI section mobile-app"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "app.manager"
+      ],
+      "admin_menu": "mobile-app",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Candidate to hide/show via package.",
+      "id": "admin.mobile-app",
+      "kind": "admin_submodule",
+      "name": "Mobile App Users",
+      "description": "Mobile app user mgmt."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "Admin UI section business-manager"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "app.manager"
+      ],
+      "admin_menu": "business-manager",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Candidate to hide/show via package.",
+      "id": "admin.business-manager",
+      "kind": "admin_submodule",
+      "name": "Business Manager",
+      "description": "Embed/link manager app."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": false,
+      "related_apis": [
+        "Admin UI section device"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "core.device_print"
+      ],
+      "admin_menu": "device",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Treat as part of core Admin / shared; do not sell alone.",
+      "id": "admin.device",
+      "kind": "admin_submodule",
+      "name": "Device Settings",
+      "description": "Device settings."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": false,
+      "related_apis": [
+        "Admin UI section backup"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "core.audit_security"
+      ],
+      "admin_menu": "backup",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Treat as part of core Admin / shared; do not sell alone.",
+      "id": "admin.backup",
+      "kind": "admin_submodule",
+      "name": "Backup & Restore",
+      "description": "Backup tools."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "Admin UI section opscompliance"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "mod.ops_compliance"
+      ],
+      "admin_menu": "opscompliance",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Candidate to hide/show via package.",
+      "id": "admin.opscompliance",
+      "kind": "admin_submodule",
+      "name": "Operations & Compliance",
+      "description": "Ops compliance."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "Admin UI section combos"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "mod.combos"
+      ],
+      "admin_menu": "combos",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Candidate to hide/show via package.",
+      "id": "admin.combos",
+      "kind": "admin_submodule",
+      "name": "Combos & Promos",
+      "description": "Combos admin."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "Admin UI section menu-builder"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "app.studio"
+      ],
+      "admin_menu": "menu-builder",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Candidate to hide/show via package.",
+      "id": "admin.menu-builder",
+      "kind": "admin_submodule",
+      "name": "Menu Builder",
+      "description": "Menu poster builder."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "Admin UI section promo-video-builder"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "app.studio"
+      ],
+      "admin_menu": "promo-video-builder",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Candidate to hide/show via package.",
+      "id": "admin.promo-video-builder",
+      "kind": "admin_submodule",
+      "name": "Promo Video Builder",
+      "description": "Promo video studio."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "Admin UI section communication-center"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "mod.communication"
+      ],
+      "admin_menu": "communication-center",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Candidate to hide/show via package.",
+      "id": "admin.communication-center",
+      "kind": "admin_submodule",
+      "name": "Communication Center",
+      "description": "Comms hub."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "Admin UI section radio"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "mod.radio"
+      ],
+      "admin_menu": "radio",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Candidate to hide/show via package.",
+      "id": "admin.radio",
+      "kind": "admin_submodule",
+      "name": "Radio",
+      "description": "Radio admin."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "Admin UI section recipe"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "app.recipe"
+      ],
+      "admin_menu": "recipe",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Candidate to hide/show via package.",
+      "id": "admin.recipe",
+      "kind": "admin_submodule",
+      "name": "Recipe & Production",
+      "description": "Recipe admin."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "Admin UI section staffhr"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "app.staff",
+        "mod.hr"
+      ],
+      "admin_menu": "staffhr",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Candidate to hide/show via package.",
+      "id": "admin.staffhr",
+      "kind": "admin_submodule",
+      "name": "Staff & HR",
+      "description": "Staff HR admin tabs."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "Admin UI section hr-workspace"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "mod.hr",
+        "app.hr"
+      ],
+      "admin_menu": "hr-workspace",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Candidate to hide/show via package.",
+      "id": "admin.hr-workspace",
+      "kind": "admin_submodule",
+      "name": "HR, Payroll & Documents",
+      "description": "HR workspace."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "Admin UI section hr-approvals"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "mod.hr"
+      ],
+      "admin_menu": "hr-approvals",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Candidate to hide/show via package.",
+      "id": "admin.hr-approvals",
+      "kind": "admin_submodule",
+      "name": "HR Approvals",
+      "description": "HR approval queue."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "Admin UI section accounting-workspace"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "app.accounting"
+      ],
+      "admin_menu": "accounting-workspace",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Candidate to hide/show via package.",
+      "id": "admin.accounting-workspace",
+      "kind": "admin_submodule",
+      "name": "Bookkeeping & Accounting",
+      "description": "Accounting admin."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "Admin UI section staffportal"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "app.staff"
+      ],
+      "admin_menu": "staffportal",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Candidate to hide/show via package.",
+      "id": "admin.staffportal",
+      "kind": "admin_submodule",
+      "name": "Staff Portal",
+      "description": "Staff portal config."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "Admin UI section onaccount"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "mod.on_account"
+      ],
+      "admin_menu": "onaccount",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Candidate to hide/show via package.",
+      "id": "admin.onaccount",
+      "kind": "admin_submodule",
+      "name": "On Account",
+      "description": "On-account admin."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "Admin UI section taken-orders"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "mod.on_account"
+      ],
+      "admin_menu": "taken-orders",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Candidate to hide/show via package.",
+      "id": "admin.taken-orders",
+      "kind": "admin_submodule",
+      "name": "Taken / Unpaid Orders",
+      "description": "Taken orders admin."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "Admin UI section hrcontracts"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "mod.hr"
+      ],
+      "admin_menu": "hrcontracts",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Candidate to hide/show via package.",
+      "id": "admin.hrcontracts",
+      "kind": "admin_submodule",
+      "name": "Contracts & Probation",
+      "description": "Contracts admin."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "Admin UI section recruitment"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "mod.careers"
+      ],
+      "admin_menu": "recruitment",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Candidate to hide/show via package.",
+      "id": "admin.recruitment",
+      "kind": "admin_submodule",
+      "name": "Recruitment",
+      "description": "Recruitment admin."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "Admin UI section delivery-dept"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "app.delivery"
+      ],
+      "admin_menu": "delivery-dept",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Candidate to hide/show via package.",
+      "id": "admin.delivery-dept",
+      "kind": "admin_submodule",
+      "name": "Deliveries",
+      "description": "Delivery admin."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "Admin UI section payroll"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "mod.hr",
+        "app.hr"
+      ],
+      "admin_menu": "payroll",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Candidate to hide/show via package.",
+      "id": "admin.payroll",
+      "kind": "admin_submodule",
+      "name": "Payroll & Compliance",
+      "description": "Payroll admin."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "Admin UI section employee-of-month"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "mod.employee_of_month"
+      ],
+      "admin_menu": "employee-of-month",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Candidate to hide/show via package.",
+      "id": "admin.employee-of-month",
+      "kind": "admin_submodule",
+      "name": "Employee of Month",
+      "description": "EOM admin."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": false,
+      "related_apis": [
+        "Admin UI section database"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "core.audit_security"
+      ],
+      "admin_menu": "database",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Treat as part of core Admin / shared; do not sell alone.",
+      "id": "admin.database",
+      "kind": "admin_submodule",
+      "name": "Database Manager",
+      "description": "DB tools."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": false,
+      "related_apis": [
+        "Admin UI section system-health"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "core.audit_security"
+      ],
+      "admin_menu": "system-health",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Treat as part of core Admin / shared; do not sell alone.",
+      "id": "admin.system-health",
+      "kind": "admin_submodule",
+      "name": "System Health",
+      "description": "Health/storage."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "Admin UI section automation"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "mod.automation"
+      ],
+      "admin_menu": "automation",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Candidate to hide/show via package.",
+      "id": "admin.automation",
+      "kind": "admin_submodule",
+      "name": "Automation Rules",
+      "description": "Automations."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": false,
+      "related_apis": [
+        "Admin UI section customfields"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "core.settings"
+      ],
+      "admin_menu": "customfields",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Treat as part of core Admin / shared; do not sell alone.",
+      "id": "admin.customfields",
+      "kind": "admin_submodule",
+      "name": "Custom Fields",
+      "description": "Custom fields."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": false,
+      "related_apis": [
+        "Admin UI section formats"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "core.settings"
+      ],
+      "admin_menu": "formats",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Treat as part of core Admin / shared; do not sell alone.",
+      "id": "admin.formats",
+      "kind": "admin_submodule",
+      "name": "Formats & Numbering",
+      "description": "Number formats."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": false,
+      "related_apis": [
+        "Admin UI section developer"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "core.audit_security"
+      ],
+      "admin_menu": "developer",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Treat as part of core Admin / shared; do not sell alone.",
+      "id": "admin.developer",
+      "kind": "admin_submodule",
+      "name": "Developer Mode",
+      "description": "Dev/license tools."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": false,
+      "related_apis": [],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "mod.loyalty"
+      ],
+      "admin_menu": "loyalty/points",
+      "appears_in": [
+        "Admin loyalty → points"
+      ],
+      "notes": "Sub-feature of loyalty.",
+      "id": "feat.loyalty.points",
+      "kind": "feature",
+      "name": "Loyalty Points",
+      "description": "Points earn/burn."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "mod.loyalty",
+        "mod.online"
+      ],
+      "admin_menu": null,
+      "appears_in": [
+        "Admin loyalty → first-gift"
+      ],
+      "notes": "",
+      "id": "feat.loyalty.first_gift",
+      "kind": "feature",
+      "name": "First Online Customer Gift",
+      "description": "First-order gift campaigns."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": false,
+      "related_apis": [],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "app.delivery",
+        "app.driver"
+      ],
+      "admin_menu": null,
+      "appears_in": [
+        "Admin delivery tabs"
+      ],
+      "notes": "",
+      "id": "feat.delivery.drivers",
+      "kind": "feature",
+      "name": "Driver pool & payouts",
+      "description": "Driver management and payout claims."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "app.hr"
+      ],
+      "admin_menu": null,
+      "appears_in": [
+        "Admin payroll"
+      ],
+      "notes": "May be sold as HR Compliance add-on.",
+      "id": "feat.hr.payroll_sars",
+      "kind": "feature",
+      "name": "Payroll SARS compliance (UIF/PAYE/SDL/COIDA)",
+      "description": "Compliance tabs inside payroll."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": false,
+      "related_apis": [],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "mod.signage"
+      ],
+      "admin_menu": null,
+      "appears_in": [
+        "Signage Centre"
+      ],
+      "notes": "",
+      "id": "feat.signage.schedules",
+      "kind": "feature",
+      "name": "Signage schedules & emergency",
+      "description": "Scheduling and emergency announce."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [],
+      "related_jobs": [
+        "external AI API if keyed"
+      ],
+      "database_tables": [],
+      "dependencies": [
+        "mod.meeting"
+      ],
+      "admin_menu": null,
+      "appears_in": [
+        "Meeting Centre"
+      ],
+      "notes": "Requires server API key; confirm packaging.",
+      "id": "feat.meeting.ai_transcript",
+      "kind": "feature",
+      "name": "AI transcription",
+      "description": "Optional AI transcript for meetings."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "ocr-engine",
+        "bank-statement-parser"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "app.accounting"
+      ],
+      "admin_menu": null,
+      "appears_in": [
+        "Accounting"
+      ],
+      "notes": "",
+      "id": "feat.accounting.ocr",
+      "kind": "feature",
+      "name": "Document OCR",
+      "description": "OCR for accounting documents/bank statements."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": false,
+      "related_apis": [
+        "expenses:budgets",
+        "expenses:recurring",
+        "expenses:ownerFundings"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "app.expenses"
+      ],
+      "admin_menu": null,
+      "appears_in": [
+        "Expenses"
+      ],
+      "notes": "",
+      "id": "feat.expenses.recurring_budgets",
+      "kind": "feature",
+      "name": "Expense budgets & recurring",
+      "description": "Budgets, recurring posts, owner funding."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": false,
+      "related_apis": [],
+      "related_jobs": [],
+      "database_tables": [
+        "biz_module_settings"
+      ],
+      "dependencies": [
+        "mod.investor"
+      ],
+      "admin_menu": null,
+      "appears_in": [
+        "Business Modules overview"
+      ],
+      "notes": "",
+      "id": "feat.biz.investor_toggle",
+      "kind": "feature",
+      "name": "investor_enabled toggle",
+      "description": "biz_module_settings flag."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": false,
+      "related_apis": [],
+      "related_jobs": [],
+      "database_tables": [
+        "biz_module_settings"
+      ],
+      "dependencies": [
+        "mod.release"
+      ],
+      "admin_menu": null,
+      "appears_in": [],
+      "notes": "",
+      "id": "feat.biz.release_toggle",
+      "kind": "feature",
+      "name": "release_enabled toggle",
+      "description": "biz_module_settings flag."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": false,
+      "related_apis": [],
+      "related_jobs": [],
+      "database_tables": [
+        "biz_module_settings"
+      ],
+      "dependencies": [
+        "mod.meeting"
+      ],
+      "admin_menu": null,
+      "appears_in": [],
+      "notes": "",
+      "id": "feat.biz.meeting_toggle",
+      "kind": "feature",
+      "name": "meeting_enabled toggle",
+      "description": "biz_module_settings flag."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": false,
+      "related_apis": [],
+      "related_jobs": [],
+      "database_tables": [
+        "marketing_*"
+      ],
+      "dependencies": [],
+      "admin_menu": null,
+      "appears_in": [],
+      "notes": "UNCERTAIN: confirm if still used vs mkt_* referral platform.",
+      "id": "feat.marketing_legacy",
+      "kind": "feature",
+      "name": "Legacy marketing_* tables",
+      "description": "Older marketing schema present in DB (mostly empty)."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "owner-salary service"
+      ],
+      "related_jobs": [],
+      "database_tables": [
+        "owner_salary_*"
+      ],
+      "dependencies": [
+        "app.staff"
+      ],
+      "admin_menu": null,
+      "appears_in": [],
+      "notes": "",
+      "id": "feat.owner_salary",
+      "kind": "feature",
+      "name": "Owner salary",
+      "description": "Owner salary periods/payments inside staff elevated UI."
+    }
+  ],
+  "special_dependencies": [
+    {
+      "topic": "Staff vs HR vs Mgr-HR",
+      "detail": "Three overlapping surfaces share employee_* / hr_* tables. Selling Staff without HR may still need limited employee master data."
+    },
+    {
+      "topic": "Delivery ↔ Driver ↔ Online",
+      "detail": "Driver app is weakly useful without Delivery desk; Delivery often needs Online or POS orders."
+    },
+    {
+      "topic": "Signage Centre ↔ Player",
+      "detail": "Player alone only shows pairing; requires Centre (or Admin approve) to function."
+    },
+    {
+      "topic": "Kiosk / Drive-Thru ↔ Catalog",
+      "detail": "Both need products/categories; Drive-Thru also couples to POS station workflows."
+    },
+    {
+      "topic": "Loyalty ↔ Online + POS",
+      "detail": "Online-specific gifts need Online; POS redemption needs POS."
+    },
+    {
+      "topic": "Communication ↔ many modules",
+      "detail": "Turning off Comms should stop WhatsApp/SMS/email jobs globally even if other modules remain."
+    },
+    {
+      "topic": "Accounting ↔ Expenses / Sales",
+      "detail": "Accounting journals may still receive posts from sales/expenses; gating must decide whether to stop posting or only hide UI."
+    },
+    {
+      "topic": "Recipe ↔ Products",
+      "detail": "Recipe components hang off products; disabling Recipe should not delete products."
+    },
+    {
+      "topic": "Business Modules toggles",
+      "detail": "investor_enabled / release_enabled / meeting_enabled already exist in biz_module_settings — precursor to entitlements."
+    },
+    {
+      "topic": "marketing_* vs mkt_*",
+      "detail": "Two marketing schemas in DB; confirm which is live before gating Referral."
+    }
+  ],
+  "decisions_needed": [
+    "Should Admin Panel always be included, with packages only toggling admin.* submodules?",
+    "Sell Staff Portal separately from full HR/Payroll, or only as one People pack?",
+    "Is Branding a standalone paid add-on or included with Online Ordering?",
+    "Bundle Signage Player with Signage Centre always?",
+    "When Accounting is off: hide UI only, or also suppress automatic journal posts from POS/expenses?",
+    "Treat legacy marketing_* tables as dead (ignore) or still part of Referral?",
+    "Is Apprentice Centre expected later? (not present in codebase today)",
+    "Donations / Owner salary / EOM — add-ons or free with HR?"
+  ]
+}

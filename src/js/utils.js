@@ -376,8 +376,33 @@ const Utils = {
     return '<span class="tag tag-ok">OK</span>';
   },
 
+  /** Phase 4: entitlement page map from entitlements:get */
+  isPageEntitled(page) {
+    if (!page || page === 'settings') return true;
+    const ent = (typeof window !== 'undefined')
+      ? (window.__SHOP_POS_ENTITLEMENTS__ || window.App?.entitlements)
+      : null;
+    if (!ent || !ent.enforcement) return true;
+    if (ent.pages && Object.prototype.hasOwnProperty.call(ent.pages, page)) return !!ent.pages[page];
+    return true;
+  },
+
+  /** Phase 4: entitlement admin section map */
+  isAdminSectionEntitled(sectionId) {
+    if (!sectionId) return true;
+    const ent = (typeof window !== 'undefined')
+      ? (window.__SHOP_POS_ENTITLEMENTS__ || window.App?.entitlements)
+      : null;
+    if (!ent || !ent.enforcement) return true;
+    if (ent.admin_sections && Object.prototype.hasOwnProperty.call(ent.admin_sections, sectionId)) {
+      return !!ent.admin_sections[sectionId];
+    }
+    return true;
+  },
+
   canAccess(user, page) {
     if (!user) return false;
+    if (!Utils.isPageEntitled(page)) return false;
     // Delivery Department portal — admin panel (delivery section) only
     if (typeof window !== 'undefined' && window.__SHOP_POS_APP_MODE__ === 'delivery') {
       if (user.role === 'delivery_manager') return page === 'admin';
@@ -453,6 +478,7 @@ const Utils = {
   canAccessAdminSection(user, sectionId) {
     if (!Utils.canAccessAdmin(user)) return false;
     if (sectionId === 'deliveries') sectionId = 'delivery-dept';
+    if (!Utils.isAdminSectionEntitled(sectionId)) return false;
     try {
       const lock = sessionStorage.getItem('shoppos_studio_lock');
       if (lock) {

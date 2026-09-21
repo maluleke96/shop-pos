@@ -3093,6 +3093,159 @@ add('web:adminAnalytics', wrapSync((filters, actor) => {
     return s.meetingSummary?.();
   }));
 
+  // ─── Platform Control (packages / add-ons) — Phase 3 definitions only ───────
+  const platformActor = (tok) => s.platformRequireSession(tok);
+  add('platform:status', wrapSync(() => s.platformStatus()));
+  add('platform:login', wrapSync((u, p) => s.platformLogin(u, p)));
+  add('platform:logout', wrapSync((tok) => s.platformLogout(tok)));
+  add('platform:syncCatalog', wrapSync((tok) => {
+    platformActor(tok);
+    return s.platformSyncCatalog();
+  }));
+  add('platform:listModules', wrapSync((tok, f) => {
+    platformActor(tok);
+    return s.platformListModules(f || {});
+  }));
+  add('platform:validateModules', wrapSync((tok, ids) => {
+    platformActor(tok);
+    return s.platformValidateModules(ids || []);
+  }));
+  add('platform:listPackages', wrapSync((tok) => {
+    platformActor(tok);
+    return s.platformListPackages();
+  }));
+  add('platform:getPackage', wrapSync((tok, id) => {
+    platformActor(tok);
+    return s.platformGetPackage(id);
+  }));
+  add('platform:savePackage', wrapSync((tok, d) => {
+    const a = platformActor(tok);
+    return s.platformSavePackage(d || {}, a);
+  }));
+  add('platform:setPackageActive', wrapSync((tok, id, active) => {
+    const a = platformActor(tok);
+    return s.platformSetPackageActive(id, active, a);
+  }));
+  add('platform:deletePackage', wrapSync((tok, id) => {
+    const a = platformActor(tok);
+    return s.platformDeletePackage(id, a);
+  }));
+  add('platform:listAddons', wrapSync((tok) => {
+    platformActor(tok);
+    return s.platformListAddons();
+  }));
+  add('platform:saveAddon', wrapSync((tok, d) => {
+    const a = platformActor(tok);
+    return s.platformSaveAddon(d || {}, a);
+  }));
+  add('platform:deleteAddon', wrapSync((tok, id) => {
+    const a = platformActor(tok);
+    return s.platformDeleteAddon(id, a);
+  }));
+  add('platform:bootstrapLabSamples', wrapSync((tok) => {
+    const a = platformActor(tok);
+    return s.platformBootstrapLabSamples(a);
+  }));
+  add('platform:getShopAssignment', wrapSync((tok, key) => {
+    platformActor(tok);
+    return s.platformGetShopAssignment(key);
+  }));
+  add('platform:saveShopAssignment', wrapSync((tok, d) => {
+    const a = platformActor(tok);
+    return s.platformSaveShopAssignment(d || {}, a);
+  }));
+  add('platform:getEntitlements', wrapSync((tok) => {
+    platformActor(tok);
+    return s.platformGetEntitlements();
+  }));
+  add('platform:listShops', wrapSync((tok, f) => {
+    platformActor(tok);
+    return s.platformListShops(f || {});
+  }));
+  add('platform:getShop', wrapSync((tok, id) => {
+    platformActor(tok);
+    return s.platformGetShop(id);
+  }));
+  add('platform:createShop', wrapSync((tok, d) => {
+    const a = platformActor(tok);
+    return s.platformCreateShop(d || {}, a);
+  }));
+  add('platform:updateShop', wrapSync((tok, id, d) => {
+    const a = platformActor(tok);
+    return s.platformUpdateShop(id, d || {}, a);
+  }));
+  add('platform:assignShop', wrapSync((tok, id, d) => {
+    const a = platformActor(tok);
+    return s.platformAssignShop(id, d || {}, a);
+  }));
+  add('platform:setShopOverrides', wrapSync((tok, id, overrides) => {
+    const a = platformActor(tok);
+    return s.platformSetShopOverrides(id, overrides || [], a);
+  }));
+  add('platform:setShopStatus', wrapSync((tok, id, status) => {
+    const a = platformActor(tok);
+    return s.platformSetShopStatus(id, status, a);
+  }));
+  add('platform:shopHealth', wrapAsync(async (tok, id) => {
+    platformActor(tok);
+    return s.platformShopHealth(id);
+  }));
+  add('platform:syncCustomerEntitlements', wrapAsync(async (tok, id) => {
+    platformActor(tok);
+    return s.platformSyncCustomerEntitlements(id);
+  }));
+  add('platform:shopAudit', wrapSync((tok, id, limit) => {
+    platformActor(tok);
+    return s.platformShopAudit(id, limit);
+  }));
+  add('platform:bootstrapLabCustomers', wrapSync((tok) => {
+    const a = platformActor(tok);
+    return s.platformBootstrapLabCustomers(a);
+  }));
+  add('platform:shopSuspension', wrapSync((tok) => {
+    platformActor(tok);
+    return s.platformShopSuspension();
+  }));
+  add('platform:provisionStatus', wrapSync((tok) => {
+    platformActor(tok);
+    return s.platformProvisionStatus();
+  }));
+  add('platform:provisionDryRun', wrapSync((tok, shopId) => {
+    const a = platformActor(tok);
+    return s.platformProvisionDryRun(shopId, a);
+  }));
+  add('platform:provisionRun', wrapAsync(async (tok, shopId) => {
+    const a = platformActor(tok);
+    return s.platformProvisionRun(shopId, a);
+  }));
+  add('platform:provisionJob', wrapSync((tok, id) => {
+    platformActor(tok);
+    return s.platformProvisionJob(id);
+  }));
+  add('platform:provisionJobs', wrapSync((tok, shopId) => {
+    platformActor(tok);
+    return s.platformProvisionJobs(shopId);
+  }));
+
+  // Shop-local entitlement snapshot (ONE source of truth for UI)
+  add('entitlements:status', wrapSync(() => s.entitlementsStatus()));
+  add('entitlements:get', wrapSync(() => s.entitlementsGet()));
+
+  // Platform → customer entitlement sync (secret-authenticated; never from browser without secret)
+  add('saas:applyEntitlementSnapshot', wrapSync((secret, snapshot) => {
+    const sync = require('../electron/services/saas-customer-sync');
+    return sync.applyEntitlementSnapshotAuthenticated(secret, snapshot);
+  }));
+  add('saas:status', wrapSync(() => {
+    const entitlements = require('../electron/services/entitlements');
+    return {
+      shop_key: entitlements.shopKey(),
+      enforcement: entitlements.enforcementEnabled(),
+      has_sync_secret: !!String(process.env.SAAS_SYNC_SECRET || '').trim(),
+      subscription_status: process.env.SHOP_SUBSCRIPTION_STATUS || null
+    };
+  }));
+
   // ─── Digital Signage ────────────────────────────────────────────────────────
   add('signage:login', wrapSync((u, p) => s.signageLogin(u, p)));
   add('signage:loginAsAdmin', wrapSync((a) => {
