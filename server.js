@@ -1469,6 +1469,14 @@ async function main() {
       return servePortalWeb(req, res, PLATFORM_WEB, '/platform');
     }
 
+    if (urlPath === '/activate' || urlPath.startsWith('/activate/')) {
+      const activateFile = path.join(PLATFORM_WEB, 'activate.html');
+      if (fs.existsSync(activateFile)) {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...corsHeaders() });
+        return res.end(fs.readFileSync(activateFile));
+      }
+    }
+
     if (urlPath === '/track' || urlPath.startsWith('/track/')) {
       return serveTrackingWeb(req, res);
     }

@@ -400,6 +400,33 @@ const Utils = {
     return true;
   },
 
+  /** SaaS access blocked overlay — never shows Railway/secrets/internal details */
+  showAccessBlockedOverlay(payload) {
+    const msg = payload?.message || {};
+    const title = msg.title || 'Service Temporarily Unavailable';
+    const body = msg.body_text || 'Your shop access has been temporarily suspended.\n\nThis may be due to your subscription status or an administrative action.\n\nPlease contact your administrator for assistance.';
+    const label = msg.contact_label || 'Contact Administrator';
+    const url = payload?.contact_admin_url || '';
+    let el = document.getElementById('saas-access-blocked');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'saas-access-blocked';
+      el.setAttribute('role', 'alertdialog');
+      el.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(15,23,42,.92);display:flex;align-items:center;justify-content:center;padding:24px;';
+      document.body.appendChild(el);
+    }
+    const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    el.innerHTML = `<div style="max-width:420px;background:#fff;color:#0f172a;padding:28px 24px;border-radius:12px;font-family:Georgia,serif">
+      <h2 style="margin:0 0 12px;font-size:1.35rem">${esc(title)}</h2>
+      <p style="white-space:pre-wrap;line-height:1.5;margin:0 0 20px">${esc(body)}</p>
+      ${url ? `<a href="${esc(url)}" target="_blank" rel="noopener" style="display:inline-block;padding:10px 16px;background:#0f172a;color:#fff;text-decoration:none;border-radius:8px">${esc(label)}</a>` : `<button type="button" style="padding:10px 16px;background:#0f172a;color:#fff;border:0;border-radius:8px" onclick="alert('Please contact your administrator for assistance.')">${esc(label)}</button>`}
+    </div>`;
+  },
+
+  hideAccessBlockedOverlay() {
+    document.getElementById('saas-access-blocked')?.remove();
+  },
+
   canAccess(user, page) {
     if (!user) return false;
     if (!Utils.isPageEntitled(page)) return false;

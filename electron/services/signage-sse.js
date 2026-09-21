@@ -11,6 +11,10 @@ function subscribeDevice(deviceId, res) {
 }
 
 function notifyDevice(deviceId, event = 'update', data = {}) {
+  try {
+    const entitlements = require('./entitlements');
+    if (!entitlements.shouldRunJob(['mod.signage', 'mod.signage_player'])) return;
+  } catch (_) { /* */ }
   const set = deviceChannels.get(Number(deviceId));
   if (!set) return;
   const payload = `event: ${event}\ndata: ${JSON.stringify({ ...data, ts: Date.now() })}\n\n`;

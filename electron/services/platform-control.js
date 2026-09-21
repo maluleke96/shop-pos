@@ -112,6 +112,12 @@ function ensureSchema() {
       }
     }
   }
+  // Phase 7+ control plane
+  try {
+    require('./platform-control-plane').ensureSchema();
+  } catch (err) {
+    console.warn('[platform] control-plane schema:', err.message || err);
+  }
   try {
     dbGet('SELECT 1 FROM platform_packages LIMIT 1');
   } catch (_) {
@@ -654,6 +660,12 @@ function bootstrapLabSamples(actor) {
   syncCatalogFromFile();
   // Example packages for lab testing — names are samples, not hard product limits
   const samples = [
+    {
+      name: 'Lab FREE',
+      description: 'Free package via normal package system — limited modules, configurable entitlements',
+      price: 0,
+      module_ids: ['app.pos', 'app.admin', 'admin.pos-menu', 'admin.payments']
+    },
     {
       name: 'Lab Starter Online',
       description: 'Sample: Online + light Admin online sections + branding',

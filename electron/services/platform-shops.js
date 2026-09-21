@@ -14,11 +14,15 @@ try { entitlements = require('./entitlements'); } catch (_) { entitlements = nul
 let platform;
 try { platform = require('./platform-control'); } catch (_) { platform = null; }
 
-const SUB_STATUSES = new Set(['TRIAL', 'ACTIVE', 'OVERDUE', 'SUSPENDED']);
+const SUB_STATUSES = new Set(['TRIAL', 'ACTIVE', 'OVERDUE', 'SUSPENDED', 'EXPIRED']);
 const DEPLOY_STATUSES = new Set([
   'not_provisioned', 'pending', 'provisioning', 'online', 'offline', 'error', 'unknown',
-  'NOT_STARTED', 'DRY_RUN', 'PROVISIONING', 'DATABASE_CREATING', 'DEPLOYING', 'HEALTH_CHECK', 'READY', 'FAILED'
+  'NOT_STARTED', 'DRY_RUN', 'PROVISIONING', 'DATABASE_CREATING', 'DEPLOYING', 'HEALTH_CHECK', 'READY', 'FAILED',
+  'WAITING_HEALTH', 'SYNCING_ENTITLEMENTS'
 ]);
+
+let controlPlane;
+try { controlPlane = require('./platform-control-plane'); } catch (_) { controlPlane = null; }
 
 function dbGet(sql, p = []) { return getDb().prepare(sql).get(...p); }
 function dbAll(sql, p = []) { return getDb().prepare(sql).all(...p); }
@@ -31,22 +35,23 @@ function uid(prefix = 'shop') {
 function ensureSchema() {
   try {
     dbGet('SELECT 1 FROM platform_shops LIMIT 1');
-    return;
-  } catch (_) { /* */ }
-  const files = [
-    path.join(__dirname, '../database/migrations-v125.sql'),
-    path.join(__dirname, '../../supabase/migrations/20260921_platform_shops.sql')
-  ];
-  for (const f of files) {
-    if (!fs.existsSync(f)) continue;
-    try {
-      getDb().exec(fs.readFileSync(f, 'utf8'));
-      console.log('[platform-shops] schema from', path.basename(f));
-      return;
-    } catch (e) {
-      console.warn('[platform-shops] schema:', e.message || e);
+  } catch (_) {
+    const files = [
+      path.join(__dirname, '../database/migrations-v125.sql'),
+      path.join(__dirname, '../../supabase/migrations/20260921_platform_shops.sql')
+    ];
+    for (const f of files) {
+      if (!fs.existsSync(f)) continue;
+      try {
+        getDb().exec(fs.readFileSync(f, 'utf8'));
+        console.log('[platform-shops] schema from', path.basename(f));
+        break;
+      } catch (e) {
+        console.warn('[platform-shops] schema:', e.message || e);
+      }
     }
   }
+  try { controlPlane?.ensureSchema?.(); } catch (_) { /* */ }
 }
 
 function audit(actor, action, shopId, detail) {
@@ -98,12 +103,30 @@ function mapShop(row) {
       if (n) addon_names.push(n);
     } catch (_) { /* */ }
   }
+  let access = null;
+  let countdown = null;
+  try {
+    if (controlPlane?.evaluateShopAccess) {
+      access = controlPlane.evaluateShopAccess(row);
+      countdown = {
+        start_date: access.subscription_start,
+        expiry_date: access.subscription_expiry,
+        days_remaining: access.days_remaining,
+        status: access.subscription_status,
+        access_state: access.access_state,
+        grace_period_days: access.grace_days,
+        grace_active: access.grace_active,
+        suspension_date: access.suspended_at
+      };
+    }
+  } catch (_) { /* */ }
   return {
     id: row.id,
     shop_name: row.shop_name,
     owner_name: row.owner_name || '',
     owner_email: row.owner_email || '',
     contact_phone: row.contact_phone || '',
+    address: row.address || '',
     shop_url: row.shop_url || '',
     railway_project_id: row.railway_project_id || '',
     railway_service_id: row.railway_service_id || '',
@@ -116,14 +139,25 @@ function mapShop(row) {
     addon_names,
     overrides,
     subscription_status: row.subscription_status || 'TRIAL',
+    subscription_start: row.subscription_start || row.trial_start || null,
+    subscription_expiry: row.subscription_expiry || row.trial_end || null,
+    grace_days: row.grace_days != null ? Number(row.grace_days) : 3,
+    suspended_at: row.suspended_at || null,
+    activation_status: row.activation_status || 'pending',
+    contract_required: Number(row.contract_required) !== 0,
+    contact_admin_url: row.contact_admin_url || '',
+    suspension_message: row.suspension_message || '',
     trial_start: row.trial_start || null,
     trial_end: row.trial_end || null,
     is_active: Number(row.is_active) !== 0,
     notes: row.notes || '',
+    registered_date: row.created_at,
     created_at: row.created_at,
     updated_at: row.updated_at,
     created_by: row.created_by || '',
-    updated_by: row.updated_by || ''
+    updated_by: row.updated_by || '',
+    access,
+    countdown
   };
 }
 
@@ -185,6 +219,10 @@ function createShop(data, actor) {
   const trialEnd = data.trial_end || null;
   const by = actor?.username || 'platform';
 
+  const subStart = data.subscription_start || trialStart;
+  const subExpiry = data.subscription_expiry || trialEnd || null;
+  const graceDays = data.grace_days != null ? Number(data.grace_days) : 3;
+
   dbRun(
     `INSERT INTO platform_shops (
       id, shop_name, owner_name, owner_email, contact_phone, shop_url,
@@ -202,6 +240,27 @@ function createShop(data, actor) {
       data.notes || '', now, now, by, by
     ]
   );
+
+  // Optional registration / calendar fields (control-plane columns)
+  try {
+    dbRun(
+      `UPDATE platform_shops SET
+        address=?, subscription_start=?, subscription_expiry=?, grace_days=?,
+        activation_status=?, contract_required=?, contact_admin_url=?, suspension_message=?
+       WHERE id=?`,
+      [
+        data.address || '',
+        subStart,
+        subExpiry,
+        Number.isFinite(graceDays) ? graceDays : 3,
+        data.activation_status || 'pending',
+        data.contract_required === false || data.contract_required === 0 ? 0 : 1,
+        data.contact_admin_url || '',
+        data.suspension_message || '',
+        id
+      ]
+    );
+  } catch (_) { /* columns may not exist yet */ }
 
   // Sync Phase 4 assignment tables (same shop id = shop_key)
   if (entitlements?.saveShopAssignment) {
@@ -246,6 +305,7 @@ function updateShopMeta(id, data, actor) {
     owner_name: data.owner_name != null ? data.owner_name : row.owner_name,
     owner_email: data.owner_email != null ? data.owner_email : row.owner_email,
     contact_phone: data.contact_phone != null ? data.contact_phone : row.contact_phone,
+    address: data.address != null ? data.address : (row.address || ''),
     shop_url: data.shop_url != null ? data.shop_url : row.shop_url,
     railway_project_id: data.railway_project_id != null ? data.railway_project_id : row.railway_project_id,
     railway_service_id: data.railway_service_id != null ? data.railway_service_id : row.railway_service_id,
@@ -255,6 +315,15 @@ function updateShopMeta(id, data, actor) {
       ? data.deployment_status : row.deployment_status,
     trial_start: data.trial_start !== undefined ? data.trial_start : row.trial_start,
     trial_end: data.trial_end !== undefined ? data.trial_end : row.trial_end,
+    subscription_start: data.subscription_start !== undefined ? data.subscription_start : (row.subscription_start || null),
+    subscription_expiry: data.subscription_expiry !== undefined ? data.subscription_expiry : (row.subscription_expiry || null),
+    grace_days: data.grace_days !== undefined ? Number(data.grace_days) : (row.grace_days != null ? Number(row.grace_days) : 3),
+    activation_status: data.activation_status != null ? data.activation_status : (row.activation_status || 'pending'),
+    contract_required: data.contract_required === false || data.contract_required === 0 ? 0
+      : (data.contract_required === true || data.contract_required === 1 ? 1
+        : (row.contract_required != null ? Number(row.contract_required) : 1)),
+    contact_admin_url: data.contact_admin_url != null ? data.contact_admin_url : (row.contact_admin_url || ''),
+    suspension_message: data.suspension_message != null ? data.suspension_message : (row.suspension_message || ''),
     notes: data.notes != null ? data.notes : row.notes,
     is_active: data.is_active === false || data.is_active === 0 ? 0
       : (data.is_active === true || data.is_active === 1 ? 1 : row.is_active)
@@ -276,6 +345,19 @@ function updateShopMeta(id, data, actor) {
       nowIso(), by, id
     ]
   );
+  try {
+    dbRun(
+      `UPDATE platform_shops SET
+        address=?, subscription_start=?, subscription_expiry=?, grace_days=?,
+        activation_status=?, contract_required=?, contact_admin_url=?, suspension_message=?
+       WHERE id=?`,
+      [
+        next.address, next.subscription_start, next.subscription_expiry, next.grace_days,
+        next.activation_status, next.contract_required, next.contact_admin_url, next.suspension_message,
+        id
+      ]
+    );
+  } catch (_) { /* */ }
   audit(by, 'shop_updated', id, { previous: mapShop(row), next: getShop(id).data });
   return getShop(id);
 }
@@ -377,19 +459,29 @@ function setSubscriptionStatus(id, status, actor) {
   if (!row) throw new Error('Shop not found');
   assertNotChisaFood(row);
   const next = String(status || '').toUpperCase();
-  if (!SUB_STATUSES.has(next)) throw new Error('Invalid subscription status. Use TRIAL|ACTIVE|OVERDUE|SUSPENDED');
+  if (!SUB_STATUSES.has(next)) throw new Error('Invalid subscription status. Use TRIAL|ACTIVE|OVERDUE|SUSPENDED|EXPIRED');
   const by = actor?.username || 'platform';
   const prev = row.subscription_status;
-  const isActive = next === 'SUSPENDED' ? 0 : 1;
+  const isActive = (next === 'SUSPENDED' || next === 'EXPIRED') ? 0 : 1;
+  const now = nowIso();
+  let suspendedAt = row.suspended_at || null;
+  if ((next === 'SUSPENDED' || next === 'EXPIRED') && prev !== next) suspendedAt = now;
+  if (next !== 'SUSPENDED' && next !== 'EXPIRED') suspendedAt = null;
   dbRun(
     `UPDATE platform_shops SET subscription_status=?, is_active=?, updated_at=?, updated_by=? WHERE id=?`,
-    [next, isActive, nowIso(), by, id]
+    [next, isActive, now, by, id]
   );
+  try {
+    dbRun('UPDATE platform_shops SET suspended_at=? WHERE id=?', [suspendedAt, id]);
+  } catch (_) { /* */ }
   audit(by, 'subscription_status_changed', id, { previous: prev, next });
   if (next === 'SUSPENDED' && prev !== 'SUSPENDED') {
     audit(by, 'shop_suspended', id, { previous: prev, next });
   }
-  if (prev === 'SUSPENDED' && next !== 'SUSPENDED') {
+  if (next === 'EXPIRED' && prev !== 'EXPIRED') {
+    audit(by, 'shop_expired', id, { previous: prev, next });
+  }
+  if ((prev === 'SUSPENDED' || prev === 'EXPIRED') && next !== 'SUSPENDED' && next !== 'EXPIRED') {
     audit(by, 'shop_reactivated', id, { previous: prev, next });
   }
   const sync = queueCustomerEntitlementSync(id);
@@ -441,19 +533,38 @@ async function syncCustomerEntitlements(shopId) {
     },
     skipDeploys: true
   });
-  if (secretCreated) {
+
+  // Redeploy when subscription status changes so running env picks up ACTIVE/SUSPENDED
+  // (process.env is fixed until restart). Also redeploy when creating a new sync secret.
+  const status = String(snapshot.subscription_status || '').toUpperCase();
+  const needsStatusRedeploy = ['ACTIVE', 'TRIAL', 'OVERDUE', 'SUSPENDED', 'EXPIRED'].includes(status);
+  if (secretCreated || needsStatusRedeploy) {
     try {
       await railway.deployService({
         environmentId: shop.railway_environment_id,
         serviceId: shop.railway_service_id
       });
-      // Allow redeploy to pick up SAAS_SYNC_SECRET
-      await new Promise((r) => setTimeout(r, 45000));
+      await new Promise((r) => setTimeout(r, secretCreated ? 45000 : 20000));
     } catch (e) {
-      return { ok: false, error: 'secret set but redeploy failed: ' + String(e.message || e).slice(0, 120) };
+      if (secretCreated) {
+        return { ok: false, error: 'secret set but redeploy failed: ' + String(e.message || e).slice(0, 120) };
+      }
+      console.warn('[shops] status redeploy:', e.message || e);
     }
   }
-  const pushed = await sync.pushSnapshotToCustomerUrl(shop.shop_url, secret, snapshot);
+
+  let pushed = null;
+  try {
+    pushed = await sync.pushSnapshotToCustomerUrl(shop.shop_url, secret, snapshot);
+  } catch (e) {
+    // If customer is mid-redeploy or still on old image, env upsert+redeploy is enough for access.
+    const msg = String(e.message || e);
+    if (/SHOP_SUSPENDED|SHOP_EXPIRED|starting|502|503/i.test(msg)) {
+      audit('system', 'customer_entitlement_sync_deferred', shopId, { error: msg.slice(0, 160), via: 'env_redeploy' });
+      return { ok: true, deferred_http_sync: true, reason: msg.slice(0, 160), subscription_status: status };
+    }
+    throw e;
+  }
   audit('system', 'customer_entitlement_synced', shopId, {
     package_id: snapshot.package_id,
     addon_ids: snapshot.addon_ids,
@@ -475,48 +586,87 @@ function queueCustomerEntitlementSync(shopId) {
   return job;
 }
 
-/** Current deployment shop suspension check (lab instance). */
+/** Current deployment shop suspension / access check (lab or customer instance). */
 function getCurrentShopSuspension() {
   ensureSchema();
+  if (controlPlane?.getCurrentShopAccess) {
+    const access = controlPlane.getCurrentShopAccess();
+    return {
+      suspended: !access.allowed,
+      shop_id: access.shop_id || null,
+      shop_name: access.shop_name || null,
+      subscription_status: access.subscription_status || access.access_state,
+      access_state: access.access_state,
+      has_record: access.has_record !== false,
+      source: access.source || 'access',
+      message: access.message || null,
+      contact_admin_url: access.contact_admin_url || '',
+      days_remaining: access.days_remaining,
+      grace_active: access.grace_active,
+      protected_production: !!access.protected_production
+    };
+  }
   if (entitlements?.isChisaFoodProtected?.()) {
     return { suspended: false, protected_production: true };
   }
-  // Env override for customer deploys (synced from Platform)
+  // Prefer DB (updated by saas sync) over stale process.env after reactivation.
+  const key = entitlements?.shopKey?.() || process.env.SHOP_ENTITLEMENT_KEY || 'lab';
+  try {
+    const row = dbGet('SELECT id, shop_name, subscription_status, is_active FROM platform_shops WHERE id = ?', [key]);
+    if (row) {
+      const suspended = row.subscription_status === 'SUSPENDED' || row.subscription_status === 'EXPIRED' || Number(row.is_active) === 0;
+      return {
+        suspended,
+        shop_id: row.id,
+        shop_name: row.shop_name,
+        subscription_status: row.subscription_status,
+        access_state: row.subscription_status,
+        has_record: true,
+        source: 'db'
+      };
+    }
+  } catch (_) { /* */ }
   const envStatus = String(process.env.SHOP_SUBSCRIPTION_STATUS || '').toUpperCase();
-  if (envStatus === 'SUSPENDED') {
+  if (envStatus === 'SUSPENDED' || envStatus === 'EXPIRED') {
     return {
       suspended: true,
-      shop_id: entitlements?.shopKey?.() || process.env.SHOP_ENTITLEMENT_KEY || null,
-      subscription_status: 'SUSPENDED',
+      shop_id: key,
+      subscription_status: envStatus,
+      access_state: envStatus,
       has_record: true,
       source: 'env'
     };
   }
-  const key = entitlements?.shopKey?.() || process.env.SHOP_ENTITLEMENT_KEY || 'lab';
-  try {
-    const row = dbGet('SELECT id, shop_name, subscription_status, is_active FROM platform_shops WHERE id = ?', [key]);
-    if (!row) return { suspended: false, shop_id: key, has_record: false };
-    const suspended = row.subscription_status === 'SUSPENDED' || Number(row.is_active) === 0;
-    return {
-      suspended,
-      shop_id: row.id,
-      shop_name: row.shop_name,
-      subscription_status: row.subscription_status,
-      has_record: true,
-      source: 'db'
-    };
-  } catch (_) {
-    return { suspended: false, shop_id: key, has_record: false };
-  }
+  return { suspended: false, shop_id: key, has_record: false };
 }
 
 function assertShopNotSuspended() {
   if (entitlements?.isChisaFoodProtected?.()) return { allowed: true };
+  if (controlPlane?.assertShopAccess) {
+    try {
+      return controlPlane.assertShopAccess();
+    } catch (err) {
+      if (err.code === 'SHOP_SUSPENDED' || err.code === 'SHOP_EXPIRED' || err.code === 'SHOP_ACCESS_BLOCKED') {
+        const access = err.access || controlPlane.getCurrentShopAccess?.() || {};
+        const msg = access.message;
+        const friendly = msg
+          ? `${msg.title || 'Service Temporarily Unavailable'}: ${(msg.body_text || '').split('\n')[0]}`
+          : 'SHOP_SUSPENDED: Your shop access has been temporarily suspended. Please contact your administrator.';
+        const e = new Error(friendly);
+        e.code = err.code === 'SHOP_EXPIRED' ? 'SHOP_EXPIRED' : 'SHOP_SUSPENDED';
+        e.status = 403;
+        e.access = access;
+        throw e;
+      }
+      throw err;
+    }
+  }
   const s = getCurrentShopSuspension();
   if (s.suspended) {
-    const err = new Error('SHOP_SUSPENDED: This shop subscription is suspended. Contact support.');
+    const err = new Error('SHOP_SUSPENDED: Your shop access has been temporarily suspended. Please contact your administrator.');
     err.code = 'SHOP_SUSPENDED';
     err.status = 403;
+    err.access = s;
     throw err;
   }
   return { allowed: true };
@@ -601,5 +751,6 @@ module.exports = {
   assertShopNotSuspended,
   listAuditForShop,
   bootstrapLabCustomers,
-  assertNotChisaFood
+  assertNotChisaFood,
+  mapShop
 };

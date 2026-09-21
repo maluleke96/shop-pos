@@ -795,6 +795,16 @@ function ensureOrderGiftColumns() {
   }
 }
 
+function ensureOrderServiceFeeColumns() {
+  for (const col of [
+    'service_fee REAL DEFAULT 0',
+    'service_fee_label TEXT DEFAULT \'\'',
+    'service_fee_config_json TEXT DEFAULT \'{}\''
+  ]) {
+    try { dbRun(`ALTER TABLE online_orders_local ADD COLUMN ${col}`); } catch (_) { /* exists */ }
+  }
+}
+
 function ensureOrderTrackingColumns() {
   for (const col of ['confirmation_code TEXT', 'tracking_token TEXT']) {
     try { dbRun(`ALTER TABLE online_orders_local ADD COLUMN ${col}`); } catch (_) { /* exists */ }
@@ -1831,7 +1841,35 @@ function validateCart(branchId, cart = {}) {
     shop.tax_enabled,
     shop.tax_inclusive
   );
-  const totalBeforeGift = round2(Math.max(0, taxTotals.total + deliveryFee));
+
+  // Platform service fee (visible — never silent). Snapshot config for the quote.
+  let serviceFee = 0;
+  let serviceFeeLabel = '';
+  let serviceFeeDisplay = null;
+  let serviceFeeConfig = null;
+  try {
+    const cp = require('./platform-control-plane');
+    const entitlements = require('./entitlements');
+    const shopKey = entitlements.shopKey?.() || process.env.SHOP_ENTITLEMENT_KEY || null;
+    let packageId = process.env.SHOP_PACKAGE_ID || null;
+    if (shopKey) {
+      try {
+        const { getDb } = require('../database/db');
+        const row = getDb().prepare('SELECT package_id FROM platform_shops WHERE id = ?').get(shopKey);
+        if (row?.package_id) packageId = row.package_id;
+      } catch (_) { /* */ }
+    }
+    const feeBase = round2(Math.max(0, taxTotals.total + deliveryFee));
+    const fee = cp.calculateServiceFee(feeBase, { package_id: packageId, shop_id: shopKey });
+    if (fee.enabled && fee.amount > 0) {
+      serviceFee = fee.amount;
+      serviceFeeLabel = fee.label || 'Platform service fee';
+      serviceFeeDisplay = fee.display;
+      serviceFeeConfig = fee.config;
+    }
+  } catch (_) { /* control plane optional */ }
+
+  const totalBeforeGift = round2(Math.max(0, taxTotals.total + deliveryFee + serviceFee));
   let giftCardAmount = 0;
   let giftCardCode = null;
   if (cart.gift_card_code) {
@@ -1870,6 +1908,10 @@ function validateCart(branchId, cart = {}) {
     delivery_place: deliveryPlace ? deliveryPlace.name : null,
     delivery_place_id: deliveryPlace ? deliveryPlace.id : null,
     delivery_place_fee: deliveryPlace ? Number(deliveryPlace.delivery_fee) || 0 : null,
+    service_fee: serviceFee,
+    service_fee_label: serviceFeeLabel,
+    service_fee_display: serviceFeeDisplay,
+    service_fee_config: serviceFeeConfig,
     tax_amount: taxTotals.tax_amount,
     total,
     total_before_gift: totalBeforeGift,
@@ -2009,6 +2051,7 @@ function submitOrder(branchId, payload = {}, webToken = null, idempotencyKey = n
 
   ensureOrderGiftColumns();
   ensureOrderTrackingColumns();
+  ensureOrderServiceFeeColumns();
   const orderNumber = nextOnlineOrderNumber();
   const fulfillment = payload.fulfillment_type || 'collection';
   const payment = resolvePaymentForOrder({ ...payload, expected_total: cart.total }, fulfillment);
@@ -2060,6 +2103,17 @@ function submitOrder(branchId, payload = {}, webToken = null, idempotencyKey = n
   ]);
 
   const orderId = r.lastInsertRowid;
+  try {
+    dbRun(
+      `UPDATE online_orders_local SET service_fee=?, service_fee_label=?, service_fee_config_json=? WHERE id=?`,
+      [
+        cart.service_fee || 0,
+        cart.service_fee_label || '',
+        JSON.stringify(cart.service_fee_config || {}),
+        orderId
+      ]
+    );
+  } catch (_) { /* column optional */ }
   logOrderEvent(orderId, 'received', 'Order placed online', 'customer', customer.id);
 
   for (const line of cart.lines) {

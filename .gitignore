@@ -39,3 +39,7 @@ www/
 sync-server/
 netlify/
 
+
+# Local DB safety dumps (never commit)
+backups/
+

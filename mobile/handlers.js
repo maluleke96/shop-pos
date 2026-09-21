@@ -3227,6 +3227,110 @@ add('web:adminAnalytics', wrapSync((filters, actor) => {
     return s.platformProvisionJobs(shopId);
   }));
 
+  // ─── Control plane (contracts / activation / devices / fees / notifications) ──
+  add('platform:customerControl', wrapSync((tok, id) => {
+    platformActor(tok);
+    return s.platformCustomerControl(id);
+  }));
+  add('platform:countdown', wrapSync((tok, id) => {
+    platformActor(tok);
+    return s.platformCountdown(id);
+  }));
+  add('platform:shopAccess', wrapSync((tok, id) => {
+    platformActor(tok);
+    return s.platformShopAccess(id);
+  }));
+  add('platform:currentAccess', wrapSync(() => s.platformCurrentAccess()));
+  add('platform:listContractVersions', wrapSync((tok) => {
+    platformActor(tok);
+    return s.platformListContractVersions();
+  }));
+  add('platform:getActiveContract', wrapSync((tok) => {
+    platformActor(tok);
+    return s.platformGetActiveContract();
+  }));
+  add('platform:createContractVersion', wrapSync((tok, d) => {
+    const a = platformActor(tok);
+    return s.platformCreateContractVersion(d || {}, a);
+  }));
+  add('platform:shopContract', wrapSync((tok, id) => {
+    platformActor(tok);
+    return s.platformShopContract(id);
+  }));
+  add('platform:acceptContract', wrapSync((tok, id, d) => {
+    platformActor(tok);
+    return s.platformAcceptContract(id, d || {});
+  }));
+  add('platform:printContract', wrapSync((tok, id, acceptanceId) => {
+    platformActor(tok);
+    return s.platformPrintContract(id, acceptanceId);
+  }));
+  add('platform:createActivation', wrapSync((tok, id, d) => {
+    const a = platformActor(tok);
+    return s.platformCreateActivation(id, d || {}, a);
+  }));
+  add('platform:listActivations', wrapSync((tok, id) => {
+    platformActor(tok);
+    return s.platformListActivations(id);
+  }));
+  add('platform:revokeActivation', wrapSync((tok, actId) => {
+    const a = platformActor(tok);
+    return s.platformRevokeActivation(actId, a);
+  }));
+  add('platform:regenerateActivation', wrapSync((tok, id, d) => {
+    const a = platformActor(tok);
+    return s.platformRegenerateActivation(id, d || {}, a);
+  }));
+  // Public redeem — no platform session (installer / app activation). Still shop-scoped + hashed secrets.
+  add('activation:redeem', wrapSync((d) => s.platformRedeemActivation(d || {})));
+  add('activation:acceptContract', wrapSync((shopId, d) => s.platformAcceptContract(shopId, d || {})));
+  add('license:validate', wrapSync((d) => s.platformValidateLicense(d || {})));
+  add('license:evaluateOffline', wrapSync((lease, opts) => s.platformEvaluateOfflineLease(lease, opts || {})));
+  add('platform:listDevices', wrapSync((tok, id) => {
+    platformActor(tok);
+    return s.platformListDevices(id);
+  }));
+  add('platform:revokeDevice', wrapSync((tok, devId) => {
+    const a = platformActor(tok);
+    return s.platformRevokeDevice(devId, a);
+  }));
+  add('platform:listServiceFees', wrapSync((tok) => {
+    platformActor(tok);
+    return s.platformListServiceFees();
+  }));
+  add('platform:upsertServiceFee', wrapSync((tok, d) => {
+    const a = platformActor(tok);
+    return s.platformUpsertServiceFee(d || {}, a);
+  }));
+  add('platform:calcServiceFee', wrapSync((tok, subtotal, opts) => {
+    platformActor(tok);
+    return s.platformCalcServiceFee(subtotal, opts || {});
+  }));
+  add('platform:listNotificationRules', wrapSync((tok) => {
+    platformActor(tok);
+    return s.platformListNotificationRules();
+  }));
+  add('platform:updateNotificationRule', wrapSync((tok, id, d) => {
+    const a = platformActor(tok);
+    return s.platformUpdateNotificationRule(id, d || {}, a);
+  }));
+  add('platform:notificationLog', wrapSync((tok, shopId, limit) => {
+    platformActor(tok);
+    return s.platformNotificationLog(shopId, limit);
+  }));
+  add('platform:processNotifications', wrapSync((tok, opts) => {
+    platformActor(tok);
+    return s.platformProcessNotifications(opts || {});
+  }));
+  add('platform:listAccessMessages', wrapSync((tok) => {
+    platformActor(tok);
+    return s.platformListAccessMessages();
+  }));
+  add('platform:setAccessMessage', wrapSync((tok, key, d) => {
+    const a = platformActor(tok);
+    return s.platformSetAccessMessage(key, d || {}, a);
+  }));
+
   // Shop-local entitlement snapshot (ONE source of truth for UI)
   add('entitlements:status', wrapSync(() => s.entitlementsStatus()));
   add('entitlements:get', wrapSync(() => s.entitlementsGet()));

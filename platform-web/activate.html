@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Activate Shop</title>
+  <style>
+    :root { --bg:#0f172a; --card:#1e293b; --text:#f8fafc; --muted:#94a3b8; --accent:#38bdf8; --err:#f87171; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: Georgia, "Times New Roman", serif; background: linear-gradient(160deg,#0f172a,#1e3a5f 55%,#0f172a); color:var(--text); min-height:100vh; }
+    .wrap { max-width:480px; margin:0 auto; padding:48px 20px; }
+    h1 { font-size:1.75rem; margin:0 0 8px; letter-spacing:-0.02em; }
+    p { color:var(--muted); line-height:1.5; }
+    .card { background:var(--card); border:1px solid rgba(148,163,184,.25); border-radius:12px; padding:24px; margin-top:24px; }
+    label { display:block; font-size:.85rem; color:var(--muted); margin:12px 0 4px; }
+    input, select { width:100%; padding:10px 12px; border-radius:8px; border:1px solid #334155; background:#0f172a; color:var(--text); font:inherit; }
+    button { margin-top:16px; width:100%; padding:12px; border:0; border-radius:8px; background:var(--accent); color:#0f172a; font-weight:700; cursor:pointer; }
+    .err { color:var(--err); }
+    .ok { color:#4ade80; }
+    .steps { font-size:.9rem; color:var(--muted); }
+    .steps strong { color:var(--text); }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Activate Shop</h1>
+    <p class="steps"><strong>Install</strong> → Activate shop → Create owner → Device registration → Login</p>
+    <p>Having the installer alone does not grant access. Enter your activation code or open a secure activation link.</p>
+    <div class="card">
+      <label>Shop ID</label>
+      <input id="shop_id" placeholder="shop_…" />
+      <label>Activation code</label>
+      <input id="code" placeholder="XXXXX-XXXXX" autocomplete="off" />
+      <label>Or link token</label>
+      <input id="token" placeholder="from activation link" autocomplete="off" />
+      <label>Device name</label>
+      <input id="device_name" value="This device" />
+      <label>Device type</label>
+      <select id="device_type">
+        <option value="windows">Windows</option>
+        <option value="android">Android</option>
+        <option value="browser">Browser</option>
+      </select>
+      <button id="go">Activate</button>
+      <p id="msg" class="err"></p>
+    </div>
+  </div>
+  <script>
+    const params = new URLSearchParams(location.search);
+    if (params.get('shop')) document.getElementById('shop_id').value = params.get('shop');
+    if (params.get('token')) document.getElementById('token').value = params.get('token');
+
+    function devicePublicId() {
+      let id = localStorage.getItem('shoppos_device_public_id');
+      if (!id) {
+        id = 'dev_' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+        localStorage.setItem('shoppos_device_public_id', id);
+      }
+      return id;
+    }
+
+    document.getElementById('go').onclick = async () => {
+      const msg = document.getElementById('msg');
+      msg.className = 'err';
+      msg.textContent = '';
+      try {
+        const res = await fetch('/rpc', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            method: 'activation:redeem',
+            args: [{
+              shop_id: document.getElementById('shop_id').value.trim(),
+              code: document.getElementById('code').value.trim() || undefined,
+              link_token: document.getElementById('token').value.trim() || undefined,
+              device: {
+                device_public_id: devicePublicId(),
+                device_name: document.getElementById('device_name').value.trim(),
+                device_type: document.getElementById('device_type').value,
+                app_version: 'web-activate'
+              }
+            }]
+          })
+        });
+        const json = await res.json();
+        if (!res.ok || json.success === false) throw new Error(json.error || 'Activation failed');
+        const data = json.data || json;
+        localStorage.setItem('shoppos_shop_id', data.shop_id || '');
+        localStorage.setItem('shoppos_license_lease', JSON.stringify(data.license || {}));
+        localStorage.setItem('shoppos_license_sync_at', String(Date.now()));
+        msg.className = 'ok';
+        msg.textContent = 'Activated: ' + (data.shop_name || data.shop_id) + '. Device registered. You can now create/confirm the owner account and sign in.';
+      } catch (e) {
+        msg.textContent = e.message || String(e);
+      }
+    };
+  </script>
+</body>
+</html>

@@ -209,7 +209,7 @@ function applyEntitlementSnapshot(snapshot, actor = 'saas-sync') {
   }
 
   const sub = String(snapshot.subscription_status || process.env.SHOP_SUBSCRIPTION_STATUS || 'TRIAL').toUpperCase();
-  const isActive = sub === 'SUSPENDED' ? 0 : 1;
+  const isActive = (sub === 'SUSPENDED' || sub === 'EXPIRED') ? 0 : 1;
   const ts = nowIso();
   try {
     dbRun(

@@ -5919,7 +5919,116 @@ module.exports = {
       platformProvisionJobs: (shopId) => {
         const p = require('./provisioner');
         return p.listJobs(shopId);
-      }
+      },
+      // Phase 7+ control plane
+      ...(() => {
+        const cp = require('./platform-control-plane');
+        return {
+          platformCustomerControl: (id) => {
+            const r = cp.getCustomerControl(id);
+            return r?.data != null ? r.data : r;
+          },
+          platformCountdown: (id) => {
+            const r = cp.getCountdown(id);
+            return r?.data != null ? r.data : r;
+          },
+          platformShopAccess: (id) => {
+            const r = cp.getShopAccessById(id);
+            return r?.data != null ? r.data : r;
+          },
+          platformCurrentAccess: () => cp.getCurrentShopAccess(),
+          platformListContractVersions: () => {
+            const r = cp.listContractVersions();
+            return r?.data != null ? r.data : r;
+          },
+          platformGetActiveContract: () => {
+            const r = cp.getActiveContract();
+            return r?.data != null ? r.data : r;
+          },
+          platformCreateContractVersion: (d, a) => {
+            const r = cp.createContractVersion(d || {}, a);
+            return r?.data != null ? r.data : r;
+          },
+          platformShopContract: (id) => {
+            const r = cp.getShopContractStatus(id);
+            return r?.data != null ? r.data : r;
+          },
+          platformAcceptContract: (id, d, meta) => {
+            const r = cp.acceptContract(id, d || {}, meta || {});
+            return r?.data != null ? r.data : r;
+          },
+          platformPrintContract: (id, acceptanceId) => {
+            const r = cp.getAcceptedAgreementPrintable(id, acceptanceId);
+            return r?.data != null ? r.data : r;
+          },
+          platformCreateActivation: (id, d, a) => {
+            const r = cp.createActivation(id, d || {}, a);
+            return r?.data != null ? r.data : r;
+          },
+          platformListActivations: (id) => {
+            const r = cp.listActivations(id);
+            return r?.data != null ? r.data : r;
+          },
+          platformRevokeActivation: (actId, a) => {
+            const r = cp.revokeActivation(actId, a);
+            return r?.data != null ? r.data : r;
+          },
+          platformRegenerateActivation: (id, d, a) => {
+            const r = cp.regenerateActivation(id, d || {}, a);
+            return r?.data != null ? r.data : r;
+          },
+          platformRedeemActivation: (d) => {
+            const r = cp.redeemActivation(d || {});
+            return r?.data != null ? r.data : r;
+          },
+          platformListDevices: (id) => {
+            const r = cp.listDevices(id);
+            return r?.data != null ? r.data : r;
+          },
+          platformRevokeDevice: (devId, a) => {
+            const r = cp.revokeDevice(devId, a);
+            return r?.data != null ? r.data : r;
+          },
+          platformValidateLicense: (d) => {
+            const r = cp.validateLicense(d || {});
+            return r?.data != null ? r.data : r;
+          },
+          platformEvaluateOfflineLease: (lease, opts) => cp.evaluateOfflineLease(lease, opts || {}),
+          platformListServiceFees: () => {
+            const r = cp.listServiceFees();
+            return r?.data != null ? r.data : r;
+          },
+          platformUpsertServiceFee: (d, a) => {
+            const r = cp.upsertServiceFee(d || {}, a);
+            return r?.data != null ? r.data : r;
+          },
+          platformCalcServiceFee: (subtotal, opts) => cp.calculateServiceFee(subtotal, opts || {}),
+          platformListNotificationRules: () => {
+            const r = cp.listNotificationRules();
+            return r?.data != null ? r.data : r;
+          },
+          platformUpdateNotificationRule: (id, d, a) => {
+            const r = cp.updateNotificationRule(id, d || {}, a);
+            return r?.data != null ? r.data : r;
+          },
+          platformNotificationLog: (shopId, limit) => {
+            const r = cp.listNotificationLog(shopId, limit);
+            return r?.data != null ? r.data : r;
+          },
+          platformProcessNotifications: (opts) => {
+            const r = cp.processSubscriptionNotifications(opts || {});
+            return r?.data != null ? r.data : r;
+          },
+          platformListAccessMessages: () => {
+            const r = cp.listAccessMessages();
+            return r?.data != null ? r.data : r;
+          },
+          platformSetAccessMessage: (key, d, a) => {
+            const r = cp.setAccessMessage(key, d || {}, a);
+            return r?.data != null ? r.data : r;
+          }
+        };
+      })()
     };
   })()
 };

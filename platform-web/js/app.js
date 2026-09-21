@@ -11,6 +11,8 @@ const PlatformApp = {
   shopHealthPreview: null,
   shopFilter: '',
   shopStatusFilter: '',
+  control: null,
+  lastActivation: null,
   assignment: null,
   entitlementsPreview: null,
   filterKind: '',
@@ -167,6 +169,7 @@ const PlatformApp = {
             <option value="ACTIVE">ACTIVE</option>
             <option value="OVERDUE">OVERDUE</option>
             <option value="SUSPENDED">SUSPENDED</option>
+            <option value="EXPIRED">EXPIRED</option>
           </select></div>
         <button class="btn" data-act="create-shop">Create shop</button>
       </div>
@@ -176,7 +179,7 @@ const PlatformApp = {
           <div class="grow"><input id="sh-filter" value="${this.esc(this.shopFilter)}" placeholder="Search shops…"></div>
           <select id="sh-status-filter">
             <option value="">All statuses</option>
-            ${['TRIAL','ACTIVE','OVERDUE','SUSPENDED'].map((st) =>
+            ${['TRIAL','ACTIVE','OVERDUE','SUSPENDED','EXPIRED'].map((st) =>
               `<option value="${st}" ${this.shopStatusFilter === st ? 'selected' : ''}>${st}</option>`).join('')}
           </select>
           <button class="btn secondary" data-act="filter-shops">Filter</button>
@@ -215,10 +218,11 @@ const PlatformApp = {
           <button class="btn" data-act="save-shop-assign">Save package / add-ons</button>
           <h3 style="margin-top:16px">Subscription</h3>
           <select id="det-status">
-            ${['TRIAL','ACTIVE','OVERDUE','SUSPENDED'].map((st) =>
+            ${['TRIAL','ACTIVE','OVERDUE','SUSPENDED','EXPIRED'].map((st) =>
               `<option value="${st}" ${s.subscription_status === st ? 'selected' : ''}>${st}</option>`).join('')}
           </select>
           <button class="btn secondary" data-act="save-shop-status">Update status</button>
+          ${this.renderCustomerControl(s)}
           <h3 style="margin-top:16px">Module overrides (JSON)</h3>
           <textarea id="det-overrides" rows="5">${this.esc(JSON.stringify((s.overrides || []).map((o) => ({
             module_id: o.module_id, enabled: Number(o.enabled), reason: o.reason || ''
@@ -257,6 +261,65 @@ const PlatformApp = {
         </div>
       </div>
     </div>` : ''}`;
+  },
+
+  renderCustomerControl(s) {
+    const c = this.control;
+    if (!c || c.customer?.id !== s.id) {
+      return `<h3 style="margin-top:16px">Customer control</h3>
+        <button class="btn secondary" data-act="load-control">Load contract, activation, devices, fees, audit</button>`;
+    }
+    const cd = c.subscription || {};
+    const contract = c.contract || {};
+    const access = c.access || {};
+    const fee = c.service_fee || {};
+    const acts = c.activation || [];
+    const devices = c.devices || [];
+    const audit = c.audit || [];
+    const secret = this.lastActivation;
+    return `<div style="margin-top:16px;border-top:1px solid #ccc;padding-top:12px">
+      <h3>Customer control</h3>
+      <p class="muted">Registration is stored on the platform shop record (separate from the customer business database).</p>
+      <p><strong>Access:</strong> ${this.esc(access.access_state || '—')} ·
+        <strong>Days remaining:</strong> ${cd.days_remaining == null ? '—' : this.esc(cd.days_remaining)} ·
+        <strong>Expiry:</strong> ${this.esc(cd.expiry_date || '—')} ·
+        <strong>Grace:</strong> ${this.esc(cd.grace_period_days ?? '—')} days
+        ${cd.suspension_date ? ` · <strong>Suspended:</strong> ${this.esc(cd.suspension_date)}` : ''}</p>
+      <h4>Contract</h4>
+      <p>${contract.accepted ? `Accepted ${this.esc(contract.latest_acceptance?.version_label || '')} at ${this.esc(contract.latest_acceptance?.accepted_at || '')}` : 'Not accepted'}
+        ${contract.needs_reacceptance ? ' · <strong>Re-acceptance required</strong>' : ''}</p>
+      <div class="row">
+        <button class="btn secondary" data-act="accept-contract">Record acceptance</button>
+        <button class="btn secondary" data-act="print-contract">Print accepted agreement</button>
+        <button class="btn secondary" data-act="new-contract">New agreement version</button>
+      </div>
+      <h4>Activation</h4>
+      <div class="row">
+        <button class="btn" data-act="gen-activation">Generate code + link</button>
+        <button class="btn secondary" data-act="regen-activation">Regenerate</button>
+      </div>
+      ${secret ? `<pre class="muted" style="white-space:pre-wrap;font-size:12px">Code: ${this.esc(secret.code)}\nLink token (show once): ${this.esc(secret.link_token)}\nExpires: ${this.esc(secret.expires_at)}\nQR payload stored locally — do not log this.</pre>` : ''}
+      <ul class="muted">${acts.map((a) => `<li>${this.esc(a.status)} · hint …${this.esc(a.code_hint)} · uses ${a.use_count}/${a.max_uses} · exp ${this.esc(a.expires_at)}
+        ${a.status === 'active' ? `<button class="btn secondary" data-revoke-act="${this.esc(a.id)}">Revoke</button>` : ''}</li>`).join('') || '<li>No activations</li>'}</ul>
+      <h4>Devices</h4>
+      <ul class="muted">${devices.map((d) => `<li>${this.esc(d.device_name)} · ${this.esc(d.device_type)} · ${this.esc(d.status)} · last ${this.esc(d.last_connection || '—')}
+        ${d.status !== 'revoked' ? `<button class="btn secondary" data-revoke-dev="${this.esc(d.id)}">Revoke</button>` : ''}</li>`).join('') || '<li>No devices</li>'}</ul>
+      <h4>Service fee (${this.esc(fee.source || 'none')})</h4>
+      <div class="row">
+        <select id="fee-type">
+          <option value="percent">Percent</option>
+          <option value="fixed">Fixed</option>
+          <option value="percent_plus_fixed">Percent + fixed</option>
+        </select>
+        <input id="fee-percent" type="number" step="0.01" placeholder="%" style="width:80px">
+        <input id="fee-fixed" type="number" step="0.01" placeholder="Fixed" style="width:80px">
+        <button class="btn secondary" data-act="save-fee">Save customer fee</button>
+      </div>
+      <p class="muted">${fee.enabled ? `Enabled · ${this.esc(fee.config?.fee_type)} ${fee.config?.percent || 0}% + ${fee.config?.fixed_amount || 0}` : 'Disabled / none'}</p>
+      <h4>Audit</h4>
+      <ul class="muted" style="max-height:160px;overflow:auto">${audit.slice(0, 12).map((a) =>
+        `<li>${this.esc(a.created_at)} · ${this.esc(a.actor)} · ${this.esc(a.action)}</li>`).join('') || '<li>No audit</li>'}</ul>
+    </div>`;
   },
 
   renderAssign() {
@@ -548,6 +611,108 @@ const PlatformApp = {
         await this.loadAll();
         this.message = 'Subscription status updated';
         this.error = '';
+        this.render();
+      } catch (e) { this.error = e.message; this.render(); }
+    });
+    const reloadControl = async () => {
+      const id = this.selectedShop?.id;
+      this.control = await PlatformAPI.customerControl(id);
+      this.render();
+    };
+    root.querySelector('[data-act="load-control"]')?.addEventListener('click', async () => {
+      try {
+        await reloadControl();
+        this.message = 'Customer control loaded';
+        this.error = '';
+        this.render();
+      } catch (e) { this.error = e.message; this.render(); }
+    });
+    root.querySelector('[data-act="accept-contract"]')?.addEventListener('click', async () => {
+      try {
+        const id = this.selectedShop?.id;
+        await PlatformAPI.acceptContract(id, {
+          accepted_by_name: this.selectedShop.owner_name,
+          accepted_by_email: this.selectedShop.owner_email
+        });
+        this.lastActivation = null;
+        await reloadControl();
+        this.message = 'Contract acceptance recorded';
+        this.error = '';
+        this.render();
+      } catch (e) { this.error = e.message; this.render(); }
+    });
+    root.querySelector('[data-act="print-contract"]')?.addEventListener('click', async () => {
+      try {
+        const doc = await PlatformAPI.printContract(this.selectedShop.id);
+        const w = window.open('', '_blank');
+        w.document.write(`<pre style="white-space:pre-wrap;font-family:serif;padding:24px">${this.esc(doc.title)}\n\n${this.esc(doc.body_text)}\n\nAccepted: ${this.esc(doc.accepted_at)} by ${this.esc(doc.accepted_by_name)}\n${this.esc(doc.legal_notice || '')}</pre>`);
+        w.document.close();
+        w.print();
+      } catch (e) { this.error = e.message; this.render(); }
+    });
+    root.querySelector('[data-act="new-contract"]')?.addEventListener('click', async () => {
+      try {
+        const label = prompt('New version label', 'v' + (Date.now() % 10000));
+        if (!label) return;
+        await PlatformAPI.createContractVersion({
+          version_label: label,
+          title: 'Shop POS Customer Agreement',
+          body_text: 'DRAFT — Configurable. Must be reviewed by a qualified South African legal professional before commercial use.\n\nUpdated terms for ' + label,
+          activate: true
+        });
+        await reloadControl();
+        this.message = 'New contract version activated — customers may need re-acceptance';
+        this.error = '';
+        this.render();
+      } catch (e) { this.error = e.message; this.render(); }
+    });
+    root.querySelector('[data-act="gen-activation"]')?.addEventListener('click', async () => {
+      try {
+        this.lastActivation = await PlatformAPI.createActivation(this.selectedShop.id, { expires_hours: 72 });
+        await reloadControl();
+        this.message = 'Activation generated (code shown once — not stored in plaintext)';
+        this.error = '';
+        this.render();
+      } catch (e) { this.error = e.message; this.render(); }
+    });
+    root.querySelector('[data-act="regen-activation"]')?.addEventListener('click', async () => {
+      try {
+        this.lastActivation = await PlatformAPI.regenerateActivation(this.selectedShop.id, { expires_hours: 72 });
+        await reloadControl();
+        this.message = 'Activation regenerated; previous codes revoked';
+        this.error = '';
+        this.render();
+      } catch (e) { this.error = e.message; this.render(); }
+    });
+    root.querySelectorAll('[data-revoke-act]').forEach((btn) => btn.addEventListener('click', async () => {
+      try {
+        await PlatformAPI.revokeActivation(btn.getAttribute('data-revoke-act'));
+        this.lastActivation = null;
+        await reloadControl();
+        this.message = 'Activation revoked';
+        this.render();
+      } catch (e) { this.error = e.message; this.render(); }
+    }));
+    root.querySelectorAll('[data-revoke-dev]').forEach((btn) => btn.addEventListener('click', async () => {
+      try {
+        await PlatformAPI.revokeDevice(btn.getAttribute('data-revoke-dev'));
+        await reloadControl();
+        this.message = 'Device revoked';
+        this.render();
+      } catch (e) { this.error = e.message; this.render(); }
+    }));
+    root.querySelector('[data-act="save-fee"]')?.addEventListener('click', async () => {
+      try {
+        await PlatformAPI.upsertServiceFee({
+          scope: 'customer',
+          scope_id: this.selectedShop.id,
+          enabled: true,
+          fee_type: document.getElementById('fee-type').value,
+          percent: Number(document.getElementById('fee-percent').value) || 0,
+          fixed_amount: Number(document.getElementById('fee-fixed').value) || 0
+        });
+        await reloadControl();
+        this.message = 'Customer service fee saved';
         this.render();
       } catch (e) { this.error = e.message; this.render(); }
     });

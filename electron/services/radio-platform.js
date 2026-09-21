@@ -1018,6 +1018,10 @@ function listAdvertJobs(token) {
 }
 
 function tickAdvertJobs(stationId) {
+  try {
+    const entitlements = require('./entitlements');
+    if (!entitlements.shouldRunJob(['mod.radio'])) return { skipped: 'FEATURE_NOT_INCLUDED' };
+  } catch (_) { /* */ }
   const due = dbAll(`
     SELECT * FROM radio_advert_jobs
     WHERE station_id = ? AND status = 'scheduled' AND datetime(run_at) <= datetime('now')

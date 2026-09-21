@@ -455,6 +455,12 @@ function startQueueWorker() {
 }
 
 async function processQueue(limit = 15) {
+  try {
+    const entitlements = require('./entitlements');
+    if (!entitlements.shouldRunJob(['mod.communication'])) {
+      return { processed: 0, skipped: 'FEATURE_NOT_INCLUDED' };
+    }
+  } catch (_) { /* */ }
   if (_processing) return { processed: 0 };
   _processing = true;
   let processed = 0;
