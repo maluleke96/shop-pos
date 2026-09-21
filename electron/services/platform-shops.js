@@ -505,6 +505,7 @@ async function syncCustomerEntitlements(shopId) {
   const snapshot = sync.buildSnapshotForShop(shopId);
   let secret = '';
   let secretCreated = false;
+  let prevEnvStatus = '';
   try {
     const vars = await railway.getVariables({
       projectId: shop.railway_project_id,
@@ -512,6 +513,7 @@ async function syncCustomerEntitlements(shopId) {
       serviceId: shop.railway_service_id
     });
     secret = String(vars.SAAS_SYNC_SECRET || '').trim();
+    prevEnvStatus = String(vars.SHOP_SUBSCRIPTION_STATUS || '').toUpperCase();
   } catch (e) {
     return { ok: false, error: String(e.message || e).slice(0, 200) };
   }
@@ -534,17 +536,22 @@ async function syncCustomerEntitlements(shopId) {
     skipDeploys: true
   });
 
-  // Redeploy when subscription status changes so running env picks up ACTIVE/SUSPENDED
-  // (process.env is fixed until restart). Also redeploy when creating a new sync secret.
+  // Redeploy only when env must change (new secret or subscription status flip).
+  // Redeploying on every ACTIVE sync races the HTTP snapshot onto a dying instance
+  // and leaves package_items empty on the replacement.
   const status = String(snapshot.subscription_status || '').toUpperCase();
-  const needsStatusRedeploy = ['ACTIVE', 'TRIAL', 'OVERDUE', 'SUSPENDED', 'EXPIRED'].includes(status);
-  if (secretCreated || needsStatusRedeploy) {
+  const statusChanged = !!prevEnvStatus && prevEnvStatus !== status;
+  const needsStatusRedeploy = secretCreated || statusChanged || ['SUSPENDED', 'EXPIRED'].includes(status);
+  if (needsStatusRedeploy) {
     try {
       await railway.deployService({
         environmentId: shop.railway_environment_id,
         serviceId: shop.railway_service_id
       });
-      await new Promise((r) => setTimeout(r, secretCreated ? 45000 : 20000));
+      const healthOk = await waitCustomerHealth(shop.shop_url, secretCreated ? 24 : 18);
+      if (!healthOk) {
+        console.warn('[shops] customer health not ready after redeploy; will still attempt snapshot push');
+      }
     } catch (e) {
       if (secretCreated) {
         return { ok: false, error: 'secret set but redeploy failed: ' + String(e.message || e).slice(0, 120) };
@@ -554,23 +561,55 @@ async function syncCustomerEntitlements(shopId) {
   }
 
   let pushed = null;
-  try {
-    pushed = await sync.pushSnapshotToCustomerUrl(shop.shop_url, secret, snapshot);
-  } catch (e) {
-    // If customer is mid-redeploy or still on old image, env upsert+redeploy is enough for access.
-    const msg = String(e.message || e);
+  let lastPushErr = null;
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    try {
+      pushed = await sync.pushSnapshotToCustomerUrl(shop.shop_url, secret, snapshot);
+      lastPushErr = null;
+      break;
+    } catch (e) {
+      lastPushErr = e;
+      const msg = String(e.message || e);
+      if (/SHOP_SUSPENDED|SHOP_EXPIRED/i.test(msg) && ['SUSPENDED', 'EXPIRED'].includes(status)) {
+        audit('system', 'customer_entitlement_sync_deferred', shopId, { error: msg.slice(0, 160), via: 'env_redeploy' });
+        return { ok: true, deferred_http_sync: true, reason: msg.slice(0, 160), subscription_status: status };
+      }
+      if (!/starting|502|503|fetch failed|ECONNREFUSED|timeout|HEALTH|UNAVAILABLE/i.test(msg) && attempt >= 2) {
+        break;
+      }
+      console.warn(`[shops] snapshot push attempt ${attempt} failed:`, msg.slice(0, 120));
+      await new Promise((r) => setTimeout(r, 8000 * attempt));
+      await waitCustomerHealth(shop.shop_url, 6);
+    }
+  }
+  if (lastPushErr) {
+    const msg = String(lastPushErr.message || lastPushErr);
     if (/SHOP_SUSPENDED|SHOP_EXPIRED|starting|502|503/i.test(msg)) {
       audit('system', 'customer_entitlement_sync_deferred', shopId, { error: msg.slice(0, 160), via: 'env_redeploy' });
       return { ok: true, deferred_http_sync: true, reason: msg.slice(0, 160), subscription_status: status };
     }
-    throw e;
+    throw lastPushErr;
   }
   audit('system', 'customer_entitlement_synced', shopId, {
     package_id: snapshot.package_id,
     addon_ids: snapshot.addon_ids,
-    subscription_status: snapshot.subscription_status
+    subscription_status: snapshot.subscription_status,
+    redeployed: !!needsStatusRedeploy
   });
   return { ok: true, pushed: railway.redact ? require('./railway-client').redact(pushed) : pushed };
+}
+
+async function waitCustomerHealth(shopUrl, attempts = 12) {
+  const base = String(shopUrl || '').replace(/\/$/, '');
+  if (!base) return false;
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      const h = await fetch(base + '/health', { signal: AbortSignal.timeout(12000) }).then((r) => r.json());
+      if (h && h.ok) return true;
+    } catch (_) { /* */ }
+    await new Promise((r) => setTimeout(r, 10000));
+  }
+  return false;
 }
 
 function queueCustomerEntitlementSync(shopId) {
