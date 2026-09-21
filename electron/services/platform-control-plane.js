@@ -203,17 +203,21 @@ function getAccessMessage(key) {
   ensureSchema();
   const row = dbGet('SELECT * FROM platform_access_messages WHERE message_key = ?', [key]);
   if (!row) {
+    const bodyText = 'Please contact your administrator for assistance.';
     return {
       message_key: key,
       title: 'Service Temporarily Unavailable',
-      body_text: 'Please contact your administrator for assistance.',
+      body: bodyText,
+      body_text: bodyText,
       contact_label: 'Contact Administrator'
     };
   }
+  const bodyText = row.body_text;
   return {
     message_key: row.message_key,
     title: row.title,
-    body_text: row.body_text,
+    body: bodyText,
+    body_text: bodyText,
     contact_label: row.contact_label || 'Contact Administrator'
   };
 }
@@ -288,7 +292,7 @@ function evaluateShopAccess(shopRow, opts = {}) {
       activation_status: shopRow?.activation_status || 'pending',
       contact_admin_url: contactUrl,
       message: customMsg
-        ? { title: msg.title, body_text: customMsg, contact_label: msg.contact_label }
+        ? { title: msg.title, body: customMsg, body_text: customMsg, contact_label: msg.contact_label }
         : msg,
       shop_id: shopRow?.id || null
     };
@@ -320,6 +324,7 @@ function evaluateShopAccess(shopRow, opts = {}) {
         access_state: 'CONTRACT_REQUIRED',
         message: {
           title: 'Agreement Required',
+          body: 'Please accept the customer agreement before activation.',
           body_text: 'Please accept the customer agreement before activation.',
           contact_label: 'Contact Administrator'
         }

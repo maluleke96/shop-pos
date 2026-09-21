@@ -149,7 +149,8 @@ async function main() {
   }
   log('SUSPENDED blocks RPC', blocked.json?.code === 'SHOP_SUSPENDED' || blocked.status === 403, blocked.json?.code || blocked.status);
   log('SUSPENDED rich message.title', !!blocked.json?.message?.title, blocked.json?.message?.title);
-  log('SUSPENDED rich message.body', !!blocked.json?.message?.body_text, String(blocked.json?.message?.body_text || '').slice(0, 80));
+  log('SUSPENDED rich message.body', !!(blocked.json?.message?.body || blocked.json?.message?.body_text), String(blocked.json?.message?.body || blocked.json?.message?.body_text || '').slice(0, 80));
+  log('SUSPENDED message.body alias', !!blocked.json?.message?.body, String(blocked.json?.message?.body || '').slice(0, 40));
   log('SUSPENDED no internals', !/railway|SAAS_SYNC|0296f469|postgres:\/\//i.test(JSON.stringify(blocked.json || {})));
 
   // Reactivate — must not stick on stale env

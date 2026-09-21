@@ -404,7 +404,7 @@ const Utils = {
   showAccessBlockedOverlay(payload) {
     const msg = payload?.message || {};
     const title = msg.title || 'Service Temporarily Unavailable';
-    const body = msg.body_text || 'Your shop access has been temporarily suspended.\n\nThis may be due to your subscription status or an administrative action.\n\nPlease contact your administrator for assistance.';
+    const body = msg.body || msg.body_text || 'Your shop access has been temporarily suspended.\n\nThis may be due to your subscription status or an administrative action.\n\nPlease contact your administrator for assistance.';
     const label = msg.contact_label || 'Contact Administrator';
     const url = payload?.contact_admin_url || '';
     let el = document.getElementById('saas-access-blocked');

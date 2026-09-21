@@ -650,7 +650,7 @@ function assertShopNotSuspended() {
         const access = err.access || controlPlane.getCurrentShopAccess?.() || {};
         const msg = access.message;
         const friendly = msg
-          ? `${msg.title || 'Service Temporarily Unavailable'}: ${(msg.body_text || '').split('\n')[0]}`
+          ? `${msg.title || 'Service Temporarily Unavailable'}: ${(msg.body || msg.body_text || '').split('\n')[0]}`
           : 'SHOP_SUSPENDED: Your shop access has been temporarily suspended. Please contact your administrator.';
         const e = new Error(friendly);
         e.code = err.code === 'SHOP_EXPIRED' ? 'SHOP_EXPIRED' : 'SHOP_SUSPENDED';
