@@ -1,0 +1,166 @@
+{
+  "at": "2026-09-21T15:01:22.085Z",
+  "lab": "https://shoppos-lab-production.up.railway.app",
+  "shop_id": "shop_mubde3o1_cb4d19bf",
+  "shop_url": "https://shoppos-production-43a7.up.railway.app",
+  "activation_link": "https://shoppos-production-43a7.up.railway.app/activate?token=k3Jkcy1IsSd-RwZZArJEXAXIzGBgYfJ-&shop=shop_mubde3o1_cb4d19bf",
+  "railway_project_id": "3168b2fc-6e06-4cbe-85cb-768a5f0e1a71",
+  "chisa_untouched": true,
+  "results": [
+    {
+      "name": "platform login",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "package available",
+      "ok": true,
+      "detail": "Lab Shop Floor"
+    },
+    {
+      "name": "create customer",
+      "ok": true,
+      "detail": "shop_mubde3o1_cb4d19bf"
+    },
+    {
+      "name": "customer fields saved",
+      "ok": true,
+      "detail": "addr=1 Lab Street, Testville grace=3"
+    },
+    {
+      "name": "provision READY",
+      "ok": true,
+      "detail": "online"
+    },
+    {
+      "name": "not Chisa project",
+      "ok": true,
+      "detail": "3168b2fc-6e06-4cbe-85cb-768a5f0e1a71"
+    },
+    {
+      "name": "customer shop URL",
+      "ok": true,
+      "detail": "https://shoppos-production-43a7.up.railway.app"
+    },
+    {
+      "name": "customer health",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "Platform Control page",
+      "ok": true,
+      "detail": "status=200"
+    },
+    {
+      "name": "Create Customer form fields",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "provision progress stages UI",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "activation Copy/Open/Regen/Revoke UI",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "activation complete URL",
+      "ok": true,
+      "detail": "https://shoppos-production-43a7.up.railway.app/activate?token=k3Jkcy1IsSd-RwZZArJEXAXIzGBgYfJ-&shop=shop_mubde3o1_cb4d19bf"
+    },
+    {
+      "name": "activation bundle pushed",
+      "ok": true,
+      "detail": "{\"ok\":true,\"skipped\":false}"
+    },
+    {
+      "name": "customer /activate served",
+      "ok": true,
+      "detail": "status=200"
+    },
+    {
+      "name": "activate steps present",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "activation context",
+      "ok": true,
+      "detail": "{\"accepted\":false,\"required\":true,\"token_ok\":true,\"err\":null}"
+    },
+    {
+      "name": "contract gate blocks redeem",
+      "ok": true,
+      "detail": "Please accept the customer agreement before activating this device"
+    },
+    {
+      "name": "contract accepted",
+      "ok": true,
+      "detail": "ok"
+    },
+    {
+      "name": "device activated",
+      "ok": true,
+      "detail": "pdev_mubdh9rx_fbe786fc"
+    },
+    {
+      "name": "token reuse blocked",
+      "ok": true,
+      "detail": "Activation is not active"
+    },
+    {
+      "name": "invalid token reported",
+      "ok": true,
+      "detail": "Invalid activation credentials"
+    },
+    {
+      "name": "revoked activation status",
+      "ok": true,
+      "detail": "revoked"
+    },
+    {
+      "name": "expiry field on activation",
+      "ok": true,
+      "detail": "2026-09-21T16:00:53.228Z"
+    },
+    {
+      "name": "customer /platform blocked",
+      "ok": true,
+      "detail": "status=404"
+    },
+    {
+      "name": "setup handoff URL in activate.html",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "POS handoff URL in activate.html",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "suspension blocks access",
+      "ok": false,
+      "detail": ""
+    },
+    {
+      "name": "reactivation restores access",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "customer data intact",
+      "ok": true,
+      "detail": "Onboard UI mubde3rs"
+    },
+    {
+      "name": "no secrets in activation/UI payloads",
+      "ok": true,
+      "detail": ""
+    }
+  ]
+}

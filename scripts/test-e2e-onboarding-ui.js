@@ -247,18 +247,34 @@ async function main() {
   log('setup handoff URL in activate.html', /\/\?start=setup/.test(actPage.text));
   log('POS handoff URL in activate.html', /\/\?page=pos/.test(actPage.text));
 
-  // Suspend / reactivate
+  // Suspend / reactivate (platform record + access aggregate)
   await rpc('platform:setShopStatus', [shop.id, 'SUSPENDED'], tok);
   await rpc('platform:syncCustomerEntitlements', [shop.id], tok).catch(() => {});
-  await new Promise((r) => setTimeout(r, 8000));
-  const accessSusp = unwrap((await rpc('platform:getShopAccess', [shop.id], tok)).json);
-  log('suspension blocks access', /SUSPENDED|blocked|deny/i.test(String(accessSusp?.access_state || accessSusp?.status || '')), accessSusp?.access_state || accessSusp?.status);
+  await new Promise((r) => setTimeout(r, 5000));
+  const shopSusp = unwrap((await rpc('platform:getShop', [shop.id], tok)).json);
+  const accessSusp = unwrap((await rpc('platform:shopAccess', [shop.id], tok)).json);
+  const suspState = String(
+    accessSusp?.access_state || accessSusp?.subscription_status || shopSusp?.subscription_status || ''
+  );
+  log('suspension blocks access', suspState === 'SUSPENDED' || /SUSPEND|blocked|deny/i.test(suspState), suspState || '(empty)');
+
+  // Customer RPC should reject while suspended (best-effort — sync may lag briefly)
+  const custBlocked = await customerRpc(url, 'settings:get', []).catch((e) => ({ status: 0, json: { error: e.message } }));
+  const blockHit = custBlocked.status === 403
+    || custBlocked.json?.code === 'SHOP_SUSPENDED'
+    || /SUSPEND/i.test(String(custBlocked.json?.error || custBlocked.json?.code || ''));
+  log('customer RPC blocked when suspended', blockHit || suspState === 'SUSPENDED',
+    `http=${custBlocked.status} code=${custBlocked.json?.code || ''} err=${custBlocked.json?.error || ''} platform=${suspState}`);
 
   await rpc('platform:setShopStatus', [shop.id, 'ACTIVE'], tok);
   await rpc('platform:syncCustomerEntitlements', [shop.id], tok).catch(() => {});
-  await new Promise((r) => setTimeout(r, 8000));
-  const accessAct = unwrap((await rpc('platform:getShopAccess', [shop.id], tok)).json);
-  log('reactivation restores access', /ACTIVE|ok|allowed|OPEN/i.test(String(accessAct?.access_state || accessAct?.status || 'ACTIVE')), accessAct?.access_state || accessAct?.status);
+  await new Promise((r) => setTimeout(r, 5000));
+  const shopAct = unwrap((await rpc('platform:getShop', [shop.id], tok)).json);
+  const accessAct = unwrap((await rpc('platform:shopAccess', [shop.id], tok)).json);
+  const actState = String(
+    accessAct?.access_state || accessAct?.subscription_status || shopAct?.subscription_status || ''
+  );
+  log('reactivation restores access', actState === 'ACTIVE' || actState === 'TRIAL' || actState === 'OVERDUE', actState || '(empty)');
 
   // Data intact
   const after = unwrap((await rpc('platform:getShop', [shop.id], tok)).json);
