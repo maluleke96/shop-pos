@@ -210,11 +210,15 @@ function applyEntitlementSnapshot(snapshot, actor = 'saas-sync') {
 
   const sub = String(snapshot.subscription_status || process.env.SHOP_SUBSCRIPTION_STATUS || 'TRIAL').toUpperCase();
   const isActive = sub === 'SUSPENDED' ? 0 : 1;
+  const ts = nowIso();
   dbRun(
-    `INSERT INTO platform_shops (id, shop_name, owner_name, owner_email, subscription_status, is_active, package_id, updated_at)
-     VALUES (?,?,?,?,?,?,?,?)
-     ON CONFLICT(id) DO UPDATE SET shop_name=excluded.shop_name, subscription_status=excluded.subscription_status,
-       is_active=excluded.is_active, package_id=excluded.package_id, updated_at=excluded.updated_at`,
+    `INSERT INTO platform_shops (
+       id, shop_name, owner_name, owner_email, subscription_status, is_active, package_id,
+       created_at, updated_at, deployment_status, notes
+     ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+     ON CONFLICT(id) DO UPDATE SET shop_name=excluded.shop_name,
+       subscription_status=excluded.subscription_status, is_active=excluded.is_active,
+       package_id=excluded.package_id, updated_at=excluded.updated_at`,
     [
       shopKey,
       snapshot.shop_name || shopKey,
@@ -223,7 +227,10 @@ function applyEntitlementSnapshot(snapshot, actor = 'saas-sync') {
       sub,
       isActive,
       packageId,
-      nowIso()
+      ts,
+      ts,
+      'online',
+      'saas-sync'
     ]
   );
 
