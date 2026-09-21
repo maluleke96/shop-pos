@@ -1,0 +1,39 @@
+{
+  "at": "2026-09-21T16:50:00.000Z",
+  "lab": "https://shoppos-lab-production.up.railway.app",
+  "chisa_project": "0296f469-4b4e-4b3f-99fb-063b03535e39",
+  "chisa_untouched": true,
+  "root_cause": "ShopProfiles.applyToEnv seeded a default Chisa Food cloud URL on hosted SaaS customer origins, so browser RPC/login/setup bound to Chisanyama instead of location.origin.",
+  "customers": {
+    "A": {
+      "id": "shop_mubgze6a_2a307159",
+      "url": "https://shoppos-production-a8fa.up.railway.app",
+      "name": "Happy Kitchen mubhasvw",
+      "project": "7724bd49-9a68-4d0a-83f7-37608d3e17e6",
+      "setup_complete": 1,
+      "owner_login": true
+    },
+    "B": {
+      "id": "shop_mubgzek5_09dca56d",
+      "url": "https://shoppos-production-7bac.up.railway.app",
+      "name": "Test Grill mubhasvw",
+      "project": "5db7c0f2-737c-4ee6-8150-a65f9352a308",
+      "setup_complete": 1,
+      "owner_login": true
+    }
+  },
+  "verified": {
+    "A_never_shows_B": true,
+    "B_never_shows_A": true,
+    "neither_shows_Chisanyama": true,
+    "activation_on_own_url": true,
+    "setup_handoff_relative": true,
+    "hosted_customer_rpc_origin": true,
+    "shop_name_from_own_db": true,
+    "returning_A_setup_complete_login": true,
+    "browser_titles_customer_specific_code": true,
+    "favicon_uses_api_logo": true,
+    "chisa_food_not_deployed_or_modified": true
+  },
+  "pass": true
+}

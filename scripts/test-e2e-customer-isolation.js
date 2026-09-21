@@ -79,11 +79,10 @@ async function provisionShop(tok, shopId) {
   return detail;
 }
 
-async function activateCustomer(url, shopId, shopName, stamp) {
-  const actRes = await rpc('platform:createActivation', [shopId, { expires_hours: 72, max_uses: 1 }],
-    (await rpc('platform:login', [USER, PASS])).json.token || (await rpc('platform:login', [USER, PASS])).json.data?.token);
-  // Prefer fresh token from outer scope — re-login is wasteful; caller passes tok via closure below
-  return actRes;
+/** Minimal valid PNG data-URL signature for e-sign gate. */
+function fakeSignature() {
+  // 1x1 transparent PNG
+  return 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
 }
 
 async function runActivationFlow(tok, url, shopId, shopName, stamp) {
@@ -103,11 +102,14 @@ async function runActivationFlow(tok, url, shopId, shopName, stamp) {
     shop_id: shopId, link_token: act.link_token
   }])).json);
 
-  await customerRpc(url, 'activation:acceptContract', [shopId, {
+  const accept = await customerRpc(url, 'activation:acceptContract', [shopId, {
     accepted_by_name: `${shopName} Owner`,
     accepted_by_email: `${stamp}@example.test`,
-    contract_version_id: ctx?.contract?.id
+    contract_version_id: ctx?.contract?.id,
+    signature_data: fakeSignature(),
+    require_signature: true
   }]);
+  log(`${shopName} contract signed`, accept.json?.success !== false, accept.json?.error || 'ok');
 
   const redeem = await customerRpc(url, 'activation:redeem', [{
     shop_id: shopId,
@@ -206,16 +208,30 @@ async function main() {
   }], tok).catch(() => {});
 
   const stamp = Date.now().toString(36);
-  const shopA = await createCustomer(tok, `Happy Kitchen ${stamp}`, `happy-${stamp}`, floor.id);
-  const shopB = await createCustomer(tok, `Test Grill ${stamp}`, `grill-${stamp}`, floor.id);
-  log('create Customer A', !!shopA?.id, shopA?.id);
-  log('create Customer B', !!shopB?.id, shopB?.id);
-  if (!shopA?.id || !shopB?.id) process.exit(1);
+  let shopA;
+  let shopB;
+  let detailA;
+  let detailB;
 
-  console.log('\nProvisioning Customer A…\n');
-  const detailA = await provisionShop(tok, shopA.id);
-  console.log('\nProvisioning Customer B…\n');
-  const detailB = await provisionShop(tok, shopB.id);
+  if (process.env.ISO_A_ID && process.env.ISO_B_ID) {
+    shopA = unwrap((await rpc('platform:getShop', [process.env.ISO_A_ID], tok)).json);
+    shopB = unwrap((await rpc('platform:getShop', [process.env.ISO_B_ID], tok)).json);
+    detailA = shopA;
+    detailB = shopB;
+    log('reuse Customer A', !!shopA?.id, shopA?.id);
+    log('reuse Customer B', !!shopB?.id, shopB?.id);
+  } else {
+    shopA = await createCustomer(tok, `Happy Kitchen ${stamp}`, `happy-${stamp}`, floor.id);
+    shopB = await createCustomer(tok, `Test Grill ${stamp}`, `grill-${stamp}`, floor.id);
+    log('create Customer A', !!shopA?.id, shopA?.id);
+    log('create Customer B', !!shopB?.id, shopB?.id);
+    if (!shopA?.id || !shopB?.id) process.exit(1);
+
+    console.log('\nProvisioning Customer A…\n');
+    detailA = await provisionShop(tok, shopA.id);
+    console.log('\nProvisioning Customer B…\n');
+    detailB = await provisionShop(tok, shopB.id);
+  }
 
   log('A provision READY', /READY|online/i.test(String(detailA.deployment_status)), detailA.deployment_status);
   log('B provision READY', /READY|online/i.test(String(detailB.deployment_status)), detailB.deployment_status);
@@ -249,23 +265,31 @@ async function main() {
     log('A/B names isolated', true, `A=${nameA || 'neutral'} B=${nameB || 'neutral'} (pre-setup OK)`);
   }
 
-  // Mark A setup complete via customer RPC if available, then re-probe landing expectation
-  let setupMarked = false;
-  try {
-    const save = await customerRpc(urlA, 'settings:save', [{ setup_complete: 1, shop_name: `Happy Kitchen ${stamp}` }]);
-    if (save.json?.success !== false) setupMarked = true;
-  } catch (_) { /* */ }
-  if (!setupMarked) {
-    try {
-      const save2 = await customerRpc(urlA, 'settings:saveParsed', [{ setup_complete: 1, shop_name: `Happy Kitchen ${stamp}` }]);
-      if (save2.json?.success !== false) setupMarked = true;
-    } catch (_) { /* */ }
-  }
-  log('A mark setup_complete (returning customer)', setupMarked, setupMarked ? 'saved' : 'RPC may require auth — skipped');
+  // Complete A's shop setup (owner account) then re-open URL → Login path
+  const setupName = `Happy Kitchen ${stamp}`;
+  const setupRes = await customerRpc(urlA, 'settings:completeSetup', [{
+    shop_name: setupName,
+    owner_username: `owner_a_${stamp}`,
+    owner_password: 'isolatioN1',
+    owner_name: 'Happy Owner',
+    recovery_secret: 'isolation-recovery-phrase',
+    recovery_secret_confirm: 'isolation-recovery-phrase',
+    currency: 'R'
+  }]);
+  const setupOk = setupRes.json?.success !== false && !setupRes.json?.error;
+  log('A complete setup (owner)', setupOk, setupRes.json?.error || 'ok');
 
-  if (setupMarked) {
+  if (setupOk) {
     const again = await probeLanding(urlA, 'A-return', false);
     log('A returning shows own name', /Happy Kitchen/i.test(again.name || ''), again.name);
+    log('A returning setup_complete', !!again.setupComplete, `setup_complete=${again.settings?.setup_complete}`);
+    // Login RPC with new owner
+    const loginA = await customerRpc(urlA, 'auth:login', [
+      `owner_a_${stamp}`,
+      'isolatioN1'
+    ]);
+    const loginOk = !!(loginA.json?.token || loginA.json?.data?.token || loginA.json?.user || loginA.json?.data?.user || loginA.json?.success);
+    log('A owner login', loginOk && loginA.json?.success !== false, loginA.json?.error || 'ok');
   }
 
   // Final Chisa guard
