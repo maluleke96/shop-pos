@@ -239,6 +239,55 @@ function applyEntitlementSnapshot(snapshot, actor = 'saas-sync') {
     console.warn('[saas-sync] platform_shops upsert:', e.message || e);
   }
 
+  // Service fees (for /order checkout display — same calc as Platform)
+  const serviceFees = Array.isArray(snapshot.service_fees) ? snapshot.service_fees : [];
+  if (serviceFees.length) {
+    try {
+      dbRun(`CREATE TABLE IF NOT EXISTS platform_service_fees (
+        id TEXT PRIMARY KEY,
+        scope TEXT NOT NULL,
+        scope_id TEXT NOT NULL DEFAULT '',
+        enabled INTEGER NOT NULL DEFAULT 0,
+        fee_type TEXT NOT NULL DEFAULT 'percent',
+        percent REAL NOT NULL DEFAULT 0,
+        fixed_amount REAL NOT NULL DEFAULT 0,
+        currency TEXT NOT NULL DEFAULT 'ZAR',
+        label TEXT NOT NULL DEFAULT 'Platform service fee',
+        updated_at TEXT,
+        updated_by TEXT
+      )`);
+      dbRun(`CREATE UNIQUE INDEX IF NOT EXISTS idx_psf_scope ON platform_service_fees(scope, scope_id)`);
+    } catch (_) { /* */ }
+    for (const f of serviceFees) {
+      if (!f?.scope) continue;
+      const scopeId = f.scope_id == null ? '' : String(f.scope_id);
+      const feeId = f.id || `fee_${f.scope}_${scopeId || 'default'}`;
+      try {
+        dbRun('DELETE FROM platform_service_fees WHERE scope = ? AND scope_id = ?', [f.scope, scopeId]);
+        dbRun(
+          `INSERT INTO platform_service_fees (
+             id, scope, scope_id, enabled, fee_type, percent, fixed_amount, currency, label, updated_at, updated_by
+           ) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+          [
+            feeId,
+            f.scope,
+            scopeId,
+            Number(f.enabled) ? 1 : 0,
+            f.fee_type || 'percent',
+            Number(f.percent) || 0,
+            Number(f.fixed_amount) || 0,
+            f.currency || 'ZAR',
+            f.label || 'Platform service fee',
+            f.updated_at || nowIso(),
+            actor
+          ]
+        );
+      } catch (e) {
+        console.warn('[saas-sync] service fee upsert:', e.message || e);
+      }
+    }
+  }
+
   try {
     const entitlements = require('./entitlements');
     entitlements.invalidateCache?.();
@@ -252,7 +301,8 @@ function applyEntitlementSnapshot(snapshot, actor = 'saas-sync') {
     subscription_status: sub,
     modules_synced: modules.length,
     packages_synced: packages.length,
-    addons_synced: addons.length
+    addons_synced: addons.length,
+    service_fees_synced: serviceFees.length
   };
 }
 
@@ -309,6 +359,19 @@ function buildSnapshotForShop(shopId) {
   const addonIds = dbAll('SELECT addon_id FROM platform_shop_addons WHERE shop_key = ?', [id]).map((r) => r.addon_id);
   const overrides = dbAll('SELECT module_id, enabled, reason FROM platform_shop_overrides WHERE shop_key = ?', [id]);
 
+  // Push effective fee configs so customer checkout can display the same fee as Platform.
+  let serviceFees = [];
+  try {
+    const packageId = asg?.package_id || shop.package_id || '';
+    serviceFees = dbAll(
+      `SELECT * FROM platform_service_fees
+       WHERE (scope = 'customer' AND scope_id = ?)
+          OR (scope = 'package' AND scope_id = ?)
+          OR (scope = 'platform_default' AND (scope_id = '' OR scope_id IS NULL))`,
+      [id, packageId]
+    );
+  } catch (_) { /* control-plane fees optional */ }
+
   return {
     shop_key: id,
     shop_name: shop.shop_name,
@@ -321,7 +384,8 @@ function buildSnapshotForShop(shopId) {
     notes: asg?.notes || '',
     modules,
     packages,
-    addons
+    addons,
+    service_fees: serviceFees
   };
 }
 
