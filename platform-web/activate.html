@@ -385,15 +385,31 @@
           <a class="btn" id="btn-setup" href="/?start=setup">Continue to Set Up My Shop</a>
           <button class="btn secondary" id="btn-skip">I already finished setup</button>`;
         document.getElementById('btn-skip').onclick = () => { state.step = 6; render(); };
-        document.getElementById('btn-setup').onclick = () => { state.step = 6; };
+        // Must open the setup wizard — never the login screen.
+        document.getElementById('btn-setup').onclick = (e) => {
+          e.preventDefault();
+          try {
+            sessionStorage.removeItem('SHOP_POS_APP_MODE');
+            localStorage.removeItem('SHOP_POS_APP_MODE');
+          } catch (_) { /* */ }
+          location.assign('/?start=setup');
+        };
         return;
       }
 
       panel.innerHTML = `
         <h2>Step 6 — Shop Setup &amp; POS</h2>
-        <a class="btn" href="/?start=setup">Open Shop Setup</a>
+        <a class="btn" id="btn-open-setup" href="/?start=setup">Open Shop Setup</a>
         <a class="btn secondary" href="/?page=pos">Go to POS</a>
         <a class="btn secondary" href="/">Go to Shop Home</a>`;
+      document.getElementById('btn-open-setup').onclick = (e) => {
+        e.preventDefault();
+        try {
+          sessionStorage.removeItem('SHOP_POS_APP_MODE');
+          localStorage.removeItem('SHOP_POS_APP_MODE');
+        } catch (_) { /* */ }
+        location.assign('/?start=setup');
+      };
     }
 
     (async () => {

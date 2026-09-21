@@ -46,6 +46,16 @@
     return '';
   }
 
+  // When activation hands off with ?start=setup, do not keep a sticky admin/pos
+  // mode that would skip the setup wizard and dump the user on Login.
+  try {
+    const q = new URLSearchParams(location.search || '');
+    if (q.get('start') === 'setup') {
+      sessionStorage.removeItem('SHOP_POS_APP_MODE');
+      localStorage.removeItem('SHOP_POS_APP_MODE');
+    }
+  } catch (_) { /* ignore */ }
+
   // Persist mode from query/hash so redirects and Capacitor entry pages keep the portal
   try {
     const fromUrl = fromQuery() || fromHash();
@@ -59,7 +69,13 @@
     window.__SHOP_POS_APP_MODE__ ||
     fromQuery() ||
     fromHash() ||
-    fromStorage() ||
+    (function () {
+      try {
+        const q = new URLSearchParams(location.search || '');
+        if (q.get('start') === 'setup') return '';
+      } catch (_) { /* */ }
+      return fromStorage();
+    })() ||
     'admin';
 
   window.__SHOP_POS_APP_MODE__ = mode;

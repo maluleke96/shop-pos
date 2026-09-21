@@ -165,6 +165,82 @@ const App = {
     return window.__SHOP_POS_APP_MODE__ || 'admin';
   },
 
+  /** Activation / first-run handoff: open setup wizard, not login. */
+  _wantsSetupHandoff() {
+    try {
+      return new URLSearchParams(location.search || '').get('start') === 'setup';
+    } catch (_) {
+      return false;
+    }
+  },
+
+  _isHostedCustomerEntry() {
+    try {
+      return !!window.ShopProfiles?.isHostedCustomerApp?.();
+    } catch (_) {
+      return false;
+    }
+  },
+
+  /**
+   * SaaS customer URL (or ?start=setup): Setup first if needed, then Login only.
+   * Never dump a first-time shop into username/password before setup completes.
+   */
+  async _bootSetupThenLogin(opts = {}) {
+    const forceSetup = !!opts.forceSetup || this._wantsSetupHandoff();
+    this.hideMobileLoading();
+    this.applyLoginChrome();
+
+    // Do not restore a session into the app when the user is trying to set up.
+    if (!forceSetup && await this.tryRestoreSession()) return;
+
+    try {
+      if (typeof API.adoptExistingBusiness === 'function') {
+        const adopted = await API.adoptExistingBusiness();
+        if (adopted?.success && adopted.data?.adopted) {
+          console.info('[App] Adopted existing business', adopted.data.business_id || adopted.data.shop_name);
+        }
+      }
+    } catch (err) {
+      console.warn('[App] adoptExistingBusiness', err?.message || err);
+    }
+
+    const res = await API.getSettingsParsed();
+    if (!res.success) {
+      this.showWelcome({
+        needsSetup: true,
+        status: res.error || 'Could not reach the shop database yet. You can still try Set Up My Shop.'
+      });
+      if (forceSetup) this.showScreen('setup');
+      return;
+    }
+    this.settings = res.data;
+    this.applyTheme();
+    this.syncDeviceSettings().catch(() => {});
+
+    const setupDone = !!Number(this.settings?.setup_complete);
+
+    if (!setupDone) {
+      this.updateBranding({ page: 'Setup' });
+      if (forceSetup) {
+        this.showScreen('setup');
+        return;
+      }
+      this.showWelcome({ needsSetup: true });
+      return;
+    }
+
+    // Setup already done — never show Set Up My Shop again; go to Login.
+    this.updateBranding({ page: 'Login' });
+    try {
+      if (forceSetup) history.replaceState(null, '', location.pathname || '/');
+    } catch (_) { /* */ }
+    this.showScreen('login');
+    this.startLoginOperatingTimer?.();
+    this.prefetchLoginScripts();
+    this.checkContractReacceptance?.().catch(() => {});
+  },
+
   isPosKiosk() {
     return this.appMode() === 'pos';
   },
@@ -439,6 +515,8 @@ const App = {
       });
 
       const mode = this.appMode();
+      const forceSetup = this._wantsSetupHandoff();
+      const hostedCustomer = this._isHostedCustomerEntry();
 
       // Dedicated apps: skip admin welcome/setup ? go straight to that app's login
       if (mode === 'apply') {
@@ -533,6 +611,13 @@ const App = {
           loginSub.textContent = 'Manager & Supervisor Portal — sign in with your assigned manager/supervisor account (or Admin credentials).';
         }
         this.startLoginOperatingTimer?.();
+        return;
+      }
+
+      // Hosted SaaS customer URL, or activation "Continue to Set Up My Shop":
+      // Setup wizard first — only Login after setup_complete.
+      if (hostedCustomer || forceSetup) {
+        await this._bootSetupThenLogin({ forceSetup });
         return;
       }
 
@@ -2296,8 +2381,17 @@ const App = {
       if (!res.success) throw new Error(res.error || 'Could not load settings');
       this.settings = res.data;
       this.updateBranding();
-      Utils.toast('Setup complete! Please sign in.', 'success');
+      Utils.toast('Setup complete! Please sign in with your new username and password.', 'success');
+      try {
+        history.replaceState(null, '', location.pathname || '/');
+      } catch (_) { /* */ }
       this.showScreen('login');
+      this.startLoginOperatingTimer?.();
+      // Prefill username for convenience
+      try {
+        const userEl = document.getElementById('login-username');
+        if (userEl && data.owner_username) userEl.value = data.owner_username;
+      } catch (_) { /* */ }
     } catch (err) {
       errEl.textContent = err.message || 'Setup failed. Please try again.';
       errEl.classList.remove('hidden');
