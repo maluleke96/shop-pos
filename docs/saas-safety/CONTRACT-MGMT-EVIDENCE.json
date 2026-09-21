@@ -1,0 +1,128 @@
+{
+  "at": "2026-09-21T16:04:36.672Z",
+  "lab": "https://shoppos-lab-production.up.railway.app",
+  "shop_id": "shop_mubfr7xr_0c9e62d0",
+  "results": [
+    {
+      "name": "login",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "nav Zenco Catalog",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "nav Lab Samples",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "nav See Lab Customers",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "nav Logout",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "Contracts tab",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "customer profile sections",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "service fee ON/OFF UI",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "signed contract viewer",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "activate e-sign canvas",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "activate customer info step",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "create draft contract",
+      "ok": true,
+      "detail": "cver_mubfr5jt_8b3993cc"
+    },
+    {
+      "name": "save draft",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "publish contract",
+      "ok": true,
+      "detail": "published"
+    },
+    {
+      "name": "list versions keeps history",
+      "ok": true,
+      "detail": "count=5"
+    },
+    {
+      "name": "create customer record",
+      "ok": true,
+      "detail": "shop_mubfr7xr_0c9e62d0"
+    },
+    {
+      "name": "customer extended fields",
+      "ok": true,
+      "detail": "id=9001015009087 wa=+27000000001"
+    },
+    {
+      "name": "per-shop fee ON",
+      "ok": true,
+      "detail": "{\"id\":\"fee_mubfr8b7_4e22e6d7\",\"scope\":\"customer\",\"scope_id\":\"shop_mubfr7xr_0c9e6"
+    },
+    {
+      "name": "platform accept recorded",
+      "ok": true,
+      "detail": "{\"id\":\"cacc_mubfr8x9_666fd012\",\"contract_version_id\":\"cver_mubfr5jt_8b3993cc\",\"version_label\":\"v-tes"
+    },
+    {
+      "name": "printable accepted snapshot",
+      "ok": true,
+      "detail": "cacc_mubfr8x9_666fd012"
+    },
+    {
+      "name": "re-acceptance required after publish",
+      "ok": true,
+      "detail": "Your Service Agreement has been updated. Please review and accept the new agreement to continue."
+    },
+    {
+      "name": "per-shop fee OFF",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "no secrets in platform app.js",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "chisa untouched",
+      "ok": true,
+      "detail": "0296f469-4b4e-4b3f-99fb-063b03535e39"
+    }
+  ],
+  "chisa_untouched": true
+}
