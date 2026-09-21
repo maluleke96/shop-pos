@@ -325,7 +325,11 @@ const OrderApp = {
         ${q.discount ? `<div>Discount${q.coupon?.code ? ` (${this.esc(q.coupon.code)})` : ''}${q.loyalty_discount ? ` · Loyalty ${ptsUsed} pts` : ''} <span>-${this.money(q.discount)}</span></div>` : ''}
         ${q.gift_card_amount ? `<div>Gift card <span>-${this.money(q.gift_card_amount)}</span></div>` : ''}
         ${q.delivery_fee != null && fulfillment === 'delivery' ? `<div>Delivery${q.delivery_place ? ` (${this.esc(q.delivery_place)})` : ''} <span>${this.money(q.delivery_fee)}</span></div>` : ''}
-        ${q.service_fee ? `<div>${this.esc(q.service_fee_label || 'Platform service fee')} <span>${this.money(q.service_fee)}</span></div>` : ''}
+        ${q.service_fee != null && Number(q.service_fee) > 0
+          ? `<div>${this.esc(q.service_fee_label || 'Service Fee')} <span>${this.money(q.service_fee)}</span></div>`
+          : (q.service_fee_config?.enabled
+            ? `<div>${this.esc(q.service_fee_label || 'Service Fee')} <span>${this.money(0)}</span></div>`
+            : '')}
         ${q.tax_amount ? `<div>Tax <span>${this.money(q.tax_amount)}</span></div>` : ''}
         <div class="total-line">Total <strong>${this.money(q.total)}</strong></div>`;
     }

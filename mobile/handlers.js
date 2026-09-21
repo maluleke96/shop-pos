@@ -3245,6 +3245,10 @@ add('web:adminAnalytics', wrapSync((filters, actor) => {
     platformActor(tok);
     return s.platformListContractVersions();
   }));
+  add('platform:getContractVersion', wrapSync((tok, id) => {
+    platformActor(tok);
+    return s.platformGetContractVersion(id);
+  }));
   add('platform:getActiveContract', wrapSync((tok) => {
     platformActor(tok);
     return s.platformGetActiveContract();
@@ -3253,17 +3257,41 @@ add('web:adminAnalytics', wrapSync((filters, actor) => {
     const a = platformActor(tok);
     return s.platformCreateContractVersion(d || {}, a);
   }));
+  add('platform:updateDraftContract', wrapSync((tok, id, d) => {
+    const a = platformActor(tok);
+    return s.platformUpdateDraftContract(id, d || {}, a);
+  }));
+  add('platform:publishContract', wrapSync((tok, id, d) => {
+    const a = platformActor(tok);
+    return s.platformPublishContract(id, d || {}, a);
+  }));
+  add('platform:previewContract', wrapSync((tok, id, shopId) => {
+    platformActor(tok);
+    return s.platformPreviewContract(id, shopId);
+  }));
+  add('platform:listContractAcceptances', wrapSync((tok, f) => {
+    platformActor(tok);
+    return s.platformListContractAcceptances(f || {});
+  }));
+  add('platform:contractTemplate', wrapSync((tok) => {
+    platformActor(tok);
+    return s.platformContractTemplate();
+  }));
   add('platform:shopContract', wrapSync((tok, id) => {
     platformActor(tok);
     return s.platformShopContract(id);
   }));
   add('platform:acceptContract', wrapSync((tok, id, d) => {
     platformActor(tok);
-    return s.platformAcceptContract(id, d || {});
+    return s.platformAcceptContract(id, { ...(d || {}), require_signature: false }, {});
   }));
   add('platform:printContract', wrapSync((tok, id, acceptanceId) => {
     platformActor(tok);
     return s.platformPrintContract(id, acceptanceId);
+  }));
+  add('platform:shopFeeReport', wrapAsync(async (tok, id, f) => {
+    platformActor(tok);
+    return s.platformShopFeeReport(id, f || {});
   }));
   add('platform:createActivation', wrapAsync(async (tok, id, d) => {
     const a = platformActor(tok);
@@ -3283,7 +3311,13 @@ add('web:adminAnalytics', wrapSync((filters, actor) => {
   }));
   // Public redeem — no platform session (installer / app activation). Still shop-scoped + hashed secrets.
   add('activation:redeem', wrapSync((d) => s.platformRedeemActivation(d || {})));
-  add('activation:acceptContract', wrapSync((shopId, d) => s.platformAcceptContract(shopId, d || {})));
+  add('activation:acceptContract', wrapSync((shopId, d) => s.platformAcceptContract(shopId, {
+    ...(d || {}),
+    require_signature: true
+  }, {
+    ip_hint: d?.ip_hint,
+    user_agent_hint: d?.user_agent_hint
+  })));
   add('activation:getContext', wrapSync((d) => s.platformGetActivationContext(d || {})));
   add('license:validate', wrapSync((d) => s.platformValidateLicense(d || {})));
   add('license:evaluateOffline', wrapSync((lease, opts) => s.platformEvaluateOfflineLease(lease, opts || {})));
@@ -3298,6 +3332,16 @@ add('web:adminAnalytics', wrapSync((filters, actor) => {
       throw err;
     }
     return s.platformApplyActivationBundle(bundle || {});
+  }));
+  add('saas:listOrderFees', wrapSync((secret, f) => {
+    const sync = require('../electron/services/saas-customer-sync');
+    const expected = sync.getSyncSecret?.() || String(process.env.SAAS_SYNC_SECRET || '').trim();
+    if (!expected || String(secret || '') !== expected) {
+      const err = new Error('Unauthorized');
+      err.status = 401;
+      throw err;
+    }
+    return s.platformListOrderFeesLocal(f || {});
   }));
   add('platform:listDevices', wrapSync((tok, id) => {
     platformActor(tok);

@@ -5941,12 +5941,36 @@ module.exports = {
             const r = cp.listContractVersions();
             return r?.data != null ? r.data : r;
           },
+          platformGetContractVersion: (id) => {
+            const r = cp.getContractVersion(id);
+            return r?.data != null ? r.data : r;
+          },
           platformGetActiveContract: () => {
             const r = cp.getActiveContract();
             return r?.data != null ? r.data : r;
           },
           platformCreateContractVersion: (d, a) => {
             const r = cp.createContractVersion(d || {}, a);
+            return r?.data != null ? r.data : r;
+          },
+          platformUpdateDraftContract: (id, d, a) => {
+            const r = cp.updateDraftContract(id, d || {}, a);
+            return r?.data != null ? r.data : r;
+          },
+          platformPublishContract: (id, d, a) => {
+            const r = cp.publishContractVersion(id, d || {}, a);
+            return r?.data != null ? r.data : r;
+          },
+          platformPreviewContract: (id, shopId) => {
+            const r = cp.previewContract(id, shopId);
+            return r?.data != null ? r.data : r;
+          },
+          platformListContractAcceptances: (f) => {
+            const r = cp.listContractAcceptances(f || {});
+            return r?.data != null ? r.data : r;
+          },
+          platformContractTemplate: () => {
+            const r = cp.getDefaultContractTemplate();
             return r?.data != null ? r.data : r;
           },
           platformShopContract: (id) => {
@@ -5959,6 +5983,14 @@ module.exports = {
           },
           platformPrintContract: (id, acceptanceId) => {
             const r = cp.getAcceptedAgreementPrintable(id, acceptanceId);
+            return r?.data != null ? r.data : r;
+          },
+          platformShopFeeReport: async (id, f) => {
+            const r = await cp.fetchCustomerFeeReport(id, f || {});
+            return r?.data != null ? r.data : r;
+          },
+          platformListOrderFeesLocal: (f) => {
+            const r = cp.listLocalOrderFeeSnapshots(f || {});
             return r?.data != null ? r.data : r;
           },
           platformCreateActivation: async (id, d, a) => {

@@ -65,7 +65,30 @@ const SHOP_EXTRA_COLS = [
   ['activation_status', "TEXT DEFAULT 'pending'"],
   ['contract_required', 'INTEGER DEFAULT 1'],
   ['contact_admin_url', "TEXT DEFAULT ''"],
-  ['suspension_message', "TEXT DEFAULT ''"]
+  ['suspension_message', "TEXT DEFAULT ''"],
+  ['owner_id_number', "TEXT DEFAULT ''"],
+  ['whatsapp', "TEXT DEFAULT ''"],
+  ['postal_address', "TEXT DEFAULT ''"],
+  ['company_name', "TEXT DEFAULT ''"],
+  ['company_registration', "TEXT DEFAULT ''"],
+  ['shop_address', "TEXT DEFAULT ''"],
+  ['shop_phone', "TEXT DEFAULT ''"],
+  ['branch_info', "TEXT DEFAULT ''"]
+];
+
+const CONTRACT_VERSION_EXTRA_COLS = [
+  ['status', "TEXT DEFAULT 'published'"],
+  ['effective_at', 'TEXT'],
+  ['require_reacceptance', 'INTEGER DEFAULT 1'],
+  ['placeholders_json', "TEXT DEFAULT '{}'"]
+];
+
+const ACCEPTANCE_EXTRA_COLS = [
+  ['signature_data', "TEXT DEFAULT ''"],
+  ['body_text_snapshot', "TEXT DEFAULT ''"],
+  ['placeholders_snapshot_json', "TEXT DEFAULT '{}'"],
+  ['device_public_id', "TEXT DEFAULT ''"],
+  ['signed_document_json', "TEXT DEFAULT '{}'"]
 ];
 
 let schemaReady = false;
@@ -90,6 +113,20 @@ function ensureSchema() {
       dbGet(`SELECT ${col} FROM platform_shops LIMIT 1`);
     } catch (_) {
       try { dbRun(`ALTER TABLE platform_shops ADD COLUMN ${col} ${def}`); } catch (__) { /* */ }
+    }
+  }
+  for (const [col, def] of CONTRACT_VERSION_EXTRA_COLS) {
+    try {
+      dbGet(`SELECT ${col} FROM platform_contract_versions LIMIT 1`);
+    } catch (_) {
+      try { dbRun(`ALTER TABLE platform_contract_versions ADD COLUMN ${col} ${def}`); } catch (__) { /* */ }
+    }
+  }
+  for (const [col, def] of ACCEPTANCE_EXTRA_COLS) {
+    try {
+      dbGet(`SELECT ${col} FROM platform_contract_acceptances LIMIT 1`);
+    } catch (_) {
+      try { dbRun(`ALTER TABLE platform_contract_acceptances ADD COLUMN ${col} ${def}`); } catch (__) { /* */ }
     }
   }
   try {
@@ -176,21 +213,147 @@ function seedDefaults() {
     }
   }
   if (!dbGet('SELECT id FROM platform_contract_versions WHERE is_active = 1')) {
-    dbRun(
-      `INSERT INTO platform_contract_versions (id, version_label, title, body_text, terms_json, is_active, created_at, created_by, notes)
-       VALUES (?,?,?,?,?,?,?,?,?)`,
-      [
-        uid('cver'), 'v1.0',
-        'Shop POS Customer Agreement (Draft)',
-        'DRAFT — Configurable customer agreement.\n\nThis text must be reviewed by a qualified South African legal professional before commercial use.\n\n1. Parties\nThis agreement is between the Platform Operator and the Customer named below.\n\n2. Services\nThe Platform provides Shop POS software and related hosted services according to the selected package and add-ons.\n\n3. Subscription & fees\nFees, billing periods, and platform service fees (if enabled) are as configured for the Customer.\n\n4. Acceptable use\nThe Customer must not misuse the service, share activation credentials improperly, or attempt to bypass access controls.\n\n5. Suspension\nThe Platform may suspend access for overdue payment, abuse, or administrative action. Customer data is retained and restored on reactivation.\n\n6. Data\nCustomer business data remains the Customer\'s. Platform does not delete historical records solely due to suspension.\n\n7. Governing law\nThis draft contemplates South African law. Final wording requires legal review.',
-        JSON.stringify({
-          subscription_terms: 'As configured per package',
-          service_fee_terms: 'Displayed at checkout when enabled; never silently added'
-        }),
-        1, now, 'system', 'Draft placeholder — legal review required before commercial use'
-      ]
-    );
+    try {
+      dbRun(
+        `INSERT INTO platform_contract_versions (id, version_label, title, body_text, terms_json, is_active, created_at, created_by, notes, status, effective_at, require_reacceptance, placeholders_json)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        [
+          uid('cver'), 'v1.0',
+          'SaaS Customer Service Agreement (Draft)',
+          DEFAULT_CONTRACT_TEMPLATE,
+          JSON.stringify({
+            subscription_terms: 'As configured per package',
+            service_fee_terms: 'Displayed at checkout when enabled; never silently added',
+            legal_notice: 'Configurable draft — review by a qualified South African legal professional before commercial use.'
+          }),
+          1, now, 'system', 'Draft placeholder — legal review required before commercial use',
+          'published', now, 1, JSON.stringify(DEFAULT_PROVIDER_PLACEHOLDERS)
+        ]
+      );
+    } catch (_) {
+      dbRun(
+        `INSERT INTO platform_contract_versions (id, version_label, title, body_text, terms_json, is_active, created_at, created_by, notes)
+         VALUES (?,?,?,?,?,?,?,?,?)`,
+        [
+          uid('cver'), 'v1.0',
+          'SaaS Customer Service Agreement (Draft)',
+          DEFAULT_CONTRACT_TEMPLATE,
+          JSON.stringify({ subscription_terms: 'As configured per package' }),
+          1, now, 'system', 'Draft placeholder — legal review required before commercial use'
+        ]
+      );
+    }
   }
+}
+
+const DEFAULT_PROVIDER_PLACEHOLDERS = {
+  service_provider_name: 'Platform Operator',
+  service_provider_registration: '[Registration number]',
+  service_provider_address: '[Service provider address]',
+  service_provider_contact: '[Service provider contact]',
+  renewal_terms: 'Subscription renews for successive periods unless cancelled or suspended according to the package terms.'
+};
+
+const DEFAULT_CONTRACT_TEMPLATE = `SAAS CUSTOMER SERVICE AGREEMENT
+Version: {{contract_version}}
+Effective date: {{effective_date}}
+
+DRAFT — This agreement is configurable and must be reviewed by a qualified South African legal professional before commercial use.
+
+1. PARTIES
+1.1 Service Provider: {{service_provider_name}} (Registration: {{service_provider_registration}})
+    Address: {{service_provider_address}}
+    Contact: {{service_provider_contact}}
+1.2 Customer: {{customer_name}}
+    ID / Company registration: {{customer_id_number}}
+    Email: {{customer_email}}
+    Phone: {{customer_phone}}
+    Address: {{customer_address}}
+
+2. SHOP
+2.1 Shop name: {{shop_name}}
+2.2 Shop ID: {{shop_id}}
+2.3 Shop address: {{shop_address}}
+2.4 Package: {{package_name}}
+2.5 Add-ons: {{addons}}
+2.6 Subscription period: {{subscription_start}} to {{subscription_expiry}}
+2.7 Subscription price / package fee: {{subscription_price}}
+2.8 Platform service fee (if enabled): {{service_fee_terms}}
+2.9 Renewal terms: {{renewal_terms}}
+
+3. SERVICES
+The Service Provider provides Shop POS software and related hosted services according to the selected package and add-ons.
+
+4. FEES AND PAYMENT
+Fees, billing periods, and platform service fees (if enabled for this shop) are as configured for the Customer. Service fees, when enabled, are calculated server-side and displayed at checkout.
+
+5. ACCEPTABLE USE
+The Customer must not misuse the service, share activation credentials improperly, or attempt to bypass access controls.
+
+6. SUSPENSION AND REACTIVATION
+The Service Provider may suspend access for overdue payment, abuse, or administrative action. Customer business data is retained and restored on reactivation.
+
+7. DATA
+Customer business data remains the Customer's. The Service Provider does not delete historical records solely due to suspension.
+
+8. CONTRACT VERSIONS
+Published contract versions are retained. Acceptance of a version creates an immutable acceptance record. Later versions do not alter prior signed acceptances.
+
+9. GOVERNING LAW
+This draft contemplates South African law. Final wording requires legal review.
+
+By signing electronically, the Customer confirms they have read and accept this Agreement for Shop {{shop_name}} ({{shop_id}}).
+`;
+
+function buildPlaceholderMap(shop, opts = {}) {
+  const fee = opts.fee || getEffectiveServiceFee({ package_id: shop?.package_id, shop_id: shop?.id });
+  const provider = {
+    ...DEFAULT_PROVIDER_PLACEHOLDERS,
+    ...(opts.provider || {}),
+    ...(parseJson(opts.versionPlaceholders, {}))
+  };
+  let packageName = opts.package_name || shop?.package_name || shop?.package_id || '—';
+  let addonNames = opts.addon_names;
+  if (!addonNames && shop?.id) {
+    try {
+      const shops = shopsMod();
+      const detail = shops?.getShop?.(shop.id)?.data;
+      if (detail) {
+        packageName = detail.package_name || packageName;
+        addonNames = detail.addon_names || [];
+      }
+    } catch (_) { /* */ }
+  }
+  const feeTerms = fee?.enabled
+    ? `${fee.config?.fee_type || fee.fee_type || 'percent'}: ${fee.config?.percent ?? fee.percent ?? 0}% + ${fee.config?.fixed_amount ?? fee.fixed_amount ?? 0} ${fee.config?.currency || fee.currency || 'ZAR'}`
+    : 'Service fee OFF for this shop';
+  return {
+    ...provider,
+    customer_name: shop?.owner_name || shop?.company_name || '—',
+    customer_id_number: shop?.owner_id_number || shop?.company_registration || '—',
+    customer_email: shop?.owner_email || '—',
+    customer_phone: shop?.contact_phone || shop?.whatsapp || '—',
+    customer_address: shop?.address || shop?.postal_address || '—',
+    shop_name: shop?.shop_name || '—',
+    shop_id: shop?.id || '—',
+    shop_address: shop?.shop_address || shop?.address || '—',
+    package_name: packageName,
+    addons: Array.isArray(addonNames) && addonNames.length ? addonNames.join(', ') : 'None',
+    subscription_price: opts.subscription_price || 'As per selected package',
+    service_fee_terms: feeTerms,
+    subscription_start: shop?.subscription_start || shop?.trial_start || '—',
+    subscription_expiry: shop?.subscription_expiry || shop?.trial_end || '—',
+    subscription_period: `${shop?.subscription_start || '—'} to ${shop?.subscription_expiry || '—'}`,
+    effective_date: opts.effective_date || nowIso().slice(0, 10),
+    contract_version: opts.version_label || '—'
+  };
+}
+
+function renderContractBody(template, placeholders) {
+  return String(template || '').replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_, key) => {
+    const v = placeholders?.[key];
+    return v == null || v === '' ? '—' : String(v);
+  });
 }
 
 /* ───────────── Access evaluation (server clock) ───────────── */
@@ -468,7 +631,16 @@ function listContractVersions() {
   ensureSchema();
   return {
     success: true,
-    data: dbAll('SELECT id, version_label, title, is_active, created_at, created_by, notes FROM platform_contract_versions ORDER BY created_at DESC')
+    data: dbAll(
+      `SELECT id, version_label, title, is_active, status, effective_at, require_reacceptance,
+              created_at, created_by, notes
+       FROM platform_contract_versions ORDER BY created_at DESC`
+    ).map((r) => ({
+      ...r,
+      is_active: Number(r.is_active) === 1,
+      require_reacceptance: Number(r.require_reacceptance) !== 0,
+      status: r.status || (Number(r.is_active) === 1 ? 'published' : 'draft')
+    }))
   };
 }
 
@@ -482,10 +654,14 @@ function getContractVersion(id, { includeBody = true } = {}) {
     version_label: row.version_label,
     title: row.title,
     is_active: Number(row.is_active) === 1,
+    status: row.status || (Number(row.is_active) === 1 ? 'published' : 'draft'),
+    effective_at: row.effective_at || null,
+    require_reacceptance: Number(row.require_reacceptance) !== 0,
     created_at: row.created_at,
     created_by: row.created_by,
     notes: row.notes,
-    terms: parseJson(row.terms_json, {})
+    terms: parseJson(row.terms_json, {}),
+    placeholders: parseJson(row.placeholders_json, DEFAULT_PROVIDER_PLACEHOLDERS)
   };
   if (includeBody) out.body_text = row.body_text;
   return { success: true, data: out };
@@ -504,27 +680,177 @@ function createContractVersion(data, actor) {
   ensureSchema();
   const id = uid('cver');
   const now = nowIso();
-  const activate = data.activate !== false;
-  if (activate) {
+  const publish = data.publish === true || data.activate === true;
+  const asDraft = data.draft === true || (!publish && data.activate === false);
+  if (publish) {
     dbRun('UPDATE platform_contract_versions SET is_active = 0');
   }
+  const placeholders = {
+    ...DEFAULT_PROVIDER_PLACEHOLDERS,
+    ...(data.placeholders && typeof data.placeholders === 'object' ? data.placeholders : {})
+  };
   dbRun(
-    `INSERT INTO platform_contract_versions (id, version_label, title, body_text, terms_json, is_active, created_at, created_by, notes)
-     VALUES (?,?,?,?,?,?,?,?,?)`,
+    `INSERT INTO platform_contract_versions (
+      id, version_label, title, body_text, terms_json, is_active, created_at, created_by, notes,
+      status, effective_at, require_reacceptance, placeholders_json
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     [
       id,
       String(data.version_label || `v${Date.now()}`).trim(),
-      String(data.title || 'Customer Agreement').trim(),
-      String(data.body_text || '').trim() || 'DRAFT — legal review required.',
+      String(data.title || 'SaaS Customer Service Agreement').trim(),
+      String(data.body_text || '').trim() || DEFAULT_CONTRACT_TEMPLATE,
       JSON.stringify(data.terms || {}),
-      activate ? 1 : 0,
+      publish ? 1 : 0,
       now,
       actorName(actor),
-      data.notes || 'Configurable agreement — review by SA legal professional before commercial use'
+      data.notes || 'Configurable agreement — review by SA legal professional before commercial use',
+      publish ? 'published' : 'draft',
+      data.effective_at || (publish ? now : null),
+      data.require_reacceptance === false || data.require_reacceptance === 0 ? 0 : 1,
+      JSON.stringify(placeholders)
     ]
   );
-  audit(actor, 'contract_version_changed', null, { contract_version_id: id, activate });
+  audit(actor, 'contract_version_changed', null, {
+    contract_version_id: id,
+    publish,
+    draft: asDraft || !publish,
+    require_reacceptance: data.require_reacceptance !== false
+  });
   return getContractVersion(id);
+}
+
+function updateDraftContract(id, data, actor) {
+  requireEnabled();
+  ensureSchema();
+  const row = dbGet('SELECT * FROM platform_contract_versions WHERE id = ?', [String(id)]);
+  if (!row) throw new Error('Contract version not found');
+  const status = row.status || (Number(row.is_active) === 1 ? 'published' : 'draft');
+  if (status === 'published' || Number(row.is_active) === 1) {
+    throw new Error('Published contracts cannot be edited — create a new version');
+  }
+  const placeholders = data.placeholders
+    ? { ...DEFAULT_PROVIDER_PLACEHOLDERS, ...data.placeholders }
+    : parseJson(row.placeholders_json, DEFAULT_PROVIDER_PLACEHOLDERS);
+  dbRun(
+    `UPDATE platform_contract_versions SET
+      version_label=?, title=?, body_text=?, terms_json=?, notes=?,
+      effective_at=?, require_reacceptance=?, placeholders_json=?, status='draft'
+     WHERE id=?`,
+    [
+      data.version_label != null ? String(data.version_label).trim() : row.version_label,
+      data.title != null ? String(data.title).trim() : row.title,
+      data.body_text != null ? String(data.body_text) : row.body_text,
+      JSON.stringify(data.terms != null ? data.terms : parseJson(row.terms_json, {})),
+      data.notes != null ? data.notes : row.notes,
+      data.effective_at !== undefined ? data.effective_at : row.effective_at,
+      data.require_reacceptance === false || data.require_reacceptance === 0 ? 0
+        : (data.require_reacceptance === true || data.require_reacceptance === 1 ? 1
+          : (row.require_reacceptance != null ? Number(row.require_reacceptance) : 1)),
+      JSON.stringify(placeholders),
+      id
+    ]
+  );
+  audit(actor, 'contract_draft_saved', null, { contract_version_id: id });
+  return getContractVersion(id);
+}
+
+function publishContractVersion(id, data = {}, actor) {
+  requireEnabled();
+  ensureSchema();
+  const row = dbGet('SELECT * FROM platform_contract_versions WHERE id = ?', [String(id)]);
+  if (!row) throw new Error('Contract version not found');
+  dbRun('UPDATE platform_contract_versions SET is_active = 0');
+  const requireRe = data.require_reacceptance === false || data.require_reacceptance === 0
+    ? 0
+    : (data.require_reacceptance === true || data.require_reacceptance === 1
+      ? 1
+      : (row.require_reacceptance != null ? Number(row.require_reacceptance) : 1));
+  const effective = data.effective_at || row.effective_at || nowIso();
+  dbRun(
+    `UPDATE platform_contract_versions SET
+      is_active=1, status='published', effective_at=?, require_reacceptance=?
+     WHERE id=?`,
+    [effective, requireRe, id]
+  );
+  audit(actor, 'contract_published', null, {
+    contract_version_id: id,
+    require_reacceptance: !!requireRe,
+    effective_at: effective
+  });
+  return getContractVersion(id);
+}
+
+function previewContract(id, shopId) {
+  requireEnabled();
+  ensureSchema();
+  const ver = dbGet('SELECT * FROM platform_contract_versions WHERE id = ?', [String(id)]);
+  if (!ver) throw new Error('Contract version not found');
+  let shop = null;
+  if (shopId) {
+    shop = dbGet('SELECT * FROM platform_shops WHERE id = ?', [String(shopId)]);
+    if (!shop) throw new Error('Shop not found');
+  }
+  const placeholders = buildPlaceholderMap(shop || {
+    shop_name: '[Shop name]',
+    id: '[Shop ID]',
+    owner_name: '[Customer name]'
+  }, {
+    version_label: ver.version_label,
+    effective_date: (ver.effective_at || nowIso()).slice(0, 10),
+    versionPlaceholders: ver.placeholders_json
+  });
+  return {
+    success: true,
+    data: {
+      id: ver.id,
+      version_label: ver.version_label,
+      title: ver.title,
+      placeholders,
+      body_text: renderContractBody(ver.body_text, placeholders),
+      template_body: ver.body_text
+    }
+  };
+}
+
+function listContractAcceptances({ contract_version_id, shop_id, limit = 100 } = {}) {
+  requireEnabled();
+  ensureSchema();
+  let sql = `SELECT a.id, a.shop_id, a.contract_version_id, a.accepted_at, a.accepted_by_name,
+                    a.accepted_by_email, a.package_id, a.device_public_id, a.created_at,
+                    v.version_label, v.title, s.shop_name
+             FROM platform_contract_acceptances a
+             LEFT JOIN platform_contract_versions v ON v.id = a.contract_version_id
+             LEFT JOIN platform_shops s ON s.id = a.shop_id
+             WHERE 1=1`;
+  const params = [];
+  if (contract_version_id) {
+    sql += ' AND a.contract_version_id = ?';
+    params.push(String(contract_version_id));
+  }
+  if (shop_id) {
+    sql += ' AND a.shop_id = ?';
+    params.push(String(shop_id));
+  }
+  sql += ' ORDER BY a.accepted_at DESC LIMIT ?';
+  params.push(Math.min(500, Math.max(1, Number(limit) || 100)));
+  return {
+    success: true,
+    data: dbAll(sql, params).map((r) => ({
+      id: r.id,
+      acceptance_id: r.id,
+      shop_id: r.shop_id,
+      shop_name: r.shop_name,
+      contract_version_id: r.contract_version_id,
+      version_label: r.version_label,
+      title: r.title,
+      accepted_at: r.accepted_at,
+      accepted_by_name: r.accepted_by_name,
+      accepted_by_email: r.accepted_by_email,
+      package_id: r.package_id,
+      device_public_id: r.device_public_id || null,
+      has_signature: !!(dbGet('SELECT length(signature_data) AS n FROM platform_contract_acceptances WHERE id = ?', [r.id])?.n)
+    }))
+  };
 }
 
 function getShopContractStatus(shopId) {
@@ -541,14 +867,19 @@ function getShopContractStatus(shopId) {
     [shopId]
   );
   const latest = history[0] || null;
-  const active = dbGet('SELECT id, version_label, title FROM platform_contract_versions WHERE is_active = 1 LIMIT 1');
-  const needsReaccept = !!(active && latest && latest.contract_version_id !== active.id);
+  const active = dbGet(
+    `SELECT id, version_label, title, require_reacceptance, effective_at, status
+     FROM platform_contract_versions WHERE is_active = 1 LIMIT 1`
+  );
+  const requireRe = active ? Number(active.require_reacceptance) !== 0 : true;
+  const needsReaccept = !!(active && latest && latest.contract_version_id !== active.id && requireRe);
+  const neverAccepted = !!(active && !latest && Number(shop.contract_required) !== 0);
   return {
     success: true,
     data: {
       shop_id: shopId,
       contract_required: Number(shop.contract_required) !== 0,
-      accepted: !!latest,
+      accepted: !!latest && !needsReaccept,
       latest_acceptance: latest
         ? {
           id: latest.id,
@@ -560,18 +891,23 @@ function getShopContractStatus(shopId) {
           accepted_by_email: latest.accepted_by_email,
           package_id: latest.package_id,
           addon_ids: parseJson(latest.addon_ids_json, []),
-          subscription_terms: parseJson(latest.subscription_terms_json, {})
+          subscription_terms: parseJson(latest.subscription_terms_json, {}),
+          has_signature: !!(latest.signature_data && String(latest.signature_data).length > 40)
         }
         : null,
       active_version: active,
-      needs_reacceptance: needsReaccept,
+      needs_reacceptance: needsReaccept || neverAccepted,
+      reacceptance_message: (needsReaccept || neverAccepted)
+        ? 'Your Service Agreement has been updated. Please review and accept the new agreement to continue.'
+        : null,
       history: history.map((h) => ({
         id: h.id,
         contract_version_id: h.contract_version_id,
         version_label: h.version_label,
         accepted_at: h.accepted_at,
         accepted_by_name: h.accepted_by_name,
-        package_id: h.package_id
+        package_id: h.package_id,
+        has_signature: !!(h.signature_data && String(h.signature_data).length > 40)
       }))
     }
   };
@@ -587,16 +923,60 @@ function acceptContract(shopId, data, meta = {}) {
   if (!versionId) throw new Error('No active contract version');
   const ver = dbGet('SELECT * FROM platform_contract_versions WHERE id = ?', [versionId]);
   if (!ver) throw new Error('Contract version not found');
+
+  const signature = String(data.signature_data || data.signature || '').trim();
+  if (data.require_signature === true) {
+    // Activation / customer sign path requires a drawn signature (data URL).
+    if (!signature || !/^data:image\/(png|jpeg|jpg|webp);base64,/i.test(signature) || signature.length < 80) {
+      const err = new Error('Please draw your signature before accepting the contract');
+      err.code = 'SIGNATURE_REQUIRED';
+      throw err;
+    }
+    if (signature.length > 900000) {
+      const err = new Error('Signature image is too large');
+      err.code = 'SIGNATURE_TOO_LARGE';
+      throw err;
+    }
+  }
+
   const id = uid('cacc');
   const now = nowIso();
   const addonIds = Array.isArray(data.addon_ids)
     ? data.addon_ids
     : dbAll('SELECT addon_id FROM platform_shop_addons WHERE shop_key = ?', [shopId]).map((r) => r.addon_id);
+  const placeholders = buildPlaceholderMap(shop, {
+    version_label: ver.version_label,
+    effective_date: (ver.effective_at || now).slice(0, 10),
+    versionPlaceholders: ver.placeholders_json,
+    package_name: data.package_name,
+    addon_names: data.addon_names,
+    subscription_price: data.subscription_price
+  });
+  const renderedBody = renderContractBody(ver.body_text, placeholders);
+  const signedDoc = {
+    acceptance_id: id,
+    shop_id: shopId,
+    shop_name: shop.shop_name,
+    customer_name: data.accepted_by_name || shop.owner_name || '',
+    customer_email: data.accepted_by_email || shop.owner_email || '',
+    contract_version_id: versionId,
+    version_label: ver.version_label,
+    title: ver.title,
+    body_text: renderedBody,
+    placeholders,
+    package_id: data.package_id || shop.package_id || null,
+    addon_ids: addonIds,
+    accepted_at: now,
+    device_public_id: data.device_public_id || '',
+    has_signature: !!signature
+  };
+
   dbRun(
     `INSERT INTO platform_contract_acceptances (
       id, shop_id, contract_version_id, accepted_at, accepted_by_name, accepted_by_email,
-      package_id, addon_ids_json, subscription_terms_json, ip_hint, user_agent_hint, created_at
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+      package_id, addon_ids_json, subscription_terms_json, ip_hint, user_agent_hint, created_at,
+      signature_data, body_text_snapshot, placeholders_snapshot_json, device_public_id, signed_document_json
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     [
       id, shopId, versionId, now,
       data.accepted_by_name || shop.owner_name || '',
@@ -604,21 +984,34 @@ function acceptContract(shopId, data, meta = {}) {
       data.package_id || shop.package_id || null,
       JSON.stringify(addonIds),
       JSON.stringify(data.subscription_terms || parseJson(ver.terms_json, {})),
-      String(meta.ip_hint || '').slice(0, 64),
-      String(meta.user_agent_hint || '').slice(0, 200),
-      now
+      String(meta.ip_hint || data.ip_hint || '').slice(0, 64),
+      String(meta.user_agent_hint || data.user_agent_hint || '').slice(0, 200),
+      now,
+      signature || '',
+      renderedBody,
+      JSON.stringify(placeholders),
+      String(data.device_public_id || '').slice(0, 120),
+      JSON.stringify(signedDoc)
     ]
   );
   // Never overwrite history — append only
   audit({ username: data.accepted_by_email || 'customer' }, 'contract_accepted', shopId, {
     acceptance_id: id,
     contract_version_id: versionId,
-    version_label: ver.version_label
+    version_label: ver.version_label,
+    has_signature: !!signature
   });
-  return { success: true, data: getShopContractStatus(shopId).data };
+  return {
+    success: true,
+    data: {
+      ...getShopContractStatus(shopId).data,
+      acceptance_id: id,
+      message: 'Contract accepted successfully.'
+    }
+  };
 }
 
-function getAcceptedAgreementPrintable(shopId, acceptanceId) {
+function getAcceptedAgreementPrintable(shopId, acceptanceId, { includeSignature = true } = {}) {
   requireEnabled();
   ensureSchema();
   const acc = acceptanceId
@@ -627,6 +1020,9 @@ function getAcceptedAgreementPrintable(shopId, acceptanceId) {
   if (!acc) throw new Error('No acceptance record');
   const ver = dbGet('SELECT * FROM platform_contract_versions WHERE id = ?', [acc.contract_version_id]);
   const shop = dbGet('SELECT * FROM platform_shops WHERE id = ?', [shopId]);
+  const signed = parseJson(acc.signed_document_json, {});
+  const body = acc.body_text_snapshot || signed.body_text || ver?.body_text || '';
+  const placeholders = parseJson(acc.placeholders_snapshot_json, signed.placeholders || {});
   return {
     success: true,
     data: {
@@ -638,11 +1034,26 @@ function getAcceptedAgreementPrintable(shopId, acceptanceId) {
       shop_id: shopId,
       version_label: ver?.version_label,
       title: ver?.title,
-      body_text: ver?.body_text,
+      body_text: body,
+      placeholders,
       package_id: acc.package_id,
       addon_ids: parseJson(acc.addon_ids_json, []),
       subscription_terms: parseJson(acc.subscription_terms_json, {}),
-      legal_notice: 'This agreement text is configurable and must be reviewed by a qualified South African legal professional before commercial use.'
+      device_public_id: acc.device_public_id || null,
+      signature_data: includeSignature ? (acc.signature_data || null) : null,
+      has_signature: !!(acc.signature_data && String(acc.signature_data).length > 40),
+      legal_notice: 'This agreement text is configurable and must be reviewed by a qualified South African legal professional before commercial use. Historical accepted copies are immutable snapshots.'
+    }
+  };
+}
+
+function getDefaultContractTemplate() {
+  return {
+    success: true,
+    data: {
+      title: 'SaaS Customer Service Agreement',
+      body_text: DEFAULT_CONTRACT_TEMPLATE,
+      placeholders: DEFAULT_PROVIDER_PLACEHOLDERS
     }
   };
 }
@@ -867,10 +1278,7 @@ function getActivationContext({ shop_id, code, link_token }) {
   ensureSchema();
   if (!shop_id) throw new Error('shop_id required');
   assertNotChisa({ id: shop_id });
-  const shop = dbGet(
-    'SELECT id, shop_name, owner_name, owner_email, contract_required, activation_status, shop_url FROM platform_shops WHERE id = ?',
-    [String(shop_id)]
-  );
+  const shop = dbGet('SELECT * FROM platform_shops WHERE id = ?', [String(shop_id)]);
   if (!shop) throw new Error('Shop not found');
 
   let activation = null;
@@ -890,7 +1298,7 @@ function getActivationContext({ shop_id, code, link_token }) {
 
   const contractStatus = getShopContractStatus(shop_id).data;
   const active = dbGet(
-    'SELECT id, version_label, title, body_text FROM platform_contract_versions WHERE is_active = 1 ORDER BY created_at DESC LIMIT 1'
+    `SELECT * FROM platform_contract_versions WHERE is_active = 1 ORDER BY created_at DESC LIMIT 1`
   );
 
   let token_ok = false;
@@ -907,6 +1315,23 @@ function getActivationContext({ shop_id, code, link_token }) {
     token_error = 'Invalid activation credentials';
   }
 
+  let contract = null;
+  if (active) {
+    const placeholders = buildPlaceholderMap(shop, {
+      version_label: active.version_label,
+      effective_date: (active.effective_at || nowIso()).slice(0, 10),
+      versionPlaceholders: active.placeholders_json
+    });
+    contract = {
+      id: active.id,
+      version_label: active.version_label,
+      title: active.title,
+      body_text: renderContractBody(active.body_text, placeholders),
+      effective_at: active.effective_at || null,
+      placeholders
+    };
+  }
+
   return {
     success: true,
     data: {
@@ -914,16 +1339,22 @@ function getActivationContext({ shop_id, code, link_token }) {
       shop_name: shop.shop_name,
       owner_name: shop.owner_name,
       owner_email: shop.owner_email,
+      owner_id_number: shop.owner_id_number || '',
+      contact_phone: shop.contact_phone || '',
+      whatsapp: shop.whatsapp || '',
+      address: shop.address || '',
+      postal_address: shop.postal_address || '',
+      company_name: shop.company_name || '',
+      company_registration: shop.company_registration || '',
+      shop_address: shop.shop_address || shop.address || '',
+      shop_phone: shop.shop_phone || shop.contact_phone || '',
       shop_url: shop.shop_url || null,
       activation_status: shop.activation_status,
       contract_required: Number(shop.contract_required) !== 0,
       contract_accepted: !!contractStatus.accepted && !contractStatus.needs_reacceptance,
-      contract: active ? {
-        id: active.id,
-        version_label: active.version_label,
-        title: active.title,
-        body_text: active.body_text
-      } : null,
+      needs_reacceptance: !!contractStatus.needs_reacceptance,
+      reacceptance_message: contractStatus.reacceptance_message || null,
+      contract,
       token_ok,
       token_error,
       activation_hint: activation ? {
@@ -1551,6 +1982,126 @@ function processSubscriptionNotifications(opts = {}) {
 
 /* ───────────── Customer control aggregate ───────────── */
 
+function listLocalOrderFeeSnapshots({ from = null, to = null, limit = 100 } = {}) {
+  ensureSchema();
+  try {
+    dbGet('SELECT service_fee FROM online_orders_local LIMIT 1');
+  } catch (_) {
+    return { success: true, data: { orders: [], totals: { order_count: 0, sales_total: 0, service_fees_total: 0 } } };
+  }
+  let sql = `SELECT id, order_number, created_at, subtotal, service_fee, service_fee_label,
+                    service_fee_config_json, total, status
+             FROM online_orders_local WHERE 1=1`;
+  const params = [];
+  if (from) { sql += ' AND created_at >= ?'; params.push(String(from)); }
+  if (to) { sql += ' AND created_at <= ?'; params.push(String(to)); }
+  sql += ' ORDER BY created_at DESC LIMIT ?';
+  params.push(Math.min(500, Math.max(1, Number(limit) || 100)));
+  const rows = dbAll(sql, params).map((r) => ({
+    id: r.id,
+    order_number: r.order_number,
+    created_at: r.created_at,
+    subtotal: Number(r.subtotal) || 0,
+    service_fee: Number(r.service_fee) || 0,
+    service_fee_label: r.service_fee_label || '',
+    service_fee_config: parseJson(r.service_fee_config_json, {}),
+    total: Number(r.total) || 0,
+    status: r.status
+  }));
+  const totals = rows.reduce((acc, r) => {
+    acc.order_count += 1;
+    acc.sales_total += r.total;
+    acc.service_fees_total += r.service_fee;
+    return acc;
+  }, { order_count: 0, sales_total: 0, service_fees_total: 0 });
+  // Also compute range totals from DB when filters used
+  try {
+    let tSql = 'SELECT COUNT(*) AS c, COALESCE(SUM(total),0) AS sales, COALESCE(SUM(service_fee),0) AS fees FROM online_orders_local WHERE 1=1';
+    const tParams = [];
+    if (from) { tSql += ' AND created_at >= ?'; tParams.push(String(from)); }
+    if (to) { tSql += ' AND created_at <= ?'; tParams.push(String(to)); }
+    const t = dbGet(tSql, tParams);
+    if (t) {
+      totals.order_count = Number(t.c) || 0;
+      totals.sales_total = Number(t.sales) || 0;
+      totals.service_fees_total = Number(t.fees) || 0;
+    }
+  } catch (_) { /* */ }
+  return { success: true, data: { orders: rows, totals } };
+}
+
+async function fetchCustomerFeeReport(shopId, { from = null, to = null, limit = 50 } = {}) {
+  requireEnabled();
+  ensureSchema();
+  assertNotChisa({ id: shopId });
+  const shop = dbGet('SELECT * FROM platform_shops WHERE id = ?', [String(shopId)]);
+  if (!shop) throw new Error('Shop not found');
+  const fee = getEffectiveServiceFee({ package_id: shop.package_id, shop_id: shopId });
+  const base = String(shop.shop_url || '').replace(/\/$/, '');
+  if (!base || !shop.railway_project_id) {
+    return {
+      success: true,
+      data: {
+        shop_id: shopId,
+        shop_name: shop.shop_name,
+        current_fee: fee,
+        source: 'unavailable',
+        orders: [],
+        totals: { order_count: 0, sales_total: 0, service_fees_total: 0 },
+        note: 'Customer shop URL not provisioned yet'
+      }
+    };
+  }
+  let secret = '';
+  try {
+    const railway = require('./railway-client');
+    const vars = await railway.getVariables({
+      projectId: shop.railway_project_id,
+      environmentId: shop.railway_environment_id,
+      serviceId: shop.railway_service_id
+    });
+    secret = String(vars.SAAS_SYNC_SECRET || '').trim();
+  } catch (_) { /* */ }
+  if (!secret) {
+    return {
+      success: true,
+      data: {
+        shop_id: shopId,
+        current_fee: fee,
+        source: 'unavailable',
+        orders: [],
+        totals: { order_count: 0, sales_total: 0, service_fees_total: 0 },
+        note: 'Unable to read customer sync secret'
+      }
+    };
+  }
+  const res = await fetch(base + '/rpc', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      method: 'saas:listOrderFees',
+      args: [secret, { from, to, limit }]
+    }),
+    signal: AbortSignal.timeout(45000)
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok || json.success === false) {
+    throw new Error(json.error || `fee report HTTP ${res.status}`);
+  }
+  const payload = json.data?.data || json.data || json;
+  return {
+    success: true,
+    data: {
+      shop_id: shopId,
+      shop_name: shop.shop_name,
+      current_fee: fee,
+      source: 'customer',
+      orders: payload.orders || [],
+      totals: payload.totals || { order_count: 0, sales_total: 0, service_fees_total: 0 }
+    }
+  };
+}
+
 function getCustomerControl(shopId) {
   requireEnabled();
   ensureSchema();
@@ -1571,7 +2122,19 @@ function getCustomerControl(shopId) {
       notifications: listNotificationLog(shopId, 20).data,
       health: null,
       access: evaluateShopAccess(dbGet('SELECT * FROM platform_shops WHERE id = ?', [shopId])),
-      audit: shops.listAuditForShop(shopId, 40).data
+      audit: shops.listAuditForShop(shopId, 40).data,
+      renewal: {
+        package_id: shop.package_id,
+        package_name: shop.package_name,
+        addon_names: shop.addon_names,
+        subscription_status: shop.subscription_status,
+        subscription_start: shop.subscription_start,
+        subscription_expiry: shop.subscription_expiry,
+        days_remaining: getCountdown(shopId).data?.days_remaining,
+        service_fee: getEffectiveServiceFee({ package_id: shop.package_id, shop_id: shopId }),
+        contract: getShopContractStatus(shopId).data,
+        show_contract_on_renewal: !!(getShopContractStatus(shopId).data?.needs_reacceptance)
+      }
     }
   };
 }
@@ -1592,9 +2155,16 @@ module.exports = {
   getContractVersion,
   getActiveContract,
   createContractVersion,
+  updateDraftContract,
+  publishContractVersion,
+  previewContract,
+  listContractAcceptances,
   getShopContractStatus,
   acceptContract,
   getAcceptedAgreementPrintable,
+  getDefaultContractTemplate,
+  renderContractBody,
+  buildPlaceholderMap,
   // activation
   createActivation,
   listActivations,
@@ -1620,6 +2190,8 @@ module.exports = {
   calculateServiceFee,
   upsertServiceFee,
   listServiceFees,
+  listLocalOrderFeeSnapshots,
+  fetchCustomerFeeReport,
   // notifications
   listNotificationRules,
   updateNotificationRule,

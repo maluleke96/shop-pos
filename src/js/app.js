@@ -675,10 +675,41 @@ const App = {
         }
       } catch (_) { /* */ }
       this.showWelcome({ shopReady: true });
+      this.checkContractReacceptance?.().catch(() => {});
     } catch (err) {
       console.error('App init failed:', err);
       this.showMobileError(err.message || 'Could not start Shop POS');
     }
+  },
+
+  async checkContractReacceptance() {
+    const shopId = localStorage.getItem('shoppos_shop_id')
+      || this.settings?.platform_shop_id
+      || this.settings?.shop_id;
+    if (!shopId || !window.API?.rpc) return;
+    try {
+      const r = await fetch('/rpc', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ method: 'activation:getContext', args: [{ shop_id: shopId }] })
+      });
+      const json = await r.json().catch(() => ({}));
+      const data = json.data || json;
+      if (!data?.needs_reacceptance && !data?.reacceptance_message) return;
+      let bar = document.getElementById('contract-reaccept-banner');
+      if (!bar) {
+        bar = document.createElement('div');
+        bar.id = 'contract-reaccept-banner';
+        bar.style.cssText = 'position:fixed;z-index:9999;left:12px;right:12px;bottom:12px;padding:14px 16px;background:#0f172a;color:#f8fafc;border:1px solid #38bdf8;border-radius:10px;font:14px/1.4 Georgia,serif;box-shadow:0 8px 24px rgba(0,0,0,.35)';
+        document.body.appendChild(bar);
+      }
+      const msg = data.reacceptance_message
+        || 'Your Service Agreement has been updated. Please review and accept the new agreement to continue.';
+      bar.innerHTML = `<strong>${msg}</strong><div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+        <a href="/activate?shop=${encodeURIComponent(shopId)}" style="background:#38bdf8;color:#0f172a;padding:8px 12px;border-radius:8px;text-decoration:none;font-weight:700">Review Updated Agreement</a>
+        <a href="/activate?shop=${encodeURIComponent(shopId)}" style="background:#334155;color:#f8fafc;padding:8px 12px;border-radius:8px;text-decoration:none">Accept &amp; Sign</a>
+      </div>`;
+    } catch (_) { /* optional */ }
   },
 
   showWelcome(opts = {}) {

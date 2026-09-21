@@ -125,8 +125,16 @@ function mapShop(row) {
     shop_name: row.shop_name,
     owner_name: row.owner_name || '',
     owner_email: row.owner_email || '',
+    owner_id_number: row.owner_id_number || '',
     contact_phone: row.contact_phone || '',
+    whatsapp: row.whatsapp || '',
     address: row.address || '',
+    postal_address: row.postal_address || '',
+    company_name: row.company_name || '',
+    company_registration: row.company_registration || '',
+    shop_address: row.shop_address || row.address || '',
+    shop_phone: row.shop_phone || row.contact_phone || '',
+    branch_info: row.branch_info || '',
     shop_url: row.shop_url || '',
     railway_project_id: row.railway_project_id || '',
     railway_service_id: row.railway_service_id || '',
@@ -246,7 +254,9 @@ function createShop(data, actor) {
     dbRun(
       `UPDATE platform_shops SET
         address=?, subscription_start=?, subscription_expiry=?, grace_days=?,
-        activation_status=?, contract_required=?, contact_admin_url=?, suspension_message=?
+        activation_status=?, contract_required=?, contact_admin_url=?, suspension_message=?,
+        owner_id_number=?, whatsapp=?, postal_address=?, company_name=?, company_registration=?,
+        shop_address=?, shop_phone=?, branch_info=?
        WHERE id=?`,
       [
         data.address || '',
@@ -257,6 +267,14 @@ function createShop(data, actor) {
         data.contract_required === false || data.contract_required === 0 ? 0 : 1,
         data.contact_admin_url || '',
         data.suspension_message || '',
+        data.owner_id_number || '',
+        data.whatsapp || data.contact_phone || '',
+        data.postal_address || '',
+        data.company_name || '',
+        data.company_registration || '',
+        data.shop_address || data.address || '',
+        data.shop_phone || data.contact_phone || '',
+        data.branch_info || '',
         id
       ]
     );
@@ -304,8 +322,16 @@ function updateShopMeta(id, data, actor) {
     shop_name: data.shop_name != null ? String(data.shop_name).trim() : row.shop_name,
     owner_name: data.owner_name != null ? data.owner_name : row.owner_name,
     owner_email: data.owner_email != null ? data.owner_email : row.owner_email,
+    owner_id_number: data.owner_id_number != null ? data.owner_id_number : (row.owner_id_number || ''),
     contact_phone: data.contact_phone != null ? data.contact_phone : row.contact_phone,
+    whatsapp: data.whatsapp != null ? data.whatsapp : (row.whatsapp || ''),
     address: data.address != null ? data.address : (row.address || ''),
+    postal_address: data.postal_address != null ? data.postal_address : (row.postal_address || ''),
+    company_name: data.company_name != null ? data.company_name : (row.company_name || ''),
+    company_registration: data.company_registration != null ? data.company_registration : (row.company_registration || ''),
+    shop_address: data.shop_address != null ? data.shop_address : (row.shop_address || ''),
+    shop_phone: data.shop_phone != null ? data.shop_phone : (row.shop_phone || ''),
+    branch_info: data.branch_info != null ? data.branch_info : (row.branch_info || ''),
     shop_url: data.shop_url != null ? data.shop_url : row.shop_url,
     railway_project_id: data.railway_project_id != null ? data.railway_project_id : row.railway_project_id,
     railway_service_id: data.railway_service_id != null ? data.railway_service_id : row.railway_service_id,
@@ -349,11 +375,15 @@ function updateShopMeta(id, data, actor) {
     dbRun(
       `UPDATE platform_shops SET
         address=?, subscription_start=?, subscription_expiry=?, grace_days=?,
-        activation_status=?, contract_required=?, contact_admin_url=?, suspension_message=?
+        activation_status=?, contract_required=?, contact_admin_url=?, suspension_message=?,
+        owner_id_number=?, whatsapp=?, postal_address=?, company_name=?, company_registration=?,
+        shop_address=?, shop_phone=?, branch_info=?
        WHERE id=?`,
       [
         next.address, next.subscription_start, next.subscription_expiry, next.grace_days,
         next.activation_status, next.contract_required, next.contact_admin_url, next.suspension_message,
+        next.owner_id_number, next.whatsapp, next.postal_address, next.company_name, next.company_registration,
+        next.shop_address, next.shop_phone, next.branch_info,
         id
       ]
     );

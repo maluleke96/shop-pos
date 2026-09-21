@@ -18,6 +18,11 @@ const PlatformApp = {
   shopStatusFilter: '',
   control: null,
   lastActivation: null,
+  contracts: [],
+  selectedContract: null,
+  contractAcceptances: [],
+  feeReport: null,
+  profileSection: 'overview',
   assignment: null,
   entitlementsPreview: null,
   filterKind: '',
@@ -68,6 +73,12 @@ const PlatformApp = {
       this.shops = [];
     }
     try {
+      const cvs = await PlatformAPI.listContractVersions();
+      this.contracts = Array.isArray(cvs) ? cvs : (cvs?.data || []);
+    } catch (_) {
+      this.contracts = [];
+    }
+    try {
       const asg = await PlatformAPI.getShopAssignment('lab');
       this.assignment = asg.data || asg;
       this.entitlementsPreview = this.assignment?.entitlements || null;
@@ -78,6 +89,31 @@ const PlatformApp = {
 
   esc(s) {
     return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  },
+
+  openSignedContractWindow(doc) {
+    const w = window.open('', '_blank');
+    if (!w) {
+      this.error = 'Pop-up blocked — allow pop-ups to view signed contract';
+      this.render();
+      return;
+    }
+    const sig = doc.signature_data
+      ? `<p><strong>Signature</strong></p><img src="${doc.signature_data}" alt="Signature" style="max-width:360px;border:1px solid #ccc;background:#fff" />`
+      : '<p class="muted">No drawn signature on this acceptance</p>';
+    w.document.write(`<!DOCTYPE html><html><head><title>Accepted Contract ${this.esc(doc.acceptance_id || '')}</title>
+      <style>body{font-family:Georgia,serif;padding:24px;line-height:1.45;max-width:800px;margin:0 auto}
+      pre{white-space:pre-wrap;background:#f8fafc;padding:16px;border:1px solid #e2e8f0}</style></head><body>
+      <h1>${this.esc(doc.title || 'Accepted Contract')}</h1>
+      <p>Version ${this.esc(doc.version_label || '')} · Acceptance ID ${this.esc(doc.acceptance_id || '')}</p>
+      <p>Shop: ${this.esc(doc.shop_name || '')} (${this.esc(doc.shop_id || '')})</p>
+      <p>Accepted ${this.esc(doc.accepted_at || '')} by ${this.esc(doc.accepted_by_name || '')} &lt;${this.esc(doc.accepted_by_email || '')}&gt;</p>
+      <pre>${this.esc(doc.body_text || '')}</pre>
+      ${sig}
+      <p><em>${this.esc(doc.legal_notice || '')}</em></p>
+      <script>window.print()</script>
+      </body></html>`);
+    w.document.close();
   },
 
   badge(cls) {
@@ -120,22 +156,24 @@ const PlatformApp = {
     el.innerHTML = `<div class="wrap">
       <div class="row" style="margin-bottom:16px">
         <div class="grow"><h1>Platform Control</h1>
-          <div class="pill">Signed in as ${this.esc(this.user?.username || 'platform')} · Phase 5 shops · lab only</div></div>
-        <button class="btn secondary" data-act="sync">Sync catalog</button>
-        <button class="btn secondary" data-act="samples">Load lab samples</button>
-        <button class="btn secondary" data-act="lab-customers">Seed lab customers</button>
+          <div class="pill">Signed in as ${this.esc(this.user?.username || 'platform')} · Customers · Contracts · Fees · lab only</div></div>
+        <button class="btn secondary" data-act="sync" title="Sync Zenco module catalog into Platform Control">Zenco Catalog</button>
+        <button class="btn secondary" data-act="samples" title="Load sample packages and add-ons for lab testing">Lab Samples</button>
+        <button class="btn secondary" data-act="lab-customers" title="Open / seed lab customers list">See Lab Customers</button>
         <button class="btn secondary" data-act="logout">Logout</button>
       </div>
       ${this.message ? `<p class="warn">${this.esc(this.message)}</p>` : ''}
       ${this.error ? `<p class="err">${this.esc(this.error)}</p>` : ''}
       <div class="tabs">
-        <button class="tab ${this.tab === 'shops' ? 'active' : ''}" data-tab="shops">Shops</button>
+        <button class="tab ${this.tab === 'shops' ? 'active' : ''}" data-tab="shops">Customers</button>
+        <button class="tab ${this.tab === 'contracts' ? 'active' : ''}" data-tab="contracts">Contracts</button>
         <button class="tab ${this.tab === 'assign' ? 'active' : ''}" data-tab="assign">Lab assignment</button>
         <button class="tab ${this.tab === 'packages' ? 'active' : ''}" data-tab="packages">Packages</button>
         <button class="tab ${this.tab === 'addons' ? 'active' : ''}" data-tab="addons">Add-ons</button>
         <button class="tab ${this.tab === 'modules' ? 'active' : ''}" data-tab="modules">Modules</button>
       </div>
       ${this.tab === 'shops' ? this.renderShops() : ''}
+      ${this.tab === 'contracts' ? this.renderContracts() : ''}
       ${this.tab === 'assign' ? this.renderAssign() : ''}
       ${this.tab === 'packages' ? this.renderPackages() : ''}
       ${this.tab === 'addons' ? this.renderAddons() : ''}
@@ -161,8 +199,18 @@ const PlatformApp = {
           <div style="margin:8px 0"><label>Owner / customer name *</label><input id="sh-owner" placeholder="Jane Owner"></div>
           <div style="margin:8px 0"><label>Email *</label><input id="sh-email" type="email" placeholder="owner@example.com"></div>
           <div style="margin:8px 0"><label>Phone</label><input id="sh-phone" placeholder="+27…"></div>
+          <div style="margin:8px 0"><label>WhatsApp</label><input id="sh-whatsapp" placeholder="+27…"></div>
+          <div style="margin:8px 0"><label>ID / passport / company reg.</label><input id="sh-idnum" placeholder="Optional"></div>
+          <div style="margin:8px 0"><label>Company / business name</label><input id="sh-company" placeholder="Optional"></div>
+          <div style="margin:8px 0"><label>Company registration</label><input id="sh-compreg" placeholder="Optional"></div>
         </div>
-        <div style="margin:8px 0"><label>Address</label><input id="sh-address" placeholder="Street, city"></div>
+        <div style="margin:8px 0"><label>Physical address</label><input id="sh-address" placeholder="Street, city"></div>
+        <div style="margin:8px 0"><label>Postal address</label><input id="sh-postal" placeholder="If different"></div>
+        <div class="grid2" style="gap:8px">
+          <div style="margin:8px 0"><label>Shop address</label><input id="sh-shopaddr" placeholder="Defaults to physical address"></div>
+          <div style="margin:8px 0"><label>Shop contact number</label><input id="sh-shopphone" placeholder="Defaults to phone"></div>
+          <div style="margin:8px 0"><label>Branch info</label><input id="sh-branch" placeholder="Optional branch label"></div>
+        </div>
         <div style="margin:8px 0"><label>Package *</label>
           <select id="sh-pkg"><option value="">— select package —</option>
             ${this.packages.map((p) => `<option value="${this.esc(p.id)}">${this.esc(p.name)}</option>`).join('')}
@@ -332,11 +380,64 @@ const PlatformApp = {
     }).join('')}</ul>`;
   },
 
+  renderContracts() {
+    const selected = this.selectedContract;
+    const list = this.contracts || [];
+    return `<div class="grid2">
+      <div class="card">
+        <h2>Contract versions</h2>
+        <p class="muted">Previous versions remain permanently available. Publishing never overwrites accepted history.</p>
+        <div class="row" style="margin-bottom:8px">
+          <button class="btn" data-act="contract-new-draft">New draft</button>
+          <button class="btn secondary" data-act="contract-load-template">Load template</button>
+        </div>
+        <table class="table"><thead><tr><th>Version</th><th>Status</th><th>Effective</th><th></th></tr></thead><tbody>
+          ${list.map((c) => `<tr>
+            <td><strong>${this.esc(c.version_label)}</strong><div class="muted">${this.esc(c.title)}</div></td>
+            <td>${c.is_active ? '<span class="badge sellable">ACTIVE</span>' : ''}<span class="badge">${this.esc(c.status || '—')}</span></td>
+            <td class="muted">${this.esc((c.effective_at || '').slice(0, 10) || '—')}</td>
+            <td><button class="btn secondary" data-open-contract="${this.esc(c.id)}">Open</button></td>
+          </tr>`).join('') || '<tr><td colspan="4" class="muted">No contract versions yet</td></tr>'}
+        </tbody></table>
+      </div>
+      <div class="card">
+        ${selected ? this.renderContractEditor(selected) : '<h2>Contract editor</h2><p class="muted">Select a version or create a new draft.</p>'}
+      </div>
+    </div>
+    ${selected ? `<div class="card" style="margin-top:16px">
+      <h3>Acceptances for ${this.esc(selected.version_label || selected.id)}</h3>
+      <ul class="muted">${(this.contractAcceptances || []).map((a) =>
+        `<li>${this.esc(a.shop_name || a.shop_id)} · ${this.esc(a.accepted_at)} · ${this.esc(a.accepted_by_name || '')} · ID ${this.esc(a.id)}
+          ${a.has_signature ? ' · signed' : ''}</li>`).join('') || '<li>No acceptances for this version yet</li>'}</ul>
+    </div>` : ''}`;
+  },
+
+  renderContractEditor(c) {
+    const isDraft = (c.status || '') === 'draft' && !c.is_active;
+    return `<h2>${this.esc(c.version_label)} · ${this.esc(c.title)}</h2>
+      <p class="muted">Status: ${this.esc(c.status || '—')} · Re-acceptance: ${c.require_reacceptance ? 'YES' : 'no'}</p>
+      <div style="margin:8px 0"><label>Version label</label><input id="cv-label" value="${this.esc(c.version_label || '')}" ${isDraft ? '' : 'readonly'}></div>
+      <div style="margin:8px 0"><label>Title</label><input id="cv-title" value="${this.esc(c.title || '')}" ${isDraft ? '' : 'readonly'}></div>
+      <div style="margin:8px 0"><label>Effective date</label><input id="cv-effective" type="date" value="${this.esc((c.effective_at || '').slice(0, 10))}"></div>
+      <div style="margin:8px 0"><label><input type="checkbox" id="cv-reaccept" ${c.require_reacceptance !== false ? 'checked' : ''}> Require re-acceptance when published</label></div>
+      <div style="margin:8px 0"><label>Body (supports {{placeholders}})</label>
+        <textarea id="cv-body" rows="14" ${isDraft ? '' : 'readonly'}>${this.esc(c.body_text || '')}</textarea></div>
+      <div style="margin:8px 0"><label>Provider placeholders (JSON)</label>
+        <textarea id="cv-ph" rows="4">${this.esc(JSON.stringify(c.placeholders || {}, null, 2))}</textarea></div>
+      <div class="row">
+        ${isDraft ? '<button class="btn" data-act="contract-save-draft">Save draft</button>' : ''}
+        ${isDraft ? '<button class="btn" data-act="contract-publish">Publish</button>' : ''}
+        <button class="btn secondary" data-act="contract-preview">Preview</button>
+        ${!isDraft ? '<button class="btn secondary" data-act="contract-new-from">New version from this</button>' : ''}
+      </div>
+      <pre id="cv-preview" class="muted" style="white-space:pre-wrap;font-size:12px;max-height:220px;overflow:auto;margin-top:12px"></pre>`;
+  },
+
   renderCustomerControl(s) {
     const c = this.control;
     if (!c || c.customer?.id !== s.id) {
-      return `<h3 style="margin-top:16px">Customer control</h3>
-        <button class="btn secondary" data-act="load-control">Load contract, activation, devices, fees, audit</button>`;
+      return `<h3 style="margin-top:16px">Customer profile</h3>
+        <button class="btn" data-act="load-control">Open full customer profile</button>`;
     }
     const cd = c.subscription || {};
     const contract = c.contract || {};
@@ -346,22 +447,64 @@ const PlatformApp = {
     const devices = c.devices || [];
     const audit = c.audit || [];
     const secret = this.lastActivation;
+    const feeR = this.feeReport;
+    const cust = c.customer || s;
     return `<div style="margin-top:16px;border-top:1px solid #ccc;padding-top:12px">
-      <h3>Customer control</h3>
-      <p class="muted">Registration is stored on the platform shop record (separate from the customer business database).</p>
-      <p><strong>Access:</strong> ${this.esc(access.access_state || '—')} ·
-        <strong>Days remaining:</strong> ${cd.days_remaining == null ? '—' : this.esc(cd.days_remaining)} ·
-        <strong>Expiry:</strong> ${this.esc(cd.expiry_date || '—')} ·
-        <strong>Grace:</strong> ${this.esc(cd.grace_period_days ?? '—')} days
-        ${cd.suspension_date ? ` · <strong>Suspended:</strong> ${this.esc(cd.suspension_date)}` : ''}</p>
-      <h4>Contract</h4>
-      <p>${contract.accepted ? `Accepted ${this.esc(contract.latest_acceptance?.version_label || '')} at ${this.esc(contract.latest_acceptance?.accepted_at || '')}` : 'Not accepted'}
-        ${contract.needs_reacceptance ? ' · <strong>Re-acceptance required</strong>' : ''}</p>
-      <div class="row">
-        <button class="btn secondary" data-act="accept-contract">Record acceptance</button>
-        <button class="btn secondary" data-act="print-contract">Print accepted agreement</button>
-        <button class="btn secondary" data-act="new-contract">New agreement version</button>
+      <h3>Customer profile</h3>
+      <div class="tabs" style="margin:8px 0">
+        ${['overview','contracts','fees','audit'].map((sec) =>
+          `<button class="tab ${this.profileSection === sec ? 'active' : ''}" data-profile-sec="${sec}">${sec}</button>`).join('')}
       </div>
+
+      ${this.profileSection === 'overview' || !this.profileSection ? `
+      <h4>CUSTOMER</h4>
+      <pre class="muted" style="white-space:pre-wrap;font-size:12px">${this.esc(JSON.stringify({
+        name: cust.owner_name,
+        id_registration: cust.owner_id_number || cust.company_registration,
+        phone: cust.contact_phone,
+        whatsapp: cust.whatsapp,
+        email: cust.owner_email,
+        address: cust.address,
+        postal_address: cust.postal_address,
+        company: cust.company_name,
+        notes: cust.notes,
+        registered: cust.registered_date || cust.created_at
+      }, null, 2))}</pre>
+      <h4>SHOP</h4>
+      <pre class="muted" style="white-space:pre-wrap;font-size:12px">${this.esc(JSON.stringify({
+        shop_name: cust.shop_name,
+        shop_id: cust.id,
+        branch: cust.branch_info,
+        shop_address: cust.shop_address,
+        shop_phone: cust.shop_phone,
+        url: cust.shop_url,
+        package: cust.package_name,
+        addons: cust.addon_names,
+        subscription_status: cust.subscription_status,
+        subscription_start: cust.subscription_start,
+        subscription_expiry: cust.subscription_expiry,
+        grace_days: cust.grace_days,
+        activation_status: cust.activation_status,
+        deployment_status: cust.deployment_status,
+        railway_project_id: cust.railway_project_id,
+        railway_service_id: cust.railway_service_id,
+        access: access.access_state,
+        days_remaining: cd.days_remaining
+      }, null, 2))}</pre>
+      <p class="muted">Railway credentials and sync secrets are never shown.</p>
+      <h4>SERVICE FEE</h4>
+      <div class="row">
+        <label><input type="checkbox" id="fee-enabled" ${fee.enabled ? 'checked' : ''}> ON</label>
+        <select id="fee-type">
+          <option value="percent" ${fee.config?.fee_type === 'percent' ? 'selected' : ''}>Percentage</option>
+          <option value="fixed" ${fee.config?.fee_type === 'fixed' ? 'selected' : ''}>Fixed</option>
+          <option value="percent_plus_fixed" ${fee.config?.fee_type === 'percent_plus_fixed' ? 'selected' : ''}>Percentage + Fixed</option>
+        </select>
+        <input id="fee-percent" type="number" step="0.01" placeholder="%" style="width:80px" value="${this.esc(fee.config?.percent ?? '')}">
+        <input id="fee-fixed" type="number" step="0.01" placeholder="Fixed" style="width:80px" value="${this.esc(fee.config?.fixed_amount ?? '')}">
+        <button class="btn secondary" data-act="save-fee">Save customer fee</button>
+      </div>
+      <p class="muted">${fee.enabled ? `Enabled · ${this.esc(fee.config?.fee_type)} ${fee.config?.percent || 0}% + ${fee.config?.fixed_amount || 0}` : 'OFF for this shop'}</p>
       <h4>Activation</h4>
       <div class="row">
         <button class="btn" data-act="gen-activation">Generate Activation Link</button>
@@ -374,36 +517,64 @@ const PlatformApp = {
             : '');
         return `<div class="activation-box">
         <label>Complete activation URL</label>
-        <input id="act-link" readonly value="${this.esc(link || '(set customer shop URL / PLATFORM_PUBLIC_BASE_URL)')}" />
-        <p class="muted" style="margin:8px 0">Code (show once): <code>${this.esc(secret.code || '—')}</code> · Expires ${this.esc(secret.expires_at || '—')}</p>
+        <input id="act-link" readonly value="${this.esc(link || '(set customer shop URL)')}" />
+        <p class="muted" style="margin:8px 0">Code (show once): <code>${this.esc(secret.code || '—')}</code></p>
         <div class="row">
           <button class="btn" data-act="copy-activation" ${link ? '' : 'disabled'}>Copy Activation Link</button>
-          <a class="btn secondary" ${link ? `href="${this.esc(link)}" target="_blank" rel="noopener"` : 'aria-disabled="true"'} ${link ? '' : 'onclick="return false"'}>Open Activation Link</a>
+          <a class="btn secondary" ${link ? `href="${this.esc(link)}" target="_blank" rel="noopener"` : 'onclick="return false"'}>Open Activation Link</a>
           <button class="btn secondary" data-act="regen-activation">Regenerate</button>
           ${acts.find((a) => a.status === 'active') ? `<button class="btn secondary" data-revoke-act="${this.esc(acts.find((a) => a.status === 'active').id)}">Revoke</button>` : ''}
         </div>
       </div>`;
       })() : ''}
-      <ul class="muted">${acts.map((a) => `<li>${this.esc(a.status)} · hint …${this.esc(a.code_hint)} · uses ${a.use_count}/${a.max_uses} · exp ${this.esc(a.expires_at)}
-        ${a.status === 'active' ? `<button class="btn secondary" data-revoke-act="${this.esc(a.id)}">Revoke</button>` : ''}</li>`).join('') || '<li>No activations</li>'}</ul>
       <h4>Devices</h4>
-      <ul class="muted">${devices.map((d) => `<li>${this.esc(d.device_name)} · ${this.esc(d.device_type)} · ${this.esc(d.status)} · last ${this.esc(d.last_connection || '—')}
+      <ul class="muted">${devices.map((d) => `<li>${this.esc(d.device_name)} · ${this.esc(d.device_type)} · ${this.esc(d.status)}
         ${d.status !== 'revoked' ? `<button class="btn secondary" data-revoke-dev="${this.esc(d.id)}">Revoke</button>` : ''}</li>`).join('') || '<li>No devices</li>'}</ul>
-      <h4>Service fee (${this.esc(fee.source || 'none')})</h4>
+      ` : ''}
+
+      ${this.profileSection === 'contracts' ? `
+      <h4>CONTRACTS</h4>
+      <p>Current: ${contract.accepted ? `Accepted ${this.esc(contract.latest_acceptance?.version_label || '')} at ${this.esc(contract.latest_acceptance?.accepted_at || '')}` : 'Not accepted'}
+        ${contract.needs_reacceptance ? ' · <strong>Re-acceptance required</strong>' : ''}</p>
       <div class="row">
-        <select id="fee-type">
-          <option value="percent">Percent</option>
-          <option value="fixed">Fixed</option>
-          <option value="percent_plus_fixed">Percent + fixed</option>
-        </select>
-        <input id="fee-percent" type="number" step="0.01" placeholder="%" style="width:80px">
-        <input id="fee-fixed" type="number" step="0.01" placeholder="Fixed" style="width:80px">
-        <button class="btn secondary" data-act="save-fee">Save customer fee</button>
+        <button class="btn secondary" data-act="print-contract">Open accepted / signed copy</button>
+        <button class="btn secondary" data-act="accept-contract">Record platform acceptance</button>
       </div>
-      <p class="muted">${fee.enabled ? `Enabled · ${this.esc(fee.config?.fee_type)} ${fee.config?.percent || 0}% + ${fee.config?.fixed_amount || 0}` : 'Disabled / none'}</p>
-      <h4>Audit</h4>
-      <ul class="muted" style="max-height:160px;overflow:auto">${audit.slice(0, 12).map((a) =>
+      <h4>Acceptance history</h4>
+      <ul class="muted">${(contract.history || []).map((h) =>
+        `<li>${this.esc(h.version_label)} · ${this.esc(h.accepted_at)} · ${this.esc(h.accepted_by_name || '')} · ID ${this.esc(h.id)}
+          ${h.has_signature ? ' · signed' : ''}
+          <button class="btn secondary" data-print-acc="${this.esc(h.id)}">Open</button></li>`).join('') || '<li>No acceptances</li>'}</ul>
+      ` : ''}
+
+      ${this.profileSection === 'fees' ? `
+      <h4>ORDERS / FEES</h4>
+      <div class="row">
+        <input id="fee-from" type="date">
+        <input id="fee-to" type="date">
+        <button class="btn" data-act="load-fee-report">Load fee report</button>
+      </div>
+      ${feeR ? `<p><strong>Orders:</strong> ${feeR.totals?.order_count ?? 0} ·
+        <strong>Sales:</strong> ${this.esc(feeR.totals?.sales_total ?? 0)} ·
+        <strong>Service fees:</strong> ${this.esc(feeR.totals?.service_fees_total ?? 0)}</p>
+        <p class="muted">Source: ${this.esc(feeR.source || '—')} ${feeR.note ? '· ' + this.esc(feeR.note) : ''}</p>
+        <table class="table"><thead><tr><th>Order</th><th>Date</th><th>Subtotal</th><th>Fee</th><th>Total</th><th>Config</th></tr></thead><tbody>
+          ${(feeR.orders || []).map((o) => `<tr>
+            <td>${this.esc(o.order_number || o.id)}</td>
+            <td class="muted">${this.esc(o.created_at)}</td>
+            <td>${this.esc(o.subtotal)}</td>
+            <td>${this.esc(o.service_fee)}</td>
+            <td>${this.esc(o.total)}</td>
+            <td class="muted">${this.esc(JSON.stringify(o.service_fee_config || {}))}</td>
+          </tr>`).join('') || '<tr><td colspan="6" class="muted">No orders in range</td></tr>'}
+        </tbody></table>` : '<p class="muted">Load a date range to view order fee snapshots (immutable per order).</p>'}
+      ` : ''}
+
+      ${this.profileSection === 'audit' ? `
+      <h4>AUDIT</h4>
+      <ul class="muted" style="max-height:220px;overflow:auto">${audit.slice(0, 40).map((a) =>
         `<li>${this.esc(a.created_at)} · ${this.esc(a.actor)} · ${this.esc(a.action)}</li>`).join('') || '<li>No audit</li>'}</ul>
+      ` : ''}
     </div>`;
   },
 
@@ -618,8 +789,9 @@ const PlatformApp = {
       try {
         const r = await PlatformAPI.syncCatalog();
         await this.loadAll();
-        this.message = `Catalog synced (${r.upserted || 0} modules)`;
+        this.message = `Zenco catalog synced (${r.upserted || 0} modules) — open Modules / Packages to browse`;
         this.error = '';
+        this.tab = 'modules';
         this.render();
       } catch (e) { this.error = e.message; this.render(); }
     });
@@ -627,7 +799,8 @@ const PlatformApp = {
       try {
         await PlatformAPI.bootstrapLabSamples();
         await this.loadAll();
-        this.message = 'Lab sample packages/add-ons loaded (editable — not hard product limits)';
+        this.tab = 'packages';
+        this.message = 'Lab Samples loaded — sample packages and add-ons are ready to edit';
         this.render();
       } catch (e) { this.error = e.message; this.render(); }
     });
@@ -636,10 +809,15 @@ const PlatformApp = {
         await PlatformAPI.bootstrapLabCustomers();
         await this.loadAll();
         this.tab = 'shops';
-        this.message = 'Lab customers A/B seeded (platform records only)';
+        this.message = 'Lab customers list ready (seeded A/B platform records if missing)';
         this.error = '';
         this.render();
-      } catch (e) { this.error = e.message; this.render(); }
+      } catch (e) {
+        // Still navigate to customers even if seed fails (e.g. already exist)
+        this.tab = 'shops';
+        this.error = e.message;
+        this.render();
+      }
     });
     root.querySelector('[data-act="create-shop"]')?.addEventListener('click', async () => {
       try {
@@ -659,7 +837,15 @@ const PlatformApp = {
           owner_name: owner,
           owner_email: email,
           contact_phone: document.getElementById('sh-phone').value.trim(),
+          whatsapp: document.getElementById('sh-whatsapp')?.value.trim() || '',
+          owner_id_number: document.getElementById('sh-idnum')?.value.trim() || '',
+          company_name: document.getElementById('sh-company')?.value.trim() || '',
+          company_registration: document.getElementById('sh-compreg')?.value.trim() || '',
           address: document.getElementById('sh-address')?.value.trim() || '',
+          postal_address: document.getElementById('sh-postal')?.value.trim() || '',
+          shop_address: document.getElementById('sh-shopaddr')?.value.trim() || '',
+          shop_phone: document.getElementById('sh-shopphone')?.value.trim() || '',
+          branch_info: document.getElementById('sh-branch')?.value.trim() || '',
           package_id: pkg,
           addon_ids,
           subscription_status: document.getElementById('sh-status').value,
@@ -719,10 +905,135 @@ const PlatformApp = {
       this.control = await PlatformAPI.customerControl(id);
       this.render();
     };
+    root.querySelectorAll('[data-profile-sec]').forEach((btn) => btn.addEventListener('click', () => {
+      this.profileSection = btn.getAttribute('data-profile-sec');
+      this.render();
+    }));
+    root.querySelectorAll('[data-open-contract]').forEach((btn) => btn.addEventListener('click', async () => {
+      try {
+        this.selectedContract = await PlatformAPI.getContractVersion(btn.getAttribute('data-open-contract'));
+        let acc = await PlatformAPI.listContractAcceptances({ contract_version_id: this.selectedContract.id });
+        this.contractAcceptances = Array.isArray(acc) ? acc : (acc?.data || []);
+        this.tab = 'contracts';
+        this.render();
+      } catch (e) { this.error = e.message; this.render(); }
+    }));
+    root.querySelector('[data-act="contract-new-draft"]')?.addEventListener('click', async () => {
+      try {
+        const tpl = await PlatformAPI.contractTemplate().catch(() => null);
+        this.selectedContract = await PlatformAPI.createContractVersion({
+          version_label: `v${(this.contracts.length || 0) + 1}.0-draft`,
+          title: tpl?.title || 'SaaS Customer Service Agreement',
+          body_text: tpl?.body_text || '',
+          placeholders: tpl?.placeholders || {},
+          draft: true,
+          activate: false,
+          publish: false
+        });
+        await this.loadAll();
+        this.tab = 'contracts';
+        this.message = 'Draft contract created';
+        this.render();
+      } catch (e) { this.error = e.message; this.render(); }
+    });
+    root.querySelector('[data-act="contract-load-template"]')?.addEventListener('click', async () => {
+      try {
+        const tpl = await PlatformAPI.contractTemplate();
+        if (document.getElementById('cv-body')) document.getElementById('cv-body').value = tpl.body_text || '';
+        if (document.getElementById('cv-title')) document.getElementById('cv-title').value = tpl.title || '';
+        if (document.getElementById('cv-ph')) document.getElementById('cv-ph').value = JSON.stringify(tpl.placeholders || {}, null, 2);
+        this.message = 'Template loaded into editor fields';
+      } catch (e) { this.error = e.message; this.render(); }
+    });
+    root.querySelector('[data-act="contract-save-draft"]')?.addEventListener('click', async () => {
+      try {
+        let placeholders = {};
+        try { placeholders = JSON.parse(document.getElementById('cv-ph')?.value || '{}'); } catch (_) { throw new Error('Placeholders must be valid JSON'); }
+        this.selectedContract = await PlatformAPI.updateDraftContract(this.selectedContract.id, {
+          version_label: document.getElementById('cv-label')?.value,
+          title: document.getElementById('cv-title')?.value,
+          body_text: document.getElementById('cv-body')?.value,
+          effective_at: document.getElementById('cv-effective')?.value || null,
+          require_reacceptance: !!document.getElementById('cv-reaccept')?.checked,
+          placeholders
+        });
+        await this.loadAll();
+        this.message = 'Draft saved';
+        this.render();
+      } catch (e) { this.error = e.message; this.render(); }
+    });
+    root.querySelector('[data-act="contract-publish"]')?.addEventListener('click', async () => {
+      try {
+        if (!confirm('Publish this contract version? Prior versions remain available.')) return;
+        let placeholders = {};
+        try { placeholders = JSON.parse(document.getElementById('cv-ph')?.value || '{}'); } catch (_) { placeholders = {}; }
+        await PlatformAPI.updateDraftContract(this.selectedContract.id, {
+          version_label: document.getElementById('cv-label')?.value,
+          title: document.getElementById('cv-title')?.value,
+          body_text: document.getElementById('cv-body')?.value,
+          effective_at: document.getElementById('cv-effective')?.value || null,
+          require_reacceptance: !!document.getElementById('cv-reaccept')?.checked,
+          placeholders
+        }).catch(() => {});
+        this.selectedContract = await PlatformAPI.publishContract(this.selectedContract.id, {
+          require_reacceptance: !!document.getElementById('cv-reaccept')?.checked,
+          effective_at: document.getElementById('cv-effective')?.value || null
+        });
+        await this.loadAll();
+        this.message = 'Contract published' + (this.selectedContract.require_reacceptance ? ' — customers may need re-acceptance' : '');
+        this.render();
+      } catch (e) { this.error = e.message; this.render(); }
+    });
+    root.querySelector('[data-act="contract-preview"]')?.addEventListener('click', async () => {
+      try {
+        const prev = await PlatformAPI.previewContract(this.selectedContract.id, this.selectedShop?.id || null);
+        const el = document.getElementById('cv-preview');
+        if (el) el.textContent = prev.body_text || '';
+        this.message = 'Preview rendered';
+      } catch (e) { this.error = e.message; this.render(); }
+    });
+    root.querySelector('[data-act="contract-new-from"]')?.addEventListener('click', async () => {
+      try {
+        const src = this.selectedContract;
+        this.selectedContract = await PlatformAPI.createContractVersion({
+          version_label: `${src.version_label || 'v'}-next`,
+          title: src.title,
+          body_text: src.body_text,
+          placeholders: src.placeholders,
+          draft: true,
+          activate: false,
+          publish: false,
+          require_reacceptance: true
+        });
+        await this.loadAll();
+        this.message = 'New draft created from previous version';
+        this.render();
+      } catch (e) { this.error = e.message; this.render(); }
+    });
+    root.querySelector('[data-act="load-fee-report"]')?.addEventListener('click', async () => {
+      try {
+        this.feeReport = await PlatformAPI.shopFeeReport(this.selectedShop.id, {
+          from: document.getElementById('fee-from')?.value || null,
+          to: document.getElementById('fee-to')?.value || null,
+          limit: 50
+        });
+        this.profileSection = 'fees';
+        this.message = 'Fee report loaded';
+        this.error = '';
+        this.render();
+      } catch (e) { this.error = e.message; this.render(); }
+    });
+    root.querySelectorAll('[data-print-acc]').forEach((btn) => btn.addEventListener('click', async () => {
+      try {
+        const doc = await PlatformAPI.printContract(this.selectedShop.id, btn.getAttribute('data-print-acc'));
+        this.openSignedContractWindow(doc);
+      } catch (e) { this.error = e.message; this.render(); }
+    }));
     root.querySelector('[data-act="load-control"]')?.addEventListener('click', async () => {
       try {
+        this.profileSection = 'overview';
         await reloadControl();
-        this.message = 'Customer control loaded';
+        this.message = 'Customer profile loaded';
         this.error = '';
         this.render();
       } catch (e) { this.error = e.message; this.render(); }
@@ -732,9 +1043,9 @@ const PlatformApp = {
         const id = this.selectedShop?.id;
         await PlatformAPI.acceptContract(id, {
           accepted_by_name: this.selectedShop.owner_name,
-          accepted_by_email: this.selectedShop.owner_email
+          accepted_by_email: this.selectedShop.owner_email,
+          require_signature: false
         });
-        this.lastActivation = null;
         await reloadControl();
         this.message = 'Contract acceptance recorded';
         this.error = '';
@@ -744,27 +1055,12 @@ const PlatformApp = {
     root.querySelector('[data-act="print-contract"]')?.addEventListener('click', async () => {
       try {
         const doc = await PlatformAPI.printContract(this.selectedShop.id);
-        const w = window.open('', '_blank');
-        w.document.write(`<pre style="white-space:pre-wrap;font-family:serif;padding:24px">${this.esc(doc.title)}\n\n${this.esc(doc.body_text)}\n\nAccepted: ${this.esc(doc.accepted_at)} by ${this.esc(doc.accepted_by_name)}\n${this.esc(doc.legal_notice || '')}</pre>`);
-        w.document.close();
-        w.print();
+        this.openSignedContractWindow(doc);
       } catch (e) { this.error = e.message; this.render(); }
     });
     root.querySelector('[data-act="new-contract"]')?.addEventListener('click', async () => {
-      try {
-        const label = prompt('New version label', 'v' + (Date.now() % 10000));
-        if (!label) return;
-        await PlatformAPI.createContractVersion({
-          version_label: label,
-          title: 'Shop POS Customer Agreement',
-          body_text: 'DRAFT — Configurable. Must be reviewed by a qualified South African legal professional before commercial use.\n\nUpdated terms for ' + label,
-          activate: true
-        });
-        await reloadControl();
-        this.message = 'New contract version activated — customers may need re-acceptance';
-        this.error = '';
-        this.render();
-      } catch (e) { this.error = e.message; this.render(); }
+      this.tab = 'contracts';
+      this.render();
     });
     root.querySelector('[data-act="gen-activation"]')?.addEventListener('click', async () => {
       try {
@@ -844,7 +1140,7 @@ const PlatformApp = {
         await PlatformAPI.upsertServiceFee({
           scope: 'customer',
           scope_id: this.selectedShop.id,
-          enabled: true,
+          enabled: !!document.getElementById('fee-enabled')?.checked,
           fee_type: document.getElementById('fee-type').value,
           percent: Number(document.getElementById('fee-percent').value) || 0,
           fixed_amount: Number(document.getElementById('fee-fixed').value) || 0
