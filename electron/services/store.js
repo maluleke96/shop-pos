@@ -5961,8 +5961,8 @@ module.exports = {
             const r = cp.getAcceptedAgreementPrintable(id, acceptanceId);
             return r?.data != null ? r.data : r;
           },
-          platformCreateActivation: (id, d, a) => {
-            const r = cp.createActivation(id, d || {}, a);
+          platformCreateActivation: async (id, d, a) => {
+            const r = await cp.createActivation(id, d || {}, a);
             return r?.data != null ? r.data : r;
           },
           platformListActivations: (id) => {
@@ -5973,12 +5973,20 @@ module.exports = {
             const r = cp.revokeActivation(actId, a);
             return r?.data != null ? r.data : r;
           },
-          platformRegenerateActivation: (id, d, a) => {
-            const r = cp.regenerateActivation(id, d || {}, a);
+          platformRegenerateActivation: async (id, d, a) => {
+            const r = await cp.regenerateActivation(id, d || {}, a);
             return r?.data != null ? r.data : r;
           },
           platformRedeemActivation: (d) => {
             const r = cp.redeemActivation(d || {});
+            return r?.data != null ? r.data : r;
+          },
+          platformGetActivationContext: (d) => {
+            const r = cp.getActivationContext(d || {});
+            return r?.data != null ? r.data : r;
+          },
+          platformApplyActivationBundle: (bundle) => {
+            const r = cp.applyActivationBundle(bundle || {});
             return r?.data != null ? r.data : r;
           },
           platformListDevices: (id) => {

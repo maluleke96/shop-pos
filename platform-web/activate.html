@@ -5,50 +5,52 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Activate Shop</title>
   <style>
-    :root { --bg:#0f172a; --card:#1e293b; --text:#f8fafc; --muted:#94a3b8; --accent:#38bdf8; --err:#f87171; }
+    :root { --bg:#0f172a; --card:#1e293b; --text:#f8fafc; --muted:#94a3b8; --accent:#38bdf8; --err:#f87171; --ok:#4ade80; --border:#334155; }
     * { box-sizing: border-box; }
     body { margin:0; font-family: Georgia, "Times New Roman", serif; background: linear-gradient(160deg,#0f172a,#1e3a5f 55%,#0f172a); color:var(--text); min-height:100vh; }
-    .wrap { max-width:480px; margin:0 auto; padding:48px 20px; }
-    h1 { font-size:1.75rem; margin:0 0 8px; letter-spacing:-0.02em; }
+    .wrap { max-width:560px; margin:0 auto; padding:32px 16px 48px; }
+    h1 { font-size:1.6rem; margin:0 0 8px; letter-spacing:-0.02em; }
+    h2 { font-size:1.15rem; margin:0 0 12px; }
     p { color:var(--muted); line-height:1.5; }
-    .card { background:var(--card); border:1px solid rgba(148,163,184,.25); border-radius:12px; padding:24px; margin-top:24px; }
+    .card { background:var(--card); border:1px solid rgba(148,163,184,.25); border-radius:12px; padding:20px; margin-top:16px; }
     label { display:block; font-size:.85rem; color:var(--muted); margin:12px 0 4px; }
-    input, select { width:100%; padding:10px 12px; border-radius:8px; border:1px solid #334155; background:#0f172a; color:var(--text); font:inherit; }
-    button { margin-top:16px; width:100%; padding:12px; border:0; border-radius:8px; background:var(--accent); color:#0f172a; font-weight:700; cursor:pointer; }
+    input, select, textarea { width:100%; padding:10px 12px; border-radius:8px; border:1px solid var(--border); background:#0f172a; color:var(--text); font:inherit; }
+    textarea { min-height:180px; white-space:pre-wrap; resize:vertical; }
+    button, .btn { margin-top:12px; width:100%; padding:12px; border:0; border-radius:8px; background:var(--accent); color:#0f172a; font-weight:700; cursor:pointer; font:inherit; text-align:center; text-decoration:none; display:inline-block; }
+    .btn.secondary { background:#334155; color:var(--text); }
     .err { color:var(--err); }
-    .ok { color:#4ade80; }
-    .steps { font-size:.9rem; color:var(--muted); }
-    .steps strong { color:var(--text); }
+    .ok { color:var(--ok); }
+    .steps { display:flex; flex-wrap:wrap; gap:6px; margin:16px 0 0; padding:0; list-style:none; font-size:.78rem; }
+    .steps li { padding:6px 10px; border-radius:999px; border:1px solid var(--border); color:var(--muted); }
+    .steps li.on { background:var(--accent); color:#0f172a; border-color:var(--accent); font-weight:700; }
+    .steps li.done { border-color:var(--ok); color:var(--ok); }
+    .contract-box { max-height:280px; overflow:auto; background:#0b1220; border:1px solid var(--border); border-radius:8px; padding:12px; white-space:pre-wrap; font-size:.92rem; line-height:1.45; color:var(--text); }
+    .check { display:flex; gap:10px; align-items:flex-start; margin-top:14px; font-size:.95rem; color:var(--text); }
+    .check input { width:auto; margin-top:3px; }
+    @media (max-width:480px) { .wrap { padding:20px 12px 40px; } h1 { font-size:1.35rem; } }
   </style>
 </head>
 <body>
   <div class="wrap">
     <h1>Activate Shop</h1>
-    <p class="steps"><strong>Install</strong> → Activate shop → Create owner → Device registration → Login</p>
-    <p>Having the installer alone does not grant access. Enter your activation code or open a secure activation link.</p>
-    <div class="card">
-      <label>Shop ID</label>
-      <input id="shop_id" placeholder="shop_…" />
-      <label>Activation code</label>
-      <input id="code" placeholder="XXXXX-XXXXX" autocomplete="off" />
-      <label>Or link token</label>
-      <input id="token" placeholder="from activation link" autocomplete="off" />
-      <label>Device name</label>
-      <input id="device_name" value="This device" />
-      <label>Device type</label>
-      <select id="device_type">
-        <option value="windows">Windows</option>
-        <option value="android">Android</option>
-        <option value="browser">Browser</option>
-      </select>
-      <button id="go">Activate</button>
-      <p id="msg" class="err"></p>
-    </div>
+    <p id="subtitle">Complete these steps to unlock your shop.</p>
+    <ul class="steps" id="stepper"></ul>
+    <div class="card" id="panel"></div>
+    <p id="msg" class="err"></p>
   </div>
   <script>
     const params = new URLSearchParams(location.search);
-    if (params.get('shop')) document.getElementById('shop_id').value = params.get('shop');
-    if (params.get('token')) document.getElementById('token').value = params.get('token');
+    const state = {
+      step: 1,
+      shop_id: (params.get('shop') || '').trim(),
+      token: (params.get('token') || '').trim(),
+      code: '',
+      ctx: null,
+      device_name: 'This device',
+      device_type: 'windows',
+      accept_name: '',
+      accept_email: ''
+    };
 
     function devicePublicId() {
       let id = localStorage.getItem('shoppos_device_public_id');
@@ -59,41 +61,234 @@
       return id;
     }
 
-    document.getElementById('go').onclick = async () => {
-      const msg = document.getElementById('msg');
-      msg.className = 'err';
-      msg.textContent = '';
-      try {
-        const res = await fetch('/rpc', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            method: 'activation:redeem',
-            args: [{
-              shop_id: document.getElementById('shop_id').value.trim(),
-              code: document.getElementById('code').value.trim() || undefined,
-              link_token: document.getElementById('token').value.trim() || undefined,
+    async function rpc(method, args) {
+      const res = await fetch('/rpc', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ method, args })
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json.success === false) {
+        const err = new Error(json.error || 'Request failed');
+        err.code = json.code;
+        throw err;
+      }
+      return json.data != null ? json.data : json;
+    }
+
+    function setMsg(text, ok) {
+      const el = document.getElementById('msg');
+      el.className = ok ? 'ok' : 'err';
+      el.textContent = text || '';
+    }
+
+    function renderStepper() {
+      const labels = [
+        '1 · Review Contract',
+        '2 · Accept Contract',
+        '3 · Activate Device',
+        '4 · Owner Account',
+        '5 · Shop Setup'
+      ];
+      document.getElementById('stepper').innerHTML = labels.map((label, i) => {
+        const n = i + 1;
+        const cls = n === state.step ? 'on' : (n < state.step ? 'done' : '');
+        return `<li class="${cls}">${label}</li>`;
+      }).join('');
+    }
+
+    async function loadContext() {
+      if (!state.shop_id) return;
+      state.ctx = await rpc('activation:getContext', [{
+        shop_id: state.shop_id,
+        link_token: state.token || undefined,
+        code: state.code || undefined
+      }]);
+      if (state.ctx.owner_name && !state.accept_name) state.accept_name = state.ctx.owner_name;
+      if (state.ctx.owner_email && !state.accept_email) state.accept_email = state.ctx.owner_email;
+      if (state.ctx.token_error && (state.token || state.code)) {
+        setMsg(state.ctx.token_error, false);
+      }
+      if (state.ctx.contract_accepted && state.step < 3) state.step = 3;
+      if (!state.ctx.contract_required) {
+        if (state.step < 3) state.step = 3;
+      }
+    }
+
+    function render() {
+      renderStepper();
+      const panel = document.getElementById('panel');
+      const ctx = state.ctx;
+      const shopLabel = ctx?.shop_name || state.shop_id || 'your shop';
+      document.getElementById('subtitle').textContent = shopLabel !== 'your shop'
+        ? `Activating ${shopLabel}`
+        : 'Complete these steps to unlock your shop.';
+
+      if (!state.shop_id) {
+        panel.innerHTML = `
+          <h2>Enter Shop ID</h2>
+          <label>Shop ID</label>
+          <input id="f-shop" placeholder="shop_…" value="" />
+          <label>Activation code (optional if you have a link token)</label>
+          <input id="f-code" placeholder="XXXXX-XXXXX" />
+          <label>Or link token</label>
+          <input id="f-token" placeholder="from activation link" value="${esc(state.token)}" />
+          <button id="btn-start">Continue</button>`;
+        document.getElementById('btn-start').onclick = async () => {
+          state.shop_id = document.getElementById('f-shop').value.trim();
+          state.code = document.getElementById('f-code').value.trim();
+          state.token = document.getElementById('f-token').value.trim();
+          try {
+            setMsg('');
+            await loadContext();
+            state.step = state.ctx?.contract_required && !state.ctx?.contract_accepted ? 1 : 3;
+            render();
+          } catch (e) { setMsg(e.message); }
+        };
+        return;
+      }
+
+      if (state.step <= 2 && ctx?.contract_required !== false) {
+        const body = ctx?.contract?.body_text || 'Agreement text is not available yet. Contact your administrator.';
+        const title = ctx?.contract?.title || 'Customer Agreement';
+        panel.innerHTML = `
+          <h2>Step ${state.step} — ${state.step === 1 ? 'Review' : 'Accept'} Contract</h2>
+          <p><strong>${esc(title)}</strong>${ctx?.contract?.version_label ? ` · ${esc(ctx.contract.version_label)}` : ''}</p>
+          <div class="contract-box">${esc(body)}</div>
+          ${state.step === 1 ? `<button id="btn-next">I have reviewed the agreement</button>` : `
+            <label>Your full name</label>
+            <input id="f-name" value="${esc(state.accept_name)}" />
+            <label>Email</label>
+            <input id="f-email" type="email" value="${esc(state.accept_email)}" />
+            <label class="check"><input type="checkbox" id="f-agree" /> <span>I accept this agreement on behalf of ${esc(shopLabel)}.</span></label>
+            <button id="btn-accept">Accept agreement</button>
+            <button class="btn secondary" id="btn-back">Back</button>
+          `}`;
+        if (state.step === 1) {
+          document.getElementById('btn-next').onclick = () => { state.step = 2; setMsg(''); render(); };
+        } else {
+          document.getElementById('btn-back').onclick = () => { state.step = 1; render(); };
+          document.getElementById('btn-accept').onclick = async () => {
+            if (!document.getElementById('f-agree').checked) { setMsg('Please confirm you accept the agreement'); return; }
+            state.accept_name = document.getElementById('f-name').value.trim();
+            state.accept_email = document.getElementById('f-email').value.trim();
+            if (!state.accept_name || !state.accept_email) { setMsg('Name and email are required'); return; }
+            try {
+              await rpc('activation:acceptContract', [state.shop_id, {
+                accepted_by_name: state.accept_name,
+                accepted_by_email: state.accept_email,
+                contract_version_id: ctx?.contract?.id
+              }]);
+              await loadContext();
+              setMsg('Agreement accepted', true);
+              state.step = 3;
+              render();
+            } catch (e) { setMsg(e.message); }
+          };
+        }
+        return;
+      }
+
+      if (state.step === 3) {
+        if (ctx?.token_error) {
+          panel.innerHTML = `<h2>Activation unavailable</h2><p class="err">${esc(ctx.token_error)}</p>
+            <p>Ask your platform administrator for a new activation link.</p>`;
+          return;
+        }
+        panel.innerHTML = `
+          <h2>Step 3 — Activate Device</h2>
+          <p>Register this browser or computer as an authorized device for ${esc(shopLabel)}.</p>
+          ${!state.token && !state.code ? `
+            <label>Activation code</label>
+            <input id="f-code" placeholder="XXXXX-XXXXX" />
+          ` : `<p class="ok">Activation credentials ready.</p>`}
+          <label>Device name</label>
+          <input id="f-dname" value="${esc(state.device_name)}" />
+          <label>Device type</label>
+          <select id="f-dtype">
+            <option value="windows">Windows</option>
+            <option value="android">Android</option>
+            <option value="browser" selected>Browser</option>
+          </select>
+          <button id="btn-activate">Activate device</button>`;
+        if (state.token || state.code) document.getElementById('f-dtype').value = 'browser';
+        document.getElementById('btn-activate').onclick = async () => {
+          const codeEl = document.getElementById('f-code');
+          if (codeEl) state.code = codeEl.value.trim();
+          state.device_name = document.getElementById('f-dname').value.trim() || 'This device';
+          state.device_type = document.getElementById('f-dtype').value;
+          try {
+            const data = await rpc('activation:redeem', [{
+              shop_id: state.shop_id,
+              code: state.code || undefined,
+              link_token: state.token || undefined,
               device: {
                 device_public_id: devicePublicId(),
-                device_name: document.getElementById('device_name').value.trim(),
-                device_type: document.getElementById('device_type').value,
+                device_name: state.device_name,
+                device_type: state.device_type,
                 app_version: 'web-activate'
               }
-            }]
-          })
-        });
-        const json = await res.json();
-        if (!res.ok || json.success === false) throw new Error(json.error || 'Activation failed');
-        const data = json.data || json;
-        localStorage.setItem('shoppos_shop_id', data.shop_id || '');
-        localStorage.setItem('shoppos_license_lease', JSON.stringify(data.license || {}));
-        localStorage.setItem('shoppos_license_sync_at', String(Date.now()));
-        msg.className = 'ok';
-        msg.textContent = 'Activated: ' + (data.shop_name || data.shop_id) + '. Device registered. You can now create/confirm the owner account and sign in.';
-      } catch (e) {
-        msg.textContent = e.message || String(e);
+            }]);
+            localStorage.setItem('shoppos_shop_id', data.shop_id || state.shop_id);
+            if (data.license) localStorage.setItem('shoppos_license_lease', JSON.stringify(data.license));
+            localStorage.setItem('shoppos_license_sync_at', String(Date.now()));
+            setMsg('Device activated for ' + (data.shop_name || state.shop_id), true);
+            state.step = 4;
+            render();
+          } catch (e) {
+            if (e.code === 'CONTRACT_REQUIRED') {
+              state.step = 1;
+              setMsg(e.message);
+              render();
+              return;
+            }
+            setMsg(e.message);
+          }
+        };
+        return;
       }
-    };
+
+      if (state.step === 4) {
+        panel.innerHTML = `
+          <h2>Step 4 — Create / Confirm Owner Account</h2>
+          <p>Next you will create the shop owner account (or confirm setup) in the Shop POS setup wizard.</p>
+          <p>Shop information, categories, and products are configured there.</p>
+          <a class="btn" id="btn-setup" href="/?start=setup">Continue to Set Up My Shop</a>
+          <button class="btn secondary" id="btn-skip5">I already finished setup</button>`;
+        document.getElementById('btn-skip5').onclick = () => { state.step = 5; render(); };
+        document.getElementById('btn-setup').onclick = () => { state.step = 5; };
+        return;
+      }
+
+      panel.innerHTML = `
+        <h2>Step 5 — Shop Setup &amp; POS</h2>
+        <p>Use the shop setup wizard to finish configuration, then open POS.</p>
+        <a class="btn" href="/?start=setup">Open Shop Setup</a>
+        <a class="btn secondary" href="/?page=pos">Go to POS</a>
+        <a class="btn secondary" href="/">Go to Shop Home</a>`;
+    }
+
+    function esc(s) {
+      return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    }
+
+    (async () => {
+      try {
+        if (state.shop_id) {
+          await loadContext();
+          if (state.ctx?.token_error) {
+            state.step = 3;
+          } else if (state.ctx?.contract_required && !state.ctx?.contract_accepted) {
+            state.step = 1;
+          } else {
+            state.step = 3;
+          }
+        }
+      } catch (e) {
+        setMsg(e.message);
+      }
+      render();
+    })();
   </script>
 </body>
 </html>

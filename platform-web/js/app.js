@@ -8,6 +8,11 @@ const PlatformApp = {
   shops: [],
   selectedShop: null,
   provisionPreview: null,
+  provisionStatus: '',
+  provisionError: '',
+  provisionBusy: false,
+  provisionFailed: false,
+  provisionPollTimer: null,
   shopHealthPreview: null,
   shopFilter: '',
   shopStatusFilter: '',
@@ -145,16 +150,21 @@ const PlatformApp = {
     const flagRows = Object.entries(flags).map(([k, v]) =>
       `<tr><td>${this.esc(k)}</td><td>${v ? '<span class="badge sellable">ON</span>' : '<span class="badge">OFF</span>'}</td></tr>`
     ).join('') || '<tr><td colspan="2" class="muted">Select a shop</td></tr>';
+    const defStart = new Date().toISOString().slice(0, 10);
+    const defEnd = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10);
     return `<div class="grid2">
       <div class="card">
-        <h2>Create shop (record only)</h2>
-        <p class="muted">Does <strong>not</strong> create Railway. No Chisa Food data is copied.</p>
-        <div style="margin:8px 0"><label>Shop name *</label><input id="sh-name" placeholder="Acme Cafe"></div>
-        <div style="margin:8px 0"><label>Owner name</label><input id="sh-owner"></div>
-        <div style="margin:8px 0"><label>Owner email</label><input id="sh-email" type="email"></div>
-        <div style="margin:8px 0"><label>Phone</label><input id="sh-phone"></div>
-        <div style="margin:8px 0"><label>Package</label>
-          <select id="sh-pkg"><option value="">— none —</option>
+        <h2>Create Customer</h2>
+        <p class="muted">Registers the customer on the platform. Provisioning (Railway) is a separate step after create.</p>
+        <div class="grid2" style="gap:8px">
+          <div style="margin:8px 0"><label>Shop name *</label><input id="sh-name" placeholder="Acme Cafe"></div>
+          <div style="margin:8px 0"><label>Owner / customer name *</label><input id="sh-owner" placeholder="Jane Owner"></div>
+          <div style="margin:8px 0"><label>Email *</label><input id="sh-email" type="email" placeholder="owner@example.com"></div>
+          <div style="margin:8px 0"><label>Phone</label><input id="sh-phone" placeholder="+27…"></div>
+        </div>
+        <div style="margin:8px 0"><label>Address</label><input id="sh-address" placeholder="Street, city"></div>
+        <div style="margin:8px 0"><label>Package *</label>
+          <select id="sh-pkg"><option value="">— select package —</option>
             ${this.packages.map((p) => `<option value="${this.esc(p.id)}">${this.esc(p.name)}</option>`).join('')}
           </select></div>
         <div style="margin:8px 0"><label>Add-ons</label>
@@ -163,18 +173,24 @@ const PlatformApp = {
               <input type="checkbox" value="${this.esc(ad.id)}">
               <div><strong>${this.esc(ad.name)}</strong></div></label>`).join('') || '<p class="muted">No add-ons</p>'}
           </div></div>
-        <div style="margin:8px 0"><label>Status</label>
-          <select id="sh-status">
-            <option value="TRIAL">TRIAL</option>
-            <option value="ACTIVE">ACTIVE</option>
-            <option value="OVERDUE">OVERDUE</option>
-            <option value="SUSPENDED">SUSPENDED</option>
-            <option value="EXPIRED">EXPIRED</option>
-          </select></div>
-        <button class="btn" data-act="create-shop">Create shop</button>
+        <div class="grid2" style="gap:8px">
+          <div style="margin:8px 0"><label>Subscription start</label><input id="sh-start" type="date" value="${defStart}"></div>
+          <div style="margin:8px 0"><label>Subscription expiry</label><input id="sh-expiry" type="date" value="${defEnd}"></div>
+          <div style="margin:8px 0"><label>Grace period (days)</label><input id="sh-grace" type="number" min="0" value="3"></div>
+          <div style="margin:8px 0"><label>Status</label>
+            <select id="sh-status">
+              <option value="TRIAL">TRIAL</option>
+              <option value="ACTIVE" selected>ACTIVE</option>
+              <option value="OVERDUE">OVERDUE</option>
+              <option value="SUSPENDED">SUSPENDED</option>
+              <option value="EXPIRED">EXPIRED</option>
+            </select></div>
+        </div>
+        <div style="margin:8px 0"><label>Notes</label><textarea id="sh-notes" rows="2" placeholder="Internal notes (optional)"></textarea></div>
+        <button class="btn" data-act="create-shop">Create Customer</button>
       </div>
       <div class="card">
-        <h2>SaaS shops (${this.shops.length})</h2>
+        <h2>Customers / Shops (${this.shops.length})</h2>
         <div class="row" style="margin-bottom:8px">
           <div class="grow"><input id="sh-filter" value="${this.esc(this.shopFilter)}" placeholder="Search shops…"></div>
           <select id="sh-status-filter">
@@ -229,14 +245,15 @@ const PlatformApp = {
           })), null, 2))}</textarea>
           <button class="btn secondary" data-act="save-shop-overrides">Save overrides</button>
           <h3 style="margin-top:16px">Provision</h3>
-          <p class="muted">Dry-run never creates Railway resources. Real provision creates a NEW project + Postgres + app (never Chisa Food).</p>
+          <p class="muted">Creates a NEW Railway project + Postgres + app for this customer (never Chisa Food).</p>
           <div class="row">
             <button class="btn secondary" data-act="provision-dry">Dry run</button>
             <button class="btn" data-act="provision-run">Provision for real</button>
             <button class="btn secondary" data-act="shop-health">Health check</button>
             <button class="btn secondary" data-act="sync-entitlements">Sync entitlements to customer</button>
+            ${this.provisionFailed ? '<button class="btn" data-act="provision-run">Retry provision</button>' : ''}
           </div>
-          <pre id="prov-out" class="muted" style="white-space:pre-wrap;font-size:12px;margin-top:8px;max-height:280px;overflow:auto">${this.esc(this.provisionPreview ? JSON.stringify(this.provisionPreview, null, 2) : '')}</pre>
+          ${this.renderProvisionProgress()}
         </div>
         <div>
           <h3>Effective entitlements</h3>
@@ -245,6 +262,8 @@ const PlatformApp = {
           <pre class="muted" style="white-space:pre-wrap;font-size:12px">${this.esc(JSON.stringify({
             owner: s.owner_name,
             email: s.owner_email,
+            phone: s.contact_phone,
+            address: s.address,
             url: s.shop_url,
             railway_project_id: s.railway_project_id,
             railway_service_id: s.railway_service_id,
@@ -252,15 +271,65 @@ const PlatformApp = {
             package: s.package_name,
             addons: s.addon_names,
             subscription_status: s.subscription_status,
-            trial_start: s.trial_start,
-            trial_end: s.trial_end,
+            subscription_start: s.subscription_start || s.trial_start,
+            subscription_expiry: s.subscription_expiry || s.trial_end,
+            grace_days: s.grace_days,
+            notes: s.notes,
             created_at: s.created_at,
-            health: this.shopHealthPreview || null,
-            entitlements_meta: s.entitlements?.meta || {}
+            health: this.shopHealthPreview || null
           }, null, 2))}</pre>
         </div>
       </div>
     </div>` : ''}`;
+  },
+
+  renderProvisionProgress() {
+    const stages = [
+      { key: 'customer', label: 'Creating Customer' },
+      { key: 'project', label: 'Creating Railway Project' },
+      { key: 'database', label: 'Creating PostgreSQL' },
+      { key: 'env', label: 'Configuring Environment' },
+      { key: 'deploy', label: 'Deploying Application' },
+      { key: 'health', label: 'Waiting for Health' },
+      { key: 'sync', label: 'Synchronizing Entitlements' },
+      { key: 'ready', label: 'Customer READY' }
+    ];
+    const status = String(this.provisionStatus || '').toUpperCase();
+    const order = ['PROVISIONING', 'DATABASE_CREATING', 'DEPLOYING', 'HEALTH_CHECK', 'WAITING_HEALTH', 'SYNCING_ENTITLEMENTS', 'READY', 'FAILED'];
+    const idx = order.indexOf(status);
+    const map = {
+      customer: true,
+      project: idx >= 0,
+      database: idx >= 1 || status === 'READY',
+      env: idx >= 2 || status === 'READY',
+      deploy: idx >= 2 || status === 'READY',
+      health: idx >= 3 || status === 'READY',
+      sync: idx >= 5 || status === 'READY',
+      ready: status === 'READY'
+    };
+    if (status === 'FAILED') {
+      return `<div class="prov-progress failed">
+        <div class="prov-stage bad">FAILED</div>
+        <p class="err">${this.esc(this.provisionError || 'Provisioning failed')}</p>
+      </div>`;
+    }
+    if (!status && !this.provisionBusy) {
+      return this.provisionPreview
+        ? `<pre class="muted" style="white-space:pre-wrap;font-size:12px;margin-top:8px;max-height:160px;overflow:auto">${this.esc(JSON.stringify(this.provisionPreview, null, 2))}</pre>`
+        : '';
+    }
+    return `<ul class="prov-progress">${stages.map((st) => {
+      const done = map[st.key];
+      const current = this.provisionBusy && (
+        (st.key === 'project' && status === 'PROVISIONING') ||
+        (st.key === 'database' && status === 'DATABASE_CREATING') ||
+        (st.key === 'deploy' && status === 'DEPLOYING') ||
+        (st.key === 'env' && status === 'DEPLOYING') ||
+        (st.key === 'health' && (status === 'HEALTH_CHECK' || status === 'WAITING_HEALTH')) ||
+        (st.key === 'sync' && status === 'SYNCING_ENTITLEMENTS')
+      );
+      return `<li class="${done ? 'done' : ''} ${current ? 'current' : ''}"><span class="mark">${done ? '✓' : (current ? '…' : '○')}</span> ${this.esc(st.label)}</li>`;
+    }).join('')}</ul>`;
   },
 
   renderCustomerControl(s) {
@@ -295,10 +364,26 @@ const PlatformApp = {
       </div>
       <h4>Activation</h4>
       <div class="row">
-        <button class="btn" data-act="gen-activation">Generate code + link</button>
+        <button class="btn" data-act="gen-activation">Generate Activation Link</button>
         <button class="btn secondary" data-act="regen-activation">Regenerate</button>
       </div>
-      ${secret ? `<pre class="muted" style="white-space:pre-wrap;font-size:12px">Code: ${this.esc(secret.code)}\nLink token (show once): ${this.esc(secret.link_token)}\nExpires: ${this.esc(secret.expires_at)}\nQR payload stored locally — do not log this.</pre>` : ''}
+      ${secret ? (() => {
+        const link = secret.activation_link
+          || (s.shop_url && secret.link_token
+            ? `${String(s.shop_url).replace(/\/$/, '')}/activate?token=${encodeURIComponent(secret.link_token)}&shop=${encodeURIComponent(s.id)}`
+            : '');
+        return `<div class="activation-box">
+        <label>Complete activation URL</label>
+        <input id="act-link" readonly value="${this.esc(link || '(set customer shop URL / PLATFORM_PUBLIC_BASE_URL)')}" />
+        <p class="muted" style="margin:8px 0">Code (show once): <code>${this.esc(secret.code || '—')}</code> · Expires ${this.esc(secret.expires_at || '—')}</p>
+        <div class="row">
+          <button class="btn" data-act="copy-activation" ${link ? '' : 'disabled'}>Copy Activation Link</button>
+          <a class="btn secondary" ${link ? `href="${this.esc(link)}" target="_blank" rel="noopener"` : 'aria-disabled="true"'} ${link ? '' : 'onclick="return false"'}>Open Activation Link</a>
+          <button class="btn secondary" data-act="regen-activation">Regenerate</button>
+          ${acts.find((a) => a.status === 'active') ? `<button class="btn secondary" data-revoke-act="${this.esc(acts.find((a) => a.status === 'active').id)}">Revoke</button>` : ''}
+        </div>
+      </div>`;
+      })() : ''}
       <ul class="muted">${acts.map((a) => `<li>${this.esc(a.status)} · hint …${this.esc(a.code_hint)} · uses ${a.use_count}/${a.max_uses} · exp ${this.esc(a.expires_at)}
         ${a.status === 'active' ? `<button class="btn secondary" data-revoke-act="${this.esc(a.id)}">Revoke</button>` : ''}</li>`).join('') || '<li>No activations</li>'}</ul>
       <h4>Devices</h4>
@@ -559,18 +644,33 @@ const PlatformApp = {
     root.querySelector('[data-act="create-shop"]')?.addEventListener('click', async () => {
       try {
         const addon_ids = [...document.querySelectorAll('#sh-addons input:checked')].map((el) => el.value);
+        const name = document.getElementById('sh-name').value.trim();
+        const owner = document.getElementById('sh-owner').value.trim();
+        const email = document.getElementById('sh-email').value.trim();
+        const pkg = document.getElementById('sh-pkg').value || null;
+        if (!name || !owner || !email || !pkg) {
+          throw new Error('Shop name, owner name, email, and package are required');
+        }
+        const start = document.getElementById('sh-start')?.value;
+        const expiry = document.getElementById('sh-expiry')?.value;
+        const toIso = (d, end) => d ? new Date(d + (end ? 'T23:59:59.000Z' : 'T00:00:00.000Z')).toISOString() : null;
         const r = await PlatformAPI.createShop({
-          shop_name: document.getElementById('sh-name').value.trim(),
-          owner_name: document.getElementById('sh-owner').value.trim(),
-          owner_email: document.getElementById('sh-email').value.trim(),
+          shop_name: name,
+          owner_name: owner,
+          owner_email: email,
           contact_phone: document.getElementById('sh-phone').value.trim(),
-          package_id: document.getElementById('sh-pkg').value || null,
+          address: document.getElementById('sh-address')?.value.trim() || '',
+          package_id: pkg,
           addon_ids,
-          subscription_status: document.getElementById('sh-status').value
+          subscription_status: document.getElementById('sh-status').value,
+          subscription_start: toIso(start, false),
+          subscription_expiry: toIso(expiry, true),
+          grace_days: Number(document.getElementById('sh-grace')?.value || 3),
+          notes: document.getElementById('sh-notes')?.value.trim() || ''
         });
         await this.loadAll();
         this.selectedShop = await PlatformAPI.getShop(r.id || r.data?.id);
-        this.message = 'Shop created (record only — no Railway)';
+        this.message = 'Customer created — next: Provision for real';
         this.error = '';
         this.render();
       } catch (e) { this.error = e.message; this.render(); }
@@ -668,21 +768,59 @@ const PlatformApp = {
     });
     root.querySelector('[data-act="gen-activation"]')?.addEventListener('click', async () => {
       try {
-        this.lastActivation = await PlatformAPI.createActivation(this.selectedShop.id, { expires_hours: 72 });
+        const created = await PlatformAPI.createActivation(this.selectedShop.id, { expires_hours: 72 });
+        this.lastActivation = created?.data || created;
+        if (!this.lastActivation.activation_link && this.selectedShop.shop_url && this.lastActivation.link_token) {
+          this.lastActivation.activation_link = `${String(this.selectedShop.shop_url).replace(/\/$/, '')}/activate?token=${encodeURIComponent(this.lastActivation.link_token)}&shop=${encodeURIComponent(this.selectedShop.id)}`;
+        }
+        const bundle = this.lastActivation.customer_bundle;
         await reloadControl();
-        this.message = 'Activation generated (code shown once — not stored in plaintext)';
-        this.error = '';
+        if (bundle && bundle.ok === false && !bundle.skipped) {
+          this.message = 'Activation link generated, but customer sync failed — open the link after retrying Generate, or check shop health';
+          this.error = bundle.reason || 'Customer activation bundle push failed';
+        } else {
+          this.message = 'Activation link generated — copy and send to the customer';
+          this.error = '';
+        }
         this.render();
       } catch (e) { this.error = e.message; this.render(); }
     });
     root.querySelector('[data-act="regen-activation"]')?.addEventListener('click', async () => {
       try {
-        this.lastActivation = await PlatformAPI.regenerateActivation(this.selectedShop.id, { expires_hours: 72 });
+        const created = await PlatformAPI.regenerateActivation(this.selectedShop.id, { expires_hours: 72 });
+        this.lastActivation = created?.data || created;
+        if (!this.lastActivation.activation_link && this.selectedShop.shop_url && this.lastActivation.link_token) {
+          this.lastActivation.activation_link = `${String(this.selectedShop.shop_url).replace(/\/$/, '')}/activate?token=${encodeURIComponent(this.lastActivation.link_token)}&shop=${encodeURIComponent(this.selectedShop.id)}`;
+        }
+        const bundle = this.lastActivation.customer_bundle;
         await reloadControl();
-        this.message = 'Activation regenerated; previous codes revoked';
-        this.error = '';
+        if (bundle && bundle.ok === false && !bundle.skipped) {
+          this.message = 'Activation regenerated, but customer sync failed';
+          this.error = bundle.reason || 'Customer activation bundle push failed';
+        } else {
+          this.message = 'Activation regenerated; previous codes revoked';
+          this.error = '';
+        }
         this.render();
       } catch (e) { this.error = e.message; this.render(); }
+    });
+    root.querySelector('[data-act="copy-activation"]')?.addEventListener('click', async () => {
+      const link = document.getElementById('act-link')?.value || this.lastActivation?.activation_link || '';
+      if (!link || link.startsWith('(')) {
+        this.error = 'No complete activation URL available yet (customer must be provisioned with a shop URL)';
+        this.render();
+        return;
+      }
+      try {
+        await navigator.clipboard.writeText(link);
+        this.message = 'Activation link copied';
+        this.error = '';
+        this.render();
+      } catch (_) {
+        document.getElementById('act-link')?.select();
+        this.message = 'Select the URL and copy manually (clipboard blocked)';
+        this.render();
+      }
     });
     root.querySelectorAll('[data-revoke-act]').forEach((btn) => btn.addEventListener('click', async () => {
       try {
@@ -740,18 +878,61 @@ const PlatformApp = {
     });
     root.querySelector('[data-act="provision-run"]')?.addEventListener('click', async () => {
       if (!confirm('Create a NEW Railway project + Postgres + app for this shop? This will not touch Chisa Food.')) return;
+      const id = this.selectedShop?.id;
+      this.provisionBusy = true;
+      this.provisionFailed = false;
+      this.provisionError = '';
+      this.provisionStatus = 'PROVISIONING';
+      this.message = 'Provisioning in progress…';
+      this.error = '';
+      this.render();
+      const poll = async () => {
+        try {
+          const jobs = await PlatformAPI.provisionJobs(id);
+          const list = Array.isArray(jobs) ? jobs : (jobs?.data || jobs?.jobs || []);
+          const latest = list[0];
+          if (latest?.status) {
+            this.provisionStatus = latest.status;
+            if (latest.error_safe) this.provisionError = latest.error_safe;
+            this.render();
+          }
+        } catch (_) { /* ignore poll errors */ }
+      };
+      if (this.provisionPollTimer) clearInterval(this.provisionPollTimer);
+      this.provisionPollTimer = setInterval(poll, 2500);
+      poll();
       try {
-        const id = this.selectedShop?.id;
-        this.message = 'Provisioning… this can take several minutes';
-        this.render();
         const r = await PlatformAPI.provisionRun(id);
+        clearInterval(this.provisionPollTimer);
+        this.provisionPollTimer = null;
+        this.provisionBusy = false;
         this.provisionPreview = r;
+        this.provisionStatus = r.status || r.data?.status || '';
         this.selectedShop = await PlatformAPI.getShop(id);
         await this.loadAll();
-        this.message = r.status === 'READY' ? 'Provision READY' : ('Provision finished: ' + (r.status || 'done'));
-        this.error = r.status === 'FAILED' ? (r.error || 'Failed') : '';
+        if (this.provisionStatus === 'READY') {
+          this.provisionFailed = false;
+          this.message = 'Customer READY';
+          this.error = '';
+        } else if (this.provisionStatus === 'FAILED') {
+          this.provisionFailed = true;
+          this.provisionError = r.error_safe || r.error || r.data?.error_safe || 'Provisioning failed';
+          this.message = '';
+          this.error = this.provisionError;
+        } else {
+          this.message = 'Provision finished: ' + (this.provisionStatus || 'done');
+        }
         this.render();
-      } catch (e) { this.error = e.message; this.render(); }
+      } catch (e) {
+        clearInterval(this.provisionPollTimer);
+        this.provisionPollTimer = null;
+        this.provisionBusy = false;
+        this.provisionFailed = true;
+        this.provisionStatus = 'FAILED';
+        this.provisionError = e.message || 'Provisioning failed';
+        this.error = this.provisionError;
+        this.render();
+      }
     });
     root.querySelector('[data-act="shop-health"]')?.addEventListener('click', async () => {
       try {

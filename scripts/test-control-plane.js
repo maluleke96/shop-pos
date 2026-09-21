@@ -109,7 +109,7 @@ async function main() {
   log('contract printable', !!(printable.body_text && printable.accepted_at));
 
   // Activation
-  const act = cp.createActivation(a.id, { expires_hours: 2, max_uses: 1 }, actor).data;
+  const act = (await cp.createActivation(a.id, { expires_hours: 2, max_uses: 1 }, actor)).data;
   log('activation generated', !!(act.code && act.link_token && act.code_hint));
   const listAct = cp.listActivations(a.id).data;
   log('activation secrets not stored', !listAct.some((x) => x.code || x.link_token));
@@ -139,7 +139,7 @@ async function main() {
   log('activation reuse prevented', reuseFail);
 
   // Expiry
-  const actExp = cp.createActivation(a.id, { expires_hours: 1 }, actor).data;
+  const actExp = (await cp.createActivation(a.id, { expires_hours: 1 }, actor)).data;
   const { getDb } = require('../electron/database/db');
   getDb().prepare(`UPDATE platform_activations SET expires_at = ? WHERE id = ?`)
     .run(new Date(Date.now() - 1000).toISOString(), actExp.id);
@@ -152,7 +152,7 @@ async function main() {
   log('activation expiry', expFail);
 
   // Revoke
-  const actRev = cp.createActivation(a.id, { expires_hours: 24 }, actor).data;
+  const actRev = (await cp.createActivation(a.id, { expires_hours: 24 }, actor)).data;
   cp.revokeActivation(actRev.id, actor);
   let revFail = false;
   try {

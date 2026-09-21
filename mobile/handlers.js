@@ -3265,7 +3265,7 @@ add('web:adminAnalytics', wrapSync((filters, actor) => {
     platformActor(tok);
     return s.platformPrintContract(id, acceptanceId);
   }));
-  add('platform:createActivation', wrapSync((tok, id, d) => {
+  add('platform:createActivation', wrapAsync(async (tok, id, d) => {
     const a = platformActor(tok);
     return s.platformCreateActivation(id, d || {}, a);
   }));
@@ -3277,15 +3277,28 @@ add('web:adminAnalytics', wrapSync((filters, actor) => {
     const a = platformActor(tok);
     return s.platformRevokeActivation(actId, a);
   }));
-  add('platform:regenerateActivation', wrapSync((tok, id, d) => {
+  add('platform:regenerateActivation', wrapAsync(async (tok, id, d) => {
     const a = platformActor(tok);
     return s.platformRegenerateActivation(id, d || {}, a);
   }));
   // Public redeem — no platform session (installer / app activation). Still shop-scoped + hashed secrets.
   add('activation:redeem', wrapSync((d) => s.platformRedeemActivation(d || {})));
   add('activation:acceptContract', wrapSync((shopId, d) => s.platformAcceptContract(shopId, d || {})));
+  add('activation:getContext', wrapSync((d) => s.platformGetActivationContext(d || {})));
   add('license:validate', wrapSync((d) => s.platformValidateLicense(d || {})));
   add('license:evaluateOffline', wrapSync((lease, opts) => s.platformEvaluateOfflineLease(lease, opts || {})));
+
+  // Platform → customer activation + contract bundle (secret-authenticated)
+  add('saas:applyActivationBundle', wrapSync((secret, bundle) => {
+    const sync = require('../electron/services/saas-customer-sync');
+    const expected = sync.getSyncSecret?.() || String(process.env.SAAS_SYNC_SECRET || '').trim();
+    if (!expected || String(secret || '') !== expected) {
+      const err = new Error('Unauthorized');
+      err.status = 401;
+      throw err;
+    }
+    return s.platformApplyActivationBundle(bundle || {});
+  }));
   add('platform:listDevices', wrapSync((tok, id) => {
     platformActor(tok);
     return s.platformListDevices(id);

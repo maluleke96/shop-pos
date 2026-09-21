@@ -528,7 +528,7 @@ function createContractVersion(data, actor) {
 }
 
 function getShopContractStatus(shopId) {
-  requireEnabled();
+  // Readable on customer instances after activation-bundle sync (no PLATFORM_CONTROL_ENABLED required).
   ensureSchema();
   const shop = dbGet('SELECT * FROM platform_shops WHERE id = ?', [String(shopId)]);
   if (!shop) throw new Error('Shop not found');
@@ -657,19 +657,22 @@ function generateReadableCode() {
   return `${out.slice(0, 5)}-${out.slice(5)}`;
 }
 
-function createActivation(shopId, data = {}, actor) {
+function buildActivationLink(shop, linkToken, shopId) {
+  const shopUrl = String(shop?.shop_url || '').replace(/\/$/, '');
+  const platformBase = String(process.env.PLATFORM_PUBLIC_BASE_URL || '').replace(/\/$/, '');
+  // Prefer customer shop URL so the customer stays on their app domain; fall back to platform public URL.
+  const base = shopUrl || platformBase;
+  if (!base) return null;
+  return `${base}/activate?token=${encodeURIComponent(linkToken)}&shop=${encodeURIComponent(shopId)}`;
+}
+
+async function createActivation(shopId, data = {}, actor) {
   requireEnabled();
   ensureSchema();
   assertNotChisa({ id: shopId });
   const shop = dbGet('SELECT * FROM platform_shops WHERE id = ?', [String(shopId)]);
   if (!shop) throw new Error('Shop not found');
-  if (Number(shop.contract_required) !== 0) {
-    const acc = dbGet(
-      'SELECT id FROM platform_contract_acceptances WHERE shop_id = ? ORDER BY accepted_at DESC LIMIT 1',
-      [shopId]
-    );
-    if (!acc) throw new Error('Contract must be accepted before generating activation');
-  }
+  // Contract is accepted by the customer on /activate (not required before generating the link).
   const code = generateReadableCode();
   const linkToken = crypto.randomBytes(24).toString('base64url');
   const hours = Math.max(1, Number(data.expires_hours || 72) || 72);
@@ -694,20 +697,240 @@ function createActivation(shopId, data = {}, actor) {
     code_hint: code.slice(-4),
     max_uses: data.max_uses || 1
   });
-  // Return secrets once — never stored plaintext
-  const base = String(data.public_base_url || process.env.PLATFORM_PUBLIC_BASE_URL || '').replace(/\/$/, '');
+
+  const overrideBase = String(data.public_base_url || '').replace(/\/$/, '');
+  const activationLink = overrideBase
+    ? `${overrideBase}/activate?token=${encodeURIComponent(linkToken)}&shop=${encodeURIComponent(shopId)}`
+    : buildActivationLink(shop, linkToken, shopId);
+
+  const contract = dbGet('SELECT * FROM platform_contract_versions WHERE is_active = 1 ORDER BY created_at DESC LIMIT 1');
+  const bundle = {
+    activation: {
+      id,
+      shop_id: shopId,
+      code_hash: hashSecret(code),
+      code_hint: code.slice(-4),
+      link_token_hash: hashSecret(linkToken),
+      expires_at: expiresAt,
+      max_uses: Math.max(1, Number(data.max_uses || 1) || 1),
+      use_count: 0,
+      status: 'active',
+      created_at: now
+    },
+    contract: contract ? {
+      id: contract.id,
+      version_label: contract.version_label,
+      title: contract.title,
+      body_text: contract.body_text,
+      terms_json: contract.terms_json,
+      is_active: 1
+    } : null,
+    shop: {
+      id: shopId,
+      shop_name: shop.shop_name,
+      owner_name: shop.owner_name,
+      owner_email: shop.owner_email,
+      contract_required: Number(shop.contract_required) !== 0 ? 1 : 0
+    }
+  };
+
+  let customer_bundle = { ok: false, skipped: true, reason: 'not_attempted' };
+  try {
+    const pushResult = await pushActivationBundleToCustomer(shop, bundle);
+    if (pushResult?.skipped) {
+      customer_bundle = { ok: false, skipped: true, reason: pushResult.reason || 'skipped' };
+    } else {
+      customer_bundle = { ok: true, skipped: false };
+    }
+  } catch (e) {
+    console.warn('[activation] customer bundle push:', e.message || e);
+    customer_bundle = { ok: false, skipped: false, reason: String(e.message || e).slice(0, 200) };
+  }
+
   return {
     success: true,
     data: {
       id,
       shop_id: shopId,
       code,
-      activation_link: base ? `${base}/activate?token=${encodeURIComponent(linkToken)}&shop=${encodeURIComponent(shopId)}` : null,
+      activation_link: activationLink,
       link_token: linkToken,
       qr_payload: JSON.stringify({ t: 'shoppos_activate', shop_id: shopId, token: linkToken }),
       expires_at: expiresAt,
       status: 'active',
-      code_hint: code.slice(-4)
+      code_hint: code.slice(-4),
+      customer_bundle
+    }
+  };
+}
+
+async function pushActivationBundleToCustomer(shop, bundle) {
+  const base = String(shop?.shop_url || '').replace(/\/$/, '');
+  if (!base || !shop?.railway_project_id) return { skipped: true, reason: 'no_shop_url' };
+  let secret = '';
+  try {
+    const railway = require('./railway-client');
+    const vars = await railway.getVariables({
+      projectId: shop.railway_project_id,
+      environmentId: shop.railway_environment_id,
+      serviceId: shop.railway_service_id
+    });
+    secret = String(vars.SAAS_SYNC_SECRET || '').trim();
+  } catch (_) { /* */ }
+  if (!secret) return { skipped: true, reason: 'no_sync_secret' };
+  const res = await fetch(base + '/rpc', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ method: 'saas:applyActivationBundle', args: [secret, bundle] }),
+    signal: AbortSignal.timeout(45000)
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok || json.success === false) {
+    throw new Error(json.error || `activation bundle HTTP ${res.status}`);
+  }
+  return json.data || json;
+}
+
+/** Apply activation + contract snapshot on a customer instance (secret-authenticated). */
+function applyActivationBundle(bundle) {
+  ensureSchema();
+  const shop = bundle?.shop;
+  const act = bundle?.activation;
+  const contract = bundle?.contract;
+  if (!shop?.id || !act?.id) throw new Error('activation bundle incomplete');
+  assertNotChisa({ id: shop.id });
+  const now = nowIso();
+  try {
+    dbRun(
+      `INSERT INTO platform_shops (
+         id, shop_name, owner_name, owner_email, subscription_status, is_active, package_id,
+         created_at, updated_at, deployment_status, notes, contract_required, activation_status
+       ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+       ON CONFLICT(id) DO UPDATE SET shop_name=excluded.shop_name,
+         owner_name=excluded.owner_name, owner_email=excluded.owner_email,
+         contract_required=excluded.contract_required, updated_at=excluded.updated_at`,
+      [
+        shop.id, shop.shop_name || shop.id, shop.owner_name || '', shop.owner_email || '',
+        'ACTIVE', 1, null, now, now, 'online', 'activation-bundle',
+        shop.contract_required === 0 ? 0 : 1,
+        'pending'
+      ]
+    );
+  } catch (e) {
+    try {
+      dbRun(
+        `UPDATE platform_shops SET shop_name=?, owner_name=?, owner_email=?, contract_required=?, updated_at=? WHERE id=?`,
+        [shop.shop_name || shop.id, shop.owner_name || '', shop.owner_email || '', shop.contract_required === 0 ? 0 : 1, now, shop.id]
+      );
+    } catch (_) { /* */ }
+  }
+  if (contract?.id) {
+    try {
+      dbRun('UPDATE platform_contract_versions SET is_active = 0');
+      dbRun(
+        `INSERT INTO platform_contract_versions (id, version_label, title, body_text, terms_json, is_active, created_at, created_by, notes)
+         VALUES (?,?,?,?,?,?,?,?,?)
+         ON CONFLICT(id) DO UPDATE SET title=excluded.title, body_text=excluded.body_text,
+           version_label=excluded.version_label, is_active=1, terms_json=excluded.terms_json`,
+        [
+          contract.id,
+          contract.version_label || 'v1',
+          contract.title || 'Customer Agreement',
+          contract.body_text || '',
+          typeof contract.terms_json === 'string' ? contract.terms_json : JSON.stringify(contract.terms_json || {}),
+          1, now, 'saas-sync', 'activation-bundle'
+        ]
+      );
+    } catch (e) {
+      console.warn('[activation] contract upsert:', e.message || e);
+    }
+  }
+  dbRun(
+    `INSERT INTO platform_activations (
+      id, shop_id, code_hash, code_hint, link_token_hash, expires_at, max_uses, use_count,
+      status, created_at, created_by, notes
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(id) DO UPDATE SET
+      code_hash=excluded.code_hash, link_token_hash=excluded.link_token_hash,
+      expires_at=excluded.expires_at, status=excluded.status, max_uses=excluded.max_uses`,
+    [
+      act.id, act.shop_id, act.code_hash, act.code_hint || '',
+      act.link_token_hash, act.expires_at, act.max_uses || 1, act.use_count || 0,
+      act.status || 'active', act.created_at || now, 'saas-sync', 'activation-bundle'
+    ]
+  );
+  return { success: true, shop_id: shop.id, activation_id: act.id };
+}
+
+/** Public activation context for /activate (no secrets). */
+function getActivationContext({ shop_id, code, link_token }) {
+  ensureSchema();
+  if (!shop_id) throw new Error('shop_id required');
+  assertNotChisa({ id: shop_id });
+  const shop = dbGet(
+    'SELECT id, shop_name, owner_name, owner_email, contract_required, activation_status, shop_url FROM platform_shops WHERE id = ?',
+    [String(shop_id)]
+  );
+  if (!shop) throw new Error('Shop not found');
+
+  let activation = null;
+  if (code) {
+    activation = dbGet(
+      `SELECT id, shop_id, code_hint, expires_at, max_uses, use_count, status FROM platform_activations
+       WHERE shop_id = ? AND code_hash = ? ORDER BY created_at DESC LIMIT 1`,
+      [shop_id, hashSecret(String(code).trim().toUpperCase())]
+    );
+  } else if (link_token) {
+    activation = dbGet(
+      `SELECT id, shop_id, code_hint, expires_at, max_uses, use_count, status FROM platform_activations
+       WHERE shop_id = ? AND link_token_hash = ? ORDER BY created_at DESC LIMIT 1`,
+      [shop_id, hashSecret(String(link_token).trim())]
+    );
+  }
+
+  const contractStatus = getShopContractStatus(shop_id).data;
+  const active = dbGet(
+    'SELECT id, version_label, title, body_text FROM platform_contract_versions WHERE is_active = 1 ORDER BY created_at DESC LIMIT 1'
+  );
+
+  let token_ok = false;
+  let token_error = null;
+  if (activation) {
+    if (activation.status === 'revoked') token_error = 'This activation link has been revoked';
+    else if (activation.expires_at && Date.parse(activation.expires_at) < serverNowMs()) {
+      token_error = 'This activation link has expired';
+    } else if (activation.status === 'used' || Number(activation.use_count) >= Number(activation.max_uses || 1)) {
+      token_error = 'This activation link has already been used';
+    } else if (activation.status !== 'active') token_error = 'This activation link is not active';
+    else token_ok = true;
+  } else if (code || link_token) {
+    token_error = 'Invalid activation credentials';
+  }
+
+  return {
+    success: true,
+    data: {
+      shop_id: shop.id,
+      shop_name: shop.shop_name,
+      owner_name: shop.owner_name,
+      owner_email: shop.owner_email,
+      shop_url: shop.shop_url || null,
+      activation_status: shop.activation_status,
+      contract_required: Number(shop.contract_required) !== 0,
+      contract_accepted: !!contractStatus.accepted && !contractStatus.needs_reacceptance,
+      contract: active ? {
+        id: active.id,
+        version_label: active.version_label,
+        title: active.title,
+        body_text: active.body_text
+      } : null,
+      token_ok,
+      token_error,
+      activation_hint: activation ? {
+        status: activation.status,
+        expires_at: activation.expires_at,
+        uses: `${activation.use_count}/${activation.max_uses}`
+      } : null
     }
   };
 }
@@ -736,7 +959,7 @@ function revokeActivation(activationId, actor) {
   return { success: true, data: { id: activationId, status: 'revoked' } };
 }
 
-function regenerateActivation(shopId, data, actor) {
+async function regenerateActivation(shopId, data, actor) {
   requireEnabled();
   ensureSchema();
   const active = dbAll(
@@ -780,6 +1003,8 @@ function redeemActivation({ code, link_token, shop_id, device }) {
   const shop = dbGet('SELECT * FROM platform_shops WHERE id = ?', [String(shop_id)]);
   if (!shop) throw new Error('Shop not found');
 
+  // Validate credentials before contract gate so cross-shop / invalid tokens
+  // fail with ACTIVATION_* (not CONTRACT_REQUIRED).
   let row = null;
   if (code) {
     const hash = hashSecret(String(code).trim().toUpperCase());
@@ -801,6 +1026,22 @@ function redeemActivation({ code, link_token, shop_id, device }) {
     err.code = 'ACTIVATION_INVALID';
     throw err;
   }
+
+  if (Number(shop.contract_required) !== 0) {
+    const active = dbGet('SELECT id FROM platform_contract_versions WHERE is_active = 1 LIMIT 1');
+    if (active) {
+      const acc = dbGet(
+        'SELECT id FROM platform_contract_acceptances WHERE shop_id = ? AND contract_version_id = ? LIMIT 1',
+        [shop_id, active.id]
+      );
+      if (!acc) {
+        const err = new Error('Please accept the customer agreement before activating this device');
+        err.code = 'CONTRACT_REQUIRED';
+        throw err;
+      }
+    }
+  }
+
   // Cross-shop misuse: hash is scoped to shop_id already
   _consumeActivation(row);
 
@@ -1360,6 +1601,10 @@ module.exports = {
   revokeActivation,
   regenerateActivation,
   redeemActivation,
+  getActivationContext,
+  applyActivationBundle,
+  pushActivationBundleToCustomer,
+  buildActivationLink,
   // devices
   registerDevice,
   listDevices,

@@ -655,10 +655,25 @@ const App = {
             return;
           }
         }
+        try {
+          const start = new URLSearchParams(location.search || '').get('start');
+          if (start === 'setup') {
+            this.showScreen('setup');
+            return;
+          }
+        } catch (_) { /* */ }
         this.showWelcome({ needsSetup: true });
         return;
       }
       this.updateBranding();
+      try {
+        const go = new URLSearchParams(location.search || '').get('page');
+        if (go === 'pos' && Number(this.settings?.setup_complete)) {
+          this.showWelcome({ shopReady: true });
+          setTimeout(() => this.navigate?.('pos') || this.showPage?.('pos'), 100);
+          return;
+        }
+      } catch (_) { /* */ }
       this.showWelcome({ shopReady: true });
     } catch (err) {
       console.error('App init failed:', err);
