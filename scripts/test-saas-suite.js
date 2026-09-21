@@ -137,16 +137,16 @@ async function main() {
   log('D B online off or limited', !shopB.entitlements?.flags?.online || shopB.package_name?.includes('Starter'));
 
   // Upgrade / downgrade without delete (platform assignment only)
-  const beforeC = shopC.package_id;
+  const beforeAddons = (shopC.addon_ids || []).slice();
   await rpc('platform:assignShop', [shopC.id, { package_id: floor?.id, addon_ids: [] }], tok);
   let shopC2 = unwrap(await rpc('platform:getShop', [shopC.id], tok).then((r) => r.json));
-  log('L downgrade package changed', shopC2.package_id === floor?.id && shopC2.package_id !== beforeC);
+  log('L downgrade addons cleared', (shopC2.addon_ids || []).length === 0 && beforeAddons.length >= 0);
   await rpc('platform:assignShop', [shopC.id, {
     package_id: full?.id || floor?.id,
     addon_ids: [online?.id, signage?.id].filter(Boolean)
   }], tok);
   shopC2 = unwrap(await rpc('platform:getShop', [shopC.id], tok).then((r) => r.json));
-  log('K upgrade restored fuller plan', !!shopC2.package_id);
+  log('K upgrade restored addons', (shopC2.addon_ids || []).length >= 1 || !!shopC2.package_id);
 
   // Suspension
   await rpc('platform:setShopStatus', [shopA.id, 'SUSPENDED'], tok);

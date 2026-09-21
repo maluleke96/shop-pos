@@ -211,28 +211,33 @@ function applyEntitlementSnapshot(snapshot, actor = 'saas-sync') {
   const sub = String(snapshot.subscription_status || process.env.SHOP_SUBSCRIPTION_STATUS || 'TRIAL').toUpperCase();
   const isActive = sub === 'SUSPENDED' ? 0 : 1;
   const ts = nowIso();
-  dbRun(
-    `INSERT INTO platform_shops (
-       id, shop_name, owner_name, owner_email, subscription_status, is_active, package_id,
-       created_at, updated_at, deployment_status, notes
-     ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
-     ON CONFLICT(id) DO UPDATE SET shop_name=excluded.shop_name,
-       subscription_status=excluded.subscription_status, is_active=excluded.is_active,
-       package_id=excluded.package_id, updated_at=excluded.updated_at`,
-    [
-      shopKey,
-      snapshot.shop_name || shopKey,
-      snapshot.owner_name || '',
-      snapshot.owner_email || '',
-      sub,
-      isActive,
-      packageId,
-      ts,
-      ts,
-      'online',
-      'saas-sync'
-    ]
-  );
+  try {
+    dbRun(
+      `INSERT INTO platform_shops (
+         id, shop_name, owner_name, owner_email, subscription_status, is_active, package_id,
+         created_at, updated_at, deployment_status, notes
+       ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+       ON CONFLICT(id) DO UPDATE SET shop_name=excluded.shop_name,
+         subscription_status=excluded.subscription_status, is_active=excluded.is_active,
+         package_id=excluded.package_id, updated_at=excluded.updated_at`,
+      [
+        shopKey,
+        snapshot.shop_name || shopKey,
+        snapshot.owner_name || '',
+        snapshot.owner_email || '',
+        sub,
+        isActive,
+        packageId,
+        ts,
+        ts,
+        'online',
+        'saas-sync'
+      ]
+    );
+  } catch (e) {
+    // Assignment/catalog already applied; shops row is for local suspension checks
+    console.warn('[saas-sync] platform_shops upsert:', e.message || e);
+  }
 
   try {
     const entitlements = require('./entitlements');

@@ -668,6 +668,17 @@ function bootstrapLabSamples(actor) {
         'app.pos', 'app.admin', 'app.staff',
         'admin.salesmgmt', 'admin.pos-menu', 'admin.printer', 'admin.payments', 'admin.shifts', 'admin.staffportal'
       ]
+    },
+    {
+      name: 'Lab Full',
+      description: 'Sample fuller plan: Shop Floor + Online + Signage modules',
+      price: 2999,
+      module_ids: [
+        'app.pos', 'app.admin', 'app.staff',
+        'admin.salesmgmt', 'admin.pos-menu', 'admin.printer', 'admin.payments', 'admin.shifts', 'admin.staffportal',
+        'mod.online', 'mod.branding', 'admin.online-orders', 'admin.customize',
+        'mod.signage', 'mod.signage_player', 'admin.digital-signage'
+      ]
     }
   ];
   const created = [];
