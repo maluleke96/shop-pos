@@ -412,6 +412,7 @@ async function syncCustomerEntitlements(shopId) {
   const railway = require('./railway-client');
   const snapshot = sync.buildSnapshotForShop(shopId);
   let secret = '';
+  let secretCreated = false;
   try {
     const vars = await railway.getVariables({
       projectId: shop.railway_project_id,
@@ -424,34 +425,33 @@ async function syncCustomerEntitlements(shopId) {
   }
   if (!secret) {
     secret = crypto.randomBytes(24).toString('base64url');
-    await railway.upsertVariables({
-      projectId: shop.railway_project_id,
-      environmentId: shop.railway_environment_id,
-      serviceId: shop.railway_service_id,
-      variables: {
-        SAAS_SYNC_SECRET: secret,
-        SHOP_PACKAGE_ID: snapshot.package_id || '',
-        SHOP_ADDON_IDS: (snapshot.addon_ids || []).join(','),
-        SHOP_SUBSCRIPTION_STATUS: snapshot.subscription_status || 'TRIAL',
-        SHOP_ENTITLEMENT_KEY: shop.id,
-        ENTITLEMENTS_ENFORCE: 'true'
-      },
-      skipDeploys: true
-    });
-  } else {
-    await railway.upsertVariables({
-      projectId: shop.railway_project_id,
-      environmentId: shop.railway_environment_id,
-      serviceId: shop.railway_service_id,
-      variables: {
-        SHOP_PACKAGE_ID: snapshot.package_id || '',
-        SHOP_ADDON_IDS: (snapshot.addon_ids || []).join(','),
-        SHOP_SUBSCRIPTION_STATUS: snapshot.subscription_status || 'TRIAL',
-        SHOP_ENTITLEMENT_KEY: shop.id,
-        ENTITLEMENTS_ENFORCE: 'true'
-      },
-      skipDeploys: true
-    });
+    secretCreated = true;
+  }
+  await railway.upsertVariables({
+    projectId: shop.railway_project_id,
+    environmentId: shop.railway_environment_id,
+    serviceId: shop.railway_service_id,
+    variables: {
+      SAAS_SYNC_SECRET: secret,
+      SHOP_PACKAGE_ID: snapshot.package_id || '',
+      SHOP_ADDON_IDS: (snapshot.addon_ids || []).join(','),
+      SHOP_SUBSCRIPTION_STATUS: snapshot.subscription_status || 'TRIAL',
+      SHOP_ENTITLEMENT_KEY: shop.id,
+      ENTITLEMENTS_ENFORCE: 'true'
+    },
+    skipDeploys: true
+  });
+  if (secretCreated) {
+    try {
+      await railway.deployService({
+        environmentId: shop.railway_environment_id,
+        serviceId: shop.railway_service_id
+      });
+      // Allow redeploy to pick up SAAS_SYNC_SECRET
+      await new Promise((r) => setTimeout(r, 45000));
+    } catch (e) {
+      return { ok: false, error: 'secret set but redeploy failed: ' + String(e.message || e).slice(0, 120) };
+    }
   }
   const pushed = await sync.pushSnapshotToCustomerUrl(shop.shop_url, secret, snapshot);
   audit('system', 'customer_entitlement_synced', shopId, {

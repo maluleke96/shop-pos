@@ -42,33 +42,51 @@ function ensureEntitlementTables() {
   // Minimal tables if migrations not yet applied
   getDb().exec(`
     CREATE TABLE IF NOT EXISTS platform_modules (
-      id TEXT PRIMARY KEY, name TEXT, description TEXT, kind TEXT, commercial_class TEXT,
-      parent_id TEXT, depends_on_json TEXT, nav_keys_json TEXT, rpc_prefixes_json TEXT,
-      http_mounts_json TEXT, jobs_json TEXT, is_active INTEGER DEFAULT 1
+      id TEXT PRIMARY KEY,
+      kind TEXT NOT NULL DEFAULT 'sellable',
+      name TEXT NOT NULL,
+      description TEXT DEFAULT '',
+      commercial_class TEXT NOT NULL DEFAULT 'sellable',
+      sellable_addon INTEGER NOT NULL DEFAULT 0,
+      default_status TEXT DEFAULT 'enabled_in_full_product',
+      admin_menu TEXT,
+      appears_in_json TEXT DEFAULT '[]',
+      dependencies_json TEXT DEFAULT '[]',
+      related_apis_json TEXT DEFAULT '[]',
+      related_jobs_json TEXT DEFAULT '[]',
+      database_tables_json TEXT DEFAULT '[]',
+      notes TEXT DEFAULT '',
+      catalog_source TEXT DEFAULT 'MODULE-CATALOG',
+      is_active INTEGER NOT NULL DEFAULT 1,
+      updated_at TEXT
     );
     CREATE TABLE IF NOT EXISTS platform_packages (
-      id TEXT PRIMARY KEY, name TEXT, description TEXT, price REAL, currency TEXT,
-      is_active INTEGER DEFAULT 1, created_at TEXT, updated_at TEXT
+      id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT DEFAULT '',
+      price NUMERIC DEFAULT 0, currency TEXT DEFAULT 'ZAR',
+      is_active INTEGER NOT NULL DEFAULT 1, created_at TEXT, updated_at TEXT
     );
     CREATE TABLE IF NOT EXISTS platform_package_items (
       package_id TEXT NOT NULL, module_id TEXT NOT NULL, PRIMARY KEY (package_id, module_id)
     );
     CREATE TABLE IF NOT EXISTS platform_addons (
-      id TEXT PRIMARY KEY, name TEXT, description TEXT, price REAL, currency TEXT,
-      is_active INTEGER DEFAULT 1, created_at TEXT, updated_at TEXT
+      id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT DEFAULT '',
+      price NUMERIC DEFAULT 0, currency TEXT DEFAULT 'ZAR',
+      is_active INTEGER NOT NULL DEFAULT 1, created_at TEXT, updated_at TEXT
     );
     CREATE TABLE IF NOT EXISTS platform_addon_items (
       addon_id TEXT NOT NULL, module_id TEXT NOT NULL, PRIMARY KEY (addon_id, module_id)
     );
     CREATE TABLE IF NOT EXISTS platform_shop_assignments (
-      shop_key TEXT PRIMARY KEY, package_id TEXT, notes TEXT, updated_at TEXT, updated_by TEXT
+      shop_key TEXT PRIMARY KEY, package_id TEXT, notes TEXT DEFAULT '',
+      updated_at TEXT, updated_by TEXT
     );
     CREATE TABLE IF NOT EXISTS platform_shop_addons (
       shop_key TEXT NOT NULL, addon_id TEXT NOT NULL, PRIMARY KEY (shop_key, addon_id)
     );
     CREATE TABLE IF NOT EXISTS platform_shop_overrides (
       shop_key TEXT NOT NULL, module_id TEXT NOT NULL, enabled INTEGER NOT NULL,
-      reason TEXT, updated_at TEXT, updated_by TEXT, PRIMARY KEY (shop_key, module_id)
+      reason TEXT DEFAULT '', updated_at TEXT, updated_by TEXT,
+      PRIMARY KEY (shop_key, module_id)
     );
     CREATE TABLE IF NOT EXISTS platform_shops (
       id TEXT PRIMARY KEY, shop_name TEXT, owner_name TEXT, owner_email TEXT,
@@ -94,21 +112,37 @@ function applyEntitlementSnapshot(snapshot, actor = 'saas-sync') {
   const modules = Array.isArray(snapshot.modules) ? snapshot.modules : [];
   for (const m of modules) {
     if (!m?.id) continue;
+    const deps = m.dependencies_json != null
+      ? (typeof m.dependencies_json === 'string' ? m.dependencies_json : JSON.stringify(m.dependencies_json))
+      : JSON.stringify(m.depends_on || []);
     dbRun(
-      `INSERT INTO platform_modules (id, name, description, kind, commercial_class, parent_id, depends_on_json, nav_keys_json, rpc_prefixes_json, http_mounts_json, jobs_json, is_active)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-       ON CONFLICT(id) DO UPDATE SET name=excluded.name, description=excluded.description,
-         kind=excluded.kind, commercial_class=excluded.commercial_class, parent_id=excluded.parent_id,
-         depends_on_json=excluded.depends_on_json, is_active=excluded.is_active`,
+      `INSERT INTO platform_modules (
+         id, kind, name, description, commercial_class, sellable_addon, default_status,
+         admin_menu, appears_in_json, dependencies_json, related_apis_json, related_jobs_json,
+         database_tables_json, notes, catalog_source, is_active, updated_at
+       ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+       ON CONFLICT(id) DO UPDATE SET
+         kind=excluded.kind, name=excluded.name, description=excluded.description,
+         commercial_class=excluded.commercial_class, dependencies_json=excluded.dependencies_json,
+         is_active=excluded.is_active, updated_at=excluded.updated_at`,
       [
-        m.id, m.name || m.id, m.description || '', m.kind || '', m.commercial_class || '',
-        m.parent_id || null,
-        JSON.stringify(m.depends_on || m.depends_on_json || []),
-        JSON.stringify(m.nav_keys || []),
-        JSON.stringify(m.rpc_prefixes || []),
-        JSON.stringify(m.http_mounts || []),
-        JSON.stringify(m.jobs || []),
-        m.is_active === 0 ? 0 : 1
+        m.id,
+        m.kind || 'sellable',
+        m.name || m.id,
+        m.description || '',
+        m.commercial_class || 'sellable',
+        m.sellable_addon ? 1 : 0,
+        m.default_status || 'enabled_in_full_product',
+        m.admin_menu || null,
+        typeof m.appears_in_json === 'string' ? m.appears_in_json : JSON.stringify(m.appears_in || []),
+        deps,
+        typeof m.related_apis_json === 'string' ? m.related_apis_json : JSON.stringify(m.related_apis || []),
+        typeof m.related_jobs_json === 'string' ? m.related_jobs_json : JSON.stringify(m.jobs || m.related_jobs || []),
+        typeof m.database_tables_json === 'string' ? m.database_tables_json : JSON.stringify(m.database_tables || []),
+        m.notes || '',
+        m.catalog_source || 'MODULE-CATALOG',
+        m.is_active === 0 ? 0 : 1,
+        nowIso()
       ]
     );
   }
@@ -250,10 +284,7 @@ function buildSnapshotForShop(shopId) {
   if (!shop) throw new Error('Shop not found on platform');
   if (/chisa/i.test(shop.shop_name + id)) throw new Error('Refusing snapshot for Chisa Food');
 
-  const modules = dbAll('SELECT * FROM platform_modules').map((m) => ({
-    ...m,
-    depends_on: (() => { try { return JSON.parse(m.depends_on_json || '[]'); } catch (_) { return []; } })()
-  }));
+  const modules = dbAll('SELECT * FROM platform_modules').map((m) => ({ ...m }));
   const packages = dbAll('SELECT * FROM platform_packages').map((p) => ({
     ...p,
     module_ids: dbAll('SELECT module_id FROM platform_package_items WHERE package_id = ?', [p.id]).map((r) => r.module_id)
