@@ -5,7 +5,8 @@
  * Catalog sync runs in the background after login succeeds.
  */
 (function () {
-  const DEFAULT_CLOUD = 'https://chisafood.up.railway.app';
+  // Installer must bind to the profile/env URL — never a hard-coded customer.
+  const DEFAULT_CLOUD = '';
   const TOKEN_KEY = 'shoppos_sync_session';
   const RPC_TIMEOUT_MS = 5000;
   const WRITE_RE = /^(auth_|sales_|stock_|products_|categories_|customers_|suppliers_|po_|returns_|expenses_|shifts_|staff_|recipe_|hr_|payroll_|held_|quotes_|layby_|giftcards_|waste_|cashup_|combos_|settings_save|settings_saveJson|ops_|salaryClaims_|whatsapp_|bookkeeping_|acc_|web_|mobile_)/;
@@ -42,13 +43,20 @@
   if (!isInstaller()) return;
 
   function syncBase() {
+    try {
+      if (window.ShopProfiles?.getActive?.()?.cloudUrl) {
+        return String(window.ShopProfiles.getActive().cloudUrl).replace(/\/$/, '');
+      }
+    } catch (_) { /* */ }
     const e = window.__SHOP_POS_ENV__ || {};
     const raw = e.SHOP_POS_SYNC_URL || e.SHOP_POS_CLOUD_URL || DEFAULT_CLOUD;
-    return String(raw).replace(/\/$/, '');
+    return String(raw || '').replace(/\/$/, '');
   }
 
   function rpcUrl() {
-    return syncBase() + '/rpc';
+    const base = syncBase();
+    if (!base) throw new Error('No shop cloud URL configured — add your shop profile first');
+    return base + '/rpc';
   }
 
   let sessionToken = '';

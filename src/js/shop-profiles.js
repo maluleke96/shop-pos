@@ -1,11 +1,40 @@
 /**
- * Multi-shop profiles — run several shops on one computer without mixing sessions.
- * Each profile stores its own cloud URL; panel apps use separate session keys per profile.
+ * Multi-shop profiles — for Windows/Android installers that manage several cloud shops.
+ *
+ * CRITICAL: On a hosted SaaS customer URL (Railway shop), NEVER apply a default
+ * Chisa Food cloud profile. The browser origin IS the customer environment.
+ * Chisanyama remains a separate environment and must not leak into other shops.
  */
 (function (global) {
   const STORAGE_KEY = 'shoppos_shop_profiles';
   const ACTIVE_KEY = 'shoppos_active_shop_profile';
-  const DEFAULT_CLOUD = 'https://chisafood.up.railway.app';
+  // Installer-only fallback when no profile exists yet. Prefer empty so users
+  // must enter their own shop URL — never silently bind SaaS customers to Chisa.
+  const DEFAULT_CLOUD = '';
+
+  function isHostedCustomerApp() {
+    try {
+      if (global.__SHOP_POS_LOCAL_INSTALLER__) return false;
+      if (String(location.protocol || '') === 'file:') return false;
+      const host = String(location.hostname || '');
+      if (!host || host === 'localhost' || host === '127.0.0.1') return false;
+      // Chisa Food's own hosted app may keep multi-shop profiles for branches.
+      if (/chisafood|chisanyama/i.test(host)) return false;
+      const proto = String(location.protocol || '');
+      return proto === 'http:' || proto === 'https:';
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function currentOriginBase() {
+    try {
+      if (location.origin && !String(location.origin).startsWith('file:')) {
+        return String(location.origin).replace(/\/$/, '');
+      }
+    } catch (_) { /* */ }
+    return '';
+  }
 
   function readProfiles() {
     try {
@@ -22,32 +51,35 @@
   }
 
   function ensureDefault() {
+    // Hosted SaaS customer apps: no Chisa default profile — origin is the shop.
+    if (isHostedCustomerApp()) return [];
     let list = readProfiles();
     if (!list.length) {
-      list = [{
-        id: 'default',
-        name: 'Chisa Food',
-        cloudUrl: DEFAULT_CLOUD,
-        created_at: new Date().toISOString()
-      }];
-      writeProfiles(list);
-      localStorage.setItem(ACTIVE_KEY, 'default');
+      // Empty installer profile list — do not seed Chisa Food.
+      return [];
     }
     return list;
   }
 
   function getActiveId() {
-    ensureDefault();
-    return localStorage.getItem(ACTIVE_KEY) || readProfiles()[0]?.id || 'default';
+    const list = ensureDefault();
+    if (!list.length) return '';
+    return localStorage.getItem(ACTIVE_KEY) || list[0]?.id || '';
   }
 
   function getActiveProfile() {
+    if (isHostedCustomerApp()) {
+      const base = currentOriginBase();
+      return base ? { id: 'origin', name: 'This shop', cloudUrl: base } : null;
+    }
     const list = ensureDefault();
+    if (!list.length) return null;
     const id = getActiveId();
-    return list.find((p) => p.id === id) || list[0];
+    return list.find((p) => p.id === id) || list[0] || null;
   }
 
   function setActive(id) {
+    if (isHostedCustomerApp()) return getActiveProfile();
     const list = ensureDefault();
     if (!list.some((p) => p.id === id)) return null;
     localStorage.setItem(ACTIVE_KEY, id);
@@ -64,9 +96,14 @@
   }
 
   function saveProfile(data) {
+    if (isHostedCustomerApp()) return null;
     const list = ensureDefault();
     const id = data.id || `shop-${Date.now()}`;
-    const cloudUrl = String(data.cloudUrl || DEFAULT_CLOUD).replace(/\/$/, '');
+    const cloudUrl = String(data.cloudUrl || DEFAULT_CLOUD || currentOriginBase()).replace(/\/$/, '');
+    if (!cloudUrl) throw new Error('Cloud URL is required');
+    if (/chisafood\.up\.railway\.app/i.test(cloudUrl) && !/chisa/i.test(String(data.name || ''))) {
+      // Allow explicit Chisa only when named as such — never accidental default for other shops
+    }
     const entry = {
       id,
       name: String(data.name || 'My Shop').trim() || 'My Shop',
@@ -81,23 +118,24 @@
   }
 
   function deleteProfile(id) {
-    if (id === 'default') return false;
+    if (isHostedCustomerApp()) return false;
     let list = readProfiles().filter((p) => p.id !== id);
-    if (!list.length) list = ensureDefault();
     writeProfiles(list);
-    if (getActiveId() === id) setActive(list[0].id);
+    if (getActiveId() === id) {
+      if (list[0]) setActive(list[0].id);
+      else localStorage.removeItem(ACTIVE_KEY);
+    }
     return true;
   }
 
-  /** Session keys scoped per shop + panel so admin/POS/driver don't clash on one PC. */
   function sessionKey(panel) {
-    const pid = getActiveId();
+    const pid = getActiveId() || 'origin';
     const panelId = String(panel || 'main').toLowerCase();
     return `shoppos_${pid}_${panelId}_session`;
   }
 
   function clearPanelSessions() {
-    const pid = getActiveId();
+    const pid = getActiveId() || 'origin';
     const prefix = `shoppos_${pid}_`;
     try {
       Object.keys(localStorage).forEach((k) => {
@@ -110,10 +148,24 @@
   }
 
   function applyToEnv() {
+    if (!global.__SHOP_POS_ENV__) global.__SHOP_POS_ENV__ = {};
+
+    // Hosted SaaS customer: always bind RPC to this origin — never Chisa Food.
+    if (isHostedCustomerApp()) {
+      const base = currentOriginBase();
+      if (base) {
+        global.__SHOP_POS_ENV__.SHOP_POS_SYNC_URL = base;
+        global.__SHOP_POS_ENV__.SHOP_POS_CLOUD_URL = base;
+        global.__SHOP_POS_ENV__.SHOP_POS_PUBLIC_URL = base;
+        global.__SHOP_POS_ENV__.RPC_URL = base + '/rpc';
+        global.__SHOP_POS_ENV__.SHOP_POS_RPC_URL = base + '/rpc';
+      }
+      return getActiveProfile();
+    }
+
     const p = getActiveProfile();
     if (!p?.cloudUrl) return p;
     const base = p.cloudUrl.replace(/\/$/, '');
-    if (!global.__SHOP_POS_ENV__) global.__SHOP_POS_ENV__ = {};
     global.__SHOP_POS_ENV__.SHOP_POS_SYNC_URL = base;
     global.__SHOP_POS_ENV__.SHOP_POS_CLOUD_URL = base;
     global.__SHOP_POS_ENV__.RPC_URL = base + '/rpc';
@@ -123,6 +175,7 @@
 
   const ShopProfiles = {
     DEFAULT_CLOUD,
+    isHostedCustomerApp,
     list: ensureDefault,
     getActive: getActiveProfile,
     getActiveId,

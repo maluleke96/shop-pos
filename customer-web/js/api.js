@@ -4,7 +4,8 @@ const OrderAPI = {
       return `${location.origin.replace(/\/$/, '')}/rpc`;
     }
     const cfg = window.__ORDER_CONFIG__ || {};
-    return cfg.rpcUrl || 'https://chisafood.up.railway.app/rpc';
+    // Same-origin only — never fall back to another customer's Railway URL.
+    return cfg.rpcUrl || '/rpc';
   })(),
 
   async call(method, args = []) {

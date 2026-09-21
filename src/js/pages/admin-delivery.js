@@ -108,8 +108,9 @@ window.AdminDeliveryPage = {
   },
 
   baseUrl() {
-    return (window.__SHOP_POS_ENV__?.RPC_URL || window.__SHOP_POS_ENV__?.SHOP_POS_RPC_URL || window.location.origin || '')
-      .replace(/\/rpc\/?$/i, '').replace(/\/$/, '') || 'https://chisafood.up.railway.app';
+    const raw = (window.__SHOP_POS_ENV__?.RPC_URL || window.__SHOP_POS_ENV__?.SHOP_POS_RPC_URL || window.location.origin || '')
+      .replace(/\/rpc\/?$/i, '').replace(/\/$/, '');
+    return raw || '';
   },
 
   whatsappLink(phone, text) {

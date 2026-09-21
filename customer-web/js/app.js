@@ -1191,6 +1191,17 @@ const OrderApp = {
     if (savedSearch) this.search = savedSearch;
     try {
       this.settings = await OrderAPI.getSettings();
+      const shopName = String(this.settings?.shop_name || '').trim() || 'Order Online';
+      document.title = `${shopName} | Online Ordering`;
+      try {
+        let link = document.querySelector('link[rel="icon"]');
+        if (!link) {
+          link = document.createElement('link');
+          link.rel = 'icon';
+          document.head.appendChild(link);
+        }
+        link.href = '/api/logo';
+      } catch (_) { /* */ }
       this.startHoursWatch();
       if (window.PanelNotify && !this._notifyReady) {
         this._notifyReady = true;

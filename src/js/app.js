@@ -714,14 +714,44 @@ const App = {
 
   showWelcome(opts = {}) {
     const statusEl = document.getElementById('welcome-status');
+    const nameEl = document.getElementById('welcome-shop-name');
     const titleEl = document.getElementById('welcome-title');
     const subEl = document.getElementById('welcome-sub');
-    const shopName = this.settings?.shop_name || this.settings?.app_display_name || 'Shop POS';
-    if (titleEl) titleEl.textContent = shopName;
+    const signInBtn = document.getElementById('welcome-signin');
+    const setupBtn = document.getElementById('welcome-setup');
+    const needsSetup = !!opts.needsSetup || !Number(this.settings?.setup_complete);
+    const shopReady = !!opts.shopReady || (!needsSetup && !!Number(this.settings?.setup_complete));
+    const rawName = (this.settings?.shop_name || this.settings?.app_display_name || '').trim();
+    const shopName = rawName && !/^my shop$/i.test(rawName) ? rawName : (needsSetup ? 'Set Up Your Shop' : 'Shop POS');
+    if (nameEl) nameEl.textContent = shopName;
+    if (titleEl) titleEl.textContent = `Welcome to ${shopName}`;
     if (subEl) {
-      subEl.textContent = opts.needsSetup
-        ? 'No shop is set up yet. Create your shop, or sign in if you already have an account on this server.'
-        : 'Sign in if you already have an account, or set up your shop to get started.';
+      if (needsSetup) {
+        subEl.textContent = 'Set up your shop to get started — this is your own shop environment.';
+        subEl.classList.remove('hidden');
+      } else if (opts.status) {
+        subEl.textContent = '';
+        subEl.classList.add('hidden');
+      } else {
+        subEl.textContent = "Don't have your shop set up yet? Use Set Up My Shop below (authorised users only after setup).";
+        // Returning customers: hide the helper line once setup is done (setup button also hidden).
+        subEl.classList.add('hidden');
+      }
+    }
+    if (signInBtn) {
+      signInBtn.textContent = 'Login';
+      // First-time: primary CTA is Set Up. Returning: primary is Login.
+      signInBtn.style.display = needsSetup && !shopReady ? 'none' : '';
+      if (!needsSetup) signInBtn.classList.add('btn-primary');
+    }
+    if (setupBtn) {
+      setupBtn.textContent = 'Set Up My Shop';
+      // After setup completes, hide setup for normal visitors (owners can still reach via admin).
+      setupBtn.style.display = needsSetup ? '' : 'none';
+      if (needsSetup) {
+        setupBtn.classList.add('btn-primary');
+        signInBtn?.classList.remove('btn-primary');
+      }
     }
     if (statusEl) {
       if (opts.status) {
@@ -735,12 +765,18 @@ const App = {
     this.showScreen('welcome');
     this.applyLoginChrome();
     this.renderShopProfilePicker();
+    this.updateBranding({ page: needsSetup ? 'Setup' : 'Login' });
   },
 
   renderShopProfilePicker() {
     const picker = document.getElementById('welcome-shop-picker');
     const sel = document.getElementById('welcome-shop-select');
     if (!picker || !sel || !window.ShopProfiles) return;
+    // SaaS hosted customer URL: never show Chisa multi-shop switcher.
+    if (ShopProfiles.isHostedCustomerApp?.()) {
+      picker.style.display = 'none';
+      return;
+    }
     const list = ShopProfiles.list();
     const active = ShopProfiles.getActive();
     sel.innerHTML = list.map((p) =>
@@ -760,15 +796,23 @@ const App = {
       setTimeout(() => location.reload(), 400);
     });
     document.getElementById('welcome-shop-add')?.addEventListener('click', () => {
-      const name = prompt('Shop name (e.g. Chisa Food Branch 2)')?.trim();
+      if (window.ShopProfiles?.isHostedCustomerApp?.()) {
+        Utils.toast('This shop URL is already your customer environment', 'info');
+        return;
+      }
+      const name = prompt('Shop name')?.trim();
       if (!name) return;
-      const url = prompt('Cloud URL (Railway shop link)', ShopProfiles.DEFAULT_CLOUD)?.trim();
+      const url = prompt('Cloud URL (your Railway shop link — not another customer\'s)', ShopProfiles.DEFAULT_CLOUD || '')?.trim();
       if (!url) return;
-      ShopProfiles.save({ name, cloudUrl: url });
-      ShopProfiles.setActive(ShopProfiles.list().slice(-1)[0]?.id);
-      ShopProfiles.clearPanelSessions();
-      Utils.toast('Shop added ? reloading?', 'success');
-      setTimeout(() => location.reload(), 400);
+      try {
+        ShopProfiles.save({ name, cloudUrl: url });
+        ShopProfiles.setActive(ShopProfiles.list().slice(-1)[0]?.id);
+        ShopProfiles.clearPanelSessions();
+        Utils.toast('Shop added — reloading', 'success');
+        setTimeout(() => location.reload(), 400);
+      } catch (e) {
+        Utils.toast(e.message || 'Could not add shop', 'error');
+      }
     });
   },
 
@@ -958,8 +1002,10 @@ const App = {
     if (mode === 'admin') {
       const loginName = document.getElementById('login-shop-name');
       if (loginName && !this.settings?.shop_name) loginName.textContent = 'Shop POS Admin';
+      const welcomeName = document.getElementById('welcome-shop-name');
+      if (welcomeName && !this.settings?.shop_name) welcomeName.textContent = 'Shop POS Admin';
       const welcomeTitle = document.getElementById('welcome-title');
-      if (welcomeTitle && !this.settings?.shop_name) welcomeTitle.textContent = 'Shop POS Admin';
+      if (welcomeTitle && !this.settings?.shop_name) welcomeTitle.textContent = 'Welcome to Shop POS Admin';
     }
     if (mode === 'delivery') {
       const loginName = document.getElementById('login-shop-name');
@@ -975,7 +1021,7 @@ const App = {
     }
     if (mode === 'mgr-hr') {
       const loginName = document.getElementById('login-shop-name');
-      const shop = this.settings?.shop_name || 'Chisanyama Connection';
+      const shop = this.settings?.shop_name || 'Shop POS';
       if (loginName) loginName.textContent = `${shop}`;
       const loginSub = document.getElementById('login-sub');
       if (loginSub) {
@@ -1638,12 +1684,17 @@ const App = {
   },
 
   getCloudBaseUrl() {
+    try {
+      if (window.ShopProfiles?.isHostedCustomerApp?.() && location.origin && !location.origin.startsWith('file:')) {
+        return location.origin.replace(/\/$/, '');
+      }
+    } catch (_) { /* */ }
     const raw = (window.__SHOP_POS_ENV__?.RPC_URL || window.__SHOP_POS_ENV__?.SHOP_POS_RPC_URL || '').replace(/\/rpc\/?$/i, '');
     if (raw) return raw.replace(/\/$/, '');
     if (typeof location !== 'undefined' && location.origin && !location.origin.startsWith('file:')) {
       return location.origin.replace(/\/$/, '');
     }
-    return 'https://chisafood.up.railway.app';
+    return '';
   },
 
   async getBusinessManagerUrl() {
@@ -1716,12 +1767,23 @@ const App = {
     this.startLoginOperatingTimer();
   },
 
-  updateBranding() {
-    const appName = (this.settings?.app_display_name || this.settings?.shop_name || 'Shop POS').trim();
-    const shopName = this.settings?.shop_name || appName;
+  updateBranding(opts = {}) {
+    const rawShop = String(this.settings?.shop_name || this.settings?.app_display_name || '').trim();
+    const setupDone = !!(this.settings && (this.settings.setup_complete === true || this.settings.setup_complete === 1));
+    const shopName = (rawShop && !/^my shop$/i.test(rawShop))
+      ? rawShop
+      : (setupDone ? 'Shop POS' : 'Set Up Your Shop');
+    const appName = String(this.settings?.app_display_name || shopName).trim() || shopName;
     const logo = this.settings?.logo_path;
+    const brandTitle = (suffix) => (suffix ? `${shopName} | ${suffix}` : shopName);
+
     const loginNameEl = document.getElementById('login-shop-name');
-    if (loginNameEl) loginNameEl.textContent = appName;
+    if (loginNameEl) loginNameEl.textContent = shopName;
+    const welcomeNameEl = document.getElementById('welcome-shop-name');
+    if (welcomeNameEl) welcomeNameEl.textContent = shopName;
+    const welcomeTitleEl = document.getElementById('welcome-title');
+    if (welcomeTitleEl) welcomeTitleEl.textContent = `Welcome to ${shopName}`;
+
     let loginMsg = document.getElementById('login-welcome-msg');
     const msgText = (this.settings?.customization?.login_message || '').trim();
     if (loginNameEl && msgText) {
@@ -1739,7 +1801,20 @@ const App = {
     }
     const sideNameEl = document.getElementById('sidebar-shop-name');
     if (sideNameEl) sideNameEl.textContent = shopName;
-    document.title = appName;
+
+    const path = String(location.pathname || '').toLowerCase();
+    const pageHint = String(opts.page || '').trim();
+    if (pageHint) document.title = brandTitle(pageHint);
+    else if (path.includes('setup')) document.title = brandTitle('Setup');
+    else if (path.includes('order') || path.includes('online')) document.title = brandTitle('Online Ordering');
+    else if (path.includes('admin') || path.includes('manager')) document.title = brandTitle('Admin');
+    else if (document.getElementById('screen-login') && !document.getElementById('screen-login')?.classList.contains('hidden')) {
+      document.title = brandTitle('Login');
+    } else if (document.getElementById('screen-welcome') && !document.getElementById('screen-welcome')?.classList.contains('hidden')) {
+      document.title = brandTitle(setupDone ? 'Login' : 'Setup');
+    } else {
+      document.title = brandTitle('POS');
+    }
 
     const useCloudLogo = !!(window.__SHOP_POS_CLOUD__ || /^https?:/i.test(String(location.protocol || '')));
     const brandInitials = (shopName || appName || 'POS').split(/\s+/).filter(Boolean).map((w) => w[0]).join('').slice(0, 2).toUpperCase() || 'POS';
@@ -1747,15 +1822,15 @@ const App = {
       const el = document.getElementById(elId);
       if (!el) return;
       if (useCloudLogo) {
-        el.innerHTML = `<img src="/api/logo" alt="${appName}" class="brand-logo-img" onerror="this.parentElement.textContent='${fallback}'">`;
+        el.innerHTML = `<img src="/api/logo" alt="${shopName}" class="brand-logo-img" onerror="this.parentElement.textContent='${fallback}'">`;
         return;
       }
       if (logo) {
         const img = await API.getImageDataUrl(logo);
         if (img?.success && (img.dataUrl || img.data)) {
-          el.innerHTML = `<img src="${img.dataUrl || img.data}" alt="${appName}" class="brand-logo-img">`;
+          el.innerHTML = `<img src="${img.dataUrl || img.data}" alt="${shopName}" class="brand-logo-img">`;
         } else {
-          el.innerHTML = `<img src="${Utils.fileUrl(logo)}" alt="${appName}" class="brand-logo-img">`;
+          el.innerHTML = `<img src="${Utils.fileUrl(logo)}" alt="${shopName}" class="brand-logo-img">`;
         }
       } else {
         el.textContent = fallback;
@@ -1776,6 +1851,10 @@ const App = {
       API.getImageDataUrl(logo).then((img) => {
         link.href = img?.success && (img.dataUrl || img.data) ? (img.dataUrl || img.data) : Utils.fileUrl(logo);
       }).catch(() => {});
+    } else {
+      link.href = 'data:image/svg+xml,' + encodeURIComponent(
+        `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="12" fill="#1e293b"/><text x="32" y="40" text-anchor="middle" fill="#fff" font-size="22" font-family="sans-serif">${brandInitials}</text></svg>`
+      );
     }
   },
 

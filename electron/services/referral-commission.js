@@ -369,7 +369,10 @@ function getPublicBase() {
     const { getPublicUrl } = require('../../../lib/public-url');
     return String(getPublicUrl()).replace(/\/$/, '');
   } catch (_) {
-    return String(process.env.SHOP_POS_PUBLIC_URL || 'https://chisafood.up.railway.app').replace(/\/$/, '');
+    const fromEnv = String(process.env.SHOP_POS_PUBLIC_URL || '').trim();
+    if (fromEnv) return fromEnv.replace(/\/$/, '');
+    const railway = String(process.env.RAILWAY_PUBLIC_DOMAIN || '').trim();
+    return railway ? `https://${railway}`.replace(/\/$/, '') : '';
   }
 }
 

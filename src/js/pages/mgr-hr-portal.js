@@ -158,7 +158,7 @@ window.MgrHrPortal = {
     const roleLabel = this.ctx?.admin_access ? 'Admin' : (this.ctx?.mode || this.ctx?.assignment?.portal_role || 'Supervisor');
     const name = this.actor()?.full_name || 'Manager';
     const unread = (this.notes || []).filter((n) => !Number(n.is_read)).length;
-    const shop = this.app?.settings?.shop_name || 'Chisanyama Connection';
+    const shop = this.app?.settings?.shop_name || 'Shop POS';
     const body = this.renderView();
 
     this.container.innerHTML = `<div class="mgrhr-shell ${this.navOpen ? 'mgrhr-nav-open' : ''}">

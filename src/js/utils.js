@@ -803,9 +803,17 @@ const Utils = {
   syncBaseUrl() {
     const cfg = window.__EXPENSE_CONFIG__ || window.__DRIVER_CONFIG__ || window.__ORDER_CONFIG__ || {};
     const env = window.__SHOP_POS_ENV__ || {};
-    return String(
-      cfg.apiBase || env.SHOP_POS_SYNC_URL || env.SHOP_POS_CLOUD_URL || env.SHOP_POS_PUBLIC_URL || 'https://chisafood.up.railway.app'
-    ).replace(/\/$/, '');
+    try {
+      if (window.ShopProfiles?.isHostedCustomerApp?.() && location.origin && !location.origin.startsWith('file:')) {
+        return String(location.origin).replace(/\/$/, '');
+      }
+    } catch (_) { /* */ }
+    const fromEnv = cfg.apiBase || env.SHOP_POS_SYNC_URL || env.SHOP_POS_CLOUD_URL || env.SHOP_POS_PUBLIC_URL || '';
+    if (fromEnv) return String(fromEnv).replace(/\/$/, '');
+    try {
+      if (location.origin && !location.origin.startsWith('file:')) return String(location.origin).replace(/\/$/, '');
+    } catch (_) { /* */ }
+    return '';
   },
 
   isCloudPos() {
@@ -855,7 +863,7 @@ const Utils = {
     if (typeof location !== 'undefined' && location.origin && !location.origin.startsWith('file:')) {
       return `${location.origin.replace(/\/$/, '')}/order/`;
     }
-    return 'https://chisafood.up.railway.app/order/';
+    return '/order/';
   },
 
   comboImageUrl(combo) {

@@ -5440,7 +5440,9 @@ const POSPage = {
     const branch = String(this.activeBranch?.name || '').trim();
     const orderUrl = (typeof Utils.getOnlineOrderUrl === 'function')
       ? Utils.getOnlineOrderUrl()
-      : 'https://chisafood.up.railway.app/order/';
+      : ((typeof location !== 'undefined' && location.origin && !location.origin.startsWith('file:'))
+        ? `${location.origin.replace(/\/$/, '')}/order/`
+        : '/order/');
     return { shop, branch, orderUrl };
   },
 

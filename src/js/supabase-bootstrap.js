@@ -84,10 +84,33 @@
   }
 
   function rpcUrl() {
+    // Hosted SaaS / Railway customer apps must always talk to the same origin.
+    // ShopProfiles must never redirect RPC to Chisa Food (or any other shop).
+    try {
+      if (window.ShopProfiles?.isHostedCustomerApp?.()) return '/rpc';
+    } catch (_) { /* */ }
+    try {
+      const host = String(location.hostname || '');
+      const proto = String(location.protocol || '');
+      if ((proto === 'http:' || proto === 'https:') && host && host !== 'localhost' && host !== '127.0.0.1'
+          && !/chisafood|chisanyama/i.test(host)) {
+        return '/rpc';
+      }
+    } catch (_) { /* */ }
     const e = env();
     const explicit = e.RPC_URL || e.SHOP_POS_RPC_URL || '';
     if (!explicit) return '/rpc';
     const base = String(explicit).replace(/\/$/, '');
+    // If explicit points at a different host while we are on http(s), prefer same-origin
+    // unless this is clearly an installer/file context (handled by useCloud callers).
+    try {
+      if (location.origin && !location.origin.startsWith('file:')) {
+        const abs = /\/rpc$/i.test(base) ? base : base + '/rpc';
+        if (abs.startsWith(location.origin.replace(/\/$/, ''))) return abs;
+        // Different host — only allow when not a hosted customer page
+        if (window.ShopProfiles?.isHostedCustomerApp?.()) return '/rpc';
+      }
+    } catch (_) { /* */ }
     return /\/rpc$/i.test(base) ? base : base + '/rpc';
   }
 

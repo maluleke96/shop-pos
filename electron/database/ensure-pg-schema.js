@@ -70,9 +70,18 @@ function ensurePgSchema(db) {
   }
   if (exists) {
     try {
+      const seedName = String(process.env.SHOP_NAME || '').trim() || 'My Shop';
       db.prepare(`INSERT INTO shop_settings (id, shop_name, setup_complete)
-        VALUES (1, 'My Shop', 0)
-        ON CONFLICT (id) DO NOTHING`).run();
+        VALUES (1, ?, 0)
+        ON CONFLICT (id) DO NOTHING`).run(seedName);
+      // If still the placeholder and SHOP_NAME is set, adopt it before setup completes.
+      if (process.env.SHOP_NAME) {
+        try {
+          db.prepare(`UPDATE shop_settings SET shop_name = ?
+            WHERE id = 1 AND setup_complete = 0
+              AND (shop_name IS NULL OR shop_name = '' OR shop_name = 'My Shop')`).run(String(process.env.SHOP_NAME).trim());
+        } catch (_) { /* ignore */ }
+      }
     } catch (_) { /* ignore */ }
     try { ensureAccSchema(db); } catch (e) { console.warn('[DB] ensureAccSchema:', e.message || e); }
     return { applied: false, reason: 'already-present' };
@@ -103,9 +112,10 @@ function ensurePgSchema(db) {
     }
   }
   try {
+    const seedName = String(process.env.SHOP_NAME || '').trim() || 'My Shop';
     db.prepare(`INSERT INTO shop_settings (id, shop_name, setup_complete)
-      VALUES (1, 'My Shop', 0)
-      ON CONFLICT (id) DO NOTHING`).run();
+      VALUES (1, ?, 0)
+      ON CONFLICT (id) DO NOTHING`).run(seedName);
   } catch (_) { /* ignore */ }
   try { ensureAccSchema(db); } catch (e) { console.warn('[DB] ensureAccSchema:', e.message || e); }
   console.log(`[DB] Schema apply done (ok=${ok}, skipped=${skipped})`);

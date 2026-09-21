@@ -52,7 +52,9 @@ function getPublicBaseUrl() {
   try {
     return require('../../../lib/public-url').getPublicUrl();
   } catch (_) {
-    return process.env.SHOP_POS_PUBLIC_URL || 'https://chisafood.up.railway.app';
+    return process.env.SHOP_POS_PUBLIC_URL
+      || (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : '')
+      || '';
   }
 }
 
