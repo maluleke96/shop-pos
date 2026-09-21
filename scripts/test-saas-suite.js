@@ -119,7 +119,7 @@ async function main() {
   });
   const shopB = await ensureShop('SAAS CUSTOMER B', {
     owner: 'Owner B', email: 'b@saas.test',
-    package_id: starter?.id || floor?.id,
+    package_id: (pkgList.find((p) => p.name === 'Lab Shop Floor') || floor)?.id,
     addon_ids: []
   });
   const shopC = await ensureShop('SAAS CUSTOMER C', {

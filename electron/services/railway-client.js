@@ -363,6 +363,42 @@ async function deployService({ environmentId, serviceId }) {
   }
 }
 
+async function getDeployment(deploymentId) {
+  if (!deploymentId) return null;
+  try {
+    const data = await graphql(
+      `query($id: String!) {
+        deployment(id: $id) { id status }
+      }`,
+      { id: String(deploymentId) }
+    );
+    return data.deployment;
+  } catch (_) {
+    return null;
+  }
+}
+
+/** Poll until SUCCESS / FAILED / CRASHED / REMOVED or timeout. */
+async function waitForDeployment(deploymentId, { maxWaitMs = 8 * 60 * 1000, intervalMs = 15000 } = {}) {
+  const started = Date.now();
+  let last = null;
+  while (Date.now() - started < maxWaitMs) {
+    last = await getDeployment(deploymentId);
+    const st = String(last?.status || '');
+    if (['SUCCESS', 'FAILED', 'CRASHED', 'REMOVED'].includes(st)) {
+      return { done: true, status: st, deployment: last, elapsed_ms: Date.now() - started };
+    }
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+  return {
+    done: false,
+    status: last?.status || 'UNKNOWN',
+    deployment: last,
+    elapsed_ms: Date.now() - started,
+    timed_out: true
+  };
+}
+
 module.exports = {
   CHISA_PROJECT_ID,
   LAB_PROJECT_ID,
@@ -383,5 +419,7 @@ module.exports = {
   listDomains,
   getVariables,
   deployService,
+  getDeployment,
+  waitForDeployment,
   getTokenPresent: () => !!getToken()
 };

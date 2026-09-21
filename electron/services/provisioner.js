@@ -18,8 +18,13 @@ try { platform = require('./platform-control'); } catch (_) { platform = null; }
 
 const STATUSES = [
   'NOT_STARTED', 'DRY_RUN', 'PROVISIONING', 'DATABASE_CREATING',
-  'DEPLOYING', 'HEALTH_CHECK', 'READY', 'FAILED'
+  'DEPLOYING', 'HEALTH_CHECK', 'WAITING_HEALTH', 'SYNCING_ENTITLEMENTS',
+  'READY', 'FAILED'
 ];
+
+/** Health poll: ~8 minutes default (Docker cold start + migrations). */
+const HEALTH_MAX_ATTEMPTS = Number(process.env.PROVISION_HEALTH_ATTEMPTS || 32);
+const HEALTH_INTERVAL_MS = Number(process.env.PROVISION_HEALTH_INTERVAL_MS || 15000);
 
 function dbGet(sql, p = []) { return getDb().prepare(sql).get(...p); }
 function dbAll(sql, p = []) { return getDb().prepare(sql).all(...p); }
@@ -219,28 +224,41 @@ async function healthCheck(url, shopId) {
     shop_key: null,
     entitlement_enforcement: null,
     ui_ok: false,
+    readiness: 'unknown', // starting | ready | unhealthy | unreachable
     errors: []
   };
   const base = String(url).replace(/\/$/, '');
   try {
     const h = await fetch(base + '/health', { signal: AbortSignal.timeout(20000) });
     checks.status = h.status;
-    const body = await h.json().catch(() => ({}));
-    checks.http_ok = h.ok && !!body.ok;
-    if (body.shop_key) checks.shop_key = body.shop_key;
-    if (!checks.http_ok) checks.errors.push('health not ok');
+    if (h.status === 502 || h.status === 503 || h.status === 504) {
+      checks.readiness = 'starting';
+      checks.errors.push('gateway_' + h.status);
+    } else {
+      const body = await h.json().catch(() => ({}));
+      checks.http_ok = h.ok && !!body.ok;
+      checks.shop_key = body.shop_key || null;
+      if (checks.http_ok) checks.readiness = 'ready';
+      else {
+        checks.readiness = 'unhealthy';
+        checks.errors.push('health not ok');
+      }
+    }
   } catch (e) {
-    checks.errors.push('health: ' + String(e.message || e).slice(0, 120));
+    const msg = String(e.message || e);
+    checks.readiness = /timeout|ECONNREFUSED|fetch failed|network/i.test(msg) ? 'starting' : 'unreachable';
+    checks.errors.push('health: ' + msg.slice(0, 120));
   }
   try {
     const ui = await fetch(base + '/', { signal: AbortSignal.timeout(20000) });
-    checks.ui_ok = ui.ok;
-    if (!ui.ok) checks.errors.push('ui http ' + ui.status);
+    checks.ui_ok = ui.ok || ui.status === 502 || ui.status === 503;
+    if (!ui.ok && ui.status !== 502 && ui.status !== 503) checks.errors.push('ui http ' + ui.status);
   } catch (e) {
-    checks.errors.push('ui: ' + String(e.message || e).slice(0, 120));
+    if (checks.readiness !== 'starting') {
+      checks.errors.push('ui: ' + String(e.message || e).slice(0, 120));
+    }
   }
-  // Entitlement RPC is best-effort (method may not exist on older builds)
-  for (const method of ['entitlements:get', 'entitlements:status']) {
+  for (const method of ['entitlements:status', 'entitlements:get']) {
     try {
       const r = await fetch(base + '/rpc', {
         method: 'POST',
@@ -256,23 +274,77 @@ async function healthCheck(url, shopId) {
       checks.entitlement_enforcement = d.enforcement ?? d.enforce ?? checks.entitlement_enforcement;
       break;
     } catch (e) {
-      checks.errors.push('rpc: ' + String(e.message || e).slice(0, 120));
+      if (checks.readiness !== 'starting') {
+        checks.errors.push('rpc: ' + String(e.message || e).slice(0, 120));
+      }
     }
-  }
-  if (!checks.rpc_ok && checks.http_ok) {
-    // Accept healthy web+postgres deploy even if entitlements RPC name differs
-    checks.rpc_ok = true;
-    checks.errors = checks.errors.filter((e) => !/^rpc:/i.test(e));
   }
   if (shopId && checks.shop_key && checks.shop_key !== shopId) {
     checks.errors.push(`shop_key mismatch: got ${checks.shop_key}`);
   }
-  // Prefer confirming package when entitlements RPC works
-  if (checks.rpc_ok && checks.entitlement_enforcement === true && !checks.shop_key && shopId) {
-    checks.errors.push('entitlements RPC missing shop_key');
-  }
   checks.passed = checks.http_ok && checks.ui_ok && checks.rpc_ok && checks.errors.length === 0;
+  if (checks.passed) checks.readiness = 'ready';
   return checks;
+}
+
+/**
+ * Verify entitlement snapshot applied (package + key flags). Never logs secrets.
+ */
+async function verifyEntitlementSync(url, shop) {
+  const out = {
+    ok: false,
+    shop_key: null,
+    package_id: null,
+    flags: null,
+    errors: []
+  };
+  const base = String(url).replace(/\/$/, '');
+  try {
+    const r = await fetch(base + '/rpc', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ method: 'entitlements:get', args: [] }),
+      signal: AbortSignal.timeout(25000)
+    });
+    const j = await r.json().catch(() => ({}));
+    if (j.success === false || /Unknown method/i.test(String(j.error || ''))) {
+      out.errors.push(j.error || 'entitlements:get failed');
+      return out;
+    }
+    const d = j.data || j;
+    out.shop_key = d.shop_key || null;
+    out.package_id = d.package_id || d.meta?.package_id || null;
+    out.flags = d.flags || null;
+    out.enforcement = d.enforcement;
+    if (shop?.id && out.shop_key && out.shop_key !== shop.id) {
+      out.errors.push('shop_key mismatch');
+    }
+    if (shop?.package_id && out.package_id && out.package_id !== shop.package_id) {
+      out.errors.push('package_id mismatch');
+    }
+    // If shop has online add-on expectation via flags from platform snapshot
+    const expectOnline = !!(shop.entitlements?.flags?.online);
+    if (expectOnline && out.flags && out.flags.online !== true) {
+      out.errors.push('expected online flag true');
+    }
+    if (out.enforcement !== true) out.errors.push('enforcement not true');
+    if (!out.package_id && shop?.package_id) out.errors.push('package_id missing on customer');
+    out.ok = out.errors.length === 0 && !!out.shop_key;
+  } catch (e) {
+    out.errors.push(String(e.message || e).slice(0, 160));
+  }
+  return out;
+}
+
+async function resolveSyncSecret(projectId, environmentId, serviceId, preferred) {
+  // Prefer existing Railway secret so retries do not rotate and force another redeploy cycle
+  try {
+    const vars = await railway.getVariables({ projectId, environmentId, serviceId });
+    const existing = String(vars.SAAS_SYNC_SECRET || '').trim();
+    if (existing) return { secret: existing, created: false };
+  } catch (_) { /* */ }
+  if (preferred) return { secret: preferred, created: true };
+  return { secret: crypto.randomBytes(24).toString('base64url'), created: true };
 }
 
 /**
@@ -447,12 +519,19 @@ async function provision(shopId, actor, { force = false } = {}) {
       throw new Error('Failed to configure Dockerfile builder: ' + String(e.message || e).slice(0, 200));
     }
 
-    // 4) Env vars — wire app to THIS project's Postgres only (never Chisa)
+    // 4) Env vars — ALL required vars BEFORE deploy (incl. SAAS_SYNC_SECRET)
     // Prefer explicit private-network URL because image-based Postgres may lack DATABASE_URL.
     const pgUrl =
       'postgresql://postgres:${{Postgres.POSTGRES_PASSWORD}}@${{Postgres.RAILWAY_PRIVATE_DOMAIN}}:5432/${{Postgres.POSTGRES_DB}}';
-    const syncSecret = crypto.randomBytes(24).toString('base64url');
+    const secretRes = await resolveSyncSecret(
+      result.projectId,
+      result.environmentId,
+      app.id,
+      null
+    );
+    const syncSecret = secretRes.secret;
     result.syncSecretSet = true;
+    result.syncSecretCreated = !!secretRes.created;
     await railway.upsertVariables({
       projectId: result.projectId,
       environmentId: result.environmentId,
@@ -474,9 +553,15 @@ async function provision(shopId, actor, { force = false } = {}) {
       },
       skipDeploys: true
     });
-    result.steps.push({ step: 'app_variables', action: 'upserted', keys: [
-      'SHOP_ENTITLEMENT_KEY', 'SHOP_PACKAGE_ID', 'SHOP_ADDON_IDS', 'ENTITLEMENTS_ENFORCE', 'DATABASE_URL'
-    ] });
+    result.steps.push({
+      step: 'app_variables',
+      action: 'upserted',
+      keys: [
+        'SHOP_ENTITLEMENT_KEY', 'SHOP_PACKAGE_ID', 'SHOP_ADDON_IDS',
+        'SAAS_SYNC_SECRET', 'ENTITLEMENTS_ENFORCE', 'DATABASE_URL'
+      ],
+      secret_reused: !secretRes.created
+    });
     // Keep secret only in memory for post-health sync — never persist to jobs/UI
     result._syncSecret = syncSecret;
 
@@ -494,7 +579,6 @@ async function provision(shopId, actor, { force = false } = {}) {
       domains = [d];
       result.steps.push({ step: 'domain', action: 'created', domain: d.domain });
     } else {
-      // Fix legacy targetPort=3000 mismatches when app listens on PORT (e.g. 8080)
       const d0 = domains[0];
       if (d0.targetPort === 3000) {
         try {
@@ -534,7 +618,12 @@ async function provision(shopId, actor, { force = false } = {}) {
       updateShopStatus(shopId, { shop_url: publicUrl }, actor);
     }
 
-    // 6) Deploy
+    // 6) Deploy AFTER all env vars are set so SAAS_SYNC_SECRET is in the running image
+    saveJob({
+      id: jobId, shop_id: shopId, mode: 'provision', status: 'DEPLOYING',
+      plan_json: JSON.stringify(plan), result_json: JSON.stringify(railway.redact(result)), dry_run: 0,
+      updated_by: actor?.username
+    });
     try {
       const dep = await railway.deployService({
         environmentId: result.environmentId,
@@ -542,12 +631,33 @@ async function provision(shopId, actor, { force = false } = {}) {
       });
       result.deploymentId = dep.deploymentId;
       result.steps.push({ step: 'deploy', action: 'triggered', id: dep.deploymentId });
-      updateShopStatus(shopId, { railway_deployment_id: String(dep.deploymentId || '') }, actor);
+      updateShopStatus(shopId, {
+        railway_deployment_id: String(dep.deploymentId || ''),
+        deployment_status: 'pending'
+      }, actor);
+
+      const wait = await railway.waitForDeployment(dep.deploymentId, {
+        maxWaitMs: Number(process.env.PROVISION_DEPLOY_WAIT_MS || 10 * 60 * 1000),
+        intervalMs: 15000
+      });
+      result.steps.push({
+        step: 'deploy_wait',
+        status: wait.status,
+        done: wait.done,
+        elapsed_ms: wait.elapsed_ms
+      });
+      if (wait.done && ['FAILED', 'CRASHED', 'REMOVED'].includes(wait.status)) {
+        throw new Error('Railway deployment ' + wait.status + ' — check build logs on customer project');
+      }
+      if (!wait.done) {
+        result.steps.push({ step: 'deploy_wait', action: 'still_building', status: wait.status });
+      }
     } catch (e) {
+      if (/Railway deployment (FAILED|CRASHED|REMOVED)/.test(String(e.message || e))) throw e;
       result.steps.push({ step: 'deploy', action: 'error', error: String(e.message || e).slice(0, 200) });
     }
 
-    // 7) Health check (poll)
+    // 7) Health check — poll until ready or classify as still-starting
     saveJob({
       id: jobId, shop_id: shopId, mode: 'provision', status: 'HEALTH_CHECK',
       plan_json: JSON.stringify(plan), result_json: JSON.stringify(railway.redact(result)), dry_run: 0,
@@ -555,114 +665,154 @@ async function provision(shopId, actor, { force = false } = {}) {
     });
     updateShopStatus(shopId, { deployment_status: 'pending' }, actor);
 
-    let health = { passed: false, errors: ['not checked'] };
+    let health = { passed: false, readiness: 'unknown', errors: ['not checked'] };
     if (publicUrl) {
-      // Keep in-request polling short (proxy timeouts). Retry reuses IDs and re-checks.
-      for (let i = 0; i < 4; i++) {
-        await sleep(10000);
+      for (let i = 0; i < HEALTH_MAX_ATTEMPTS; i++) {
+        await sleep(HEALTH_INTERVAL_MS);
         health = await healthCheck(publicUrl, shop.id);
         result.health = health;
+        result.steps.push({
+          step: 'health_poll',
+          attempt: i + 1,
+          readiness: health.readiness,
+          errors: health.errors
+        });
         if (health.passed) break;
-        result.steps.push({ step: 'health_poll', attempt: i + 1, errors: health.errors });
+        // Permanent unhealthy (not starting) after several successes of deploy — keep polling anyway
       }
     }
 
-    if (health.passed) {
-      // Push catalog + assignment into customer DB (Phase 4 engine on customer)
-      try {
-        const syncMod = require('./saas-customer-sync');
-        let secret = result._syncSecret;
-        if (!secret) {
-          const vars = await railway.getVariables({
-            projectId: result.projectId,
-            environmentId: result.environmentId,
-            serviceId: result.appServiceId
-          });
-          secret = String(vars.SAAS_SYNC_SECRET || '').trim();
-        }
-        if (secret && publicUrl) {
-          const snapshot = syncMod.buildSnapshotForShop(shopId);
-          const pushed = await syncMod.pushSnapshotToCustomerUrl(publicUrl, secret, snapshot);
-          result.steps.push({
-            step: 'entitlement_sync',
-            action: 'pushed',
-            package_id: snapshot.package_id,
-            addon_count: (snapshot.addon_ids || []).length
-          });
-          result.entitlement_sync = { ok: true, package_id: snapshot.package_id };
-          // Re-check entitlements RPC
-          await sleep(3000);
-          health = await healthCheck(publicUrl, shop.id);
-          result.health = health;
-        }
-      } catch (e) {
-        result.steps.push({
-          step: 'entitlement_sync',
-          action: 'error',
-          error: String(e.message || e).slice(0, 200)
-        });
-        // Do not mark READY if sync failed — customer would lack package enforcement
-        health.passed = false;
-        health.errors = (health.errors || []).concat(['entitlement_sync: ' + String(e.message || e).slice(0, 120)]);
-      }
+    if (!health.passed) {
       delete result._syncSecret;
-
-      if (!health.passed) {
-        const errMsg = 'Health/entitlement sync did not pass — resources kept for retry. ' + (health.errors || []).join('; ');
-        updateShopStatus(shopId, { deployment_status: 'error' }, actor);
-        saveJob({
-          id: jobId, shop_id: shopId, mode: 'provision', status: 'FAILED',
-          plan_json: JSON.stringify(plan),
-          result_json: JSON.stringify(railway.redact(result)),
-          error_safe: errMsg.slice(0, 500),
-          dry_run: 0,
-          updated_by: actor?.username
-        });
-        return {
-          success: false,
-          error: errMsg,
-          data: { job_id: jobId, status: 'FAILED', result: railway.redact(result), plan }
-        };
-      }
-
+      const stillStarting = health.readiness === 'starting' || health.readiness === 'unreachable';
+      const status = stillStarting ? 'WAITING_HEALTH' : 'FAILED';
+      const errMsg = stillStarting
+        ? 'Application still starting — resources kept. Press Retry to continue health/sync. ' + (health.errors || []).join('; ')
+        : 'Health check failed — resources kept for retry. ' + (health.errors || []).join('; ');
       updateShopStatus(shopId, {
-        deployment_status: 'online',
+        deployment_status: stillStarting ? 'pending' : 'error',
+        shop_url: publicUrl || shop.shop_url,
+        railway_project_id: result.projectId,
+        railway_service_id: result.appServiceId,
+        railway_environment_id: result.environmentId
+      }, actor);
+      saveJob({
+        id: jobId, shop_id: shopId, mode: 'provision', status,
+        plan_json: JSON.stringify(plan),
+        result_json: JSON.stringify(railway.redact(result)),
+        error_safe: errMsg.slice(0, 500),
+        dry_run: 0,
+        updated_by: actor?.username
+      });
+      audit(actor?.username, stillStarting ? 'provision_waiting_health' : 'provision_failed', shopId, {
+        job_id: jobId, error: errMsg.slice(0, 300)
+      });
+      return {
+        success: false,
+        error: errMsg,
+        data: { job_id: jobId, status, result: railway.redact(result), plan, retryable: true }
+      };
+    }
+
+    // 8) Entitlement sync — only after deploy has SAAS_SYNC_SECRET and app is healthy
+    saveJob({
+      id: jobId, shop_id: shopId, mode: 'provision', status: 'SYNCING_ENTITLEMENTS',
+      plan_json: JSON.stringify(plan), result_json: JSON.stringify(railway.redact(result)), dry_run: 0,
+      updated_by: actor?.username
+    });
+    try {
+      const syncMod = require('./saas-customer-sync');
+      let secret = result._syncSecret;
+      if (!secret) {
+        const resolved = await resolveSyncSecret(
+          result.projectId, result.environmentId, result.appServiceId, null
+        );
+        secret = resolved.secret;
+      }
+      const freshShop = shops.getShop(shopId).data;
+      const snapshot = syncMod.buildSnapshotForShop(shopId);
+      const pushed = await syncMod.pushSnapshotToCustomerUrl(publicUrl, secret, snapshot);
+      result.steps.push({
+        step: 'entitlement_sync',
+        action: 'pushed',
+        package_id: snapshot.package_id,
+        addon_count: (snapshot.addon_ids || []).length
+      });
+      result.entitlement_sync = { ok: true, package_id: snapshot.package_id };
+
+      // Verify customer accepted snapshot
+      let verified = { ok: false, errors: ['not verified'] };
+      for (let i = 0; i < 6; i++) {
+        await sleep(5000);
+        verified = await verifyEntitlementSync(publicUrl, freshShop);
+        if (verified.ok) break;
+      }
+      result.entitlement_verify = {
+        ok: verified.ok,
+        shop_key: verified.shop_key,
+        package_id: verified.package_id,
+        flags: verified.flags,
+        errors: verified.errors
+      };
+      result.steps.push({
+        step: 'entitlement_verify',
+        ok: verified.ok,
+        package_id: verified.package_id,
+        errors: verified.errors
+      });
+      if (!verified.ok) {
+        throw new Error('Entitlement sync verification failed: ' + (verified.errors || []).join('; '));
+      }
+    } catch (e) {
+      delete result._syncSecret;
+      const errMsg = 'Entitlement sync failed — resources kept for retry. ' + String(e.message || e).slice(0, 300);
+      result.steps.push({
+        step: 'entitlement_sync',
+        action: 'error',
+        error: String(e.message || e).slice(0, 200)
+      });
+      updateShopStatus(shopId, {
+        deployment_status: 'pending',
         shop_url: publicUrl,
         railway_project_id: result.projectId,
         railway_service_id: result.appServiceId,
         railway_environment_id: result.environmentId
       }, actor);
       saveJob({
-        id: jobId, shop_id: shopId, mode: 'provision', status: 'READY',
-        plan_json: JSON.stringify(plan), result_json: JSON.stringify(railway.redact(result)), dry_run: 0,
+        id: jobId, shop_id: shopId, mode: 'provision', status: 'FAILED',
+        plan_json: JSON.stringify(plan),
+        result_json: JSON.stringify(railway.redact(result)),
+        error_safe: errMsg.slice(0, 500),
+        dry_run: 0,
         updated_by: actor?.username
       });
-      audit(actor?.username, 'provision_ready', shopId, {
-        job_id: jobId, project_id: result.projectId, url: publicUrl
-      });
-      return { success: true, data: { job_id: jobId, status: 'READY', result: railway.redact(result), plan } };
+      audit(actor?.username, 'provision_sync_failed', shopId, { job_id: jobId, error: errMsg.slice(0, 300) });
+      return {
+        success: false,
+        error: errMsg,
+        data: { job_id: jobId, status: 'FAILED', result: railway.redact(result), plan, retryable: true }
+      };
     }
-
     delete result._syncSecret;
 
-    // Not healthy yet — mark FAILED soft (resources kept for retry)
-    const errMsg = 'Health check did not pass yet — resources kept for retry. ' + (health.errors || []).join('; ');
-    updateShopStatus(shopId, { deployment_status: 'error' }, actor);
+    updateShopStatus(shopId, {
+      deployment_status: 'online',
+      shop_url: publicUrl,
+      railway_project_id: result.projectId,
+      railway_service_id: result.appServiceId,
+      railway_environment_id: result.environmentId
+    }, actor);
     saveJob({
-      id: jobId, shop_id: shopId, mode: 'provision', status: 'FAILED',
-      plan_json: JSON.stringify(plan),
-      result_json: JSON.stringify(railway.redact(result)),
-      error_safe: errMsg.slice(0, 500),
-      dry_run: 0,
+      id: jobId, shop_id: shopId, mode: 'provision', status: 'READY',
+      plan_json: JSON.stringify(plan), result_json: JSON.stringify(railway.redact(result)), dry_run: 0,
       updated_by: actor?.username
     });
-    audit(actor?.username, 'provision_failed', shopId, { job_id: jobId, error: errMsg.slice(0, 300) });
-    return {
-      success: false,
-      error: errMsg,
-      data: { job_id: jobId, status: 'FAILED', result: railway.redact(result), plan }
-    };
+    audit(actor?.username, 'provision_ready', shopId, {
+      job_id: jobId, project_id: result.projectId, url: publicUrl
+    });
+    return { success: true, data: { job_id: jobId, status: 'READY', result: railway.redact(result), plan } };
   } catch (e) {
+    delete result._syncSecret;
     const safe = String(e.message || e).slice(0, 500);
     updateShopStatus(shopId, { deployment_status: 'error' }, actor);
     saveJob({
@@ -687,6 +837,8 @@ function status() {
     github_repo: process.env.PROVISION_GITHUB_REPO || 'maluleke96/shop-pos',
     github_branch: process.env.PROVISION_GITHUB_BRANCH || 'saas-web',
     chisa_project_blocked: railway.CHISA_PROJECT_ID,
+    health_max_attempts: HEALTH_MAX_ATTEMPTS,
+    health_interval_ms: HEALTH_INTERVAL_MS,
     statuses: STATUSES
   };
 }
@@ -697,6 +849,7 @@ module.exports = {
   dryRun,
   provision,
   healthCheck,
+  verifyEntitlementSync,
   getJob,
   listJobs,
   buildPlan,
