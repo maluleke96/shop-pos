@@ -294,7 +294,16 @@ function evaluateShopAccess(shopRow, opts = {}) {
     };
   };
 
-  if (status === 'SUSPENDED' || Number(shopRow?.is_active) === 0) {
+  if (status === 'SUSPENDED') {
+    return blockedPayload('SUSPENDED', 'suspended');
+  }
+
+  if (status === 'EXPIRED') {
+    return blockedPayload('EXPIRED', 'expired');
+  }
+
+  // Inactive without an explicit EXPIRED status still blocks as suspended.
+  if (Number(shopRow?.is_active) === 0) {
     return blockedPayload('SUSPENDED', 'suspended');
   }
 
@@ -316,10 +325,6 @@ function evaluateShopAccess(shopRow, opts = {}) {
         }
       };
     }
-  }
-
-  if (status === 'EXPIRED') {
-    return blockedPayload('EXPIRED', 'expired');
   }
 
   if (!Number.isNaN(expiryMs) && now > expiryMs) {
