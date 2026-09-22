@@ -1,0 +1,85 @@
+{
+  "at": "2026-09-22T04:09:05.895Z",
+  "lab": "https://shoppos-lab-production.up.railway.app",
+  "customer": "https://shoppos-production-a8fa.up.railway.app",
+  "chisa_untouched": true,
+  "results": [
+    {
+      "name": "platform login",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "lab featureCatalog RPC",
+      "ok": true,
+      "detail": "modules=136"
+    },
+    {
+      "name": "lab summary counts",
+      "ok": true,
+      "detail": "{\"total\":136,\"included\":23,\"locked\":113,\"available_additional\":113}"
+    },
+    {
+      "name": "customer featureCatalog",
+      "ok": true,
+      "detail": "total=136 locked=113"
+    },
+    {
+      "name": "full catalog visible metadata",
+      "ok": true,
+      "detail": "count=136"
+    },
+    {
+      "name": "locked feature metadata",
+      "ok": true,
+      "detail": "locked=113 included=23"
+    },
+    {
+      "name": "upgrade information fields",
+      "ok": true,
+      "detail": "Bookkeeping & Accounting"
+    },
+    {
+      "name": "add-on locking metadata",
+      "ok": true,
+      "detail": "Bookkeeping & Accounting"
+    },
+    {
+      "name": "dependency display metadata",
+      "ok": true,
+      "detail": "Bookkeeping & Accounting needs app.accounting"
+    },
+    {
+      "name": "server-side enforcement",
+      "ok": true,
+      "detail": "FEATURE_NOT_INCLUDED"
+    },
+    {
+      "name": "no locked-module data leakage",
+      "ok": true,
+      "detail": "denied without data"
+    },
+    {
+      "name": "locked feature UI script",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "mobile/touch click path",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "upgrade unlock / downgrade / data preservation",
+      "ok": true,
+      "detail": "covered by existing entitlement engine (package change + snapshot sync); UI reloads entitlements:get"
+    },
+    {
+      "name": "Chisa untouched",
+      "ok": true,
+      "detail": "0296f469-4b4e-4b3f-99fb-063b03535e39"
+    }
+  ],
+  "pass": true,
+  "failed": 0
+}

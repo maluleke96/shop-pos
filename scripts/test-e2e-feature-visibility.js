@@ -84,10 +84,10 @@ async function main() {
 
     // Server enforcement: call a locked module RPC if enforcement on
     if (cat?.enforcement) {
-      const denied = await rpc(customerUrl, 'acc:listAccounts', []);
+      const denied = await rpc(customerUrl, 'bookkeeping:dashboard', []);
       const code = denied.json?.code || denied.json?.error || '';
-      log('server-side enforcement', denied.status === 403 || /FEATURE_NOT_INCLUDED/i.test(String(code)), String(code).slice(0, 120));
-      log('no locked-module data leakage', !denied.json?.data || denied.json?.success === false, 'no payload');
+      log('server-side enforcement', denied.status === 403 || /FEATURE_NOT_INCLUDED/i.test(String(code)), String(code).slice(0, 160));
+      log('no locked-module data leakage', denied.json?.success === false && !denied.json?.accounts, 'denied without data');
     } else {
       log('server-side enforcement', true, 'enforcement off on this shop — skipped deny check');
       log('no locked-module data leakage', true, 'enforcement off');

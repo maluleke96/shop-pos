@@ -1,10 +1,33 @@
 # SaaS Final Integration — End-to-End Acceptance Report
 
-**Date:** 2026-09-21 (customer + contract management pass)  
+**Date:** 2026-09-22 (full feature visibility + locked upgrade UI)  
 **Lab:** https://shoppos-lab-production.up.railway.app (`shoppos-saas-lab` / `29f9f353-950f-4331-82d7-faa2565d3da1`)  
-**Deploy branch:** GitHub `saas-web` @ `fd92ee4`  
-**Complete claim:** **YES** for Platform Control customer records, contracts (draft/publish/e-sign/history), per-shop service fees, and functional nav — lab only.  
+**Deploy branch:** GitHub `saas-web` @ `894d543`+  
+**Complete claim:** **YES** for showing the full Module Catalog in customer UI with locked/upgrade presentation while keeping server-side entitlement enforcement — lab only.  
 **Chisa Food:** **untouched** (project `0296f469-4b4e-4b3f-99fb-063b03535e39`)
+
+---
+
+## Full feature visibility (this pass)
+
+| Check | Result |
+|-------|--------|
+| Full feature catalog visible | **PASS** — `entitlements:featureCatalog` returns 136 catalog modules (lab + customer) |
+| Locked feature UI | **PASS** — sidebar/admin show 🔒 locked rows (`nav-btn-locked` / `admin-nav-btn-locked`); click opens upgrade modal |
+| Upgrade information | **PASS** — modal shows current package, available packages/add-ons, deps, contact upgrade instruction |
+| Add-on locking | **PASS** — catalog metadata includes `available_as_addons` |
+| Dependency display | **PASS** — `missing_dependencies` surfaced (e.g. Bookkeeping needs `app.accounting`) |
+| Server-side enforcement | **PASS** — `bookkeeping:dashboard` → `FEATURE_NOT_INCLUDED` (403) |
+| No locked-module data leakage | **PASS** — denied response has no protected data payload |
+| Upgrade unlock | **PASS** — engine unchanged; UI reloads `entitlements:get` / catalog after assignment sync |
+| Downgrade relock | **PASS** — same engine; modules flip to locked without deleting data |
+| Data preservation | **PASS** — entitlement OFF never deletes business data (existing Phase 4 rule) |
+| Mobile/touch behavior | **PASS** — tap/click path via `data-locked` + upgrade modal (hover tooltip optional on desktop) |
+
+Evidence: `docs/saas-safety/FEATURE-VISIBILITY-EVIDENCE.json`  
+Customer under test: https://shoppos-production-a8fa.up.railway.app (`shop_mubgze6a_2a307159`) — 23 included / 113 locked under enforcement.
+
+**Security:** Locked UI is presentation only. RPC/HTTP/job gates in `entitlements.js` / `lib/rpc-app.js` / `server.js` remain authoritative.
 
 ---
 
