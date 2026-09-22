@@ -1076,7 +1076,10 @@ const App = {
         this._setNavGroupOpen(gid, open);
         wrap?.classList.toggle('is-open', open);
         const panel = wrap?.querySelector('.nav-group-items');
-        if (panel) panel.classList.toggle('hidden', !open);
+        if (panel) {
+          panel.classList.toggle('hidden', !open);
+          panel.removeAttribute('hidden');
+        }
         const chev = toggle.querySelector('.nav-group-chevron');
         if (chev) chev.textContent = open ? '▾' : '▸';
         toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
@@ -2818,7 +2821,7 @@ const App = {
           <span class="nav-group-label">${g.label}</span>
           <span class="nav-group-chevron" aria-hidden="true">${open ? '▾' : '▸'}</span>
         </button>
-        <div class="nav-group-items"${open ? '' : ' hidden'}>
+        <div class="nav-group-items${open ? '' : ' hidden'}">
           ${kids.map((it) => this._renderNavPageBtn(it)).join('')}
         </div>
       </div>`;

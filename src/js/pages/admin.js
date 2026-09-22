@@ -216,7 +216,7 @@ const AdminPage = {
           <span class="admin-nav-group-label">${this._adminNavLabel(g.label)}</span>
           <span class="admin-nav-group-chevron" aria-hidden="true">${open ? '▾' : '▸'}</span>
         </button>
-        <div class="admin-nav-group-items"${open ? '' : ' hidden'}>
+        <div class="admin-nav-group-items${open ? '' : ' hidden'}">
           ${kids.map((s) => this._adminSectionBtnHtml(s, this.section)).join('')}
         </div>
       </div>`;
@@ -294,7 +294,11 @@ const AdminPage = {
         const open = !wrap?.classList.contains('is-open');
         this._setAdminGroupOpen(gid, open);
         wrap?.classList.toggle('is-open', open);
-        wrap?.querySelector('.admin-nav-group-items')?.classList.toggle('hidden', !open);
+        const panel = wrap?.querySelector('.admin-nav-group-items');
+        if (panel) {
+          panel.classList.toggle('hidden', !open);
+          panel.removeAttribute('hidden');
+        }
         const chev = toggle.querySelector('.admin-nav-group-chevron');
         if (chev) chev.textContent = open ? '▾' : '▸';
         toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
