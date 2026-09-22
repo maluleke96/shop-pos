@@ -1,4 +1,4 @@
-const SHELL_CACHE = 'shoppos-shell-v2-navpro';
+const SHELL_CACHE = 'shoppos-shell-v3-navpro';
 const IMAGE_CACHE = 'shoppos-images-v1';
 
 const SHELL_ASSETS = [

@@ -2715,6 +2715,7 @@ const App = {
       if (!this.isPosKiosk()) {
         try { await API.ensureDemoNotificationSound(); } catch { /* ignore */ }
         this.initPanelNotify();
+        this.startTopbarClock();
         this.startOperatingTimer();
         this.startOperatingHoursWatch();
         this.startNotificationSoundMonitor();
@@ -2907,6 +2908,12 @@ const App = {
       audit: 'Audit Log', settings: 'Settings', features: 'Explore All Features'
     };
     document.getElementById('page-title').textContent = titles[page] || page;
+    const crumb = document.getElementById('topbar-breadcrumb');
+    if (crumb) {
+      const shop = this.settings?.shop_name || 'Shop POS';
+      crumb.textContent = page === 'admin' ? `${shop} › Admin Panel` : `${shop} › ${titles[page] || page}`;
+    }
+    this.updateTopbarUserChip();
 
     const content = document.getElementById('page-content');
     if (!content) return;
@@ -3289,6 +3296,7 @@ const App = {
       }
     } catch { /* ignore */ }
     this.stopOperatingTimer();
+    this.stopTopbarClock();
     this.stopOperatingHoursWatch();
     this.stopAutoLogoutTimer();
     this.stopNotificationSoundMonitor();
@@ -3391,6 +3399,116 @@ const App = {
     return [hh, mm, ss].map(n => String(n).padStart(2, '0')).join(':');
   },
 
+  updateTopbarUserChip() {
+    const chip = document.getElementById('topbar-user-chip');
+    if (!chip) return;
+    const name = String(this.user?.full_name || this.user?.username || '').trim();
+    const parts = name.split(/\s+/).filter(Boolean);
+    let initials = '—';
+    if (parts.length >= 2) initials = (parts[0][0] + parts[1][0]).toUpperCase();
+    else if (parts.length === 1) initials = parts[0].slice(0, 2).toUpperCase();
+    chip.textContent = initials;
+    chip.title = name || 'Signed in user';
+  },
+
+  updateTopbarClock() {
+    const el = document.getElementById('topbar-clock');
+    if (!el) return;
+    const now = new Date();
+    const hh = String(now.getHours()).padStart(2, '0');
+    const mm = String(now.getMinutes()).padStart(2, '0');
+    const ss = String(now.getSeconds()).padStart(2, '0');
+    el.textContent = `${hh}:${mm}:${ss}`;
+    el.setAttribute('datetime', now.toISOString());
+  },
+
+  updateTopbarSystemStatus() {
+    const wrap = document.getElementById('topbar-system-status');
+    if (!wrap) return;
+    const online = typeof navigator !== 'undefined' ? navigator.onLine !== false : true;
+    wrap.classList.toggle('is-offline', !online);
+    const text = wrap.querySelector('.topbar-status-text');
+    if (text) text.textContent = online ? 'System Online' : 'System Offline';
+  },
+
+  updateTopbarCountdown() {
+    const wrap = document.getElementById('topbar-countdown-wrap');
+    const label = document.getElementById('topbar-countdown-label');
+    const value = document.getElementById('topbar-countdown');
+    if (!wrap || !label || !value) return;
+
+    wrap.classList.remove('is-warn', 'is-closed');
+
+    // 1) Closing-hours countdown (same source as operating banner)
+    try {
+      const oh = this.getTodayOperatingHours?.();
+      if (oh && this.user && !oh.closed_today && oh.enabled && oh.force_pos !== 'closed' && oh.force_pos !== 'open') {
+        const closeAt = this.parseTimeToday(oh.close_time);
+        const diff = closeAt - new Date();
+        const warnMins = oh.warn_minutes || 15;
+        if (diff > 0) {
+          label.textContent = 'Closes in';
+          value.textContent = this.formatCountdown(diff);
+          if (diff / 60000 <= warnMins) wrap.classList.add('is-warn');
+          return;
+        }
+        label.textContent = 'Closed';
+        value.textContent = '00:00:00';
+        wrap.classList.add('is-closed');
+        return;
+      }
+      if (oh && oh.force_pos === 'closed') {
+        label.textContent = 'Closing';
+        value.textContent = '00:00:00';
+        wrap.classList.add('is-closed');
+        return;
+      }
+    } catch (_) { /* ignore */ }
+
+    // 2) License / lease countdown
+    try {
+      const lease = window.ShopPosLicense?.getLease?.();
+      if (lease?.expires_at) {
+        const diff = Date.parse(lease.expires_at) - Date.now();
+        if (Number.isFinite(diff)) {
+          label.textContent = diff > 0 ? 'License' : 'Expired';
+          value.textContent = this.formatCountdown(Math.max(0, diff));
+          if (diff <= 0) wrap.classList.add('is-closed');
+          else if (diff <= 8 * 3600 * 1000) wrap.classList.add('is-warn'); // warn under 8 hours
+          return;
+        }
+      }
+    } catch (_) { /* ignore */ }
+
+    // 3) Always show a live countdown to end of day so time is never empty
+    const end = new Date();
+    end.setHours(23, 59, 59, 999);
+    label.textContent = 'Day left';
+    value.textContent = this.formatCountdown(Math.max(0, end - Date.now()));
+  },
+
+  startTopbarClock() {
+    this.stopTopbarClock();
+    this.updateTopbarUserChip();
+    const tick = () => {
+      this.updateTopbarClock();
+      this.updateTopbarCountdown();
+      this.updateTopbarSystemStatus();
+    };
+    tick();
+    this._topbarClockInterval = setInterval(tick, 1000);
+    if (!this._topbarOnlineBound) {
+      this._topbarOnlineBound = true;
+      window.addEventListener('online', () => this.updateTopbarSystemStatus());
+      window.addEventListener('offline', () => this.updateTopbarSystemStatus());
+    }
+  },
+
+  stopTopbarClock() {
+    if (this._topbarClockInterval) clearInterval(this._topbarClockInterval);
+    this._topbarClockInterval = null;
+  },
+
   startOperatingTimer() {
     this.stopOperatingTimer();
     const banner = document.getElementById('operating-banner');
@@ -3401,7 +3519,10 @@ const App = {
       /* still tick so after-hours / force alerts can show */
     }
     this._closeAlertShown = false;
-    this._operatingTick = () => this.updateOperatingBanner();
+    this._operatingTick = () => {
+      this.updateOperatingBanner();
+      this.updateTopbarCountdown();
+    };
     this._operatingTick();
     this._operatingInterval = setInterval(this._operatingTick, 1000);
   },

@@ -21,7 +21,7 @@
     html.apply-only #app, html.apply-only #mobile-loading { display: none !important; }
     html.apply-only body { background: #f1f5f9; }
   </style>
-  <link rel="stylesheet" href="css/app.css?v=navpro2">
+  <link rel="stylesheet" href="css/app.css?v=navpro3">
   <link rel="stylesheet" href="css/delivery-dept.css">
   <link rel="stylesheet" href="css/pos-till.css">
   <link rel="stylesheet" href="css/communication-center.css">
@@ -215,7 +215,10 @@
           <div class="topbar-left">
             <button class="btn-icon" id="btn-nav-back" aria-label="Go back" title="Back">←</button>
             <button class="btn-icon" id="btn-sidebar-toggle" aria-label="Open menu">☰</button>
-            <h2 id="page-title">Dashboard</h2>
+            <div class="topbar-title-wrap">
+              <div class="topbar-breadcrumb" id="topbar-breadcrumb">Shop POS</div>
+              <h2 id="page-title">Dashboard</h2>
+            </div>
           </div>
           <div class="topbar-right">
             <label class="branch-switcher muted" style="display:flex;align-items:center;gap:6px;font-size:12px" title="View data for one branch or all">
@@ -225,10 +228,23 @@
               </select>
             </label>
             <div class="search-box">
-              <input type="search" id="global-search" placeholder="Search products, staff, receipts, donations…">
+              <input type="search" id="global-search" placeholder="Search products, customers...">
               <div id="search-results" class="search-dropdown hidden"></div>
             </div>
+            <div class="topbar-clock-wrap" title="Current time">
+              <span class="topbar-meta-label">Time</span>
+              <time id="topbar-clock" class="topbar-clock" datetime="">--:--:--</time>
+            </div>
+            <div class="topbar-countdown-wrap" id="topbar-countdown-wrap" title="Countdown timer">
+              <span class="topbar-meta-label" id="topbar-countdown-label">Countdown</span>
+              <span id="topbar-countdown" class="topbar-countdown">00:00:00</span>
+            </div>
+            <div class="topbar-status" id="topbar-system-status" title="System status">
+              <span class="topbar-status-dot" aria-hidden="true"></span>
+              <span class="topbar-status-text">System Online</span>
+            </div>
             <button class="btn-icon notif-btn" id="btn-notifications" title="Notifications">🔔<span class="badge hidden" id="notif-badge">0</span></button>
+            <div class="topbar-user" id="topbar-user-chip" title="Signed in user" aria-hidden="true">—</div>
           </div>
         </header>
         <div class="page-content" id="page-content"></div>
