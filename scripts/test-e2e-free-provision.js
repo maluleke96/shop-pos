@@ -15,7 +15,8 @@ function log(name, ok, detail) {
 }
 
 async function rpc(method, args = [], token, timeoutMs = 180000) {
-  const bodyArgs = token && method !== 'platform:login' ? [token, ...args] : args;
+  const noTok = new Set(['platform:login', 'platform:status', 'activation:redeem', 'license:evaluateOffline']);
+  const bodyArgs = token && !noTok.has(method) ? [token, ...args] : args;
   const res = await fetch(`${BASE}/rpc`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ method, args: bodyArgs }),
@@ -103,6 +104,9 @@ async function main() {
   // FREE lab package: pos+admin limited — online/signage should be off
   log('FREE online restricted', flags.online === false || flags.online == null, String(flags.online));
   log('FREE signage restricted', flags.signage === false || flags.signage == null, String(flags.signage));
+  // FREE still includes POS shop-floor access on lab packages
+  log('FREE pos included', flags.pos === true, String(flags.pos));
+  log('FREE admin included', flags.admin === true, String(flags.admin));
 
   // Activation + login
   const act = unwrap((await rpc('platform:createActivation', [shop.id, { expires_hours: 24 }], tok)).json);
@@ -142,7 +146,10 @@ async function main() {
   await new Promise((r) => setTimeout(r, 20000));
   await waitReady(url, 8);
   const ent2 = unwrap((await customerRpc(url, 'entitlements:get', [])).json);
-  log('upgrade FREE→Shop Floor', ent2?.flags?.pos === true || !!ent2?.flags, JSON.stringify(ent2?.flags || {}).slice(0, 100));
+  const flags2 = ent2?.flags || {};
+  log('upgrade FREE→Shop Floor pos', flags2.pos === true, JSON.stringify(flags2).slice(0, 120));
+  log('upgrade FREE→Shop Floor admin', flags2.admin === true, String(flags2.admin));
+  log('upgrade FREE→Shop Floor enforcement', ent2?.enforcement === true, String(ent2?.enforcement));
   const shopAfter = unwrap((await rpc('platform:getShop', [shop.id], tok)).json);
   log('shop record preserved', shopAfter.id === shop.id && /FREE Disposable/.test(shopAfter.shop_name));
 

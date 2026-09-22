@@ -104,7 +104,8 @@ function buildHandlers(store) {
   const CLOUD_SYNC =
     (typeof window !== 'undefined' &&
       (window.__SHOP_POS_ENV__?.SHOP_POS_SYNC_URL || window.__SHOP_POS_ENV__?.SHOP_POS_CLOUD_URL)) ||
-    'https://chisafood.up.railway.app';
+    (typeof location !== 'undefined' && location.origin) ||
+    '';
 
   async function mobileCloudRpc(method, args) {
     if (isServerCloudRpc()) {

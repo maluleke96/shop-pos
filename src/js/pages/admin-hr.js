@@ -385,7 +385,7 @@
       const templates = res.data || [];
       el.innerHTML = `${isAdmin ? '<button class="btn btn-primary" id="hr-new-hr-tpl" style="margin:12px 0">+ Template</button>' : ''}
         <p class="muted" style="margin-bottom:8px">${isAdmin
-          ? 'Edit the Chisanyama Connection training and probation agreements. Assign them to a manager/supervisor to fill for new staff.'
+          ? 'Edit the training and probation agreements. Assign them to a manager/supervisor to fill for new staff.'
           : 'View training and probation templates. Admin assigns forms to you to fill for new staff.'}</p>
         <div class="table-wrap"><table><thead><tr><th>Type</th><th>Title</th><th></th></tr></thead>
         <tbody>${templates.map(t => `<tr><td><span class="tag">${t.type}</span></td><td>${t.title}</td>
@@ -1139,7 +1139,7 @@
           clauses: clauseLines,
           custom_clauses: clauseLines.map((t, i) => `\n### Additional Clause ${i + 1}\n${t}`).join('\n'),
           currency: this.admin.settings?.currency || 'R',
-          business_name: this.admin.settings?.shop_name || 'Chisanyama Connection'
+          business_name: this.admin.settings?.shop_name || 'Your Shop'
         };
       };
       const refreshPreview = async () => {
@@ -1227,14 +1227,14 @@
       const LOADING_PLACEHOLDER = '';
       Utils.showModal(tpl ? 'Edit Template' : 'New Template', `
         <div class="form-grid">
-          <div class="field"><label>Name *</label><input id="tpl-name" value="${tpl?.name || 'Chisanyama Connection Employment Contract'}"></div>
+          <div class="field"><label>Name *</label><input id="tpl-name" value="${tpl?.name || 'Employment Contract'}"></div>
           <div class="field"><label>Position</label><input id="tpl-position" value="${tpl?.position || ''}"></div>
           <div class="field full"><label><input type="checkbox" id="tpl-default" ${tpl?.is_default || !tpl ? 'checked' : ''}> Default template</label></div>
           <div class="field full"><label>Contract Body <span class="muted">({{employee_name}}, {{id_number}}, {{position}}, {{branch}}, {{start_date}}, {{currency}}{{salary_amount}}, etc.)</span></label>
-            <textarea id="tpl-body" rows="18" style="font-family:monospace;font-size:12px" placeholder="Click Load Chisanyama Default or paste contract text…">${body || LOADING_PLACEHOLDER}</textarea></div>
+            <textarea id="tpl-body" rows="18" style="font-family:monospace;font-size:12px" placeholder="Click Load Default Template or paste contract text…">${body || LOADING_PLACEHOLDER}</textarea></div>
           <div class="field full"><label>Extra Clauses (one per line)</label><textarea id="tpl-clauses" rows="4">${clauses}</textarea></div>
         </div>`,
-        '<button type="button" class="btn btn-primary" id="tpl-save">Save Template</button><button type="button" class="btn btn-ghost" id="tpl-load-default">Load Chisanyama Default</button>');
+        '<button type="button" class="btn btn-primary" id="tpl-save">Save Template</button><button type="button" class="btn btn-ghost" id="tpl-load-default">Load Default Template</button>');
       const fillDefaultIfEmpty = (text) => {
         const el = document.getElementById('tpl-body');
         if (!el || !text) return;
@@ -1257,7 +1257,7 @@
         if (!name) return Utils.toast('Name required', 'error');
         const bodyText = document.getElementById('tpl-body').value.trim();
         if (!bodyText || bodyText === 'Loading default template…') {
-          return Utils.toast('Contract body is required — load the Chisanyama default or paste text', 'error');
+          return Utils.toast('Contract body is required — load the default template or paste text', 'error');
         }
         const clauseLines = document.getElementById('tpl-clauses').value.split('\n').map(s => s.trim()).filter(Boolean);
         const r = await API.saveContractTemplate({

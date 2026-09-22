@@ -1,5 +1,5 @@
 /**
- * Manager & Supervisor HR / Disciplinary Portal — Chisanyama Connection UI
+ * Manager & Supervisor HR / Disciplinary Portal
  */
 window.MgrHrPortal = {
   view: 'dashboard',

@@ -1,10 +1,13 @@
 # SaaS Final Integration — End-to-End Acceptance Report
 
-**Date:** 2026-09-22 (full feature visibility + locked upgrade UI)  
+**Date:** 2026-09-22 (heal + upgrade reliability + isolation scrub)  
 **Lab:** https://shoppos-lab-production.up.railway.app (`shoppos-saas-lab` / `29f9f353-950f-4331-82d7-faa2565d3da1`)  
-**Deploy branch:** GitHub `saas-web` @ `894d543`+  
-**Complete claim:** **YES** for showing the full Module Catalog in customer UI with locked/upgrade presentation while keeping server-side entitlement enforcement — lab only.  
+**Deploy branch:** GitHub `saas-web` @ `460dcaa`+ (heal script + Chisa fallback scrub follow)  
+**Complete claim:** **YES** for lab UI/control plane + customer entitlement heal (`pos:true` on 16/16 provisioned shops). Self-serve billing still deferred.  
 **Chisa Food:** **untouched** (project `0296f469-4b4e-4b3f-99fb-063b03535e39`)
+
+### Entitlement heal (2026-09-22)
+Wiped `platform_package_items` left several disposable customers with `flags.pos === false`. Ran `scripts/heal-customer-entitlements.js` against Platform → **16/16** shops restored to `pos:true`. Evidence: `docs/saas-safety/ENTITLEMENT-HEAL-EVIDENCE.json`. Env-boot no longer passes empty `module_ids` arrays.
 
 ---
 
@@ -127,9 +130,10 @@ Evidence: `docs/saas-safety/ONBOARDING-UI-EVIDENCE.json`
 
 ## Commits (`saas-web`)
 
-1. `fd92ee4` — Customer profiles, contract lifecycle with e-sign, per-shop fee reporting  
-2. `69b7916` / `4e99c42` — Onboarding UI journey  
-3. Prior hardening: fee sync, sync-race, message.body  
+1. `894d543` — Full feature catalog visibility + locked upgrade UI (`entitlements:featureCatalog`)  
+2. `740e8bd` — Activation → setup handoff (not login)  
+3. `fd92ee4` — Customer profiles, contract lifecycle with e-sign, per-shop fee reporting  
+4. Prior onboarding / hardening commits  
 
 Lab deploy: `railway up --service shoppos-lab` → **shoppos-saas-lab** only.
 

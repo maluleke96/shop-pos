@@ -72,7 +72,7 @@ const AdminRadioPage = {
       <div class="admin-section">
         <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:flex-start;justify-content:space-between;margin-bottom:14px">
           <div>
-            <h2 style="margin:0 0 4px">📻 Chisanyama Connection Radio</h2>
+            <h2 style="margin:0 0 4px">📻 Shop Radio</h2>
             <p class="muted" style="margin:0">Separate from Menu Builder &amp; Promo Video · Status:
               <strong style="color:${live ? '#ef4444' : 'inherit'}">${live ? '🟢 Online / LIVE' : '🔴 Offline'}</strong>
               · Listeners: <strong>${listeners}</strong>

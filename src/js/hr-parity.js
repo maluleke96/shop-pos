@@ -385,7 +385,7 @@
     'hr-training': ['Training', 'Daily evaluations, pass to probation, PDF/print/WhatsApp — same as Admin Contracts & Probation.'],
     'hr-probation': ['Probation', 'Setup probation, daily evaluations, final decision and letters.'],
     'hr-employment-contracts': ['Employment Contracts', 'Issue contracts after probation; re-sign windows and PDFs.'],
-    'hr-tp-forms': ['Training & Probation Forms', 'Chisanyama Connection training and probation agreement templates.'],
+    'hr-tp-forms': ['Training & Probation Forms', 'Training and probation agreement templates for your shop.'],
     'hr-hr-contract-templates': ['Contract Templates', 'Reusable employment contract templates.'],
     'hr-probation-evals': ['Probation Evaluations', 'Probation evaluation history and scoring.'],
     'hr-staff-submissions': ['Staff Submissions', 'Forms staff completed in Staff Portal — review and approve.'],

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Chisa Food — All Apps &amp; Panels</title>
+  <title>Shop POS — All Apps &amp; Panels</title>
   <style>
     :root { --bg:#0f172a; --card:#1e293b; --text:#f8fafc; --muted:#94a3b8; --accent:#22c55e; --border:#334155; }
     * { box-sizing: border-box; }
@@ -29,8 +29,8 @@
 </head>
 <body>
   <div class="wrap">
-    <h1>🍽️ Chisa Food</h1>
-    <p class="sub">All shop panels — bookmark this page. Use <strong>Multi-shop</strong> below to run more than one shop on the same computer without mixing logins.</p>
+    <h1>🏪 Shop POS</h1>
+    <p class="sub">All shop panels — bookmark this page. Use <strong>Multi-shop</strong> below only when running more than one shop on the same computer.</p>
 
     <div class="shop-bar">
       <h2 style="margin:0 0 10px;font-size:1rem">Multi-shop on this device</h2>
@@ -47,15 +47,15 @@
       </div>
     </div>
 
-    <div class="domain" id="base-url">https://chisafood.up.railway.app</div>
+    <div class="domain" id="base-url"></div>
     <div class="grid" id="links"></div>
-    <footer>Cloud POS · Supabase Postgres · Railway</footer>
+    <footer>Cloud POS · Shop database · Railway</footer>
   </div>
   <script src="js/shop-profiles.js"></script>
   <script>
     function activeBase() {
       const p = window.ShopProfiles?.getActive?.();
-      return (p?.cloudUrl || location.origin || 'https://chisafood.up.railway.app').replace(/\/$/, '');
+      return (p?.cloudUrl || location.origin || '').replace(/\/$/, '');
     }
 
     function refreshShopUi() {

@@ -176,7 +176,7 @@ function syncManagerWebConfig() {
     process.env.SHOP_POS_PUBLIC_URL ||
     process.env.SHOP_POS_SYNC_URL ||
     (railwayDomain ? `https://${railwayDomain}` : '') ||
-    'https://chisafood.up.railway.app'
+    ''
   ).replace(/\/$/, '');
   const rpc = (
     process.env.SHOP_POS_PUBLIC_RPC_URL ||
@@ -203,7 +203,7 @@ function syncExpenseWebConfig() {
     process.env.SHOP_POS_PUBLIC_URL ||
     process.env.SHOP_POS_SYNC_URL ||
     (railwayDomain ? `https://${railwayDomain}` : '') ||
-    'https://chisafood.up.railway.app'
+    ''
   ).replace(/\/$/, '');
   const rpc = (
     process.env.SHOP_POS_PUBLIC_RPC_URL ||
@@ -230,7 +230,7 @@ function syncStudioWebConfig() {
     process.env.SHOP_POS_PUBLIC_URL ||
     process.env.SHOP_POS_SYNC_URL ||
     (railwayDomain ? `https://${railwayDomain}` : '') ||
-    'https://chisafood.up.railway.app'
+    ''
   ).replace(/\/$/, '');
   const rpc = (
     process.env.SHOP_POS_PUBLIC_RPC_URL ||
@@ -257,7 +257,7 @@ function syncRadioWebConfigs() {
     process.env.SHOP_POS_PUBLIC_URL ||
     process.env.SHOP_POS_SYNC_URL ||
     (railwayDomain ? `https://${railwayDomain}` : '') ||
-    'https://chisafood.up.railway.app'
+    ''
   ).replace(/\/$/, '');
   const rpc = (
     process.env.SHOP_POS_PUBLIC_RPC_URL ||
@@ -458,7 +458,7 @@ function syncDriverWebConfig() {
     process.env.SHOP_POS_PUBLIC_URL ||
     process.env.SHOP_POS_SYNC_URL ||
     (railwayDomain ? `https://${railwayDomain}` : '') ||
-    'https://chisafood.up.railway.app'
+    ''
   ).replace(/\/$/, '');
   const rpc = (
     process.env.SHOP_POS_PUBLIC_RPC_URL ||
@@ -485,7 +485,7 @@ function portalConfig(windowName, portalPath) {
     process.env.SHOP_POS_PUBLIC_URL ||
     process.env.SHOP_POS_SYNC_URL ||
     (railwayDomain ? `https://${railwayDomain}` : '') ||
-    'https://chisafood.up.railway.app'
+    ''
   ).replace(/\/$/, '');
   const rpc = (
     process.env.SHOP_POS_PUBLIC_RPC_URL ||
@@ -800,7 +800,7 @@ function syncOrderWebConfig() {
     process.env.SHOP_POS_PUBLIC_URL ||
     process.env.SHOP_POS_SYNC_URL ||
     (railwayDomain ? `https://${railwayDomain}` : '') ||
-    'https://chisafood.up.railway.app'
+    ''
   ).replace(/\/$/, '');
   const rpc = (
     process.env.SHOP_POS_PUBLIC_RPC_URL ||

@@ -18,7 +18,7 @@ const DriverAPI = {
       return `${location.origin.replace(/\/$/, '')}/rpc`;
     }
     const c = window.__DRIVER_CONFIG__ || {};
-    return (c.rpcUrl || 'https://chisafood.up.railway.app/rpc').replace(/\/$/, '');
+    return (c.rpcUrl || (typeof location !== 'undefined' ? `${location.origin}/rpc` : '/rpc')).replace(/\/$/, '');
   },
 
   token() { return localStorage.getItem('driver_token') || ''; },

@@ -1,6 +1,6 @@
 /**
  * Admin → Communication Center
- * Dark themed outbound messaging hub for Chisanyama Connection.
+ * Dark themed outbound messaging hub for the shop.
  */
 window.AdminCommunicationCenterPage = {
   el: null,
@@ -130,7 +130,7 @@ window.AdminCommunicationCenterPage = {
       <div class="cc-header">
         <div>
           <h2>Communication Center</h2>
-          <p class="cc-sub">Chisanyama Connection — outbound WhatsApp, SMS, Email, Social &amp; in-app</p>
+          <p class="cc-sub">Outbound WhatsApp, SMS, Email, Social &amp; in-app</p>
         </div>
         <div class="cc-header-actions">
           <button type="button" class="btn btn-primary btn-sm" data-cc-act="goto" data-tab="dashboard" data-focus="compose">Create Message</button>

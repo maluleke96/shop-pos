@@ -1,5 +1,5 @@
 /**
- * Chisanyama Connection Radio — platform service.
+ * Shop Radio — platform service.
  * Separate module from Menu/Promo Studio. Reuses users + permissions JSON.
  * Multi-station ready via radio_stations.slug / branch_id.
  */
@@ -75,8 +75,8 @@ function ensureDefaultStation() {
       INSERT INTO radio_stations (branch_id, name, slug, public_enabled, status, programme_title, programme_upcoming, settings_json)
       VALUES (NULL, ?, 'main', 1, 'off_air', 'Welcome to the Connection', 'Stay tuned for live shows', ?)
     `, [
-      `${shop.shop_name || 'Chisanyama'} Connection Radio`,
-      JSON.stringify({ tagline: 'Listen live · Order food · Stay connected' })
+      `${shop.shop_name || 'Shop'} Radio`,
+      JSON.stringify({ tagline: 'Listen live · Order · Stay connected' })
     ]);
   } catch (_) { /* */ }
   const created = dbGet('SELECT id FROM radio_stations WHERE slug = ? LIMIT 1', ['main']);
@@ -252,7 +252,7 @@ function shopBrand() {
     const store = require('./store');
     const s = store.getSettingsParsed?.() || {};
     return {
-      shop_name: s.shop_name || s.business_name || 'Chisanyama',
+      shop_name: s.shop_name || s.business_name || 'Shop',
       currency: s.currency || 'R',
       logo_url: s.logo_url || s.logo || null,
       phone: s.phone || s.whatsapp || s.contact_phone || null,
@@ -263,7 +263,7 @@ function shopBrand() {
       social_youtube: s.social_youtube || s.youtube || null
     };
   } catch (_) {
-    return { shop_name: 'Chisanyama', currency: 'R', logo_url: null };
+    return { shop_name: 'Shop', currency: 'R', logo_url: null };
   }
 }
 
@@ -345,7 +345,7 @@ function publicPayload(station) {
       slug: station.slug,
       name: station.name,
       status: live ? 'live' : 'off_air',
-      programme_title: prog.active?.title || station.programme_title || 'Chisanyama Connection',
+      programme_title: prog.active?.title || station.programme_title || 'Live Radio',
       programme_upcoming: prog.upcoming?.title || station.programme_upcoming || '',
       stream_url: station.stream_url || null,
       play_url: playUrl,

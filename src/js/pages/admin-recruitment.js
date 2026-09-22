@@ -604,7 +604,7 @@
       if (!r.success) return Utils.toast(r.error || 'Could not build poster', 'error');
       const d = r.data || {};
       const applyUrl = d.apply_url || '';
-      const shopName = d.shop?.shop_name || this.app.settings?.shop_name || 'Chisanyama';
+      const shopName = d.shop?.shop_name || this.app.settings?.shop_name || 'Shop';
       const [png, qrCard] = await Promise.all([
         this.drawWhatsAppPoster(d),
         this.drawApplyQrCard(applyUrl, shopName)
@@ -658,7 +658,7 @@
       ctx.fillStyle = '#0f172a';
       ctx.textAlign = 'center';
       ctx.font = '800 54px system-ui,sans-serif';
-      this.fitText(ctx, shopName || 'Chisanyama', 450, 160, 800, 54);
+      this.fitText(ctx, shopName || 'Shop', 450, 160, 800, 54);
       try {
         const img = await this.loadImg(this.qrUrl(applyUrl, 420));
         ctx.drawImage(img, 210, 220, 480, 480);
@@ -796,7 +796,7 @@
       ctx.fillStyle = '#0f172a';
       ctx.textAlign = 'left';
       ctx.font = '800 36px system-ui,sans-serif';
-      this.fitText(ctx, shop.shop_name || 'Chisanyama', 440, 1620, 500, 36);
+      this.fitText(ctx, shop.shop_name || 'Shop', 440, 1620, 500, 36);
       ctx.font = '800 28px system-ui,sans-serif';
       ctx.fillText('Scan me to apply', 440, 1680);
       ctx.fillText('for a job', 440, 1718);

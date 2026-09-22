@@ -171,7 +171,7 @@ const UsersPage = {
         </div>` : ''}
         ${showPerms ? `<div class="field full" id="uf-radio-wrap" style="border-top:1px solid var(--border);padding-top:12px;margin-top:4px">
           <label style="font-weight:600">📻 Radio Studio Access</label>
-          <p class="muted" style="margin:4px 0 8px;font-size:12px">Chisanyama Connection Radio — separate from Menu/Promo Studio. Owner always has full access. Turning Radio Studio Access OFF revokes active Radio sessions.</p>
+          <p class="muted" style="margin:4px 0 8px;font-size:12px">Shop Radio — separate from Menu/Promo Studio. Owner always has full access. Turning Radio Studio Access OFF revokes active Radio sessions.</p>
           ${RADIO_PERM_KEYS.map(k => `<label style="display:block;padding:4px 0;font-size:13px"><input type="checkbox" class="uf-perm" data-key="${k}" ${perms[k] ? 'checked' : ''}> ${USER_PERM_LABELS[k]}</label>`).join('')}
         </div>` : ''}
         ${canGrantRecipe && editingOwner ? `<div class="field full" style="border-top:1px solid var(--border);padding-top:12px;margin-top:4px">

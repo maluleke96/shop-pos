@@ -1,0 +1,184 @@
+{
+  "at": "2026-09-22T16:41:47.232Z",
+  "base": "https://shoppos-lab-production.up.railway.app",
+  "healed": 16,
+  "total": 16,
+  "results": [
+    {
+      "id": "shop_mubgzek5_09dca56d",
+      "name": "Test Grill mubgzebc",
+      "url": "https://shoppos-production-7bac.up.railway.app",
+      "before_pos": false,
+      "sync_ok": true,
+      "sync_detail": "ok",
+      "after_pos": true,
+      "after_admin": true,
+      "package": ""
+    },
+    {
+      "id": "shop_mubgze6a_2a307159",
+      "name": "Happy Kitchen mubgzebc",
+      "url": "https://shoppos-production-a8fa.up.railway.app",
+      "before_pos": false,
+      "sync_ok": true,
+      "sync_detail": "ok",
+      "after_pos": true,
+      "after_admin": true,
+      "package": ""
+    },
+    {
+      "id": "shop_mubde3o1_cb4d19bf",
+      "name": "Onboard UI mubde3rs",
+      "url": "https://shoppos-production-43a7.up.railway.app",
+      "before_pos": false,
+      "sync_ok": true,
+      "sync_detail": "ok",
+      "after_pos": true,
+      "after_admin": true,
+      "package": ""
+    },
+    {
+      "id": "shop_mubd0e2m_02b9ea36",
+      "name": "good",
+      "url": "https://shoppos-production-3387.up.railway.app",
+      "before_pos": true,
+      "sync_ok": true,
+      "sync_detail": "ok",
+      "after_pos": true,
+      "after_admin": true,
+      "package": ""
+    },
+    {
+      "id": "shop_mub0xavc_e03eb77c",
+      "name": "E2E FREE Cafe mub0t7be",
+      "url": "https://shoppos-production-716e.up.railway.app",
+      "before_pos": false,
+      "sync_ok": true,
+      "sync_detail": "ok",
+      "after_pos": true,
+      "after_admin": true,
+      "package": ""
+    },
+    {
+      "id": "shop_mub0t757_b0dfd679",
+      "name": "End-to-End Test Restaurant",
+      "url": "https://shoppos-production-ba5a.up.railway.app",
+      "before_pos": false,
+      "sync_ok": true,
+      "sync_detail": "ok",
+      "after_pos": true,
+      "after_admin": true,
+      "package": ""
+    },
+    {
+      "id": "shop_mub0nme8_19be32f3",
+      "name": "HARDENING CLEAN mub0nmkc",
+      "url": "https://shoppos-production-c3e7.up.railway.app",
+      "before_pos": false,
+      "sync_ok": true,
+      "sync_detail": "ok",
+      "after_pos": true,
+      "after_admin": true,
+      "package": ""
+    },
+    {
+      "id": "shop_muaym1z2_221e2e83",
+      "name": "FREE Disposable muaym229",
+      "url": "https://shoppos-production-e106.up.railway.app",
+      "before_pos": false,
+      "sync_ok": true,
+      "sync_detail": "ok",
+      "after_pos": true,
+      "after_admin": true,
+      "package": ""
+    },
+    {
+      "id": "shop_muayaqo8_eba22ce3",
+      "name": "good",
+      "url": "https://shoppos-production-ab6b.up.railway.app",
+      "before_pos": true,
+      "sync_ok": true,
+      "sync_detail": "ok",
+      "after_pos": true,
+      "after_admin": true,
+      "package": ""
+    },
+    {
+      "id": "shop_muay8exk_8e822da9",
+      "name": "Hardening Gap muay8f3z",
+      "url": "https://shoppos-production-de1c.up.railway.app",
+      "before_pos": false,
+      "sync_ok": true,
+      "sync_detail": "ok",
+      "after_pos": true,
+      "after_admin": true,
+      "package": ""
+    },
+    {
+      "id": "shop_muax3was_11b72682",
+      "name": "End-to-End Test Restaurant",
+      "url": "https://shoppos-production-6753.up.railway.app",
+      "before_pos": false,
+      "sync_ok": true,
+      "sync_detail": "ok",
+      "after_pos": true,
+      "after_admin": true,
+      "package": ""
+    },
+    {
+      "id": "shop_muaopt2v_49efe8d6",
+      "name": "HARDENING CLEAN muaopt9x",
+      "url": "https://shoppos-production-6664.up.railway.app",
+      "before_pos": false,
+      "sync_ok": true,
+      "sync_detail": "ok",
+      "after_pos": true,
+      "after_admin": true,
+      "package": ""
+    },
+    {
+      "id": "shop_muanub9f_6fca6cad",
+      "name": "SAAS CUSTOMER C",
+      "url": "https://shoppos-production-0166.up.railway.app",
+      "before_pos": false,
+      "sync_ok": true,
+      "sync_detail": "ok",
+      "after_pos": true,
+      "after_admin": true,
+      "package": ""
+    },
+    {
+      "id": "shop_muanuamu_6b104c19",
+      "name": "SAAS CUSTOMER B",
+      "url": "https://shoppos-production-41e8.up.railway.app",
+      "before_pos": false,
+      "sync_ok": true,
+      "sync_detail": "ok",
+      "after_pos": true,
+      "after_admin": true,
+      "package": ""
+    },
+    {
+      "id": "shop_muanu9ze_19f32c08",
+      "name": "SAAS CUSTOMER A",
+      "url": "https://shoppos-production-95cc.up.railway.app",
+      "before_pos": false,
+      "sync_ok": true,
+      "sync_detail": "ok",
+      "after_pos": true,
+      "after_admin": true,
+      "package": ""
+    },
+    {
+      "id": "shop_muair7ux_1b3d9d48",
+      "name": "PHASE6 TEST SHOP",
+      "url": "https://shoppos-production-e530.up.railway.app",
+      "before_pos": false,
+      "sync_ok": true,
+      "sync_detail": "ok",
+      "after_pos": true,
+      "after_admin": true,
+      "package": ""
+    }
+  ]
+}
