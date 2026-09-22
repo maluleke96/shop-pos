@@ -104,10 +104,11 @@ const AdminPage = {
 
     const studioLock = this.studioLockSections();
     const navSections = this.sections.filter((s) =>
-      Utils.canAccessAdminSection(app.user, s.id) && (!studioLock || studioLock.has(s.id))
+      Utils.canAccessAdminSectionByRole(app.user, s.id) && (!studioLock || studioLock.has(s.id))
     );
-    if (!navSections.find((s) => s.id === this.section) && navSections.length) {
-      this.section = navSections[0].id;
+    if (!navSections.find((s) => s.id === this.section && Utils.canAccessAdminSection(app.user, s.id)) && navSections.length) {
+      const firstOpen = navSections.find((s) => Utils.canAccessAdminSection(app.user, s.id));
+      this.section = firstOpen?.id || navSections[0].id;
     }
 
     el.innerHTML = `<div class="admin-layout${studioLock ? ' is-studio-lock' : ''}">
@@ -120,9 +121,11 @@ const AdminPage = {
           <input type="search" id="admin-global-search" placeholder="Search admin… (Ctrl+K)" autocomplete="off" title="Search admin sections, products, staff — Ctrl+K">
           <div id="admin-search-results" class="search-dropdown hidden"></div>
         </div>
-        <nav class="admin-nav" id="admin-nav">${navSections.map(s =>
-          `<button class="admin-nav-btn ${s.id === this.section ? 'active' : ''}" data-section="${s.id}">${this._adminNavLabel(s.label)}</button>`
-        ).join('')}</nav>
+        <nav class="admin-nav" id="admin-nav">${navSections.map(s => {
+          const locked = !Utils.canAccessAdminSection(app.user, s.id);
+          const tip = locked ? `Upgrade your package to access ${String(s.label).replace(/^[^A-Za-z0-9]+/, '')}.` : '';
+          return `<button type="button" class="admin-nav-btn ${s.id === this.section && !locked ? 'active' : ''} ${locked ? 'admin-nav-btn-locked' : ''}" data-section="${s.id}" ${locked ? `data-locked="1" title="${Utils.escHtml(tip)}"` : ''}>${locked ? '🔒 ' : ''}${this._adminNavLabel(s.label)}</button>`;
+        }).join('')}</nav>
       </div>
       <div class="admin-content" id="admin-content"></div>
     </div>`;
@@ -154,13 +157,20 @@ const AdminPage = {
     el.querySelector('#admin-nav').addEventListener('click', (e) => {
       const btn = e.target.closest('.admin-nav-btn');
       if (!btn) return;
-      if (this.section && this.section !== btn.dataset.section) {
+      const section = btn.dataset.section;
+      if (btn.dataset.locked === '1' || !Utils.canAccessAdminSection(this.app.user, section)) {
+        window.SaasFeatures?.loadCatalog?.().then(() => {
+          window.SaasFeatures?.openLockedAdminSection?.(section);
+        });
+        return;
+      }
+      if (this.section && this.section !== section) {
         this._sectionHistory = this._sectionHistory || [];
         this._sectionHistory.push(this.section);
         if (this._sectionHistory.length > 30) this._sectionHistory.shift();
       }
-      this.section = btn.dataset.section;
-      el.querySelectorAll('.admin-nav-btn').forEach(b => b.classList.toggle('active', b.dataset.section === this.section));
+      this.section = section;
+      el.querySelectorAll('.admin-nav-btn').forEach(b => b.classList.toggle('active', b.dataset.section === this.section && !b.dataset.locked));
       this.toggleOpsComplianceLayout(this.section === 'opscompliance');
       this.renderSection(document.getElementById('admin-content'));
       window.App?._saveNavState?.();
@@ -339,11 +349,13 @@ const AdminPage = {
     if (!nav || !this.app?.user) return;
     const studioLock = this.studioLockSections();
     const visible = this.sections.filter((s) =>
-      Utils.canAccessAdminSection(this.app.user, s.id) && (!studioLock || studioLock.has(s.id))
+      Utils.canAccessAdminSectionByRole(this.app.user, s.id) && (!studioLock || studioLock.has(s.id))
     );
-    nav.innerHTML = visible.map((s) =>
-      `<button class="admin-nav-btn ${s.id === this.section ? 'active' : ''}" data-section="${s.id}">${this._adminNavLabel(s.label)}</button>`
-    ).join('');
+    nav.innerHTML = visible.map((s) => {
+      const locked = !Utils.canAccessAdminSection(this.app.user, s.id);
+      const tip = locked ? `Upgrade your package to access ${String(s.label).replace(/^[^A-Za-z0-9]+/, '')}.` : '';
+      return `<button type="button" class="admin-nav-btn ${s.id === this.section && !locked ? 'active' : ''} ${locked ? 'admin-nav-btn-locked' : ''}" data-section="${s.id}" ${locked ? `data-locked="1" title="${Utils.escHtml(tip)}"` : ''}>${locked ? '🔒 ' : ''}${this._adminNavLabel(s.label)}</button>`;
+    }).join('');
   },
 
   async saveWebGlobalSettings(payload) {

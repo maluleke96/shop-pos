@@ -15,6 +15,17 @@ const DashboardPage = {
       this.paintStats(el, cached.data, from, to);
     }
     this.load(el, from, to);
+    window.SaasFeatures?.loadCatalog?.().then(() => {
+      // Refresh summary strip once catalog arrives
+      const content = el.querySelector('#dash-content');
+      if (content && !content.querySelector('.saas-plan-summary') && window.SaasFeatures?.summaryHtml?.()) {
+        const host = this._host || el;
+        const from2 = Utils.monthStart();
+        const to2 = Utils.today();
+        const cached = window.DataCache?.peek?.('dashboard', [from2, to2]);
+        if (cached?.success && cached.data) this.paintStats(host, cached.data, from2, to2);
+      }
+    }).catch(() => {});
   },
 
   async activate(el, app) {
@@ -34,7 +45,9 @@ const DashboardPage = {
       const day = new Date(g.day).toLocaleDateString('en', { weekday: 'short', month: 'short', day: 'numeric' });
       return `<div class="chart-bar-wrap"><div class="chart-bar" style="height:${h}px" title="${fmt(g.total)}"></div><span class="chart-label">${day}</span></div>`;
     }).join('');
+    const planSummary = window.SaasFeatures?.summaryHtml?.() || '';
     content.innerHTML = `
+      ${planSummary}
       <div class="stats-grid" id="dash-stats">
         <div class="stat-card primary"><div class="label">Sales (${Utils.formatDate(from)} — ${Utils.formatDate(to)})</div><div class="value">${fmt(s.todaySales ?? 0)}</div><div class="sub">${s.todayCount ?? 0} transactions</div></div>
         <div class="stat-card success"><div class="label">Profit</div><div class="value">${fmt(s.profit ?? 0)}</div></div>
@@ -44,6 +57,9 @@ const DashboardPage = {
       </div>
       <div class="card" id="dash-chart-card"><div class="card-header"><h3>Sales Chart</h3></div>
         <div class="card-body"><div class="chart-bars">${bars || '<p class="muted">No sales in this period</p>'}</div></div></div>`;
+    content.querySelector('#saas-dash-explore')?.addEventListener('click', () => {
+      window.App?.navigate?.('features');
+    });
   },
 
   async load(el, from, to) {

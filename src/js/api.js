@@ -203,6 +203,7 @@ const API = {
     return res;
   },
   getEntitlementsStatus: () => invoke('entitlements:status'),
+  getFeatureCatalog: () => invoke('entitlements:featureCatalog'),
   getOperatingHours: () => invoke('settings:getOperatingHours'),
   getMobileApkStatus: async () => {
     const base = String((typeof Utils !== 'undefined' && Utils.syncBaseUrl?.()) || window.location.origin).replace(/\/$/, '');

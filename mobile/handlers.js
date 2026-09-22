@@ -3391,6 +3391,7 @@ add('web:adminAnalytics', wrapSync((filters, actor) => {
   // Shop-local entitlement snapshot (ONE source of truth for UI)
   add('entitlements:status', wrapSync(() => s.entitlementsStatus()));
   add('entitlements:get', wrapSync(() => s.entitlementsGet()));
+  add('entitlements:featureCatalog', wrapSync(() => s.entitlementsFeatureCatalog()));
 
   // Platform → customer entitlement sync (secret-authenticated; never from browser without secret)
   add('saas:applyEntitlementSnapshot', wrapSync((secret, snapshot) => {

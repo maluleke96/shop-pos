@@ -31,7 +31,8 @@ const App = {
     { id: 'reports', label: '📈 Reports', roles: ['owner', 'manager'] },
     { id: 'bookkeeping', label: '📒 Bookkeeping', roles: ['owner', 'manager'] },
     { id: 'users', label: '👤 Users', roles: ['owner', 'manager'] },
-    { id: 'audit', label: '🔍 Audit Log', roles: ['owner', 'manager'] }
+    { id: 'audit', label: '🔍 Audit Log', roles: ['owner', 'manager'] },
+    { id: 'features', label: '✨ Explore All Features', roles: ['owner', 'manager', 'supervisor'] }
   ],
 
   pages: {},
@@ -156,7 +157,8 @@ const App = {
     bookkeeping: 'BookkeepingPage',
     users: 'UsersPage',
     audit: 'AuditPage',
-    settings: 'SettingsPage'
+    settings: 'SettingsPage',
+    features: 'FeaturesPage'
   },
   _lazyScripts: {},
   _scheduledDocInterval: null,
@@ -2409,6 +2411,8 @@ const App = {
       this.entitlements = data;
       this.entitlementsLoaded = true;
       try { window.__SHOP_POS_ENTITLEMENTS__ = data; } catch (_) { /* */ }
+      window.SaasFeatures?.invalidate?.();
+      window.SaasFeatures?.loadCatalog?.(true).catch?.(() => {});
     } catch (_) {
       this.entitlements = { enforcement: false };
       this.entitlementsLoaded = true;
@@ -2709,12 +2713,21 @@ const App = {
 
   renderNav() {
     const nav = document.getElementById('sidebar-nav');
+    if (!nav) return;
+    const enforcement = !!(this.entitlements?.enforcement);
     nav.innerHTML = this.navItems
-      .filter(item => Utils.canAccess(this.user, item.id))
-      .map(item => `<button class="nav-btn" data-page="${item.id}">${item.label}</button>`)
+      .filter((item) => Utils.canAccessByRole(this.user, item.id))
+      .map((item) => {
+        const entitled = !enforcement || Utils.isPageEntitled(item.id);
+        if (entitled) {
+          return `<button type="button" class="nav-btn" data-page="${item.id}">${item.label}</button>`;
+        }
+        const tip = `Upgrade your package to access ${String(item.label).replace(/^[^A-Za-z0-9]+/, '')}.`;
+        return `<button type="button" class="nav-btn nav-btn-locked" data-page="${item.id}" data-locked="1" title="${Utils.escHtml(tip)}" aria-label="${Utils.escHtml(tip)}">🔒 ${item.label}</button>`;
+      })
       .join('');
     const setBtn = document.querySelector('.sidebar-footer [data-page="settings"]');
-    if (setBtn) setBtn.classList.toggle('hidden', !Utils.canAccess(this.user, 'settings'));
+    if (setBtn) setBtn.classList.toggle('hidden', !Utils.canAccessByRole(this.user, 'settings'));
   },
 
   async navigate(page) {
@@ -2725,9 +2738,12 @@ const App = {
     // Immediate UI feedback ? never block navigation on session/network
     this.closeSidebar();
     if (!this.user) return;
+    if (!Utils.canAccessByRole(this.user, page)) return;
     if (!Utils.canAccess(this.user, page)) {
       if (!Utils.isPageEntitled(page)) {
-        Utils.toast('FEATURE_NOT_INCLUDED: this page is not in your plan', 'error');
+        await window.SaasFeatures?.loadCatalog?.();
+        if (window.SaasFeatures?.openLockedPage) window.SaasFeatures.openLockedPage(page);
+        else Utils.toast('FEATURE_NOT_INCLUDED: this page is not in your plan', 'error');
       }
       return;
     }
@@ -2745,7 +2761,7 @@ const App = {
       this.checkNotificationSounds().catch(() => {});
     }
     document.querySelectorAll('.nav-btn').forEach(b =>
-      b.classList.toggle('active', b.dataset.page === page));
+      b.classList.toggle('active', b.dataset.page === page && !b.dataset.locked));
     const titles = {
       dashboard: 'Dashboard', admin: 'Admin Panel', pos: 'Point of Sale', staff: 'Staff Portal', products: 'Products', categories: 'Categories',
       stock: 'Stock Management', customers: 'Customers', suppliers: 'Suppliers', expenses: 'Expenses',
@@ -2753,7 +2769,7 @@ const App = {
       'document-hub': 'Document Hub', whatsapp: 'WhatsApp',
       operations: 'Cash-Up & Operations', restaurant: 'Restaurant', recipe: 'Recipe & Production',
       'purchase-orders': 'Purchase Orders', reports: 'Reports', bookkeeping: 'Bookkeeping & Finance', users: 'User Management',
-      audit: 'Audit Log', settings: 'Settings'
+      audit: 'Audit Log', settings: 'Settings', features: 'Explore All Features'
     };
     document.getElementById('page-title').textContent = titles[page] || page;
 

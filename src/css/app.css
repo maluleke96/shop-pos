@@ -692,6 +692,25 @@ body[data-active-screen="delivery-dept"] .sidebar-backdrop {
 }
 .nav-btn:hover { background: #334155; color: #fff; }
 .nav-btn.active { background: var(--primary); color: #fff; }
+.nav-btn-locked,
+.admin-nav-btn-locked {
+  opacity: 0.72;
+  color: #94a3b8 !important;
+  font-style: normal;
+}
+.nav-btn-locked:hover,
+.admin-nav-btn-locked:hover {
+  background: rgba(148, 163, 184, 0.15);
+  color: #e2e8f0 !important;
+}
+.saas-feat-status { font-size: 13px; white-space: nowrap; }
+.saas-feat-included { color: #16a34a; font-weight: 600; }
+.saas-feat-locked { color: #64748b; font-weight: 600; }
+.saas-feat-row-locked:hover { background: rgba(148, 163, 184, 0.12); }
+.saas-upgrade-body { line-height: 1.5; }
+.saas-upgrade-lead { font-size: 15px; margin-top: 0; }
+.saas-upgrade-hint { margin-top: 16px; font-size: 13px; }
+.saas-plan-summary { border: 1px solid var(--border, #e2e8f0); }
 .sidebar-footer { padding: 12px 8px; border-top: 1px solid #334155; }
 .logout-btn { color: #f87171 !important; }
 

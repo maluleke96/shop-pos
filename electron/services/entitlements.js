@@ -263,11 +263,19 @@ const HTTP_MOUNT_MODULES = {
 };
 
 function modulesById() {
-  if (!platform) return {};
+  // Prefer platform-control when available (lab); fall back to local synced catalog (customer shops).
+  if (platform) {
+    try {
+      const r = platform.listModules({});
+      const map = {};
+      for (const m of r.data || []) map[m.id] = m;
+      if (Object.keys(map).length) return map;
+    } catch (_) { /* */ }
+  }
   try {
-    const r = platform.listModules({});
+    const rows = dbAll('SELECT * FROM platform_modules WHERE is_active = 1 OR is_active IS NULL');
     const map = {};
-    for (const m of r.data || []) map[m.id] = m;
+    for (const m of rows) map[m.id] = m;
     return map;
   } catch (_) {
     return {};
@@ -759,11 +767,164 @@ function status() {
   };
 }
 
+/**
+ * Public feature catalog for customer UI (visibility + lock metadata).
+ * Does NOT grant access — server RPC/HTTP gates remain authoritative.
+ * Safe to call without platform operator privileges.
+ */
+function getFeatureCatalog(force = false) {
+  ensureSchema();
+  const ent = getEntitlements(force);
+  const key = shopKey();
+  const map = modulesById();
+
+  let packageRow = null;
+  let packageId = ent.meta?.package_id || null;
+  try {
+    if (!packageId) {
+      packageId = dbGet('SELECT package_id FROM platform_shop_assignments WHERE shop_key = ?', [key])?.package_id || null;
+    }
+    if (packageId) {
+      packageRow = dbGet('SELECT id, name, description FROM platform_packages WHERE id = ?', [packageId]);
+    }
+  } catch (_) { /* */ }
+
+  let currentAddons = [];
+  try {
+    const aids = Array.isArray(ent.meta?.addon_ids)
+      ? ent.meta.addon_ids
+      : dbAll('SELECT addon_id FROM platform_shop_addons WHERE shop_key = ?', [key]).map((r) => r.addon_id);
+    currentAddons = aids.map((id) => {
+      const row = dbGet('SELECT id, name, description FROM platform_addons WHERE id = ?', [id]);
+      return row ? { id: row.id, name: row.name, description: row.description || '' } : { id, name: id };
+    });
+  } catch (_) { /* */ }
+
+  // package_id → modules; module → packages/addons that provide it
+  const packageByModule = {};
+  const addonByModule = {};
+  try {
+    for (const row of dbAll(
+      `SELECT pi.module_id, p.id AS package_id, p.name AS package_name
+       FROM platform_package_items pi
+       JOIN platform_packages p ON p.id = pi.package_id
+       WHERE p.is_active = 1 OR p.is_active IS NULL`
+    )) {
+      if (!packageByModule[row.module_id]) packageByModule[row.module_id] = [];
+      packageByModule[row.module_id].push({ id: row.package_id, name: row.package_name });
+    }
+  } catch (_) { /* */ }
+  try {
+    for (const row of dbAll(
+      `SELECT ai.module_id, a.id AS addon_id, a.name AS addon_name
+       FROM platform_addon_items ai
+       JOIN platform_addons a ON a.id = ai.addon_id
+       WHERE a.is_active = 1 OR a.is_active IS NULL`
+    )) {
+      if (!addonByModule[row.module_id]) addonByModule[row.module_id] = [];
+      addonByModule[row.module_id].push({ id: row.addon_id, name: row.addon_name });
+    }
+  } catch (_) { /* */ }
+
+  const parseDeps = (m) => {
+    const raw = m?.dependencies_json ?? m?.depends_on ?? [];
+    const list = typeof raw === 'string' ? parseJson(raw, []) : (Array.isArray(raw) ? raw : []);
+    return list.map((d) => String(d)).filter(Boolean);
+  };
+
+  const modules = [];
+  let included = 0;
+  let locked = 0;
+  for (const id of Object.keys(map).sort()) {
+    const m = map[id];
+    if (!m || Number(m.is_active) === 0) continue;
+    // Skip pure shared_core noise in explorer? Keep them as included for honesty.
+    const isOn = !ent.enforcement || !!ent.modules?.[id] || !!ent.shared_core?.includes(id);
+    const deps = parseDeps(m);
+    const missing_deps = deps.filter((d) => ent.enforcement && !(ent.modules?.[d] || ent.shared_core?.includes(d)));
+    const status = isOn ? 'included' : (missing_deps.length && !isOn ? 'locked' : 'locked');
+    if (status === 'included') included += 1;
+    else locked += 1;
+    modules.push({
+      id,
+      name: m.name || id,
+      description: m.description || '',
+      kind: m.kind || 'sellable',
+      commercial_class: m.commercial_class || 'sellable',
+      sellable_addon: !!Number(m.sellable_addon),
+      status,
+      included: status === 'included',
+      dependencies: deps,
+      missing_dependencies: missing_deps,
+      available_in_packages: packageByModule[id] || [],
+      available_as_addons: addonByModule[id] || []
+    });
+  }
+
+  const nav_pages = Object.entries(NAV_PAGE_MODULES).map(([page, mods]) => {
+    const entitled = !ent.enforcement || !!ent.pages?.[page];
+    const primary = mods[0];
+    const mod = modules.find((x) => x.id === primary) || null;
+    return {
+      page,
+      module_ids: mods,
+      status: entitled ? 'included' : 'locked',
+      included: entitled,
+      name: mod?.name || page,
+      description: mod?.description || '',
+      available_in_packages: mod?.available_in_packages || [],
+      available_as_addons: mod?.available_as_addons || [],
+      missing_dependencies: mod?.missing_dependencies || []
+    };
+  });
+
+  const admin_sections = Object.entries(ent.admin_sections || {}).map(([section, on]) => {
+    const mid = adminSectionModuleId(section);
+    const mod = modules.find((x) => x.id === mid) || null;
+    const includedSec = !ent.enforcement || !!on;
+    return {
+      section,
+      module_id: mid,
+      status: includedSec ? 'included' : 'locked',
+      included: includedSec,
+      name: mod?.name || section,
+      description: mod?.description || '',
+      available_in_packages: mod?.available_in_packages || [],
+      available_as_addons: mod?.available_as_addons || [],
+      missing_dependencies: mod?.missing_dependencies || []
+    };
+  });
+
+  return {
+    success: true,
+    enforcement: !!ent.enforcement,
+    protected_production: !!ent.protected_production,
+    shop_key: key,
+    computed_at: ent.computed_at || nowIso(),
+    current_package: packageRow
+      ? { id: packageRow.id, name: packageRow.name, description: packageRow.description || '' }
+      : (packageId ? { id: packageId, name: packageId } : null),
+    current_addons: currentAddons,
+    summary: {
+      total: modules.length,
+      included,
+      locked,
+      available_additional: locked
+    },
+    modules,
+    nav_pages,
+    admin_sections,
+    upgrade_instruction:
+      'Contact your administrator or Platform operator to upgrade your package or add-ons. Self-service billing is not enabled in this shop.'
+  };
+}
+
 module.exports = {
   isChisaFoodProtected,
   enforcementEnabled,
   shopKey,
   getEntitlements,
+  getFeatureCatalog,
   computeEffectiveEntitlements,
   invalidateCache,
   isModuleEnabled,

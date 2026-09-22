@@ -378,7 +378,7 @@ const Utils = {
 
   /** Phase 4: entitlement page map from entitlements:get */
   isPageEntitled(page) {
-    if (!page || page === 'settings') return true;
+    if (!page || page === 'settings' || page === 'features') return true;
     const ent = (typeof window !== 'undefined')
       ? (window.__SHOP_POS_ENTITLEMENTS__ || window.App?.entitlements)
       : null;
@@ -398,6 +398,46 @@ const Utils = {
       return !!ent.admin_sections[sectionId];
     }
     return true;
+  },
+
+  /** Role/permission check WITHOUT entitlement (used to show locked nav items). */
+  canAccessByRole(user, page) {
+    if (!user) return false;
+    if (page === 'features') {
+      return ['owner', 'manager', 'supervisor', 'assistant_manager'].includes(user.role);
+    }
+    if (typeof window !== 'undefined' && window.__SHOP_POS_APP_MODE__ === 'delivery') {
+      if (user.role === 'delivery_manager') return page === 'admin';
+      if (['owner', 'manager', 'supervisor'].includes(user.role)) return page === 'admin' || page === 'dashboard';
+      return false;
+    }
+    if (typeof window !== 'undefined' && window.__SHOP_POS_APP_MODE__ === 'pos') {
+      return page === 'pos' && ['owner', 'manager', 'cashier', 'supervisor', 'assistant_manager'].includes(user.role);
+    }
+    if (page === 'admin') return Utils.canAccessAdmin(user);
+    if (user.role === 'owner') return true;
+    const pagePermMap = {
+      dashboard: 'view_reports', pos: 'sell', staff: 'staff_portal', products: 'products', categories: 'products',
+      stock: 'manage_stock', customers: 'customers', suppliers: 'suppliers', expenses: 'view_reports',
+      returns: 'refunds', quotes: 'quotes', layby: 'layby', giftcards: 'gift_cards',
+      'document-hub': 'operations', whatsapp: 'whatsapp', operations: 'operations', restaurant: 'kitchen', 'purchase-orders': 'suppliers',
+      reports: 'reports', audit: 'view_reports', bookkeeping: 'bookkeeping', admin: 'system_settings', users: 'system_settings',
+      settings: 'system_settings', recipe: 'recipe'
+    };
+    if (user.role === 'assistant_manager') {
+      const perm = pagePermMap[page];
+      return perm ? Utils.hasPermission(user, perm) : false;
+    }
+    const perm = pagePermMap[page];
+    if (perm && Utils.hasPermission(user, perm)) return true;
+    if (page === 'staff' || page === 'returns') return false;
+    const managerPages = ['dashboard', 'admin', 'pos', 'products', 'categories', 'stock', 'customers', 'suppliers', 'expenses', 'quotes', 'layby', 'giftcards', 'document-hub', 'whatsapp', 'operations', 'restaurant', 'recipe', 'purchase-orders', 'reports', 'bookkeeping', 'audit', 'settings', 'users', 'features'];
+    const cashierPages = ['pos'];
+    const supervisorPages = ['admin', 'pos', 'operations', 'layby', 'giftcards', 'quotes', 'features'];
+    if (user.role === 'manager') return managerPages.includes(page);
+    if (user.role === 'supervisor') return supervisorPages.includes(page);
+    if (user.role === 'cashier') return cashierPages.includes(page);
+    return false;
   },
 
   /** SaaS access blocked overlay — never shows Railway/secrets/internal details */
@@ -503,9 +543,15 @@ const Utils = {
   },
 
   canAccessAdminSection(user, sectionId) {
+    if (!Utils.canAccessAdminSectionByRole(user, sectionId)) return false;
+    if (sectionId === 'deliveries') sectionId = 'delivery-dept';
+    return Utils.isAdminSectionEntitled(sectionId);
+  },
+
+  /** Role-only admin section visibility (ignores package entitlements — for locked nav). */
+  canAccessAdminSectionByRole(user, sectionId) {
     if (!Utils.canAccessAdmin(user)) return false;
     if (sectionId === 'deliveries') sectionId = 'delivery-dept';
-    if (!Utils.isAdminSectionEntitled(sectionId)) return false;
     try {
       const lock = sessionStorage.getItem('shoppos_studio_lock');
       if (lock) {

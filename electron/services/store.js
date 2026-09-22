@@ -5846,6 +5846,7 @@ module.exports = {
         return rest;
       },
       entitlementsGet: () => entitlements.getEntitlements(true),
+      entitlementsFeatureCatalog: () => entitlements.getFeatureCatalog(true),
       entitlementsIsModuleEnabled: (id) => entitlements.isModuleEnabled(id),
       entitlementsIsAdminSectionAllowed: (id) => entitlements.isAdminSectionAllowed(id),
       entitlementsIsNavPageAllowed: (id) => entitlements.isNavPageAllowed(id),
