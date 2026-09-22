@@ -152,6 +152,11 @@
     },
 
     async renderExplorer(el) {
+      try {
+        await global.App?.loadEntitlements?.();
+        global.App?.renderNav?.();
+        global.AdminPage?.refreshAdminNav?.();
+      } catch (_) { /* ignore */ }
       const cat = await this.loadCatalog(true);
       if (!el) return;
       if (!cat) {
@@ -181,12 +186,23 @@
           </tr>`;
         }).join('');
 
-      el.innerHTML = `<div class="page-toolbar"><h3>Explore All Features</h3></div>
-        <p class="muted">Current package: <strong>${Utils.escHtml(pkg)}</strong>. Locked features stay visible — upgrade to unlock. Server access control is unchanged.</p>
+      el.innerHTML = `<div class="page-toolbar"><h3>Explore All Features</h3>
+          <button type="button" class="btn btn-ghost btn-sm" id="saas-refresh-plan">Refresh plan</button>
+        </div>
+        <p class="muted">Current package: <strong>${Utils.escHtml(pkg)}</strong>. Locked features stay visible — upgrade on Platform Control to unlock. Server access control is unchanged.</p>
         <div class="table-wrap"><table class="data-table saas-feat-table">
           <thead><tr><th>Feature</th><th>Status</th><th>Package / Add-on</th></tr></thead>
           <tbody>${rows || '<tr><td colspan="3">No catalog modules synced yet.</td></tr>'}</tbody>
         </table></div>`;
+      el.querySelector('#saas-refresh-plan')?.addEventListener('click', async () => {
+        try {
+          await global.App?.refreshEntitlementsAndNav?.({ force: true });
+          await this.renderExplorer(el);
+          Utils.toast('Plan refreshed', 'success');
+        } catch (e) {
+          Utils.toast(e?.message || 'Refresh failed', 'error');
+        }
+      });
       el.querySelectorAll('[data-saas-mod]').forEach((tr) => {
         tr.style.cursor = 'pointer';
         tr.addEventListener('click', () => this.openLockedModule(tr.getAttribute('data-saas-mod')));

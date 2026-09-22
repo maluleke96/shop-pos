@@ -878,13 +878,26 @@ const PlatformApp = {
       try {
         const id = this.selectedShop?.id;
         const addon_ids = [...document.querySelectorAll('#det-addons input:checked')].map((el) => el.value);
+        const btn = root.querySelector('[data-act="save-shop-assign"]');
+        if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
         await PlatformAPI.assignShop(id, {
           package_id: document.getElementById('det-pkg').value || null,
           addon_ids
         });
+        let syncMsg = 'Package/add-ons saved on Platform.';
+        try {
+          if (btn) btn.textContent = 'Syncing to shop…';
+          const r = await PlatformAPI.syncCustomerEntitlements(id);
+          if (r?.ok) syncMsg = 'Package updated and synced to customer shop. Ask them to refresh (or switch tabs) to unlock modules.';
+          else if (r?.skipped || r?.reason) syncMsg = `Package saved. Sync: ${r.reason || r.error || 'skipped'} — use Sync entitlements if needed.`;
+          else if (r?.error) syncMsg = `Package saved. Sync failed: ${r.error} — use Sync entitlements.`;
+          this.provisionPreview = r;
+        } catch (syncErr) {
+          syncMsg = `Package saved on Platform. Customer sync error: ${syncErr.message || syncErr} — use Sync entitlements.`;
+        }
         this.selectedShop = await PlatformAPI.getShop(id);
         await this.loadAll();
-        this.message = 'Package/add-ons updated (entitlements recalculated)';
+        this.message = syncMsg;
         this.error = '';
         this.render();
       } catch (e) { this.error = e.message; this.render(); }
@@ -893,9 +906,16 @@ const PlatformApp = {
       try {
         const id = this.selectedShop?.id;
         await PlatformAPI.setShopStatus(id, document.getElementById('det-status').value);
+        let syncMsg = 'Subscription status updated';
+        try {
+          const r = await PlatformAPI.syncCustomerEntitlements(id);
+          if (r?.ok) syncMsg = 'Status updated and synced to customer shop';
+          else if (r?.reason || r?.error) syncMsg = `Status updated. Sync: ${r.reason || r.error}`;
+          this.provisionPreview = r;
+        } catch (_) { /* keep status message */ }
         this.selectedShop = await PlatformAPI.getShop(id);
         await this.loadAll();
-        this.message = 'Subscription status updated';
+        this.message = syncMsg;
         this.error = '';
         this.render();
       } catch (e) { this.error = e.message; this.render(); }

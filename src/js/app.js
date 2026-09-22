@@ -1241,12 +1241,17 @@ const App = {
       document.addEventListener('visibilitychange', () => {
         if (document.visibilityState === 'visible' && this.user) {
           this.pollNotifications(true).catch(() => {});
+          this.refreshEntitlementsAndNav({ force: false }).catch(() => {});
         }
       });
       window.addEventListener('focus', () => {
-        if (this.user) this.pollNotifications(false).catch(() => {});
+        if (this.user) {
+          this.pollNotifications(false).catch(() => {});
+          this.refreshEntitlementsAndNav({ force: false }).catch(() => {});
+        }
       });
     }
+    this.bindEntitlementRefresh();
   },
 
   bindGlobalCatalogSync() {
@@ -2491,10 +2496,40 @@ const App = {
       window.SaasFeatures?.invalidate?.();
       window.SaasFeatures?.loadCatalog?.(true).catch?.(() => {});
     } catch (_) {
-      this.entitlements = { enforcement: false };
-      this.entitlementsLoaded = true;
-      try { window.__SHOP_POS_ENTITLEMENTS__ = this.entitlements; } catch (_) { /* */ }
+      // Keep last known plan — do not fail-open to "everything unlocked"
+      if (!this.entitlementsLoaded || !this.entitlements) {
+        this.entitlements = { enforcement: false };
+        this.entitlementsLoaded = true;
+        try { window.__SHOP_POS_ENTITLEMENTS__ = this.entitlements; } catch (_) { /* */ }
+      } else {
+        try { Utils.toast?.('Could not refresh plan; showing last known access.', 'error'); } catch (_) { /* */ }
+      }
     }
+  },
+
+  async refreshEntitlementsAndNav(opts = {}) {
+    if (!this.user) return;
+    const force = opts.force !== false;
+    const now = Date.now();
+    if (!force && this._lastEntitlementRefreshAt && (now - this._lastEntitlementRefreshAt) < 20000) return;
+    this._lastEntitlementRefreshAt = now;
+    await this.loadEntitlements();
+    if (!this.isPosKiosk?.()) {
+      try { this.renderNav(); } catch (_) { /* */ }
+      try { window.AdminPage?.refreshAdminNav?.(); } catch (_) { /* */ }
+    }
+  },
+
+  bindEntitlementRefresh() {
+    if (this._entitlementRefreshBound) return;
+    this._entitlementRefreshBound = true;
+    const kick = () => {
+      if (document.visibilityState === 'visible' && this.user && !this.isPosKiosk?.()) {
+        this.refreshEntitlementsAndNav({ force: false }).catch(() => {});
+      }
+    };
+    document.addEventListener('visibilitychange', kick);
+    window.addEventListener('focus', kick);
   },
 
   async ensureAdminSectionScripts(sectionId) {
@@ -2715,6 +2750,7 @@ const App = {
       if (!this.isPosKiosk()) {
         try { await API.ensureDemoNotificationSound(); } catch { /* ignore */ }
         this.initPanelNotify();
+        this.bindEntitlementRefresh();
         this.startTopbarClock();
         this.startOperatingTimer();
         this.startOperatingHoursWatch();

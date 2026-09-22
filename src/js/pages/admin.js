@@ -311,10 +311,14 @@ const AdminPage = {
       location.href = back;
     });
     document.getElementById('admin-view-packages')?.addEventListener('click', () => {
-      if (window.SaasFeatures?.openLockedPage) {
-        window.SaasFeatures.loadCatalog?.().then(() => window.SaasFeatures.openLockedPage('features'));
-      } else if (this.app?.navigate) {
+      if (this.app?.navigate) {
+        window.SaasFeatures?.loadCatalog?.(true)?.catch?.(() => {});
         this.app.navigate('features');
+      } else {
+        window.SaasFeatures?.loadCatalog?.(true)?.then?.(() => {
+          const host = document.getElementById('page-content');
+          if (host) window.SaasFeatures?.renderExplorer?.(host);
+        });
       }
     });
 

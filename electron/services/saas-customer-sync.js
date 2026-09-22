@@ -319,7 +319,7 @@ function applyFromEnvIfConfigured() {
     .filter(Boolean);
   const sub = String(process.env.SHOP_SUBSCRIPTION_STATUS || 'TRIAL').toUpperCase();
   ensureEntitlementTables();
-  // Only upsert assignment row — catalog should arrive via snapshot
+  // Only upsert assignment row — do NOT pass empty module_ids arrays (that would wipe package_items on redeploy/boot)
   return applyEntitlementSnapshot({
     shop_key: shopKey,
     shop_name: process.env.SHOP_NAME || shopKey,
@@ -327,8 +327,8 @@ function applyFromEnvIfConfigured() {
     addon_ids: addonIds,
     subscription_status: sub,
     modules: [],
-    packages: packageId ? [{ id: packageId, name: packageId, module_ids: [] }] : [],
-    addons: addonIds.map((id) => ({ id, name: id, module_ids: [] }))
+    packages: packageId ? [{ id: packageId, name: packageId }] : [],
+    addons: addonIds.map((id) => ({ id, name: id }))
   }, 'env-boot');
 }
 
