@@ -1,4 +1,4 @@
-const SHELL_CACHE = 'shoppos-shell-v1';
+const SHELL_CACHE = 'shoppos-shell-v2-navpro';
 const IMAGE_CACHE = 'shoppos-images-v1';
 
 const SHELL_ASSETS = [
@@ -12,6 +12,7 @@ const SHELL_ASSETS = [
   '/js/offline-queue.js',
   '/js/supabase-bootstrap.js',
   '/js/api.js',
+  '/css/app.css',
   '/css/pos-till.css'
 ];
 
@@ -31,7 +32,11 @@ self.addEventListener('install', (e) => {
 });
 
 self.addEventListener('activate', (e) => {
-  e.waitUntil(self.clients.claim());
+  e.waitUntil(
+    caches.keys().then((keys) => Promise.all(
+      keys.filter((k) => k !== SHELL_CACHE && k !== IMAGE_CACHE).map((k) => caches.delete(k))
+    )).then(() => self.clients.claim())
+  );
 });
 
 self.addEventListener('fetch', (e) => {
@@ -59,12 +64,12 @@ self.addEventListener('fetch', (e) => {
   if (url.pathname.endsWith('.js') || url.pathname.endsWith('.css') || url.pathname === '/' || url.pathname.endsWith('.html')) {
     e.respondWith((async () => {
       const cache = await caches.open(SHELL_CACHE);
-      const cached = await cache.match(e.request);
       try {
-        const resp = await fetch(e.request);
+        const resp = await fetch(e.request, { cache: 'no-store' });
         if (resp.ok) cache.put(e.request, resp.clone());
         return resp;
       } catch (err) {
+        const cached = await cache.match(e.request);
         if (cached) return cached;
         throw err;
       }

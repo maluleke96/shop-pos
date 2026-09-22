@@ -219,7 +219,7 @@ const AdminPage = {
     const locked = !Utils.canAccessAdminSection(this.app.user, s.id);
     const tip = locked ? `Upgrade your package to access ${String(s.label).replace(/^[^A-Za-z0-9]+/, '')}.` : '';
     const active = s.id === activeId && !locked;
-    const label = this._adminNavLabel(s.label);
+    const label = this._adminNavLabel(String(s.label || '').replace(/^[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE00}-\u{FE0F}\u{200D}\s]+/gu, '').trim() || s.label);
     return `<button type="button" class="admin-nav-btn admin-nav-sub ${active ? 'active' : ''} ${locked ? 'admin-nav-btn-locked' : ''}" data-section="${s.id}" ${locked ? `data-locked="1" title="${Utils.escHtml(tip)}"` : ''}><span class="admin-nav-sub-dot" aria-hidden="true"></span><span class="admin-nav-sub-label">${locked ? '🔒 ' : ''}${label}</span></button>`;
   },
 
@@ -241,7 +241,9 @@ const AdminPage = {
       html += `<div class="admin-nav-group${open ? ' is-open' : ''}" data-admin-nav-group="${g.id}" style="--group-accent:${accent}">
         <button type="button" class="admin-nav-btn admin-nav-group-toggle" data-admin-nav-group-toggle="${g.id}" aria-expanded="${open ? 'true' : 'false'}">
           <span class="admin-nav-group-icon" aria-hidden="true">${icon}</span>
-          <span class="admin-nav-group-label">${this._adminNavLabel(g.label)}</span>
+          <span class="admin-nav-group-text">
+            <span class="admin-nav-group-label">${this._adminNavLabel(g.label)}</span>
+          </span>
           <span class="admin-nav-group-count">${kids.length}</span>
           <span class="admin-nav-group-chevron" aria-hidden="true">${open ? '▾' : '▸'}</span>
         </button>
@@ -275,23 +277,45 @@ const AdminPage = {
     }
 
     el.innerHTML = `<div class="admin-layout${studioLock ? ' is-studio-lock' : ''}">
-      <div class="admin-sidebar-col">
+      <aside class="admin-sidebar-col admin-panel-drawer">
         ${studioLock ? `<div class="studio-lock-bar" style="padding:10px 12px;margin-bottom:8px;border:1px solid rgba(251,191,36,.35);border-radius:10px;background:rgba(251,191,36,.08)">
           <strong style="display:block;font-size:12px;color:#fde68a">Menu &amp; Promo Studio</strong>
           <button type="button" class="btn btn-ghost btn-sm" id="studio-return" style="margin-top:6px">← Back to Studio</button>
         </div>` : ''}
+        <div class="admin-panel-head${studioLock ? ' hidden' : ''}">
+          <div class="admin-panel-head-text">
+            <h2 class="admin-panel-title">Admin Panel</h2>
+            <p class="admin-panel-sub">Manage and control your business.</p>
+          </div>
+        </div>
         <div class="admin-search-bar${studioLock ? ' hidden' : ''}">
-          <input type="search" id="admin-global-search" placeholder="Search admin… (Ctrl+K)" autocomplete="off" title="Search admin sections, products, staff — Ctrl+K">
+          <span class="admin-search-icon" aria-hidden="true">🔍</span>
+          <input type="search" id="admin-global-search" placeholder="Search admin features..." autocomplete="off" title="Search admin sections, products, staff — Ctrl+K">
           <div id="admin-search-results" class="search-dropdown hidden"></div>
         </div>
         <nav class="admin-nav" id="admin-nav">${this._renderAdminNavHtml(navSections)}</nav>
-      </div>
+        <div class="admin-upgrade-card${studioLock ? ' hidden' : ''}">
+          <div class="admin-upgrade-icon" aria-hidden="true">👑</div>
+          <div class="admin-upgrade-copy">
+            <strong>Upgrade Your Package</strong>
+            <span>Unlock more modules for your shop.</span>
+          </div>
+          <button type="button" class="btn btn-primary btn-sm" id="admin-view-packages">View Packages</button>
+        </div>
+      </aside>
       <div class="admin-content" id="admin-content"></div>
     </div>`;
 
     document.getElementById('studio-return')?.addEventListener('click', () => {
       const back = sessionStorage.getItem('shoppos_studio_return') || '/studio/';
       location.href = back;
+    });
+    document.getElementById('admin-view-packages')?.addEventListener('click', () => {
+      if (window.SaasFeatures?.openLockedPage) {
+        window.SaasFeatures.loadCatalog?.().then(() => window.SaasFeatures.openLockedPage('features'));
+      } else if (this.app?.navigate) {
+        this.app.navigate('features');
+      }
     });
 
     const searchInput = el.querySelector('#admin-global-search');
