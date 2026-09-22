@@ -35,6 +35,64 @@ const App = {
     { id: 'features', label: '✨ Explore All Features', roles: ['owner', 'manager', 'supervisor'] }
   ],
 
+  /**
+   * Far-left sidebar layout only — regroups existing navItems (no feature changes).
+   * Settings / Logout stay in the sidebar footer.
+   */
+  navGroups: [
+    { type: 'item', id: 'dashboard' },
+    { type: 'group', id: 'sales', label: '💳 SALES', items: ['pos', 'quotes', 'returns', 'layby'] },
+    { type: 'group', id: 'products-stock', label: '📦 PRODUCTS & STOCK', items: ['products', 'categories', 'stock', 'purchase-orders'] },
+    { type: 'group', id: 'customers', label: '👥 CUSTOMERS', items: ['customers', 'giftcards'] },
+    { type: 'group', id: 'suppliers-expenses', label: '🚚 SUPPLIERS & EXPENSES', items: ['suppliers', 'expenses'] },
+    { type: 'group', id: 'restaurant', label: '🍽️ RESTAURANT', items: ['restaurant', 'recipe'] },
+    { type: 'group', id: 'staff-users', label: '👷 STAFF & USERS', items: ['staff', 'users'] },
+    { type: 'group', id: 'finance', label: '💰 FINANCE', items: ['operations', 'bookkeeping'] },
+    { type: 'group', id: 'reports', label: '📈 REPORTS', items: ['reports'] },
+    { type: 'group', id: 'communication', label: '💬 COMMUNICATION', items: ['whatsapp', 'document-hub'] },
+    { type: 'item', id: 'audit' },
+    { type: 'item', id: 'features' },
+    { type: 'item', id: 'admin' }
+  ],
+
+  _navGroupOpen: null,
+
+  _navItemById(id) {
+    return this.navItems.find((n) => n.id === id) || null;
+  },
+
+  _isNavGroupOpen(groupId) {
+    try {
+      if (!this._navGroupOpen) {
+        const raw = sessionStorage.getItem('shoppos_nav_groups_open');
+        this._navGroupOpen = raw ? JSON.parse(raw) : {};
+      }
+    } catch (_) {
+      this._navGroupOpen = {};
+    }
+    return !!this._navGroupOpen[groupId];
+  },
+
+  _setNavGroupOpen(groupId, open) {
+    try {
+      if (!this._navGroupOpen) this._navGroupOpen = {};
+      if (open) this._navGroupOpen[groupId] = true;
+      else delete this._navGroupOpen[groupId];
+      sessionStorage.setItem('shoppos_nav_groups_open', JSON.stringify(this._navGroupOpen));
+    } catch (_) { /* */ }
+  },
+
+  _renderNavPageBtn(item) {
+    if (!item) return '';
+    const enforcement = !!(this.entitlements?.enforcement);
+    const entitled = !enforcement || Utils.isPageEntitled(item.id);
+    if (entitled) {
+      return `<button type="button" class="nav-btn" data-page="${item.id}">${item.label}</button>`;
+    }
+    const tip = `Upgrade your package to access ${String(item.label).replace(/^[^A-Za-z0-9]+/, '')}.`;
+    return `<button type="button" class="nav-btn nav-btn-locked" data-page="${item.id}" data-locked="1" title="${Utils.escHtml(tip)}" aria-label="${Utils.escHtml(tip)}">🔒 ${item.label}</button>`;
+  },
+
   pages: {},
   /** Page script bundles ? Android loads these on first open (Windows index still preloads most). */
   _pageBundles: {
@@ -1008,6 +1066,22 @@ const App = {
     });
 
     document.getElementById('sidebar-nav').addEventListener('click', (e) => {
+      const toggle = e.target.closest('[data-nav-group-toggle]');
+      if (toggle) {
+        e.preventDefault();
+        e.stopPropagation();
+        const gid = toggle.getAttribute('data-nav-group-toggle');
+        const wrap = toggle.closest('.nav-group');
+        const open = !wrap?.classList.contains('is-open');
+        this._setNavGroupOpen(gid, open);
+        wrap?.classList.toggle('is-open', open);
+        const panel = wrap?.querySelector('.nav-group-items');
+        if (panel) panel.classList.toggle('hidden', !open);
+        const chev = toggle.querySelector('.nav-group-chevron');
+        if (chev) chev.textContent = open ? '▾' : '▸';
+        toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+        return;
+      }
       const btn = e.target.closest('.nav-btn');
       if (!btn?.dataset.page) return;
       this.closeSidebar();
@@ -2714,20 +2788,57 @@ const App = {
   renderNav() {
     const nav = document.getElementById('sidebar-nav');
     if (!nav) return;
-    const enforcement = !!(this.entitlements?.enforcement);
-    nav.innerHTML = this.navItems
-      .filter((item) => Utils.canAccessByRole(this.user, item.id))
-      .map((item) => {
-        const entitled = !enforcement || Utils.isPageEntitled(item.id);
-        if (entitled) {
-          return `<button type="button" class="nav-btn" data-page="${item.id}">${item.label}</button>`;
-        }
-        const tip = `Upgrade your package to access ${String(item.label).replace(/^[^A-Za-z0-9]+/, '')}.`;
-        return `<button type="button" class="nav-btn nav-btn-locked" data-page="${item.id}" data-locked="1" title="${Utils.escHtml(tip)}" aria-label="${Utils.escHtml(tip)}">🔒 ${item.label}</button>`;
-      })
-      .join('');
+    const byId = (id) => this._navItemById(id);
+    const canSee = (id) => {
+      const item = byId(id);
+      return !!(item && Utils.canAccessByRole(this.user, id));
+    };
+
+    // Auto-expand group that contains the active page
+    const active = this.currentPage;
+    (this.navGroups || []).forEach((g) => {
+      if (g.type === 'group' && (g.items || []).includes(active)) this._setNavGroupOpen(g.id, true);
+    });
+
+    const placed = new Set();
+    let html = '';
+    for (const g of (this.navGroups || [])) {
+      if (g.type === 'item') {
+        if (!canSee(g.id)) continue;
+        html += this._renderNavPageBtn(byId(g.id));
+        placed.add(g.id);
+        continue;
+      }
+      const kids = (g.items || []).map(byId).filter((it) => it && canSee(it.id));
+      if (!kids.length) continue;
+      kids.forEach((it) => placed.add(it.id));
+      const open = this._isNavGroupOpen(g.id);
+      html += `<div class="nav-group${open ? ' is-open' : ''}" data-nav-group="${g.id}">
+        <button type="button" class="nav-btn nav-group-toggle" data-nav-group-toggle="${g.id}" aria-expanded="${open ? 'true' : 'false'}">
+          <span class="nav-group-label">${g.label}</span>
+          <span class="nav-group-chevron" aria-hidden="true">${open ? '▾' : '▸'}</span>
+        </button>
+        <div class="nav-group-items"${open ? '' : ' hidden'}>
+          ${kids.map((it) => this._renderNavPageBtn(it)).join('')}
+        </div>
+      </div>`;
+    }
+    // Safety: any navItems not listed in groups still appear (no feature loss)
+    for (const item of this.navItems) {
+      if (placed.has(item.id)) continue;
+      if (item.id === 'settings') continue; // footer
+      if (!canSee(item.id)) continue;
+      html += this._renderNavPageBtn(item);
+    }
+
+    nav.innerHTML = html;
     const setBtn = document.querySelector('.sidebar-footer [data-page="settings"]');
     if (setBtn) setBtn.classList.toggle('hidden', !Utils.canAccessByRole(this.user, 'settings'));
+
+    // Mark active leaf
+    nav.querySelectorAll('.nav-btn[data-page]').forEach((b) => {
+      b.classList.toggle('active', b.dataset.page === this.currentPage && !b.dataset.locked);
+    });
   },
 
   async navigate(page) {
@@ -2762,6 +2873,23 @@ const App = {
     }
     document.querySelectorAll('.nav-btn').forEach(b =>
       b.classList.toggle('active', b.dataset.page === page && !b.dataset.locked));
+    // Keep the active page's far-left group expanded
+    (this.navGroups || []).forEach((g) => {
+      if (g.type === 'group' && (g.items || []).includes(page)) {
+        this._setNavGroupOpen(g.id, true);
+        const wrap = document.querySelector(`.nav-group[data-nav-group="${g.id}"]`);
+        if (wrap) {
+          wrap.classList.add('is-open');
+          wrap.querySelector('.nav-group-items')?.classList.remove('hidden');
+          const t = wrap.querySelector('[data-nav-group-toggle]');
+          if (t) {
+            t.setAttribute('aria-expanded', 'true');
+            const c = t.querySelector('.nav-group-chevron');
+            if (c) c.textContent = '▾';
+          }
+        }
+      }
+    });
     const titles = {
       dashboard: 'Dashboard', admin: 'Admin Panel', pos: 'Point of Sale', staff: 'Staff Portal', products: 'Products', categories: 'Categories',
       stock: 'Stock Management', customers: 'Customers', suppliers: 'Suppliers', expenses: 'Expenses',

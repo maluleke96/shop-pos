@@ -95,6 +95,140 @@ const AdminPage = {
     { id: 'developer', label: '🔧 Developer Mode', icon: 'developer' }
   ],
 
+  /**
+   * Admin sidebar layout only — regroups existing sections (no feature/design changes).
+   */
+  adminNavGroups: [
+    {
+      id: 'overview-monitoring',
+      label: '📊 OVERVIEW & MONITORING',
+      items: ['overview', 'analytics', 'sales-targets', 'dailyclose', 'alerts', 'activity', 'exceptions']
+    },
+    {
+      id: 'sales-pos',
+      label: '💳 SALES & POS',
+      items: [
+        'salesmgmt', 'pos-menu', 'saleexplorer', 'soldproducts', 'returnsmgmt', 'quotes', 'discounts',
+        'discount-report', 'printer', 'payments', 'receipt', 'cashiers', 'shifts', 'operating',
+        'cashdrawer', 'onaccount', 'taken-orders'
+      ]
+    },
+    {
+      id: 'products-inventory',
+      label: '📦 PRODUCTS & INVENTORY',
+      items: ['inventory', 'combos', 'menu-builder', 'importexport', 'customfields', 'formats']
+    },
+    {
+      id: 'customers-loyalty',
+      label: '👥 CUSTOMERS & LOYALTY',
+      items: ['top-customers', 'loyalty', 'customer-reports', 'referral-dept']
+    },
+    {
+      id: 'business-mgmt',
+      label: '🏢 BUSINESS MANAGEMENT',
+      items: ['business-manager', 'branches', 'business-modules', 'customize', 'approvals', 'mobile-app']
+    },
+    {
+      id: 'online-digital',
+      label: '🌐 ONLINE & DIGITAL',
+      items: ['online-orders', 'digital-signage', 'radio']
+    },
+    {
+      id: 'comm-marketing',
+      label: '📣 COMMUNICATION & MARKETING',
+      items: ['communication-center', 'promo-video-builder']
+    },
+    {
+      id: 'restaurant-ops',
+      label: '🍽️ RESTAURANT & OPERATIONS',
+      items: ['recipe', 'delivery-dept', 'opscompliance']
+    },
+    {
+      id: 'staff-hr',
+      label: '👷 STAFF & HR',
+      items: [
+        'staffhr', 'hr-workspace', 'hr-approvals', 'staffportal', 'hrcontracts',
+        'recruitment', 'payroll', 'employee-of-month'
+      ]
+    },
+    {
+      id: 'finance-accounting',
+      label: '💰 FINANCE & ACCOUNTING',
+      items: ['accounting-workspace', 'tax', 'tax-hub']
+    },
+    {
+      id: 'security-access',
+      label: '🔐 SECURITY & ACCESS',
+      items: ['security', 'permissions', 'device']
+    },
+    {
+      id: 'system-database',
+      label: '💾 SYSTEM & DATABASE',
+      items: ['backup', 'database', 'system-health', 'automation', 'developer']
+    }
+  ],
+
+  _adminGroupOpen: null,
+
+  _isAdminGroupOpen(groupId) {
+    try {
+      if (!this._adminGroupOpen) {
+        const raw = sessionStorage.getItem('shoppos_admin_nav_groups_open');
+        this._adminGroupOpen = raw ? JSON.parse(raw) : {};
+      }
+    } catch (_) {
+      this._adminGroupOpen = {};
+    }
+    return !!this._adminGroupOpen[groupId];
+  },
+
+  _setAdminGroupOpen(groupId, open) {
+    try {
+      if (!this._adminGroupOpen) this._adminGroupOpen = {};
+      if (open) this._adminGroupOpen[groupId] = true;
+      else delete this._adminGroupOpen[groupId];
+      sessionStorage.setItem('shoppos_admin_nav_groups_open', JSON.stringify(this._adminGroupOpen));
+    } catch (_) { /* */ }
+  },
+
+  _adminSectionBtnHtml(s, activeId) {
+    const locked = !Utils.canAccessAdminSection(this.app.user, s.id);
+    const tip = locked ? `Upgrade your package to access ${String(s.label).replace(/^[^A-Za-z0-9]+/, '')}.` : '';
+    const active = s.id === activeId && !locked;
+    return `<button type="button" class="admin-nav-btn ${active ? 'active' : ''} ${locked ? 'admin-nav-btn-locked' : ''}" data-section="${s.id}" ${locked ? `data-locked="1" title="${Utils.escHtml(tip)}"` : ''}>${locked ? '🔒 ' : ''}${this._adminNavLabel(s.label)}</button>`;
+  },
+
+  _renderAdminNavHtml(navSections) {
+    const byId = Object.fromEntries((navSections || []).map((s) => [s.id, s]));
+    const placed = new Set();
+    let html = '';
+    // Expand group containing current section
+    (this.adminNavGroups || []).forEach((g) => {
+      if ((g.items || []).includes(this.section)) this._setAdminGroupOpen(g.id, true);
+    });
+    for (const g of (this.adminNavGroups || [])) {
+      const kids = (g.items || []).map((id) => byId[id]).filter(Boolean);
+      if (!kids.length) continue;
+      kids.forEach((s) => placed.add(s.id));
+      const open = this._isAdminGroupOpen(g.id);
+      html += `<div class="admin-nav-group${open ? ' is-open' : ''}" data-admin-nav-group="${g.id}">
+        <button type="button" class="admin-nav-btn admin-nav-group-toggle" data-admin-nav-group-toggle="${g.id}" aria-expanded="${open ? 'true' : 'false'}">
+          <span class="admin-nav-group-label">${this._adminNavLabel(g.label)}</span>
+          <span class="admin-nav-group-chevron" aria-hidden="true">${open ? '▾' : '▸'}</span>
+        </button>
+        <div class="admin-nav-group-items"${open ? '' : ' hidden'}>
+          ${kids.map((s) => this._adminSectionBtnHtml(s, this.section)).join('')}
+        </div>
+      </div>`;
+    }
+    // Safety: any section not in a group still appears
+    for (const s of (navSections || [])) {
+      if (placed.has(s.id)) continue;
+      html += this._adminSectionBtnHtml(s, this.section);
+    }
+    return html;
+  },
+
   async render(el, app) {
     this.app = app;
     if (this.section === 'deliveries') this.section = 'delivery-dept';
@@ -121,11 +255,7 @@ const AdminPage = {
           <input type="search" id="admin-global-search" placeholder="Search admin… (Ctrl+K)" autocomplete="off" title="Search admin sections, products, staff — Ctrl+K">
           <div id="admin-search-results" class="search-dropdown hidden"></div>
         </div>
-        <nav class="admin-nav" id="admin-nav">${navSections.map(s => {
-          const locked = !Utils.canAccessAdminSection(app.user, s.id);
-          const tip = locked ? `Upgrade your package to access ${String(s.label).replace(/^[^A-Za-z0-9]+/, '')}.` : '';
-          return `<button type="button" class="admin-nav-btn ${s.id === this.section && !locked ? 'active' : ''} ${locked ? 'admin-nav-btn-locked' : ''}" data-section="${s.id}" ${locked ? `data-locked="1" title="${Utils.escHtml(tip)}"` : ''}>${locked ? '🔒 ' : ''}${this._adminNavLabel(s.label)}</button>`;
-        }).join('')}</nav>
+        <nav class="admin-nav" id="admin-nav">${this._renderAdminNavHtml(navSections)}</nav>
       </div>
       <div class="admin-content" id="admin-content"></div>
     </div>`;
@@ -155,9 +285,25 @@ const AdminPage = {
     }
 
     el.querySelector('#admin-nav').addEventListener('click', (e) => {
+      const toggle = e.target.closest('[data-admin-nav-group-toggle]');
+      if (toggle) {
+        e.preventDefault();
+        e.stopPropagation();
+        const gid = toggle.getAttribute('data-admin-nav-group-toggle');
+        const wrap = toggle.closest('.admin-nav-group');
+        const open = !wrap?.classList.contains('is-open');
+        this._setAdminGroupOpen(gid, open);
+        wrap?.classList.toggle('is-open', open);
+        wrap?.querySelector('.admin-nav-group-items')?.classList.toggle('hidden', !open);
+        const chev = toggle.querySelector('.admin-nav-group-chevron');
+        if (chev) chev.textContent = open ? '▾' : '▸';
+        toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+        return;
+      }
       const btn = e.target.closest('.admin-nav-btn');
-      if (!btn) return;
+      if (!btn || btn.hasAttribute('data-admin-nav-group-toggle')) return;
       const section = btn.dataset.section;
+      if (!section) return;
       if (btn.dataset.locked === '1' || !Utils.canAccessAdminSection(this.app.user, section)) {
         window.SaasFeatures?.loadCatalog?.().then(() => {
           window.SaasFeatures?.openLockedAdminSection?.(section);
@@ -170,7 +316,24 @@ const AdminPage = {
         if (this._sectionHistory.length > 30) this._sectionHistory.shift();
       }
       this.section = section;
-      el.querySelectorAll('.admin-nav-btn').forEach(b => b.classList.toggle('active', b.dataset.section === this.section && !b.dataset.locked));
+      el.querySelectorAll('.admin-nav-btn[data-section]').forEach(b => b.classList.toggle('active', b.dataset.section === this.section && !b.dataset.locked));
+      // Expand owning group
+      (this.adminNavGroups || []).forEach((g) => {
+        if ((g.items || []).includes(section)) {
+          this._setAdminGroupOpen(g.id, true);
+          const wrap = el.querySelector(`.admin-nav-group[data-admin-nav-group="${g.id}"]`);
+          if (wrap) {
+            wrap.classList.add('is-open');
+            wrap.querySelector('.admin-nav-group-items')?.classList.remove('hidden');
+            const t = wrap.querySelector('[data-admin-nav-group-toggle]');
+            if (t) {
+              t.setAttribute('aria-expanded', 'true');
+              const c = t.querySelector('.admin-nav-group-chevron');
+              if (c) c.textContent = '▾';
+            }
+          }
+        }
+      });
       this.toggleOpsComplianceLayout(this.section === 'opscompliance');
       this.renderSection(document.getElementById('admin-content'));
       window.App?._saveNavState?.();
@@ -351,11 +514,7 @@ const AdminPage = {
     const visible = this.sections.filter((s) =>
       Utils.canAccessAdminSectionByRole(this.app.user, s.id) && (!studioLock || studioLock.has(s.id))
     );
-    nav.innerHTML = visible.map((s) => {
-      const locked = !Utils.canAccessAdminSection(this.app.user, s.id);
-      const tip = locked ? `Upgrade your package to access ${String(s.label).replace(/^[^A-Za-z0-9]+/, '')}.` : '';
-      return `<button type="button" class="admin-nav-btn ${s.id === this.section && !locked ? 'active' : ''} ${locked ? 'admin-nav-btn-locked' : ''}" data-section="${s.id}" ${locked ? `data-locked="1" title="${Utils.escHtml(tip)}"` : ''}>${locked ? '🔒 ' : ''}${this._adminNavLabel(s.label)}</button>`;
-    }).join('');
+    nav.innerHTML = this._renderAdminNavHtml(visible);
   },
 
   async saveWebGlobalSettings(payload) {

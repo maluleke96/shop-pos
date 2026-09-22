@@ -692,6 +692,21 @@ body[data-active-screen="delivery-dept"] .sidebar-backdrop {
 }
 .nav-btn:hover { background: #334155; color: #fff; }
 .nav-btn.active { background: var(--primary); color: #fff; }
+.nav-group { margin-bottom: 2px; }
+.nav-group-toggle {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+}
+.nav-group-chevron { opacity: 0.7; font-size: 12px; flex-shrink: 0; }
+.nav-group-items { padding-left: 10px; margin: 2px 0 6px; border-left: 1px solid #334155; }
+.nav-group-items .nav-btn { font-size: 13px; padding: 8px 10px; }
+.admin-nav-group { margin-bottom: 2px; }
+.admin-nav-group-toggle {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  font-weight: 600;
+}
+.admin-nav-group-chevron { opacity: 0.7; font-size: 12px; flex-shrink: 0; }
+.admin-nav-group-items { padding-left: 8px; margin: 2px 0 6px; border-left: 1px solid var(--border); }
+.admin-nav-group-items .admin-nav-btn { font-size: 12px; padding: 8px 10px; }
 .nav-btn-locked,
 .admin-nav-btn-locked {
   opacity: 0.72;
