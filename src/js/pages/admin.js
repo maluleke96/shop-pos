@@ -101,12 +101,16 @@ const AdminPage = {
   adminNavGroups: [
     {
       id: 'overview-monitoring',
-      label: '📊 OVERVIEW & MONITORING',
+      label: 'Overview & Monitoring',
+      icon: '📊',
+      accent: '#2563eb',
       items: ['overview', 'analytics', 'sales-targets', 'dailyclose', 'alerts', 'activity', 'exceptions']
     },
     {
       id: 'sales-pos',
-      label: '💳 SALES & POS',
+      label: 'Sales & POS',
+      icon: '💳',
+      accent: '#16a34a',
       items: [
         'salesmgmt', 'pos-menu', 'saleexplorer', 'soldproducts', 'returnsmgmt', 'quotes', 'discounts',
         'discount-report', 'printer', 'payments', 'receipt', 'cashiers', 'shifts', 'operating',
@@ -115,37 +119,51 @@ const AdminPage = {
     },
     {
       id: 'products-inventory',
-      label: '📦 PRODUCTS & INVENTORY',
+      label: 'Products & Inventory',
+      icon: '📦',
+      accent: '#ea580c',
       items: ['inventory', 'combos', 'menu-builder', 'importexport', 'customfields', 'formats']
     },
     {
       id: 'customers-loyalty',
-      label: '👥 CUSTOMERS & LOYALTY',
+      label: 'Customers & Loyalty',
+      icon: '👥',
+      accent: '#0d9488',
       items: ['top-customers', 'loyalty', 'customer-reports', 'referral-dept']
     },
     {
       id: 'business-mgmt',
-      label: '🏢 BUSINESS MANAGEMENT',
+      label: 'Business Management',
+      icon: '🏢',
+      accent: '#4f46e5',
       items: ['business-manager', 'branches', 'business-modules', 'customize', 'approvals', 'mobile-app']
     },
     {
       id: 'online-digital',
-      label: '🌐 ONLINE & DIGITAL',
+      label: 'Online & Digital',
+      icon: '🌐',
+      accent: '#0284c7',
       items: ['online-orders', 'digital-signage', 'radio']
     },
     {
       id: 'comm-marketing',
-      label: '📣 COMMUNICATION & MARKETING',
+      label: 'Communication & Marketing',
+      icon: '📣',
+      accent: '#db2777',
       items: ['communication-center', 'promo-video-builder']
     },
     {
       id: 'restaurant-ops',
-      label: '🍽️ RESTAURANT & OPERATIONS',
+      label: 'Restaurant & Operations',
+      icon: '🍽️',
+      accent: '#d97706',
       items: ['recipe', 'delivery-dept', 'opscompliance']
     },
     {
       id: 'staff-hr',
-      label: '👷 STAFF & HR',
+      label: 'Staff & HR',
+      icon: '👷',
+      accent: '#7c3aed',
       items: [
         'staffhr', 'hr-workspace', 'hr-approvals', 'staffportal', 'hrcontracts',
         'recruitment', 'payroll', 'employee-of-month'
@@ -153,17 +171,23 @@ const AdminPage = {
     },
     {
       id: 'finance-accounting',
-      label: '💰 FINANCE & ACCOUNTING',
+      label: 'Finance & Accounting',
+      icon: '💰',
+      accent: '#059669',
       items: ['accounting-workspace', 'tax', 'tax-hub']
     },
     {
       id: 'security-access',
-      label: '🔐 SECURITY & ACCESS',
+      label: 'Security & Access',
+      icon: '🔐',
+      accent: '#dc2626',
       items: ['security', 'permissions', 'device']
     },
     {
       id: 'system-database',
-      label: '💾 SYSTEM & DATABASE',
+      label: 'System & Database',
+      icon: '💾',
+      accent: '#475569',
       items: ['backup', 'database', 'system-health', 'automation', 'developer']
     }
   ],
@@ -195,7 +219,8 @@ const AdminPage = {
     const locked = !Utils.canAccessAdminSection(this.app.user, s.id);
     const tip = locked ? `Upgrade your package to access ${String(s.label).replace(/^[^A-Za-z0-9]+/, '')}.` : '';
     const active = s.id === activeId && !locked;
-    return `<button type="button" class="admin-nav-btn ${active ? 'active' : ''} ${locked ? 'admin-nav-btn-locked' : ''}" data-section="${s.id}" ${locked ? `data-locked="1" title="${Utils.escHtml(tip)}"` : ''}>${locked ? '🔒 ' : ''}${this._adminNavLabel(s.label)}</button>`;
+    const label = this._adminNavLabel(s.label);
+    return `<button type="button" class="admin-nav-btn admin-nav-sub ${active ? 'active' : ''} ${locked ? 'admin-nav-btn-locked' : ''}" data-section="${s.id}" ${locked ? `data-locked="1" title="${Utils.escHtml(tip)}"` : ''}><span class="admin-nav-sub-dot" aria-hidden="true"></span><span class="admin-nav-sub-label">${locked ? '🔒 ' : ''}${label}</span></button>`;
   },
 
   _renderAdminNavHtml(navSections) {
@@ -211,9 +236,13 @@ const AdminPage = {
       if (!kids.length) continue;
       kids.forEach((s) => placed.add(s.id));
       const open = this._isAdminGroupOpen(g.id);
-      html += `<div class="admin-nav-group${open ? ' is-open' : ''}" data-admin-nav-group="${g.id}">
+      const accent = g.accent || '#2563eb';
+      const icon = g.icon || '📁';
+      html += `<div class="admin-nav-group${open ? ' is-open' : ''}" data-admin-nav-group="${g.id}" style="--group-accent:${accent}">
         <button type="button" class="admin-nav-btn admin-nav-group-toggle" data-admin-nav-group-toggle="${g.id}" aria-expanded="${open ? 'true' : 'false'}">
+          <span class="admin-nav-group-icon" aria-hidden="true">${icon}</span>
           <span class="admin-nav-group-label">${this._adminNavLabel(g.label)}</span>
+          <span class="admin-nav-group-count">${kids.length}</span>
           <span class="admin-nav-group-chevron" aria-hidden="true">${open ? '▾' : '▸'}</span>
         </button>
         <div class="admin-nav-group-items${open ? '' : ' hidden'}">

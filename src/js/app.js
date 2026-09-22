@@ -41,15 +41,15 @@ const App = {
    */
   navGroups: [
     { type: 'item', id: 'dashboard' },
-    { type: 'group', id: 'sales', label: '💳 SALES', items: ['pos', 'quotes', 'returns', 'layby'] },
-    { type: 'group', id: 'products-stock', label: '📦 PRODUCTS & STOCK', items: ['products', 'categories', 'stock', 'purchase-orders'] },
-    { type: 'group', id: 'customers', label: '👥 CUSTOMERS', items: ['customers', 'giftcards'] },
-    { type: 'group', id: 'suppliers-expenses', label: '🚚 SUPPLIERS & EXPENSES', items: ['suppliers', 'expenses'] },
-    { type: 'group', id: 'restaurant', label: '🍽️ RESTAURANT', items: ['restaurant', 'recipe'] },
-    { type: 'group', id: 'staff-users', label: '👷 STAFF & USERS', items: ['staff', 'users'] },
-    { type: 'group', id: 'finance', label: '💰 FINANCE', items: ['operations', 'bookkeeping'] },
-    { type: 'group', id: 'reports', label: '📈 REPORTS', items: ['reports'] },
-    { type: 'group', id: 'communication', label: '💬 COMMUNICATION', items: ['whatsapp', 'document-hub'] },
+    { type: 'group', id: 'sales', label: 'Sales', icon: '💳', accent: '#22c55e', items: ['pos', 'quotes', 'returns', 'layby'] },
+    { type: 'group', id: 'products-stock', label: 'Products & Stock', icon: '📦', accent: '#f97316', items: ['products', 'categories', 'stock', 'purchase-orders'] },
+    { type: 'group', id: 'customers', label: 'Customers', icon: '👥', accent: '#14b8a6', items: ['customers', 'giftcards'] },
+    { type: 'group', id: 'suppliers-expenses', label: 'Suppliers & Expenses', icon: '🚚', accent: '#38bdf8', items: ['suppliers', 'expenses'] },
+    { type: 'group', id: 'restaurant', label: 'Restaurant', icon: '🍽️', accent: '#f59e0b', items: ['restaurant', 'recipe'] },
+    { type: 'group', id: 'staff-users', label: 'Staff & Users', icon: '👷', accent: '#a855f7', items: ['staff', 'users'] },
+    { type: 'group', id: 'finance', label: 'Finance', icon: '💰', accent: '#10b981', items: ['operations', 'bookkeeping'] },
+    { type: 'group', id: 'reports', label: 'Reports', icon: '📈', accent: '#3b82f6', items: ['reports'] },
+    { type: 'group', id: 'communication', label: 'Communication', icon: '💬', accent: '#ec4899', items: ['whatsapp', 'document-hub'] },
     { type: 'item', id: 'audit' },
     { type: 'item', id: 'features' },
     { type: 'item', id: 'admin' }
@@ -2816,9 +2816,13 @@ const App = {
       if (!kids.length) continue;
       kids.forEach((it) => placed.add(it.id));
       const open = this._isNavGroupOpen(g.id);
-      html += `<div class="nav-group${open ? ' is-open' : ''}" data-nav-group="${g.id}">
+      const accent = g.accent || '#3b82f6';
+      const icon = g.icon || '📁';
+      html += `<div class="nav-group${open ? ' is-open' : ''}" data-nav-group="${g.id}" style="--group-accent:${accent}">
         <button type="button" class="nav-btn nav-group-toggle" data-nav-group-toggle="${g.id}" aria-expanded="${open ? 'true' : 'false'}">
+          <span class="nav-group-icon" aria-hidden="true">${icon}</span>
           <span class="nav-group-label">${g.label}</span>
+          <span class="nav-group-count">${kids.length}</span>
           <span class="nav-group-chevron" aria-hidden="true">${open ? '▾' : '▸'}</span>
         </button>
         <div class="nav-group-items${open ? '' : ' hidden'}">
