@@ -392,6 +392,52 @@ function updateShopMeta(id, data, actor) {
   return getShop(id);
 }
 
+/**
+ * Delete a shop from Platform Control.
+ * Safety: shop must be SUSPENDED first (cannot delete an online/active customer).
+ * Does not destroy the Railway project — only removes platform registration records.
+ */
+function deleteShop(id, actor) {
+  requireEnabled();
+  ensureSchema();
+  const row = dbGet('SELECT * FROM platform_shops WHERE id = ?', [String(id)]);
+  if (!row) throw new Error('Shop not found');
+  assertNotChisaFood(row);
+  const status = String(row.subscription_status || '').toUpperCase();
+  if (status !== 'SUSPENDED') {
+    throw new Error('Suspend this shop first. Online / active shops cannot be deleted until subscription status is SUSPENDED.');
+  }
+  const by = actor?.username || 'platform';
+  const snap = mapShop(row);
+
+  // Related platform rows (best-effort; tables may vary)
+  const tables = [
+    ['platform_shop_addons', 'shop_key'],
+    ['platform_shop_overrides', 'shop_key'],
+    ['platform_shop_assignments', 'shop_key'],
+    ['platform_shop_activations', 'shop_id'],
+    ['platform_devices', 'shop_id'],
+    ['platform_contract_acceptances', 'shop_id'],
+    ['platform_service_fees', 'scope_id'],
+    ['platform_provision_jobs', 'shop_id'],
+    ['platform_audit_log', 'shop_id']
+  ];
+  for (const [table, col] of tables) {
+    try {
+      dbRun(`DELETE FROM ${table} WHERE ${col} = ?`, [id]);
+    } catch (_) { /* table/column may not exist */ }
+  }
+  dbRun('DELETE FROM platform_shops WHERE id = ?', [id]);
+  audit(by, 'shop_deleted', id, {
+    shop_name: snap.shop_name,
+    owner_email: snap.owner_email,
+    shop_url: snap.shop_url,
+    railway_project_id: snap.railway_project_id || '',
+    note: 'Platform record removed after SUSPENDED. Railway project not destroyed.'
+  });
+  return { success: true, data: { id, deleted: true, shop_name: snap.shop_name } };
+}
+
 function assignPackageAndAddons(id, data, actor) {
   requireEnabled();
   ensureSchema();
@@ -811,6 +857,7 @@ module.exports = {
   getShop,
   createShop,
   updateShopMeta,
+  deleteShop,
   assignPackageAndAddons,
   setOverrides,
   setSubscriptionStatus,

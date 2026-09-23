@@ -5867,6 +5867,10 @@ module.exports = {
         const r = shops.updateShopMeta(id, d || {}, a);
         return r?.data != null ? r.data : r;
       },
+      platformDeleteShop: (id, a) => {
+        const r = shops.deleteShop(id, a);
+        return r?.data != null ? r.data : r;
+      },
       platformAssignShop: (id, d, a) => {
         const r = shops.assignPackageAndAddons(id, d || {}, a);
         return r?.data != null ? r.data : r;

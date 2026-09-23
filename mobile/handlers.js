@@ -3175,6 +3175,10 @@ add('web:adminAnalytics', wrapSync((filters, actor) => {
     const a = platformActor(tok);
     return s.platformUpdateShop(id, d || {}, a);
   }));
+  add('platform:deleteShop', wrapSync((tok, id) => {
+    const a = platformActor(tok);
+    return s.platformDeleteShop(id, a);
+  }));
   add('platform:assignShop', wrapSync((tok, id, d) => {
     const a = platformActor(tok);
     return s.platformAssignShop(id, d || {}, a);

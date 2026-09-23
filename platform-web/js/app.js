@@ -7,6 +7,7 @@ const PlatformApp = {
   addons: [],
   shops: [],
   selectedShop: null,
+  editingShopId: null,
   provisionPreview: null,
   provisionStatus: '',
   provisionError: '',
@@ -89,6 +90,110 @@ const PlatformApp = {
 
   esc(s) {
     return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  },
+
+  isoToDateInput(iso) {
+    if (!iso) return '';
+    const s = String(iso);
+    if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+    const d = new Date(s);
+    if (Number.isNaN(d.getTime())) return '';
+    return d.toISOString().slice(0, 10);
+  },
+
+  collectCustomerForm() {
+    const addon_ids = [...document.querySelectorAll('#sh-addons input:checked')].map((el) => el.value);
+    const start = document.getElementById('sh-start')?.value;
+    const expiry = document.getElementById('sh-expiry')?.value;
+    const toIso = (d, end) => d ? new Date(d + (end ? 'T23:59:59.000Z' : 'T00:00:00.000Z')).toISOString() : null;
+    return {
+      shop_name: document.getElementById('sh-name')?.value.trim() || '',
+      owner_name: document.getElementById('sh-owner')?.value.trim() || '',
+      owner_email: document.getElementById('sh-email')?.value.trim() || '',
+      contact_phone: document.getElementById('sh-phone')?.value.trim() || '',
+      whatsapp: document.getElementById('sh-whatsapp')?.value.trim() || '',
+      owner_id_number: document.getElementById('sh-idnum')?.value.trim() || '',
+      company_name: document.getElementById('sh-company')?.value.trim() || '',
+      company_registration: document.getElementById('sh-compreg')?.value.trim() || '',
+      address: document.getElementById('sh-address')?.value.trim() || '',
+      postal_address: document.getElementById('sh-postal')?.value.trim() || '',
+      shop_address: document.getElementById('sh-shopaddr')?.value.trim() || '',
+      shop_phone: document.getElementById('sh-shopphone')?.value.trim() || '',
+      branch_info: document.getElementById('sh-branch')?.value.trim() || '',
+      package_id: document.getElementById('sh-pkg')?.value || null,
+      addon_ids,
+      subscription_status: document.getElementById('sh-status')?.value || 'ACTIVE',
+      subscription_start: toIso(start, false),
+      subscription_expiry: toIso(expiry, true),
+      grace_days: Number(document.getElementById('sh-grace')?.value || 3),
+      notes: document.getElementById('sh-notes')?.value.trim() || ''
+    };
+  },
+
+  fillCustomerForm(shop) {
+    if (!shop) return;
+    const set = (id, val) => {
+      const el = document.getElementById(id);
+      if (el) el.value = val == null ? '' : String(val);
+    };
+    set('sh-name', shop.shop_name || '');
+    set('sh-owner', shop.owner_name || '');
+    set('sh-email', shop.owner_email || '');
+    set('sh-phone', shop.contact_phone || '');
+    set('sh-whatsapp', shop.whatsapp || shop.contact_phone || '');
+    set('sh-idnum', shop.owner_id_number || '');
+    set('sh-company', shop.company_name || '');
+    set('sh-compreg', shop.company_registration || '');
+    set('sh-address', shop.address || '');
+    set('sh-postal', shop.postal_address || '');
+    set('sh-shopaddr', shop.shop_address || shop.address || '');
+    set('sh-shopphone', shop.shop_phone || shop.contact_phone || '');
+    set('sh-branch', shop.branch_info || '');
+    set('sh-pkg', shop.package_id || '');
+    set('sh-status', shop.subscription_status || 'ACTIVE');
+    set('sh-start', this.isoToDateInput(shop.subscription_start || shop.trial_start || shop.countdown?.start_date));
+    set('sh-expiry', this.isoToDateInput(shop.subscription_expiry || shop.trial_end || shop.countdown?.expiry_date));
+    set('sh-grace', shop.grace_days != null ? shop.grace_days : (shop.countdown?.grace_period_days ?? 3));
+    set('sh-notes', shop.notes || '');
+    const addons = new Set(shop.addon_ids || []);
+    document.querySelectorAll('#sh-addons input[type=checkbox]').forEach((el) => {
+      el.checked = addons.has(el.value);
+    });
+    try {
+      document.getElementById('sh-name')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    } catch (_) { /* */ }
+  },
+
+  async beginEditShop(id) {
+    const shop = await PlatformAPI.getShop(id);
+    this.selectedShop = shop;
+    this.editingShopId = shop.id;
+    this.error = '';
+    this.message = `Editing ${shop.shop_name} — update fields and Save changes`;
+    this.render();
+    this.fillCustomerForm(shop);
+  },
+
+  async deleteShopFlow(id) {
+    const shop = this.shops.find((x) => x.id === id) || (this.selectedShop?.id === id ? this.selectedShop : null) || await PlatformAPI.getShop(id);
+    const status = String(shop?.subscription_status || '').toUpperCase();
+    if (status !== 'SUSPENDED') {
+      throw new Error('Suspend this shop first (set Status to SUSPENDED and Update status). Online / active shops cannot be deleted.');
+    }
+    const ok = window.confirm(
+      `Delete "${shop.shop_name}" from Platform Control?\n\n` +
+      `This removes the Platform customer record.\n` +
+      `It does NOT destroy the Railway project.\n\n` +
+      `Shop ID: ${shop.id}`
+    );
+    if (!ok) return;
+    await PlatformAPI.deleteShop(id);
+    if (this.selectedShop?.id === id) this.selectedShop = null;
+    if (this.editingShopId === id) this.editingShopId = null;
+    await this.loadAll();
+    this.message = `Deleted ${shop.shop_name} from Platform (was SUSPENDED)`;
+    this.error = '';
+    this.render();
   },
 
   openSignedContractWindow(doc) {
@@ -184,6 +289,7 @@ const PlatformApp = {
 
   renderShops() {
     const s = this.selectedShop;
+    const editing = !!this.editingShopId;
     const flags = s?.entitlements?.flags || {};
     const flagRows = Object.entries(flags).map(([k, v]) =>
       `<tr><td>${this.esc(k)}</td><td>${v ? '<span class="badge sellable">ON</span>' : '<span class="badge">OFF</span>'}</td></tr>`
@@ -192,8 +298,11 @@ const PlatformApp = {
     const defEnd = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10);
     return `<div class="grid2">
       <div class="card">
-        <h2>Create Customer</h2>
-        <p class="muted">Registers the customer on the platform. Provisioning (Railway) is a separate step after create.</p>
+        <h2>${editing ? 'Edit Customer' : 'Create Customer'}</h2>
+        <p class="muted">${editing
+          ? `Editing <strong>${this.esc(this.editingShopId)}</strong> — change fields below and save. Package/status updates apply immediately.`
+          : 'Registers the customer on the platform. Provisioning (Railway) is a separate step after create.'}</p>
+        ${editing ? `<input type="hidden" id="sh-edit-id" value="${this.esc(this.editingShopId)}">` : ''}
         <div class="grid2" style="gap:8px">
           <div style="margin:8px 0"><label>Shop name *</label><input id="sh-name" placeholder="Acme Cafe"></div>
           <div style="margin:8px 0"><label>Owner / customer name *</label><input id="sh-owner" placeholder="Jane Owner"></div>
@@ -235,7 +344,12 @@ const PlatformApp = {
             </select></div>
         </div>
         <div style="margin:8px 0"><label>Notes</label><textarea id="sh-notes" rows="2" placeholder="Internal notes (optional)"></textarea></div>
-        <button class="btn" data-act="create-shop">Create Customer</button>
+        <div class="row" style="gap:8px;flex-wrap:wrap">
+          ${editing
+            ? `<button class="btn" data-act="save-shop-edit">Save changes</button>
+               <button class="btn secondary" data-act="cancel-shop-edit">Cancel edit</button>`
+            : `<button class="btn" data-act="create-shop">Create Customer</button>`}
+        </div>
       </div>
       <div class="card">
         <h2>Customers / Shops (${this.shops.length})</h2>
@@ -248,24 +362,36 @@ const PlatformApp = {
           </select>
           <button class="btn secondary" data-act="filter-shops">Filter</button>
         </div>
+        <p class="muted" style="margin:0 0 8px;font-size:12px">Delete is only allowed after the shop is <strong>SUSPENDED</strong>. Online / active shops cannot be deleted.</p>
         <table class="table"><thead><tr>
           <th>Shop</th><th>Owner</th><th>Package</th><th>Status</th><th>Deploy</th><th></th>
         </tr></thead><tbody>
-          ${this.shops.map((sh) => `<tr>
+          ${this.shops.map((sh) => {
+            const suspended = String(sh.subscription_status || '').toUpperCase() === 'SUSPENDED';
+            return `<tr>
             <td><strong>${this.esc(sh.shop_name)}</strong><div class="muted">${this.esc(sh.id)}</div>
               <div class="muted">${this.esc(sh.shop_url || '—')}</div></td>
             <td>${this.esc(sh.owner_name || '—')}<div class="muted">${this.esc(sh.owner_email || '')}</div></td>
             <td class="muted">${this.esc(sh.package_name || '—')}<div>${(sh.addon_names || []).map((n) => this.esc(n)).join(', ') || ''}</div></td>
-            <td><span class="badge ${sh.subscription_status === 'SUSPENDED' ? '' : 'sellable'}">${this.esc(sh.subscription_status)}</span>
+            <td><span class="badge ${suspended ? '' : 'sellable'}">${this.esc(sh.subscription_status)}</span>
               <div class="muted">${sh.is_active ? 'active' : 'inactive'}</div></td>
             <td class="muted">${this.esc(sh.deployment_status)}</td>
-            <td><button class="btn secondary" data-open-shop="${this.esc(sh.id)}">Open</button></td>
-          </tr>`).join('') || '<tr><td colspan="6" class="muted">No shops yet</td></tr>'}
+            <td style="white-space:nowrap">
+              <button class="btn secondary" data-open-shop="${this.esc(sh.id)}">Open</button>
+              <button class="btn secondary" data-edit-shop="${this.esc(sh.id)}">Edit</button>
+              <button class="btn secondary" data-delete-shop="${this.esc(sh.id)}" title="${suspended ? 'Delete suspended shop from Platform' : 'Suspend this shop first, then delete'}" ${suspended ? '' : 'disabled'}>Delete</button>
+            </td>
+          </tr>`;
+          }).join('') || '<tr><td colspan="6" class="muted">No shops yet</td></tr>'}
         </tbody></table>
       </div>
     </div>
     ${s ? `<div class="card" style="margin-top:16px">
       <h2>${this.esc(s.shop_name)} <span class="muted">${this.esc(s.id)}</span></h2>
+      <div class="row" style="gap:8px;flex-wrap:wrap;margin-bottom:12px">
+        <button class="btn secondary" data-edit-shop="${this.esc(s.id)}">Edit shop details</button>
+        <button class="btn secondary" data-delete-shop="${this.esc(s.id)}" ${String(s.subscription_status || '').toUpperCase() === 'SUSPENDED' ? '' : 'disabled'} title="${String(s.subscription_status || '').toUpperCase() === 'SUSPENDED' ? 'Delete from Platform' : 'Suspend first, then delete'}">Delete shop</button>
+      </div>
       <div class="grid2">
         <div>
           <h3>Package &amp; add-ons</h3>
@@ -821,45 +947,54 @@ const PlatformApp = {
     });
     root.querySelector('[data-act="create-shop"]')?.addEventListener('click', async () => {
       try {
-        const addon_ids = [...document.querySelectorAll('#sh-addons input:checked')].map((el) => el.value);
-        const name = document.getElementById('sh-name').value.trim();
-        const owner = document.getElementById('sh-owner').value.trim();
-        const email = document.getElementById('sh-email').value.trim();
-        const pkg = document.getElementById('sh-pkg').value || null;
-        if (!name || !owner || !email || !pkg) {
+        const payload = this.collectCustomerForm();
+        if (!payload.shop_name || !payload.owner_name || !payload.owner_email || !payload.package_id) {
           throw new Error('Shop name, owner name, email, and package are required');
         }
-        const start = document.getElementById('sh-start')?.value;
-        const expiry = document.getElementById('sh-expiry')?.value;
-        const toIso = (d, end) => d ? new Date(d + (end ? 'T23:59:59.000Z' : 'T00:00:00.000Z')).toISOString() : null;
-        const r = await PlatformAPI.createShop({
-          shop_name: name,
-          owner_name: owner,
-          owner_email: email,
-          contact_phone: document.getElementById('sh-phone').value.trim(),
-          whatsapp: document.getElementById('sh-whatsapp')?.value.trim() || '',
-          owner_id_number: document.getElementById('sh-idnum')?.value.trim() || '',
-          company_name: document.getElementById('sh-company')?.value.trim() || '',
-          company_registration: document.getElementById('sh-compreg')?.value.trim() || '',
-          address: document.getElementById('sh-address')?.value.trim() || '',
-          postal_address: document.getElementById('sh-postal')?.value.trim() || '',
-          shop_address: document.getElementById('sh-shopaddr')?.value.trim() || '',
-          shop_phone: document.getElementById('sh-shopphone')?.value.trim() || '',
-          branch_info: document.getElementById('sh-branch')?.value.trim() || '',
-          package_id: pkg,
-          addon_ids,
-          subscription_status: document.getElementById('sh-status').value,
-          subscription_start: toIso(start, false),
-          subscription_expiry: toIso(expiry, true),
-          grace_days: Number(document.getElementById('sh-grace')?.value || 3),
-          notes: document.getElementById('sh-notes')?.value.trim() || ''
-        });
+        const r = await PlatformAPI.createShop(payload);
         await this.loadAll();
+        this.editingShopId = null;
         this.selectedShop = await PlatformAPI.getShop(r.id || r.data?.id);
         this.message = 'Customer created — next: Provision for real';
         this.error = '';
         this.render();
       } catch (e) { this.error = e.message; this.render(); }
+    });
+    root.querySelector('[data-act="save-shop-edit"]')?.addEventListener('click', async () => {
+      try {
+        const id = this.editingShopId || document.getElementById('sh-edit-id')?.value;
+        if (!id) throw new Error('No shop selected for edit');
+        const payload = this.collectCustomerForm();
+        if (!payload.shop_name || !payload.owner_name || !payload.owner_email) {
+          throw new Error('Shop name, owner name, and email are required');
+        }
+        await PlatformAPI.updateShop(id, payload);
+        if (payload.package_id) {
+          await PlatformAPI.assignShop(id, {
+            package_id: payload.package_id,
+            addon_ids: payload.addon_ids || []
+          });
+        }
+        if (payload.subscription_status) {
+          await PlatformAPI.setShopStatus(id, payload.subscription_status);
+        }
+        await this.loadAll();
+        this.selectedShop = await PlatformAPI.getShop(id);
+        this.editingShopId = null;
+        this.message = 'Customer updated';
+        this.error = '';
+        this.render();
+      } catch (e) {
+        this.error = e.message;
+        this.render();
+        if (this.editingShopId && this.selectedShop) this.fillCustomerForm(this.selectedShop);
+      }
+    });
+    root.querySelector('[data-act="cancel-shop-edit"]')?.addEventListener('click', () => {
+      this.editingShopId = null;
+      this.message = 'Edit cancelled';
+      this.error = '';
+      this.render();
     });
     root.querySelector('[data-act="filter-shops"]')?.addEventListener('click', async () => {
       this.shopFilter = document.getElementById('sh-filter')?.value || '';
@@ -869,11 +1004,25 @@ const PlatformApp = {
     });
     root.querySelectorAll('[data-open-shop]').forEach((btn) => btn.addEventListener('click', async () => {
       try {
+        this.editingShopId = null;
         this.selectedShop = await PlatformAPI.getShop(btn.getAttribute('data-open-shop'));
         this.error = '';
         this.render();
       } catch (e) { this.error = e.message; this.render(); }
     }));
+    root.querySelectorAll('[data-edit-shop]').forEach((btn) => btn.addEventListener('click', async () => {
+      try {
+        await this.beginEditShop(btn.getAttribute('data-edit-shop'));
+      } catch (e) { this.error = e.message; this.render(); }
+    }));
+    root.querySelectorAll('[data-delete-shop]').forEach((btn) => btn.addEventListener('click', async () => {
+      try {
+        await this.deleteShopFlow(btn.getAttribute('data-delete-shop'));
+      } catch (e) { this.error = e.message; this.render(); }
+    }));
+    if (this.editingShopId && this.selectedShop?.id === this.editingShopId) {
+      this.fillCustomerForm(this.selectedShop);
+    }
     root.querySelector('[data-act="save-shop-assign"]')?.addEventListener('click', async () => {
       try {
         const id = this.selectedShop?.id;

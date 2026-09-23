@@ -44,6 +44,7 @@ const PlatformAPI = {
   getShop: (id) => PlatformAPI.call('platform:getShop', [id]),
   createShop: (d) => PlatformAPI.call('platform:createShop', [d]),
   updateShop: (id, d) => PlatformAPI.call('platform:updateShop', [id, d]),
+  deleteShop: (id) => PlatformAPI.call('platform:deleteShop', [id]),
   assignShop: (id, d) => PlatformAPI.call('platform:assignShop', [id, d]),
   setShopOverrides: (id, o) => PlatformAPI.call('platform:setShopOverrides', [id, o]),
   setShopStatus: (id, status) => PlatformAPI.call('platform:setShopStatus', [id, status]),
