@@ -50,7 +50,7 @@
           <div>
             <div class="mo-admin-kicker">Restaurant operations</div>
             <h3 style="margin:4px 0 6px">Manager Operations &amp; Daily Tasks</h3>
-            <p class="muted" style="margin:0;max-width:52ch">Daily duties, checklists, photo evidence, and owner reports — powered by live POS sales. Owners and managers sign in with the same password they use for Admin.</p>
+            <p class="muted" style="margin:0;max-width:52ch">Daily duties, checklists, photo evidence, and owner reports — powered by live POS sales and Admin Sales Targets. Linked to Staff HR, Staff Portal, and Employee of the Month. Owners and managers sign in with the same Admin password.</p>
           </div>
           <div class="mo-admin-actions">
             <a class="btn btn-primary" href="/manager-ops/" target="_blank" rel="noopener">Open Manager App</a>
@@ -157,29 +157,105 @@
     },
 
     async renderTasks(el) {
-      const r = await API.moListTasks({}, this.app.user);
-      if (!r.success) {
-        el.innerHTML = `<p class="error-msg">${esc(r.error || 'Could not load tasks')}</p>`;
+      const [tasksRes, peopleRes, checkRes] = await Promise.all([
+        API.moListTasks({ admin_view: true }, this.app.user),
+        API.moListPeople(this.app.user),
+        API.moChecklists()
+      ]);
+      if (!tasksRes.success) {
+        el.innerHTML = `<p class="error-msg">${esc(tasksRes.error || 'Could not load tasks')}</p>`;
         return;
       }
-      const rows = r.data || [];
+      const rows = tasksRes.data || [];
+      const people = peopleRes.success ? (peopleRes.data || []) : [];
+      const checklists = checkRes.success ? (checkRes.data || []) : [];
+      const peopleOpts = people.map((p) =>
+        `<option value="${p.id}">${esc(p.full_name || p.username)} (${esc(p.role)})</option>`
+      ).join('');
       el.innerHTML = `<div class="card"><div class="card-body">
         <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px">
-          <div><h4 style="margin:0">Daily tasks</h4><p class="muted" style="margin:4px 0 0">${rows.length} task(s) for today</p></div>
+          <div><h4 style="margin:0">Daily tasks</h4>
+            <p class="muted" style="margin:4px 0 0">${rows.length} task(s) — create and assign people + a responsible manager</p></div>
           <button type="button" class="btn btn-ghost" id="mo-refresh-tasks">Refresh</button>
         </div>
+
+        <div class="mo-create-task" style="padding:12px;border:1px solid var(--border,#e2e8f0);border-radius:10px;margin-bottom:16px;background:rgba(37,99,235,.04)">
+          <strong>Create &amp; assign a task</strong>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px;margin-top:10px">
+            <input class="form-input" id="mo-new-title" placeholder="Task name (e.g. Opening Checklist)">
+            <select class="form-input" id="mo-new-cat">
+              <option value="opening">Opening</option><option value="sales">Sales</option>
+              <option value="marketing">Marketing</option><option value="kitchen">Kitchen</option>
+              <option value="customers">Customers</option><option value="stock">Stock</option>
+              <option value="closing">Closing</option><option value="attendance">Attendance</option>
+              <option value="general">General</option>
+            </select>
+            <select class="form-input" id="mo-new-assignee"><option value="">Assign to person…</option>${peopleOpts}</select>
+            <select class="form-input" id="mo-new-manager"><option value="">Responsible manager…</option>${peopleOpts}</select>
+            <select class="form-input" id="mo-new-check"><option value="">Checklist (optional)</option>
+              ${checklists.map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select>
+          </div>
+          <button type="button" class="btn btn-primary" id="mo-create-task" style="margin-top:10px">Create task</button>
+        </div>
+
         <div class="table-wrap"><table class="data-table">
-          <thead><tr><th>Task</th><th>Category</th><th>Role</th><th>Due</th><th>Status</th></tr></thead>
-          <tbody>${rows.map((t) => `<tr>
+          <thead><tr><th>Task</th><th>Category</th><th>Assigned to</th><th>Manager</th><th>Due</th><th>Status</th><th></th></tr></thead>
+          <tbody>${rows.map((t) => `<tr data-id="${t.id}">
             <td><strong>${esc(t.title)}</strong>${t.is_primary ? ' <span class="muted">· primary</span>' : ''}</td>
             <td>${esc(t.category)}</td>
-            <td>${esc(t.assigned_role)}</td>
+            <td>${esc(t.assigned_user_name || t.assigned_role || '—')}</td>
+            <td>${esc(t.manager_user_name || '—')}</td>
             <td>${esc((t.due_at || '').slice(11, 16) || '—')}</td>
             <td><span class="tag ${statusClass(t.status)}">${statusLabel(t.status)}</span></td>
-          </tr>`).join('') || '<tr><td colspan="5" class="muted">No tasks yet — click Generate today\'s tasks</td></tr>'}
+            <td><button type="button" class="btn btn-ghost btn-sm mo-reassign" data-id="${t.id}">Assign</button></td>
+          </tr>`).join('') || '<tr><td colspan="7" class="muted">No tasks yet — create one above or Generate today\'s tasks</td></tr>'}
           </tbody></table></div>
       </div></div>`;
       el.querySelector('#mo-refresh-tasks')?.addEventListener('click', () => this.renderTasks(el));
+      el.querySelector('#mo-create-task')?.addEventListener('click', async () => {
+        const title = el.querySelector('#mo-new-title')?.value?.trim();
+        if (!title) return Utils.toast('Enter a task name', 'error');
+        const payload = {
+          title,
+          category: el.querySelector('#mo-new-cat')?.value,
+          assigned_user_id: Number(el.querySelector('#mo-new-assignee')?.value) || null,
+          manager_user_id: Number(el.querySelector('#mo-new-manager')?.value) || null,
+          checklist_template_id: Number(el.querySelector('#mo-new-check')?.value) || null,
+          is_primary: true
+        };
+        const out = await API.moCreateTask(payload, this.app.user);
+        if (!out.success) return Utils.toast(out.error || 'Create failed', 'error');
+        Utils.toast('Task created & assigned', 'success');
+        this.renderTasks(el);
+      });
+      el.querySelectorAll('.mo-reassign').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          const id = Number(btn.dataset.id);
+          const row = btn.closest('tr');
+          if (!row || row.nextElementSibling?.classList?.contains('mo-assign-row')) return;
+          const tr = document.createElement('tr');
+          tr.className = 'mo-assign-row';
+          tr.innerHTML = `<td colspan="7">
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:8px 0">
+              <span class="muted">Assign #${id}:</span>
+              <select class="form-input mo-asg-u" style="min-width:160px"><option value="">Person…</option>${peopleOpts}</select>
+              <select class="form-input mo-asg-m" style="min-width:160px"><option value="">Manager…</option>${peopleOpts}</select>
+              <button type="button" class="btn btn-primary btn-sm mo-asg-save">Save</button>
+              <button type="button" class="btn btn-ghost btn-sm mo-asg-cancel">Cancel</button>
+            </div></td>`;
+          row.after(tr);
+          tr.querySelector('.mo-asg-cancel').onclick = () => tr.remove();
+          tr.querySelector('.mo-asg-save').onclick = async () => {
+            const out = await API.moAssignTask(id, {
+              assigned_user_id: Number(tr.querySelector('.mo-asg-u').value) || null,
+              manager_user_id: Number(tr.querySelector('.mo-asg-m').value) || null
+            }, this.app.user);
+            if (!out.success) return Utils.toast(out.error || 'Assign failed', 'error');
+            Utils.toast('Assignment saved', 'success');
+            this.renderTasks(el);
+          };
+        });
+      });
     },
 
     async renderAccess(el) {
@@ -263,35 +339,68 @@
       const rows = r.success ? (r.data || []) : [];
       el.innerHTML = `<div class="card"><div class="card-body">
         <h4 style="margin-top:0">Manager reports</h4>
+        <p class="muted">Printable professional reports with sales targets, tasks, incidents, and attendance.</p>
         <div class="table-wrap"><table class="data-table">
-          <thead><tr><th>Date</th><th>Submitted by</th><th>Sales</th><th>Tasks</th><th>Status</th></tr></thead>
+          <thead><tr><th>Date</th><th>Submitted by</th><th>Sales</th><th>Tasks</th><th>Status</th><th></th></tr></thead>
           <tbody>${rows.map((x) => `<tr>
             <td>${esc(x.work_date)}</td>
             <td>${esc(x.submitted_by_name || '—')}</td>
             <td>${money(x.sales_amount)}</td>
             <td>${x.tasks_completed || 0}/${x.tasks_total || 0}</td>
             <td>${esc(x.status)}</td>
-          </tr>`).join('') || '<tr><td colspan="5" class="muted">No reports yet</td></tr>'}
+            <td><button type="button" class="btn btn-primary btn-sm mo-print-report" data-id="${x.id}">Print PDF</button></td>
+          </tr>`).join('') || '<tr><td colspan="6" class="muted">No reports yet</td></tr>'}
           </tbody></table></div>
       </div></div>`;
+      el.querySelectorAll('.mo-print-report').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          const out = await API.moReportPdf(Number(btn.dataset.id), this.app.user);
+          if (!out.success) return Utils.toast(out.error || 'PDF failed', 'error');
+          const d = out.data || {};
+          if (!d.base64) return Utils.toast('No PDF data', 'error');
+          const a = document.createElement('a');
+          a.href = `data:application/pdf;base64,${d.base64}`;
+          a.download = d.filename || 'manager-ops-report.pdf';
+          a.click();
+          Utils.toast('Report downloaded', 'success');
+        });
+      });
     },
 
     async renderIncidents(el) {
       const r = await API.moListIncidents({});
       const rows = r.success ? (r.data || []) : [];
       el.innerHTML = `<div class="card"><div class="card-body">
-        <h4 style="margin-top:0">Incidents &amp; problems</h4>
+        <h4 style="margin-top:0">Reported problems</h4>
+        <p class="muted">Sent from Manager Operations — review and resolve here. Linked to your Admin notifications.</p>
         <div class="table-wrap"><table class="data-table">
-          <thead><tr><th>When</th><th>Category</th><th>Priority</th><th>Description</th><th>Status</th></tr></thead>
-          <tbody>${rows.map((i) => `<tr>
+          <thead><tr><th>When</th><th>Category</th><th>Priority</th><th>Reported by</th><th>Description</th><th>Status</th><th></th></tr></thead>
+          <tbody>${rows.map((i) => `<tr class="${i.status === 'open' ? 'mo-inc-open' : ''}">
             <td>${esc((i.created_at || i.work_date || '').slice(0, 16))}</td>
-            <td>${esc(i.category)}</td>
-            <td>${esc(i.priority)}</td>
-            <td>${esc(i.description)}</td>
+            <td><strong>${esc(i.category)}</strong></td>
+            <td><span class="tag ${i.priority === 'urgent' || i.priority === 'high' ? 'tag-danger' : ''}">${esc(i.priority)}</span></td>
+            <td>${esc(i.reported_by_name || '—')}</td>
+            <td style="max-width:280px">${esc(i.description)}</td>
             <td>${esc(i.status)}</td>
-          </tr>`).join('') || '<tr><td colspan="5" class="muted">No incidents</td></tr>'}
+            <td>${i.status === 'open'
+              ? `<button type="button" class="btn btn-primary btn-sm mo-resolve-inc" data-id="${i.id}">Resolve</button>`
+              : '<span class="muted">Done</span>'}</td>
+          </tr>`).join('') || '<tr><td colspan="7" class="muted">No incidents</td></tr>'}
           </tbody></table></div>
-      </div></div>`;
+      </div></div>
+      <style>.mo-inc-open td{background:rgba(239,68,68,.06)}</style>`;
+      el.querySelectorAll('.mo-resolve-inc').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          const notes = prompt('Resolution notes (optional):') || '';
+          const out = await API.moResolveIncident(Number(btn.dataset.id), { notes, status: 'resolved' }, this.app.user);
+          if (!out.success) return Utils.toast(out.error || 'Failed', 'error');
+          Utils.toast('Incident resolved', 'success');
+          this.renderIncidents(el);
+        });
+      });
+      rows.filter((i) => i.status === 'open' && !i.owner_seen_at).forEach((i) => {
+        API.moMarkIncidentSeen(i.id, this.app.user).catch(() => {});
+      });
     },
 
     async renderSales(el) {
@@ -301,16 +410,30 @@
         el.innerHTML = `<p class="error-msg">${esc(r.error || 'Could not load sales')}</p>`;
         return;
       }
+      const products = s.products || [];
       el.innerHTML = `<div class="card"><div class="card-body">
-        <h4 style="margin-top:0">Sales monitoring (live from POS)</h4>
-        <p class="muted">Read-only. Figures cannot be edited from Manager Operations.</p>
+        <h4 style="margin-top:0">Sales monitoring</h4>
+        <p class="muted">Live from POS totals and <strong>Admin → Sales Targets</strong>${s.override_active ? ' (MO override active)' : ''}. Read-only here.</p>
         <div class="mo-stat-grid" style="margin-top:12px">
-          <div class="mo-stat"><div class="muted">Target</div><strong>${money(s.target, s.currency)}</strong></div>
-          <div class="mo-stat"><div class="muted">Sales</div><strong>${money(s.sales, s.currency)}</strong></div>
+          <div class="mo-stat"><div class="muted">Daily target</div><strong>${money(s.target, s.currency)}</strong></div>
+          <div class="mo-stat"><div class="muted">Sales today</div><strong>${money(s.sales, s.currency)}</strong></div>
           <div class="mo-stat"><div class="muted">Remaining</div><strong>${money(s.remaining, s.currency)}</strong></div>
           <div class="mo-stat"><div class="muted">Progress</div><strong>${s.progress || 0}%</strong></div>
           <div class="mo-stat"><div class="muted">Orders</div><strong>${s.order_count || 0}</strong></div>
         </div>
+        <h4 style="margin:20px 0 8px">Product / item targets</h4>
+        <p class="muted" style="margin-top:0">${s.product_targets_active ? 'Active product targets from Admin Sales Targets' : 'No product targets set in Admin Sales Targets'}</p>
+        <div class="table-wrap"><table class="data-table">
+          <thead><tr><th>Product</th><th>Target qty</th><th>Sold</th><th>Remaining</th><th>Target value</th><th>Sold value</th></tr></thead>
+          <tbody>${products.map((p) => `<tr>
+            <td>${esc(p.name || p.product_name || ('#' + p.product_id))}</td>
+            <td>${p.target_qty || 0}</td>
+            <td>${p.sold_qty || 0}</td>
+            <td>${p.remaining_qty || 0}</td>
+            <td>${money(p.target_value, s.currency)}</td>
+            <td>${money(p.sold_value, s.currency)}</td>
+          </tr>`).join('') || '<tr><td colspan="6" class="muted">Set item targets under Admin → Sales Targets</td></tr>'}
+          </tbody></table></div>
       </div></div>`;
     },
 
@@ -319,15 +442,16 @@
       const rows = r.success ? (r.data || []) : [];
       el.innerHTML = `<div class="card"><div class="card-body">
         <h4 style="margin-top:0">Staff attendance</h4>
-        <p class="muted">From existing staff attendance — no separate employee database.</p>
+        <p class="muted">Pulled live from Staff HR / Staff Portal attendance — same records as Admin Staff.</p>
         <div class="table-wrap"><table class="data-table">
-          <thead><tr><th>Name</th><th>Status</th><th>In</th><th>Out</th></tr></thead>
+          <thead><tr><th>Name</th><th>Role</th><th>Status</th><th>In</th><th>Out</th></tr></thead>
           <tbody>${rows.map((a) => `<tr>
             <td>${esc(a.name)}</td>
+            <td>${esc(a.role || '—')}</td>
             <td>${esc(a.status)}${a.late ? ' (late)' : ''}</td>
             <td>${esc(a.clock_in || '—')}</td>
             <td>${esc(a.clock_out || '—')}</td>
-          </tr>`).join('') || '<tr><td colspan="4" class="muted">No staff records</td></tr>'}
+          </tr>`).join('') || '<tr><td colspan="5" class="muted">No staff records</td></tr>'}
           </tbody></table></div>
       </div></div>`;
     },

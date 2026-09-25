@@ -115,13 +115,22 @@
         <div class="card">
           <div class="h-row"><strong>TODAY</strong><span class="muted">${h.shop_name || ''}</span></div>
           <div style="margin-top:10px">
-            <div class="muted">Sales Target</div>
+            <div class="muted">Sales target (from Admin)</div>
             <div style="font-size:1.4rem;font-weight:800">${money(s.target, s.currency)}</div>
-            <div class="muted" style="margin-top:8px">Current Sales</div>
+            <div class="muted" style="margin-top:8px">Current sales (live POS)</div>
             <div style="font-size:1.25rem;font-weight:700">${money(s.sales, s.currency)}</div>
             <div class="progress"><span style="width:${Math.min(100, s.progress || 0)}%"></span></div>
-            <div class="muted" style="margin-top:6px">Progress ${s.progress || 0}% · Remaining ${money(s.remaining, s.currency)}</div>
+            <div class="muted" style="margin-top:6px">Progress ${s.progress || 0}% · Remaining ${money(s.remaining, s.currency)} · Orders ${s.order_count || 0}</div>
           </div>
+          ${(s.products && s.products.length) ? `
+          <div style="margin-top:14px;border-top:1px solid #e2e8f0;padding-top:10px">
+            <strong style="font-size:13px">Item targets</strong>
+            ${(s.products || []).slice(0, 6).map((p) => `
+              <div class="h-row" style="margin-top:6px;font-size:13px">
+                <span>${p.name || p.product_name || ('#' + p.product_id)}</span>
+                <span class="muted">${p.sold_qty || 0}/${p.target_qty || 0}</span>
+              </div>`).join('')}
+          </div>` : ''}
         </div>
         <div class="stat-row">
           <div class="stat red"><div class="label">MY TASKS remaining</div><div class="value">🔴 ${c.remaining || 0}</div></div>

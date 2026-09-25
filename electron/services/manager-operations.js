@@ -116,22 +116,44 @@ function assertModuleEnabled() {
 function ensureSchema() {
   try {
     dbGet('SELECT 1 FROM mo_daily_tasks LIMIT 1');
-    return;
-  } catch (_) { /* */ }
-  try {
-    const p = path.join(__dirname, '../database/migrations-v130.sql');
-    if (fs.existsSync(p)) {
-      const sql = fs.readFileSync(p, 'utf8');
-      for (const stmt of sql.split(';').map((s) => s.trim()).filter(Boolean)) {
-        try { getDb().exec(stmt + ';'); } catch (e) {
-          if (!/already exists|duplicate column/i.test(String(e.message || ''))) {
-            console.warn('[manager-ops] migrate:', e.message);
+  } catch (_) {
+    try {
+      const p = path.join(__dirname, '../database/migrations-v130.sql');
+      if (fs.existsSync(p)) {
+        const sql = fs.readFileSync(p, 'utf8');
+        for (const stmt of sql.split(';').map((s) => s.trim()).filter(Boolean)) {
+          try { getDb().exec(stmt + ';'); } catch (e) {
+            if (!/already exists|duplicate column/i.test(String(e.message || ''))) {
+              console.warn('[manager-ops] migrate:', e.message);
+            }
           }
         }
       }
+    } catch (e) {
+      console.warn('[manager-ops] schema:', e.message || e);
     }
-  } catch (e) {
-    console.warn('[manager-ops] schema:', e.message || e);
+  }
+  ensureMoColumns();
+}
+
+function ensureMoColumns() {
+  const cols = [
+    ['mo_daily_tasks', 'manager_user_id', 'INTEGER'],
+    ['mo_daily_tasks', 'assigned_user_name', 'TEXT'],
+    ['mo_daily_tasks', 'manager_user_name', 'TEXT'],
+    ['mo_task_templates', 'default_assigned_user_id', 'INTEGER'],
+    ['mo_task_templates', 'manager_user_id', 'INTEGER'],
+    ['mo_incidents', 'owner_seen_at', 'TEXT'],
+    ['mo_incidents', 'resolved_notes', 'TEXT']
+  ];
+  for (const [table, col, typ] of cols) {
+    try {
+      getDb().exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${typ}`);
+    } catch (e) {
+      if (!/duplicate column|already exists/i.test(String(e.message || ''))) {
+        /* column may already exist */
+      }
+    }
   }
 }
 
@@ -398,14 +420,22 @@ function generateDailyTasks(workDate, actor, branchId = null) {
         || dbGet('SELECT id FROM mo_checklist_templates WHERE category = ? AND is_active = 1', [tpl.category])
       : null;
     const due = dueAtForTemplate(tpl, day);
+    const assignee = lookupUser(tpl.default_assigned_user_id);
+    const manager = lookupUser(tpl.manager_user_id);
     const taskId = dbInsert(
       `INSERT INTO mo_daily_tasks (
         shop_key, branch_id, work_date, template_id, checklist_template_id, title, category,
-        assigned_role, is_primary, is_required, photo_mode, verification_required, priority, status, due_at
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'not_started',?)`,
+        assigned_role, assigned_user_id, assigned_user_name, manager_user_id, manager_user_name,
+        is_primary, is_required, photo_mode, verification_required, priority, status, due_at
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'not_started',?)`,
       [
         shopKey(), branchId, day, tpl.id, checklist?.id || null, tpl.name, tpl.category,
-        tpl.assigned_role, tpl.is_primary ? 1 : 0, tpl.is_required ? 1 : 0, tpl.photo_mode || 'none',
+        tpl.assigned_role,
+        assignee?.id || tpl.default_assigned_user_id || null,
+        assignee?.full_name || assignee?.username || null,
+        manager?.id || tpl.manager_user_id || null,
+        manager?.full_name || manager?.username || null,
+        tpl.is_primary ? 1 : 0, tpl.is_required ? 1 : 0, tpl.photo_mode || 'none',
         tpl.verification_required ? 1 : 0, tpl.priority || 'medium', due
       ]
     );
@@ -421,6 +451,9 @@ function generateDailyTasks(workDate, actor, branchId = null) {
           [taskId, it.id, it.label, it.is_required ? 1 : 0, it.photo_mode || 'none', it.sort_order || 0]
         );
       }
+    }
+    if (assignee?.id) {
+      pushStaffPortalFeed(assignee.id, 'Manager Ops task', `${tpl.name} is assigned to you for ${day}`, taskId);
     }
     created += 1;
   }
@@ -461,14 +494,54 @@ function markOverdue() {
   return rows.length;
 }
 
+function lookupUser(id) {
+  if (id == null || id === '') return null;
+  try {
+    return dbGet('SELECT id, username, full_name, role FROM users WHERE id = ?', [Number(id)]);
+  } catch (_) {
+    return null;
+  }
+}
+
+function employeeIdForUser(userId) {
+  if (!userId) return null;
+  try {
+    return dbGet('SELECT id FROM employees WHERE user_id = ? LIMIT 1', [Number(userId)])?.id || null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function pushStaffPortalFeed(userId, title, message, refId) {
+  const empId = employeeIdForUser(userId);
+  if (!empId) return;
+  try {
+    dbRun(
+      `INSERT INTO employee_portal_feed (employee_id, feed_type, title, message, ref_id, is_read)
+       VALUES (?,?,?,?,?,0)`,
+      [empId, 'manager_ops_task', title, message, refId != null ? Number(refId) : null]
+    );
+  } catch (_) { /* portal feed optional */ }
+}
+
+function touchEmployeeOfMonth(userId) {
+  if (!userId) return;
+  try {
+    const eom = require('./employee-of-month');
+    const my = eom.monthYearFromDate();
+    eom.computeEmployeeScores(my);
+  } catch (_) { /* EOM optional */ }
+}
+
 function getSalesSummary(branchId) {
   const store = require('./store');
   const settings = getMoSettings();
   const prog = store.getTodayTargetProgress?.(branchId === 0 ? null : branchId) || {};
+  // Live from Admin Sales Targets — override only when explicitly set in MO settings
   let target = Number(prog.daily_target ?? prog.dailyTarget ?? prog.target ?? 0) || 0;
-  if (settings.daily_sales_target_override != null && Number(settings.daily_sales_target_override) > 0) {
-    target = Number(settings.daily_sales_target_override);
-  }
+  const usingOverride = settings.daily_sales_target_override != null
+    && Number(settings.daily_sales_target_override) > 0;
+  if (usingOverride) target = Number(settings.daily_sales_target_override);
   const sales = Number(prog.sales_achieved ?? prog.todaySales ?? prog.sales ?? prog.amount ?? 0) || 0;
   const remaining = Math.max(0, Number(prog.remaining != null ? prog.remaining : (target - sales)));
   const progress = Number(prog.percentage ?? prog.progress ?? (target > 0 ? Math.min(100, Math.round((sales / target) * 1000) / 10) : 0));
@@ -483,6 +556,7 @@ function getSalesSummary(branchId) {
     }
     orderCount = dbGet(sql, params)?.c || 0;
   } catch (_) { /* */ }
+  const products = Array.isArray(prog.products) ? prog.products : [];
   return {
     target,
     sales,
@@ -490,6 +564,15 @@ function getSalesSummary(branchId) {
     progress,
     order_count: orderCount,
     currency: (store.getSettingsParsed?.()?.currency) || 'R',
+    daily_active: !!prog.daily_active || target > 0,
+    product_targets_active: !!prog.product_targets_active,
+    product_target_qty: prog.product_target_qty || 0,
+    product_sold_qty: prog.product_sold_qty || 0,
+    product_target_value: prog.product_target_value || 0,
+    product_sold_value: prog.product_sold_value || 0,
+    products,
+    source: 'admin_sales_targets',
+    override_active: usingOverride,
     // read-only from POS — never writable from this module
     read_only: true
   };
@@ -652,6 +735,7 @@ function completeTask(taskId, data, actor) {
     // stays completed until verified
   }
   moAudit(actor, 'task_completed', 'mo_daily_task', taskId, { notes: data?.notes });
+  touchEmployeeOfMonth(actor.id);
   return getTask(taskId, actor);
 }
 
@@ -756,11 +840,56 @@ function reportIncident(data, actor) {
   }
   moAudit(actor, 'problem_reported', 'mo_incident', id, { category, priority });
   const settings = getMoSettings();
-  if (settings.notify_owner_on_urgent && (priority === 'urgent' || data.requires_owner)) {
-    notify('mo_urgent_problem', 'Urgent problem reported', `${category}: ${String(data.description).slice(0, 120)}`, {
-      entity_type: 'mo_incident', entity_id: id, action_page: 'manager-ops', audience_roles: 'owner,manager'
-    });
+  const alertOwner = settings.notify_owner_on_urgent !== 0
+    || priority === 'urgent' || priority === 'high' || data.requires_owner;
+  // Always alert owners/managers so Admin Incidents inbox stays live
+  notify(
+    priority === 'urgent' || priority === 'high' ? 'mo_urgent_problem' : 'mo_problem_reported',
+    priority === 'urgent' || priority === 'high' ? 'Urgent problem reported' : 'Problem reported',
+    `${category}: ${String(data.description).slice(0, 140)}`,
+    {
+      entity_type: 'mo_incident',
+      entity_id: id,
+      action_page: 'manager-ops',
+      audience_roles: 'owner,manager'
+    }
+  );
+  if (!alertOwner && settings.notify_owner_on_urgent === 0) {
+    /* still notified above for inbox — settings only muted “urgent” label historically */
   }
+  return dbGet('SELECT * FROM mo_incidents WHERE id = ?', [id]);
+}
+
+function resolveIncident(id, data, actor) {
+  assertModuleEnabled();
+  requireAdmin(actor);
+  ensureSchema();
+  const row = dbGet('SELECT * FROM mo_incidents WHERE id = ?', [id]);
+  if (!row) throw new Error('Incident not found');
+  dbRun(
+    `UPDATE mo_incidents SET status=?, resolved_at=?, resolved_by=?, resolved_notes=?, owner_seen_at=COALESCE(owner_seen_at, ?), updated_at=? WHERE id=?`,
+    [
+      data?.status || 'resolved',
+      nowIso(),
+      actor.id,
+      data?.notes || data?.resolved_notes || null,
+      nowIso(),
+      nowIso(),
+      id
+    ]
+  );
+  moAudit(actor, 'incident_resolved', 'mo_incident', id, data || {});
+  return dbGet('SELECT * FROM mo_incidents WHERE id = ?', [id]);
+}
+
+function markIncidentSeen(id, actor) {
+  assertModuleEnabled();
+  requireAdmin(actor);
+  ensureSchema();
+  dbRun(
+    `UPDATE mo_incidents SET owner_seen_at=COALESCE(owner_seen_at, ?), updated_at=? WHERE id=?`,
+    [nowIso(), nowIso(), id]
+  );
   return dbGet('SELECT * FROM mo_incidents WHERE id = ?', [id]);
 }
 
@@ -783,7 +912,6 @@ function getAttendanceSnapshot() {
   try {
     const staff = require('./staff');
     const emps = staff.getEmployees?.({ status: 'Active' }) || [];
-    const day = todayLocal();
     return emps.map((e) => {
       let att = null;
       try { att = staff.getTodayAttendance?.(e.id); } catch (_) { /* */ }
@@ -793,17 +921,125 @@ function getAttendanceSnapshot() {
             : att.status || 'scheduled';
       return {
         employee_id: e.id,
+        user_id: e.user_id || null,
         name: e.full_name,
-        role: e.role || e.job_title,
+        role: e.role || e.job_title || e.position,
+        branch: e.branch || null,
         status,
         clock_in: att?.clock_in || null,
         clock_out: att?.clock_out || null,
-        late: !!(att?.late || (att?.clock_in && att?.is_late))
+        late: !!(att?.late || (att?.clock_in && att?.is_late)),
+        source: 'staff_hr'
       };
     });
   } catch (_) {
     return [];
   }
+}
+
+function listAssignablePeople() {
+  ensureSchema();
+  const users = dbAll(`
+    SELECT u.id, u.username, u.full_name, u.role,
+      (SELECT e.id FROM employees e WHERE e.user_id = u.id LIMIT 1) AS employee_id
+    FROM users u
+    WHERE COALESCE(u.is_active, 1) = 1
+    ORDER BY
+      CASE lower(u.role)
+        WHEN 'owner' THEN 0 WHEN 'manager' THEN 1 WHEN 'assistant_manager' THEN 2
+        WHEN 'supervisor' THEN 3 ELSE 4
+      END,
+      u.full_name COLLATE NOCASE, u.username COLLATE NOCASE
+  `) || [];
+  return users.map((u) => ({
+    id: u.id,
+    username: u.username,
+    full_name: u.full_name,
+    role: u.role,
+    employee_id: u.employee_id || null,
+    linked_to_hr: !!u.employee_id
+  }));
+}
+
+function createDailyTask(data, actor) {
+  assertModuleEnabled();
+  requireAdmin(actor);
+  ensureSchema();
+  const title = String(data?.title || '').trim();
+  if (!title) throw new Error('Task name is required');
+  const day = data?.work_date || todayLocal();
+  const assignee = lookupUser(data.assigned_user_id);
+  const manager = lookupUser(data.manager_user_id);
+  const checklistId = data.checklist_template_id || null;
+  const taskId = dbInsert(
+    `INSERT INTO mo_daily_tasks (
+      shop_key, branch_id, work_date, template_id, checklist_template_id, title, category,
+      assigned_role, assigned_user_id, assigned_user_name, manager_user_id, manager_user_name,
+      is_primary, is_required, photo_mode, verification_required, priority, status, due_at, notes
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'not_started',?,?)`,
+    [
+      shopKey(), data.branch_id || null, day, data.template_id || null, checklistId, title,
+      data.category || 'general',
+      data.assigned_role || assignee?.role || 'assistant_manager',
+      assignee?.id || null, assignee?.full_name || assignee?.username || null,
+      manager?.id || null, manager?.full_name || manager?.username || null,
+      data.is_primary !== false ? 1 : 0, data.is_required !== false ? 1 : 0,
+      data.photo_mode || 'none', data.verification_required ? 1 : 0,
+      data.priority || 'medium', data.due_at || null, data.notes || null
+    ]
+  );
+  if (checklistId) {
+    const items = dbAll(
+      'SELECT * FROM mo_checklist_items WHERE template_id = ? AND is_active = 1 ORDER BY sort_order, id',
+      [checklistId]
+    );
+    for (const it of items) {
+      dbRun(
+        `INSERT INTO mo_checklist_progress (task_id, checklist_item_id, label, is_required, photo_mode, sort_order)
+         VALUES (?,?,?,?,?,?)`,
+        [taskId, it.id, it.label, it.is_required ? 1 : 0, it.photo_mode || 'none', it.sort_order || 0]
+      );
+    }
+  }
+  if (assignee?.id) {
+    pushStaffPortalFeed(assignee.id, 'New Manager Ops task', `${title} assigned for ${day}`, taskId);
+    notify('mo_task_assigned', 'Task assigned', `${title} was assigned to you`, {
+      entity_type: 'mo_daily_task', entity_id: taskId, action_page: 'manager-ops',
+      audience_user_ids: String(assignee.id)
+    });
+  }
+  moAudit(actor, 'task_created', 'mo_daily_task', taskId, data);
+  return getTask(taskId, actor);
+}
+
+function assignDailyTask(taskId, data, actor) {
+  assertModuleEnabled();
+  requireAdmin(actor);
+  ensureSchema();
+  const task = dbGet('SELECT * FROM mo_daily_tasks WHERE id = ?', [taskId]);
+  if (!task) throw new Error('Task not found');
+  const assignee = data.assigned_user_id != null ? lookupUser(data.assigned_user_id) : null;
+  const manager = data.manager_user_id != null ? lookupUser(data.manager_user_id) : null;
+  dbRun(
+    `UPDATE mo_daily_tasks SET
+      assigned_user_id=?, assigned_user_name=?, manager_user_id=?, manager_user_name=?,
+      assigned_role=COALESCE(?, assigned_role), updated_at=?
+     WHERE id=?`,
+    [
+      assignee ? assignee.id : (data.assigned_user_id === null ? null : task.assigned_user_id),
+      assignee ? (assignee.full_name || assignee.username) : (data.assigned_user_id === null ? null : task.assigned_user_name),
+      manager ? manager.id : (data.manager_user_id === null ? null : task.manager_user_id),
+      manager ? (manager.full_name || manager.username) : (data.manager_user_id === null ? null : task.manager_user_name),
+      data.assigned_role || (assignee?.role) || null,
+      nowIso(),
+      taskId
+    ]
+  );
+  if (assignee?.id) {
+    pushStaffPortalFeed(assignee.id, 'Manager Ops assignment', `${task.title} is now yours`, taskId);
+  }
+  moAudit(actor, 'task_assigned', 'mo_daily_task', taskId, data);
+  return getTask(taskId, actor);
 }
 
 function ownerDashboard(workDate, branchId) {
@@ -1073,17 +1309,20 @@ function saveTaskTemplate(data, actor) {
   assertModuleEnabled();
   requireAdmin(actor);
   ensureSchema();
+  const defaultAssignee = data.default_assigned_user_id != null ? Number(data.default_assigned_user_id) : null;
+  const managerId = data.manager_user_id != null ? Number(data.manager_user_id) : null;
   if (data.id) {
     dbRun(
       `UPDATE mo_task_templates SET name=?, category=?, description=?, assigned_role=?, is_primary=?, is_required=?,
        photo_mode=?, verification_required=?, priority=?, sort_order=?, schedule_offset_minutes=?, schedule_anchor=?,
-       recurrence=?, is_active=?, updated_at=? WHERE id=?`,
+       recurrence=?, is_active=?, default_assigned_user_id=?, manager_user_id=?, updated_at=? WHERE id=?`,
       [
         data.name, data.category || 'general', data.description || null, data.assigned_role || 'assistant_manager',
         data.is_primary ? 1 : 0, data.is_required !== false ? 1 : 0, data.photo_mode || 'none',
         data.verification_required ? 1 : 0, data.priority || 'medium', data.sort_order || 0,
         data.schedule_offset_minutes != null ? data.schedule_offset_minutes : null,
         data.schedule_anchor || 'open', data.recurrence || 'daily', data.is_active !== false ? 1 : 0,
+        defaultAssignee, managerId,
         nowIso(), data.id
       ]
     );
@@ -1093,15 +1332,17 @@ function saveTaskTemplate(data, actor) {
   const id = dbInsert(
     `INSERT INTO mo_task_templates (
       code, name, category, description, assigned_role, is_primary, is_required, photo_mode,
-      verification_required, priority, sort_order, schedule_offset_minutes, schedule_anchor, recurrence, is_active
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)`,
+      verification_required, priority, sort_order, schedule_offset_minutes, schedule_anchor, recurrence, is_active,
+      default_assigned_user_id, manager_user_id
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?)`,
     [
       data.code || null, data.name, data.category || 'general', data.description || null,
       data.assigned_role || 'assistant_manager', data.is_primary !== false ? 1 : 0,
       data.is_required !== false ? 1 : 0, data.photo_mode || 'none', data.verification_required ? 1 : 0,
       data.priority || 'medium', data.sort_order || 0,
       data.schedule_offset_minutes != null ? data.schedule_offset_minutes : null,
-      data.schedule_anchor || 'open', data.recurrence || 'daily'
+      data.schedule_anchor || 'open', data.recurrence || 'daily',
+      defaultAssignee, managerId
     ]
   );
   moAudit(actor, 'template_created', 'mo_task_template', id, data);
@@ -1213,6 +1454,167 @@ function listAudit(filters = {}) {
   return dbAll(sql, params);
 }
 
+function getReportPrintPayload(reportId, actor) {
+  assertModuleEnabled();
+  ensureSchema();
+  const report = getReport(reportId, actor);
+  if (!report) throw new Error('Report not found');
+  const day = report.work_date;
+  const sales = getSalesSummary(report.branch_id);
+  const tasks = dbAll('SELECT * FROM mo_daily_tasks WHERE work_date = ? ORDER BY due_at, id', [day]) || [];
+  const incidents = listIncidents({ work_date: day, limit: 200 });
+  const attendance = getAttendanceSnapshot();
+  let shop = {};
+  try { shop = require('./store').getSettingsParsed?.() || {}; } catch (_) { /* */ }
+  return {
+    shop_name: shop.shop_name || report.shop_name || 'Shop',
+    address: shop.address || '',
+    phone: shop.phone || '',
+    currency: shop.currency || sales.currency || 'R',
+    work_date: day,
+    submitted_by: report.submitted_by_name,
+    submitted_at: report.submitted_at,
+    manager_comments: report.manager_comments || '',
+    sales,
+    tasks: tasks.map((t) => ({
+      title: t.title,
+      category: t.category,
+      assigned_to: t.assigned_user_name || t.assigned_role,
+      manager: t.manager_user_name || '',
+      status: t.status,
+      due_at: t.due_at
+    })),
+    incidents: incidents.map((i) => ({
+      category: i.category,
+      priority: i.priority,
+      description: i.description,
+      status: i.status,
+      reported_by: i.reported_by_name
+    })),
+    attendance,
+    summary: {
+      tasks_total: report.tasks_total,
+      tasks_completed: report.tasks_completed,
+      incidents_count: report.incidents_count,
+      photos_count: report.photos_count,
+      outstanding_count: report.outstanding_count
+    }
+  };
+}
+
+function buildDailyReportPdf(reportId, actor) {
+  const payload = getReportPrintPayload(reportId, actor);
+  const { jsPDF } = require('jspdf');
+  require('jspdf-autotable');
+  const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+  const cur = payload.currency || 'R';
+  const money = (n) => `${cur}${Number(n || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+  let y = 16;
+  doc.setFontSize(16);
+  doc.setFont(undefined, 'bold');
+  doc.text(payload.shop_name || 'Shop', 105, y, { align: 'center' });
+  y += 7;
+  doc.setFontSize(11);
+  doc.text('Manager Operations — Daily Report', 105, y, { align: 'center' });
+  y += 6;
+  doc.setFontSize(9);
+  doc.setFont(undefined, 'normal');
+  doc.text(`Date: ${payload.work_date}  ·  Submitted by: ${payload.submitted_by || '—'}`, 105, y, { align: 'center' });
+  y += 8;
+  doc.setDrawColor(180);
+  doc.line(14, y, 196, y);
+  y += 8;
+
+  doc.setFont(undefined, 'bold');
+  doc.setFontSize(11);
+  doc.text('Sales (live from POS + Admin Sales Targets)', 14, y);
+  y += 6;
+  doc.setFont(undefined, 'normal');
+  doc.setFontSize(9);
+  const s = payload.sales || {};
+  doc.text(`Target: ${money(s.target)}   Sales: ${money(s.sales)}   Progress: ${s.progress || 0}%   Orders: ${s.order_count || 0}`, 14, y);
+  y += 5;
+  if (s.products && s.products.length) {
+    doc.autoTable({
+      startY: y,
+      head: [['Product target', 'Target qty', 'Sold', 'Remaining']],
+      body: s.products.slice(0, 20).map((p) => [
+        p.name || p.product_name || `#${p.product_id}`,
+        String(p.target_qty || 0),
+        String(p.sold_qty || 0),
+        String(p.remaining_qty || 0)
+      ]),
+      styles: { fontSize: 8 },
+      margin: { left: 14, right: 14 }
+    });
+    y = doc.lastAutoTable.finalY + 8;
+  } else {
+    y += 4;
+  }
+
+  doc.setFont(undefined, 'bold');
+  doc.setFontSize(11);
+  doc.text('Daily tasks', 14, y);
+  y += 2;
+  doc.autoTable({
+    startY: y + 2,
+    head: [['Task', 'Category', 'Assigned', 'Manager', 'Status']],
+    body: (payload.tasks || []).map((t) => [t.title, t.category, t.assigned_to || '—', t.manager || '—', t.status]),
+    styles: { fontSize: 8 },
+    margin: { left: 14, right: 14 }
+  });
+  y = doc.lastAutoTable.finalY + 8;
+
+  doc.setFont(undefined, 'bold');
+  doc.setFontSize(11);
+  doc.text('Incidents / problems', 14, y);
+  y += 2;
+  doc.autoTable({
+    startY: y + 2,
+    head: [['Category', 'Priority', 'By', 'Status', 'Description']],
+    body: (payload.incidents || []).length
+      ? payload.incidents.map((i) => [i.category, i.priority, i.reported_by || '—', i.status, String(i.description || '').slice(0, 80)])
+      : [['—', '—', '—', '—', 'None']],
+    styles: { fontSize: 8 },
+    margin: { left: 14, right: 14 }
+  });
+  y = doc.lastAutoTable.finalY + 8;
+
+  doc.setFont(undefined, 'bold');
+  doc.setFontSize(11);
+  doc.text('Attendance (Staff HR)', 14, y);
+  y += 2;
+  doc.autoTable({
+    startY: y + 2,
+    head: [['Name', 'Role', 'Status', 'In', 'Out']],
+    body: (payload.attendance || []).map((a) => [a.name, a.role || '—', a.status, a.clock_in || '—', a.clock_out || '—']),
+    styles: { fontSize: 8 },
+    margin: { left: 14, right: 14 }
+  });
+  y = doc.lastAutoTable.finalY + 10;
+
+  if (payload.manager_comments) {
+    doc.setFont(undefined, 'bold');
+    doc.text('Manager comments', 14, y);
+    y += 5;
+    doc.setFont(undefined, 'normal');
+    const lines = doc.splitTextToSize(payload.manager_comments, 180);
+    doc.text(lines, 14, y);
+    y += lines.length * 4 + 6;
+  }
+
+  doc.setFontSize(8);
+  doc.setTextColor(120);
+  doc.text(`Generated ${new Date().toLocaleString()} · Manager Operations linked to POS, Sales Targets, Staff HR`, 14, 285);
+  const buf = Buffer.from(doc.output('arraybuffer'));
+  return {
+    filename: `manager-ops-report-${payload.work_date}.pdf`,
+    mime: 'application/pdf',
+    base64: buf.toString('base64'),
+    payload
+  };
+}
+
 module.exports = {
   MODULE_ID,
   INCIDENT_CATEGORIES,
@@ -1241,6 +1643,8 @@ module.exports = {
   offerHelp,
   reportIncident,
   listIncidents,
+  resolveIncident,
+  markIncidentSeen,
   getAttendanceSnapshot,
   ownerDashboard,
   mobileHome,
@@ -1253,6 +1657,11 @@ module.exports = {
   saveTaskTemplate,
   listChecklistTemplates,
   saveChecklistTemplate,
+  createDailyTask,
+  assignDailyTask,
+  listAssignablePeople,
+  getReportPrintPayload,
+  buildDailyReportPdf,
   portalLogin,
   portalLogout,
   resolvePortalSession,

@@ -79,6 +79,25 @@ function computeEmployeeScores(monthYear) {
           AND date(run_date) BETWEEN date(?) AND date(?)
       `).get(emp.id, from, to)?.c || 0;
     } catch (_) { /* checklist tables may be absent on older DBs */ }
+
+    // Manager Operations daily tasks linked via employees.user_id
+    try {
+      if (emp.user_id) {
+        const moDone = db.prepare(`
+          SELECT COUNT(*) as c FROM mo_daily_tasks
+          WHERE assigned_user_id = ? AND status IN ('completed','verified')
+            AND date(work_date) BETWEEN date(?) AND date(?)
+        `).get(emp.user_id, from, to)?.c || 0;
+        const moTotal = db.prepare(`
+          SELECT COUNT(*) as c FROM mo_daily_tasks
+          WHERE assigned_user_id = ?
+            AND date(work_date) BETWEEN date(?) AND date(?)
+        `).get(emp.user_id, from, to)?.c || 0;
+        checklistDone += Number(moDone) || 0;
+        checklistTotal += Number(moTotal) || 0;
+      }
+    } catch (_) { /* mo tables optional */ }
+
     // Completion ratio, then penalize each missed/failed deadline heavily for EOM
     const baseChecklist = checklistTotal ? (checklistDone / checklistTotal) * 100 : (checklistFailed ? 0 : 50);
     const checklistScore = Math.max(0, Math.min(100, baseChecklist - (checklistFailed * 20)));
@@ -604,7 +623,7 @@ function getPortalFeed(employeeId) {
     maybeAutoSelectNext(null);
     current = getRecord(monthYearFromDate());
   }
-  if (current && isEomDisplayActive(current) && current.employee_id === employeeId) {
+      if (current && isEomDisplayActive(current) && current.employee_id === employeeId) {
     const already = items.some(i => i.feed_type === 'employee_of_month' && i.ref_id === current.id);
     if (!already) {
       items.unshift({
@@ -627,6 +646,33 @@ function getPortalFeed(employeeId) {
       }
     });
   }
+
+  // Surface open Manager Ops tasks assigned to this employee's linked user
+  try {
+    const emp = db.prepare('SELECT user_id FROM employees WHERE id = ?').get(employeeId);
+    if (emp?.user_id) {
+      const today = new Date().toLocaleDateString('en-CA');
+      const moTasks = db.prepare(`
+        SELECT id, title, status, category FROM mo_daily_tasks
+        WHERE assigned_user_id = ? AND work_date = ?
+          AND status NOT IN ('completed','verified')
+        ORDER BY id DESC LIMIT 5
+      `).all(emp.user_id, today);
+      for (const t of moTasks) {
+        items.unshift({
+          id: null,
+          employee_id: employeeId,
+          feed_type: 'manager_ops_task',
+          title: 'Manager Operations task',
+          message: `${t.title} (${t.category || 'task'}) — open in Manager Ops`,
+          photo_path: null,
+          ref_id: t.id,
+          is_read: 0,
+          created_at: today
+        });
+      }
+    }
+  } catch (_) { /* mo optional */ }
 
   return items.filter(Boolean);
 }

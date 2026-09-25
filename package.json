@@ -25,6 +25,7 @@
     "build:cloud-windows": "node scripts/build-cloud-windows-apps.js",
     "build:cloud-android": "node scripts/build-cloud-android-apps.js",
     "build:cloud-shell-android": "node scripts/build-cloud-shell-android.js",
+    "build:manager-ops-android": "node scripts/build-cloud-shell-android.js manager-ops",
     "build:hr-accounting-android": "node scripts/build-hr-accounting-android.js",
     "build:manager-android": "node scripts/build-manager-android.js",
     "build:manager-windows": "node scripts/rebuild-manager-only.js",

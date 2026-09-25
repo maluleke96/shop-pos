@@ -2,7 +2,7 @@
  * Build Android APKs that load the LIVE cloud UI (same as browser).
  * Single source of truth — no bundled SQLite snapshots.
  *
- * Usage: node scripts/build-cloud-shell-android.js [pos|staff|recipe|expense|studio|driver|delivery|manager|order|referral|referral-commission|mgr-hr|all]
+ * Usage: node scripts/build-cloud-shell-android.js [pos|staff|recipe|expense|studio|driver|delivery|manager|manager-ops|order|referral|referral-commission|mgr-hr|all]
  */
 const fs = require('fs');
 const path = require('path');
@@ -11,6 +11,7 @@ const { spawnSync } = require('child_process');
 const root = path.join(__dirname, '..');
 const cloudUrl = (process.env.SHOP_POS_CLOUD_URL || 'https://chisafood.up.railway.app').replace(/\/$/, '');
 const destRoot = path.join(process.env.USERPROFILE || process.env.HOME || '', 'Downloads', 'ShopPOS-Installers', 'Android');
+const moDestRoot = path.join(process.env.USERPROFILE || process.env.HOME || '', 'Downloads', 'Manager-Operations');
 
 const APPS = [
   { id: 'pos', config: 'capacitor.pos.json', apkName: 'ShopPOS-POS.apk', appName: 'Shop POS', serverPath: '/pos-app.html' },
@@ -21,6 +22,7 @@ const APPS = [
   { id: 'driver', config: 'capacitor.driver.json', apkName: 'ShopPOS-Driver.apk', appName: 'Driver App', serverPath: '/driver/' },
   { id: 'delivery', config: 'capacitor.delivery.json', apkName: 'ShopPOS-DeliveryDepartment.apk', appName: 'Delivery Department', serverPath: '/delivery-app.html' },
   { id: 'manager', config: 'capacitor.manager.json', apkName: 'ShopPOS-Manager.apk', appName: 'Business Manager', serverPath: '/manager/' },
+  { id: 'manager-ops', config: 'capacitor.manager-ops.json', apkName: 'ShopPOS-ManagerOperations.apk', appName: 'Manager Operations', serverPath: '/manager-ops/', destFolder: moDestRoot },
   { id: 'order', config: 'capacitor.order.json', apkName: 'ShopPOS-OnlineOrdering.apk', appName: 'Online Ordering', serverPath: '/order/' },
   { id: 'referral', config: 'capacitor.referral.json', apkName: 'ShopPOS-ReferralAgent.apk', appName: 'Referral Agent', serverPath: '/referral-app.html' },
   { id: 'referral-commission', config: 'capacitor.referral-commission.json', apkName: 'ShopPOS-ReferralCommission.apk', appName: 'Referral Commission', serverPath: '/referral-commission-app.html' },
@@ -130,6 +132,28 @@ function buildApp(app) {
   fs.mkdirSync(destRoot, { recursive: true });
   const dest = path.join(destRoot, app.apkName);
   fs.copyFileSync(findApk(), dest);
+  if (app.destFolder) {
+    fs.mkdirSync(app.destFolder, { recursive: true });
+    const moDest = path.join(app.destFolder, app.apkName);
+    fs.copyFileSync(dest, moDest);
+    const latest = path.join(app.destFolder, 'ShopPOS-ManagerOperations-latest.apk');
+    fs.copyFileSync(dest, latest);
+    const readme = path.join(app.destFolder, 'README.txt');
+    fs.writeFileSync(readme, `Manager Operations — Android installer
+=====================================
+Install ShopPOS-ManagerOperations.apk on your Android phone.
+
+This app opens the live Manager Operations portal for your shop:
+  ${cloudUrl}/manager-ops/
+
+Sign in with the same username and password you use for Admin / POS.
+Owners and managers always have access. Other staff need access granted
+under Admin → Manager Operations → Staff Access.
+
+Built: ${new Date().toISOString()}
+`, 'utf8');
+    console.log(`✓ Also copied to ${app.destFolder}`);
+  }
   const mb = (fs.statSync(dest).size / (1024 * 1024)).toFixed(1);
   console.log(`✓ ${app.apkName} (${mb} MB) — loads live cloud UI`);
   return dest;
@@ -139,7 +163,7 @@ const arg = (process.argv[2] || 'all').trim().toLowerCase();
 const list = arg === 'all' ? APPS : APPS.filter((a) => a.id === arg);
 if (!list.length) {
   console.error('Unknown app:', arg);
-  console.error('Usage: node scripts/build-cloud-shell-android.js [pos|staff|recipe|expense|studio|driver|manager|order|referral|referral-commission|mgr-hr|all]');
+  console.error('Usage: node scripts/build-cloud-shell-android.js [pos|staff|recipe|expense|studio|driver|manager|manager-ops|order|referral|referral-commission|mgr-hr|all]');
   process.exit(1);
 }
 

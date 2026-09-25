@@ -2585,6 +2585,13 @@ function registerIpc() {
     const user = store.requireActor(a, ['owner', 'manager']);
     return store.listAccessCandidates();
   }));
+  ipcMain.handle('mo:listPeople', wrapF((a) => { store.requireActor(a, ['owner', 'manager', 'assistant_manager', 'supervisor']); return store.listAssignablePeople(); }));
+  ipcMain.handle('mo:createTask', wrapF((d, a) => store.createDailyTask(d || {}, a)));
+  ipcMain.handle('mo:assignTask', wrapF((id, d, a) => store.assignDailyTask(id, d || {}, a)));
+  ipcMain.handle('mo:resolveIncident', wrapF((id, d, a) => store.resolveIncident(id, d || {}, a)));
+  ipcMain.handle('mo:markIncidentSeen', wrapF((id, a) => store.markIncidentSeen(id, a)));
+  ipcMain.handle('mo:reportPdf', wrapF((id, a) => store.buildDailyReportPdf(id, a)));
+  ipcMain.handle('mo:reportPrint', wrapF((id, a) => store.getReportPrintPayload(id, a)));
   ipcMain.handle('mo:generateTasks', wrapF((d, a) => store.generateDailyTasks(d?.work_date, a, d?.branch_id)));
   ipcMain.handle('mo:audit', wrapF((f) => store.listAudit(f || {})));
   ipcMain.handle('mo:categories', wrapF(() => store.MO_INCIDENT_CATEGORIES || []));

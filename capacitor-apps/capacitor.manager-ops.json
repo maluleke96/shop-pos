@@ -1,0 +1,12 @@
+{
+  "appId": "com.shoppos.managerops",
+  "appName": "Manager Operations",
+  "webDir": "www",
+  "server": {
+    "url": "https://chisafood.up.railway.app/manager-ops/",
+    "cleartext": false
+  },
+  "android": {
+    "allowMixedContent": false
+  }
+}

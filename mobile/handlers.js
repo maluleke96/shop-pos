@@ -3639,6 +3639,13 @@ add('web:adminAnalytics', wrapSync((filters, actor) => {
     if (!['owner', 'manager'].includes(r)) throw new Error('Only owners and managers can manage staff access');
     return managerOps.listAccessCandidates();
   }));
+  add('mo:listPeople', wrapSync((a) => { moActor(a); return managerOps.listAssignablePeople(); }));
+  add('mo:createTask', wrapSync((d, a) => managerOps.createDailyTask(d || {}, moActor(a))));
+  add('mo:assignTask', wrapSync((id, d, a) => managerOps.assignDailyTask(id, d || {}, moActor(a))));
+  add('mo:resolveIncident', wrapSync((id, d, a) => managerOps.resolveIncident(id, d || {}, moActor(a))));
+  add('mo:markIncidentSeen', wrapSync((id, a) => managerOps.markIncidentSeen(id, moActor(a))));
+  add('mo:reportPdf', wrapSync((id, a) => managerOps.buildDailyReportPdf(id, moActor(a))));
+  add('mo:reportPrint', wrapSync((id, a) => managerOps.getReportPrintPayload(id, moActor(a))));
   add('mo:generateTasks', wrapSync((d, a) => managerOps.generateDailyTasks(d?.work_date, moActor(a), d?.branch_id)));
   add('mo:audit', wrapSync((f) => { requireSession(); return managerOps.listAudit(f || {}); }));
   add('mo:categories', wrapSync(() => managerOps.INCIDENT_CATEGORIES));
@@ -3663,7 +3670,7 @@ add('web:adminAnalytics', wrapSync((filters, actor) => {
   add('managerOps:ackMessage', wrapSync((tok, id) => managerOps.acknowledgeOwnerMessage(id, moPortal(tok))));
   add('managerOps:evidence', wrapSync((tok, id) => managerOps.getEvidenceDataUrl(id, moPortal(tok))));
   add('managerOps:attendance', wrapSync((tok) => { moPortal(tok); return managerOps.getAttendanceSnapshot(); }));
-
+  add('managerOps:reportPdf', wrapSync((tok, id) => managerOps.buildDailyReportPdf(id, moPortal(tok))));
   const studioApp = require('../electron/services/studio-app-platform');
   add('studioApp:login', wrapSync((u, p, d) => studioApp.studioLogin(u, p, d || {})));
   add('studioApp:logout', wrapSync((tok) => studioApp.studioLogout(tok)));
