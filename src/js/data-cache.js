@@ -321,10 +321,17 @@ function installApiReadCache() {
   };
 
   after('completeSale', (res) => {
-    if (res?.success !== false) invalidateSales();
+    if (res?.success !== false) {
+      invalidateSales();
+      // Loyalty redeem/earn changes customer balances — don't show stale points
+      DataCache.invalidate('customers');
+    }
   });
   after('acceptOnlineOrderAsSale', (res) => {
-    if (res?.success !== false && !res?.error) invalidateSales();
+    if (res?.success !== false && !res?.error) {
+      invalidateSales();
+      DataCache.invalidate('customers');
+    }
   });
   after('saveSalesTargets', (res) => {
     if (res?.success !== false) {

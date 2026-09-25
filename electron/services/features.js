@@ -747,6 +747,16 @@ function calcLoyaltyRedemption(customerId, pointsToRedeem, saleTotal) {
   return { points, discount: points * pointValue, pointValue };
 }
 
+function syncWebCustomerLoyaltyBalance(customerId, balance) {
+  try {
+    const db = getDb();
+    const bal = Math.max(0, Math.floor(Number(balance) || 0));
+    const id = Number(customerId);
+    if (!id) return;
+    db.prepare('UPDATE web_customers SET loyalty_points = ? WHERE customer_id = ?').run(bal, id);
+  } catch (_) { /* optional table / column */ }
+}
+
 function earnLoyaltyPoints(customerId, saleTotal, saleId) {
   if (!customerId) return 0;
   const loyaltyPts = require('./loyalty-points');
@@ -761,17 +771,26 @@ function earnLoyaltyPoints(customerId, saleTotal, saleId) {
   const txn = db.prepare('INSERT INTO loyalty_transactions (customer_id, points, type, sale_id) VALUES (?,?,?,?)')
     .run(customerId, points, 'earn', saleId);
   loyaltyPts.addPointLot(customerId, points, txn.lastInsertRowid);
+  const bal = db.prepare('SELECT loyalty_points FROM customers WHERE id = ?').get(customerId);
+  syncWebCustomerLoyaltyBalance(customerId, bal?.loyalty_points);
   return points;
 }
 
 function redeemLoyaltyPoints(customerId, points, saleId) {
   const loyaltyPts = require('./loyalty-points');
-  const c = getDb().prepare('SELECT loyalty_points FROM customers WHERE id = ?').get(customerId);
-  if (!c || c.loyalty_points < points) throw new Error('Insufficient points');
-  getDb().prepare('UPDATE customers SET loyalty_points = loyalty_points - ? WHERE id = ?').run(points, customerId);
-  getDb().prepare('INSERT INTO loyalty_transactions (customer_id, points, type, sale_id) VALUES (?,?,?,?)').run(customerId, -points, 'redeem', saleId);
-  loyaltyPts.consumeLotsFifo(customerId, points);
-  return points;
+  const pts = Math.floor(Number(points) || 0);
+  if (pts <= 0) return 0;
+  const db = getDb();
+  const c = db.prepare('SELECT loyalty_points FROM customers WHERE id = ?').get(customerId);
+  const available = Math.floor(Number(c?.loyalty_points) || 0);
+  if (!c || available < pts) throw new Error('Insufficient points');
+  db.prepare('UPDATE customers SET loyalty_points = loyalty_points - ? WHERE id = ?').run(pts, customerId);
+  db.prepare('INSERT INTO loyalty_transactions (customer_id, points, type, sale_id) VALUES (?,?,?,?)')
+    .run(customerId, -pts, 'redeem', saleId);
+  loyaltyPts.consumeLotsFifo(customerId, pts);
+  const bal = db.prepare('SELECT loyalty_points FROM customers WHERE id = ?').get(customerId);
+  syncWebCustomerLoyaltyBalance(customerId, bal?.loyalty_points);
+  return pts;
 }
 
 function getLoyaltyHistory(customerId) {

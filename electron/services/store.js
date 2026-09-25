@@ -2736,8 +2736,9 @@ function completeSale(saleData, actorId, actorName, actorRole) {
   const taxRate = settingsForTax.tax_enabled ? (settingsForTax.tax_rate || 0) : 0;
   const taxInclusive = settingsForTax.tax_inclusive;
   const preLoyaltyTotal = calcSaleTaxTotals(grossSubtotal, cartDiscount, taxRate, taxInclusive).total;
-  const loyaltyRedemption = saleData.customer_id && saleData.loyalty_redeem > 0
-    ? features.calcLoyaltyRedemption(saleData.customer_id, saleData.loyalty_redeem, preLoyaltyTotal)
+  const redeemRequested = Math.floor(Number(saleData.loyalty_redeem) || 0);
+  const loyaltyRedemption = saleData.customer_id && redeemRequested > 0
+    ? features.calcLoyaltyRedemption(saleData.customer_id, redeemRequested, preLoyaltyTotal)
     : { points: 0, discount: 0 };
   const saleDiscount = money(cartDiscount + (loyaltyRedemption.discount || 0));
   const taxTotals = calcSaleTaxTotals(grossSubtotal, saleDiscount, taxRate, taxInclusive);
@@ -2977,6 +2978,15 @@ function completeSale(saleData, actorId, actorName, actorRole) {
 
     if (loyaltyRedemption.points > 0 && saleData.customer_id) {
       features.redeemLoyaltyPoints(saleData.customer_id, loyaltyRedemption.points, saleId);
+      // Persist redeem amount in notes if client omitted it (admin/reports visibility)
+      if (!saleData.notes || !/Loyalty:/i.test(String(saleData.notes))) {
+        try {
+          const note = `Loyalty: ${loyaltyRedemption.points} pts (−${loyaltyRedemption.discount})`;
+          const prev = saleData.notes ? `${saleData.notes} · ${note}` : note;
+          db.prepare('UPDATE sales SET notes = ? WHERE id = ?').run(prev, saleId);
+          saleData.notes = prev;
+        } catch (_) { /* optional */ }
+      }
     }
 
     return { saleId, receiptNumber, orderNumber };
@@ -2988,9 +2998,14 @@ function completeSale(saleData, actorId, actorName, actorRole) {
   }
 
   let loyaltyPointsEarned = 0;
+  let loyaltyBalanceAfter = null;
   let customerReward = null;
   if (saleData.customer_id) {
     try { loyaltyPointsEarned = features.earnLoyaltyPoints(saleData.customer_id, saleTotal, result.saleId); } catch (_) {}
+    try {
+      const balRow = getDb().prepare('SELECT loyalty_points FROM customers WHERE id = ?').get(saleData.customer_id);
+      loyaltyBalanceAfter = Math.max(0, Math.floor(Number(balRow?.loyalty_points) || 0));
+    } catch (_) { /* optional */ }
     try {
       customerReward = customerRewardsSvc.processCustomerRewards(
         saleData.customer_id,
@@ -3036,13 +3051,19 @@ function completeSale(saleData, actorId, actorName, actorRole) {
   } catch (err) {
     console.warn('[referral] processSale:', err.message);
   }
+  const saleRow = getSale(result.saleId);
   return {
     ...result,
-    sale: getSale(result.saleId),
+    sale: saleRow,
     automation: autoRules,
     loyaltyPointsEarned,
     loyaltyPointsRedeemed: loyaltyRedemption.points,
     loyaltyDiscount: loyaltyRedemption.discount,
+    loyaltyBalanceAfter: loyaltyBalanceAfter != null
+      ? loyaltyBalanceAfter
+      : Math.max(0, Math.floor(
+        (Number(saleData._loyalty_start_balance) || 0) - (loyaltyRedemption.points || 0) + (loyaltyPointsEarned || 0)
+      )),
     customerReward
   };
 }

@@ -1705,6 +1705,8 @@ const POSPage = {
       const q = input.value.trim();
       if (!q) {
         dropdown.classList.add('hidden');
+        // Clearing the search must also remove the customer from Current Order / Pay
+        if (this.selectedCustomer) this.clearCustomer();
         return;
       }
       if (this.selectedCustomer && q === `${this.selectedCustomer.name}${this.selectedCustomer.phone ? ` (${this.selectedCustomer.phone})` : ''}`) {
@@ -1746,6 +1748,11 @@ const POSPage = {
     const clearBtn = document.getElementById('pos-clear-customer');
     if (input) { input.value = ''; input.title = ''; }
     if (clearBtn) clearBtn.style.display = 'none';
+    document.getElementById('pos-loyalty-row')?.classList.add('hidden');
+    const loyaltyLabel = document.getElementById('pos-loyalty-label');
+    const loyaltyValue = document.getElementById('pos-loyalty-value');
+    if (loyaltyLabel) loyaltyLabel.textContent = 'Customer points';
+    if (loyaltyValue) loyaltyValue.textContent = '0';
     this.renderCart();
   },
 
@@ -3297,7 +3304,9 @@ const POSPage = {
     });
 
     document.getElementById('pos-cancel').addEventListener('click', () => {
-      this.cart = []; this.discount = 0; this.loadedQuoteId = null; this.renderCart();
+      this.cart = []; this.discount = 0; this.loadedQuoteId = null;
+      this.clearCustomer();
+      this.renderCart();
     });
     document.getElementById('pos-discount').addEventListener('click', () => this.showDiscountModal());
     document.getElementById('pos-hold').addEventListener('click', () => this.holdOrder());
@@ -5341,6 +5350,8 @@ const POSPage = {
         const saleId = res.data?.saleId || sale?.id;
         const loyaltyPointsEarned = res.data?.loyaltyPointsEarned || 0;
         const loyaltyPointsRedeemed = res.data?.loyaltyPointsRedeemed || loyaltyRedeem || 0;
+        const loyaltyDiscountApplied = res.data?.loyaltyDiscount != null ? res.data.loyaltyDiscount : (loyaltyDiscount || 0);
+        const loyaltyBalanceAfter = res.data?.loyaltyBalanceAfter;
         const customerReward = res.data?.customerReward || null;
         if (!sale || !sale.receipt_number) throw new Error('Sale completed but receipt data missing');
         if (this.loadedQuoteId) {
@@ -5384,6 +5395,12 @@ const POSPage = {
         }
         this.lastSale = sale;
         this.lastSaleCustomer = this.selectedCustomer ? { ...this.selectedCustomer } : null;
+        if (this.lastSaleCustomer && loyaltyBalanceAfter != null) {
+          this.lastSaleCustomer.loyalty_points = loyaltyBalanceAfter;
+        } else if (this.lastSaleCustomer) {
+          const startPts = Math.floor(this.lastSaleCustomer.loyalty_points || 0);
+          this.lastSaleCustomer.loyalty_points = Math.max(0, startPts - (loyaltyPointsRedeemed || 0) + (loyaltyPointsEarned || 0));
+        }
         const giftCardPayment = (payments || []).find(p => (p.type || p.payment_type) === 'giftcard' && p.gift_card_code);
         this.lastSaleGiftCardCode = giftCardPayment?.gift_card_code || null;
         this.lastSaleGiftCardAmount = Number(giftCardPayment?.amount) || 0;
@@ -5404,7 +5421,7 @@ const POSPage = {
         this.deliveryAddress = null;
         this.renderCart();
         this.renderProducts();
-        this.showOrderSuccess(sale, change, payments, loyaltyPointsEarned, loyaltyPointsRedeemed, loyaltyDiscount, this.lastSaleCustomer);
+        this.showOrderSuccess(sale, change, payments, loyaltyPointsEarned, loyaltyPointsRedeemed, loyaltyDiscountApplied, this.lastSaleCustomer);
         if (customerReward?.grants?.length && !this.app.isPosKiosk?.()) {
           this.handleCustomerRewardNotifications(customerReward, currency);
         }
@@ -5823,7 +5840,7 @@ const POSPage = {
     if (loyaltyEl) {
       const parts = [];
       const cust = customer || this.lastSaleCustomer;
-      const balance = Math.floor(cust?.loyalty_points || 0);
+      const balance = Math.max(0, Math.floor(Number(cust?.loyalty_points) || 0));
       const balanceWorth = Utils.loyaltyPointsValue(balance, this.app.settings, currency);
       if (loyaltyPointsRedeemed > 0) {
         parts.push(`Redeemed ${loyaltyPointsRedeemed} pts (−${Utils.formatMoney(loyaltyDiscount, currency)})`);
@@ -5832,8 +5849,8 @@ const POSPage = {
         const earnedWorth = Utils.loyaltyPointsValue(loyaltyPointsEarned, this.app.settings, currency);
         parts.push(`Earned ${loyaltyPointsEarned} pts (= ${earnedWorth.formatted})`);
       }
-      if (balance > 0) {
-        parts.push(`Balance ${balance} pts (= ${balanceWorth.formatted})`);
+      if (cust) {
+        parts.push(`Balance now ${balance} pts (= ${balanceWorth.formatted})`);
       }
       if (this.lastSaleGiftCardCode) {
         parts.push(`Gift card ${this.lastSaleGiftCardCode}: −${Utils.formatMoney(this.lastSaleGiftCardAmount || 0, currency)}`);
@@ -5882,11 +5899,12 @@ const POSPage = {
       const body = this._buildReceiptWhatsAppText(sale, recipient, {
         loyaltyEarned: loyaltyPointsEarned,
         loyaltyRedeemed: loyaltyPointsRedeemed,
+        loyaltyBalance: Math.floor(Number(recipient.loyalty_points) || 0),
         giftLine,
         deliveryAddress: sale.delivery_address || this.deliveryAddress || ''
       });
       const earnedWorth = Utils.loyaltyPointsValue(loyaltyPointsEarned, this.app.settings, currency);
-      const balance = Math.floor(recipient.loyalty_points || loyaltyPointsEarned || 0);
+      const balance = Math.floor(Number(recipient.loyalty_points) || 0);
       const balanceWorth = Utils.loyaltyPointsValue(balance, this.app.settings, currency);
       const deliveryAddr = sale.delivery_address || this.deliveryAddress || '';
       this._openOrSendWhatsApp({
