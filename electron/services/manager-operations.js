@@ -1643,8 +1643,11 @@ function saveChecklistTemplate(data, actor) {
   assertModuleEnabled();
   requireAdmin(actor);
   ensureSchema();
-  let id = data.id;
+  let id = data.id != null && data.id !== '' ? Number(data.id) : null;
+  if (id && !Number.isFinite(id)) id = null;
   if (id) {
+    const existing = dbGet('SELECT id FROM mo_checklist_templates WHERE id = ?', [id]);
+    if (!existing) throw new Error('Checklist not found');
     dbRun(
       `UPDATE mo_checklist_templates SET name=?, category=?, assigned_role=?, description=?, is_active=?, sort_order=?, updated_at=? WHERE id=?`,
       [data.name, data.category || 'general', data.assigned_role || 'assistant_manager', data.description || null,
@@ -1672,7 +1675,21 @@ function saveChecklistTemplate(data, actor) {
     });
   }
   moAudit(actor, 'checklist_changed', 'mo_checklist_template', id, { name: data.name });
-  return listChecklistTemplates().find((t) => t.id === id);
+  return listChecklistTemplates().find((t) => Number(t.id) === Number(id));
+}
+
+function deleteChecklistTemplate(id, actor) {
+  assertModuleEnabled();
+  requireAdmin(actor);
+  ensureSchema();
+  const tid = Number(id);
+  if (!Number.isFinite(tid) || tid <= 0) throw new Error('Checklist not found');
+  const row = dbGet('SELECT * FROM mo_checklist_templates WHERE id = ?', [tid]);
+  if (!row) throw new Error('Checklist not found');
+  dbRun('DELETE FROM mo_checklist_items WHERE template_id = ?', [tid]);
+  dbRun('DELETE FROM mo_checklist_templates WHERE id = ?', [tid]);
+  moAudit(actor, 'checklist_deleted', 'mo_checklist_template', tid, { name: row.name });
+  return { ok: true, id: tid, name: row.name };
 }
 
 /* —— Portal sessions (mobile) —— */
@@ -1938,6 +1955,7 @@ module.exports = {
   saveTaskTemplate,
   listChecklistTemplates,
   saveChecklistTemplate,
+  deleteChecklistTemplate,
   createDailyTask,
   assignDailyTask,
   assignManyTasks,

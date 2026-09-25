@@ -2579,6 +2579,7 @@ function registerIpc() {
   ipcMain.handle('mo:saveTemplate', wrapF((d, a) => store.saveTaskTemplate(d || {}, a)));
   ipcMain.handle('mo:checklists', wrapF(() => store.listChecklistTemplates()));
   ipcMain.handle('mo:saveChecklist', wrapF((d, a) => store.saveChecklistTemplate(d || {}, a)));
+  ipcMain.handle('mo:deleteChecklist', wrapF((id, a) => store.deleteChecklistTemplate(id, a)));
   ipcMain.handle('mo:getSettings', wrapF(() => store.getMoSettings()));
   ipcMain.handle('mo:saveSettings', wrapF((d, a) => store.saveMoSettings(d || {}, a)));
   ipcMain.handle('mo:listAccess', wrapF((a) => {

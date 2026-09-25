@@ -165,7 +165,7 @@ const channels = [
   'mo:completeTask', 'mo:verifyTask', 'mo:sales', 'mo:reportProblem', 'mo:listIncidents',
   'mo:teamHelp', 'mo:requestHelp', 'mo:offerHelp', 'mo:submitReport', 'mo:listReports', 'mo:getReport',
   'mo:ownerRespond', 'mo:ackMessage', 'mo:evidence', 'mo:attendance', 'mo:templates', 'mo:saveTemplate',
-  'mo:checklists', 'mo:saveChecklist', 'mo:getSettings', 'mo:saveSettings', 'mo:listAccess', 'mo:listPeople',
+  'mo:checklists', 'mo:saveChecklist', 'mo:deleteChecklist', 'mo:getSettings', 'mo:saveSettings', 'mo:listAccess', 'mo:listPeople',
   'mo:createTask', 'mo:assignTask', 'mo:assignMany', 'mo:adminComplete', 'mo:listNotifications',
   'mo:resolveIncident', 'mo:markIncidentSeen', 'mo:reportPdf', 'mo:reportPrint',
   'mo:generateTasks',

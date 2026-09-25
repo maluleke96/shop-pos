@@ -3631,6 +3631,7 @@ add('web:adminAnalytics', wrapSync((filters, actor) => {
   add('mo:saveTemplate', wrapSync((d, a) => managerOps.saveTaskTemplate(d || {}, moActor(a))));
   add('mo:checklists', wrapSync(() => { requireSession(); return managerOps.listChecklistTemplates(); }));
   add('mo:saveChecklist', wrapSync((d, a) => managerOps.saveChecklistTemplate(d || {}, moActor(a))));
+  add('mo:deleteChecklist', wrapSync((id, a) => managerOps.deleteChecklistTemplate(id, moActor(a))));
   add('mo:getSettings', wrapSync(() => { requireSession(); return managerOps.getMoSettings(); }));
   add('mo:saveSettings', wrapSync((d, a) => managerOps.saveMoSettings(d || {}, moActor(a))));
   add('mo:listAccess', wrapSync((a) => {

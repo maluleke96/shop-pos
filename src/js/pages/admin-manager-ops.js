@@ -690,20 +690,29 @@
 
     async renderChecklists(el) {
       const r = await this.cached('checklists', () => API.moChecklists(), 30000);
-      const rows = r.success ? (r.data || []) : [];
-      const editingId = this._editChecklistId || null;
-      const editing = rows.find((c) => Number(c.id) === Number(editingId)) || null;
+      const rows = (r && r.success !== false ? (r.data || r) : []) || [];
+      const list = Array.isArray(rows) ? rows : [];
+      const editingId = this._editChecklistId != null ? Number(this._editChecklistId) : null;
+      const editing = editingId
+        ? (list.find((c) => Number(c.id) === editingId) || this._editChecklistDraft || null)
+        : null;
       const catHints = [...new Set([
         'opening', 'sales', 'marketing', 'kitchen', 'customers', 'stock', 'closing', 'attendance', 'general',
-        ...rows.map((c) => c.category).filter(Boolean)
+        ...list.map((c) => c.category).filter(Boolean)
       ])];
+      const itemLines = (c) => {
+        if (!c) return '';
+        const items = Array.isArray(c.items) ? c.items : [];
+        return items.map((it) => (typeof it === 'string' ? it : (it.label || ''))).filter(Boolean).join('\n');
+      };
 
       el.innerHTML = `<div class="card"><div class="card-body">
         <h4 style="margin-top:0">Checklists</h4>
-        <p class="muted">Write your own name, your own category, and your item lines. They appear in the Manager Ops app when linked to a task.</p>
+        <p class="muted">Write your own name, category, and item lines. Click <strong>Edit items</strong> to change a list, or <strong>Delete</strong> to remove it.</p>
 
-        <div class="mo-cl-editor" id="mo-cl-form">
-          <strong id="mo-cl-form-title">${editing ? 'Edit checklist' : 'Add checklist'}</strong>
+        <div class="mo-cl-editor${editing ? ' mo-cl-editing' : ''}" id="mo-cl-form">
+          <strong id="mo-cl-form-title">${editing ? `Editing: ${esc(editing.name)}` : 'Add checklist'}</strong>
+          ${editing ? `<p class="muted" style="margin:6px 0 0">Change the name, category, or item lines below, then Save changes.</p>` : ''}
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px">
             <div>
               <label class="muted">Checklist name *</label>
@@ -719,9 +728,7 @@
             </div>
           </div>
           <label class="muted" style="display:block;margin-top:10px">Checklist items — one line each (headings / steps)</label>
-          <textarea class="form-input" id="mo-cl-items" rows="8" placeholder="Shop opened on time&#10;Kitchen ready&#10;POS working&#10;Write any item you want…">${esc(
-            editing ? (editing.items || []).map((it) => it.label || it).join('\n') : ''
-          )}</textarea>
+          <textarea class="form-input" id="mo-cl-items" rows="8" placeholder="Shop opened on time&#10;Kitchen ready&#10;POS working&#10;Write any item you want…">${esc(itemLines(editing))}</textarea>
           <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
             <button type="button" class="btn btn-primary" id="mo-cl-save">${editing ? 'Save changes' : 'Add checklist'}</button>
             ${editing ? '<button type="button" class="btn btn-ghost" id="mo-cl-cancel">Cancel edit</button>' : ''}
@@ -729,71 +736,55 @@
         </div>
 
         <div id="mo-cl-list">
-          ${rows.map((c) => `
-            <div class="mo-cl-card" data-id="${c.id}">
+          ${list.map((c) => {
+            const items = Array.isArray(c.items) ? c.items : [];
+            const isEditing = Number(c.id) === editingId;
+            return `<div class="mo-cl-card${isEditing ? ' mo-cl-card-active' : ''}" data-id="${c.id}">
               <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center">
                 <div>
                   <strong>${esc(c.name)}</strong>
-                  <span class="muted"> · ${esc(c.category || 'general')} · ${(c.items || []).length} items</span>
+                  <span class="muted"> · ${esc(c.category || 'general')} · ${items.length} items</span>
+                  ${isEditing ? ' <span class="tag tag-warn">editing</span>' : ''}
                 </div>
-                <button type="button" class="btn btn-primary btn-sm mo-cl-edit" data-id="${c.id}">Edit items</button>
+                <div style="display:flex;gap:6px;flex-wrap:wrap">
+                  <button type="button" class="btn btn-primary btn-sm mo-cl-edit" data-id="${c.id}">Edit items</button>
+                  <button type="button" class="btn btn-ghost btn-sm mo-cl-delete" data-id="${c.id}" data-name="${esc(c.name)}">Delete</button>
+                </div>
               </div>
               <ul style="margin:8px 0 0;padding-left:18px;color:var(--muted,#64748b);font-size:13px">
-                ${(c.items || []).map((it) => `<li>${esc(it.label || it)}</li>`).join('') || '<li>No items</li>'}
+                ${items.map((it) => `<li>${esc(typeof it === 'string' ? it : (it.label || ''))}</li>`).join('') || '<li>No items</li>'}
               </ul>
-            </div>`).join('') || '<p class="muted">No checklists yet — add one above</p>'}
+            </div>`;
+          }).join('') || '<p class="muted">No checklists yet — add one above</p>'}
         </div>
-      </div></div>`;
+      </div></div>
+      <style>
+        .mo-cl-editing{outline:2px solid #10b981;background:rgba(16,185,129,.12)!important}
+        .mo-cl-card-active{border-color:#10b981;box-shadow:0 0 0 2px rgba(16,185,129,.25)}
+      </style>`;
 
-      const fillEditor = (c) => {
-        const titleEl = el.querySelector('#mo-cl-form-title');
-        const nameEl = el.querySelector('#mo-cl-name');
-        const catEl = el.querySelector('#mo-cl-cat');
-        const itemsEl = el.querySelector('#mo-cl-items');
-        const saveBtn = el.querySelector('#mo-cl-save');
-        if (titleEl) titleEl.textContent = c ? 'Edit checklist' : 'Add checklist';
-        if (nameEl) nameEl.value = c?.name || '';
-        if (catEl) catEl.value = c?.category || '';
-        if (itemsEl) itemsEl.value = c ? (c.items || []).map((it) => it.label || it).join('\n') : '';
-        if (saveBtn) saveBtn.textContent = c ? 'Save changes' : 'Add checklist';
-        let cancel = el.querySelector('#mo-cl-cancel');
-        if (c && !cancel) {
-          cancel = document.createElement('button');
-          cancel.type = 'button';
-          cancel.className = 'btn btn-ghost';
-          cancel.id = 'mo-cl-cancel';
-          cancel.textContent = 'Cancel edit';
-          saveBtn?.parentElement?.appendChild(cancel);
-          cancel.addEventListener('click', () => {
-            this._editChecklistId = null;
-            fillEditor(null);
-          });
-        } else if (!c && cancel) {
-          cancel.remove();
-        } else if (cancel) {
-          cancel.onclick = () => {
-            this._editChecklistId = null;
-            fillEditor(null);
-          };
-        }
-        el.querySelector('#mo-cl-form')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        nameEl?.focus();
-      };
+      if (editing) {
+        requestAnimationFrame(() => {
+          el.querySelector('#mo-cl-form')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          el.querySelector('#mo-cl-items')?.focus();
+        });
+      }
 
-      const saveBtn = el.querySelector('#mo-cl-save');
-      saveBtn?.addEventListener('click', async () => {
+      el.querySelector('#mo-cl-save')?.addEventListener('click', async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
         const name = el.querySelector('#mo-cl-name')?.value?.trim();
         const category = el.querySelector('#mo-cl-cat')?.value?.trim() || 'general';
         const items = String(el.querySelector('#mo-cl-items')?.value || '')
-          .split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+          .split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
         if (!name) return Utils.toast('Enter a checklist name', 'error');
         if (!items.length) return Utils.toast('Add at least one item line', 'error');
-        const editId = this._editChecklistId;
-        const prev = editId ? rows.find((c) => Number(c.id) === Number(editId)) : null;
-        saveBtn.disabled = true;
-        saveBtn.textContent = 'Saving…';
+        const editId = this._editChecklistId != null ? Number(this._editChecklistId) : null;
+        const prev = editId ? list.find((c) => Number(c.id) === editId) : null;
+        const saveBtn = el.querySelector('#mo-cl-save');
+        if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = 'Saving…'; }
         const payload = {
-          id: prev ? prev.id : undefined,
+          id: prev ? prev.id : (editId || undefined),
           name,
           category,
           assigned_role: prev?.assigned_role || 'assistant_manager',
@@ -803,29 +794,74 @@
           sort_order: prev?.sort_order || 0
         };
         const out = await API.moSaveChecklist(payload, this.app.user);
-        saveBtn.disabled = false;
-        saveBtn.textContent = prev ? 'Save changes' : 'Add checklist';
+        if (saveBtn) {
+          saveBtn.disabled = false;
+          saveBtn.textContent = prev || editId ? 'Save changes' : 'Add checklist';
+        }
         if (!out.success) return Utils.toast(out.error || 'Save failed', 'error');
         this._editChecklistId = null;
+        this._editChecklistDraft = null;
         this.bust('checklists');
-        Utils.toast(prev ? 'Checklist updated' : 'Checklist added', 'success');
-        this.renderChecklists(el);
+        Utils.toast(prev || editId ? 'Checklist updated' : 'Checklist added', 'success');
+        await this.renderChecklists(el);
       });
 
-      el.querySelector('#mo-cl-cancel')?.addEventListener('click', () => {
+      el.querySelector('#mo-cl-cancel')?.addEventListener('click', async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
         this._editChecklistId = null;
-        fillEditor(null);
+        this._editChecklistDraft = null;
+        await this.renderChecklists(el);
       });
 
-      el.querySelectorAll('.mo-cl-edit').forEach((btn) => {
-        btn.addEventListener('click', () => {
-          const id = Number(btn.dataset.id);
-          const c = rows.find((x) => Number(x.id) === id);
-          if (!c) return;
+      const listEl = el.querySelector('#mo-cl-list');
+      listEl?.addEventListener('click', async (e) => {
+        const editBtn = e.target.closest('.mo-cl-edit');
+        const delBtn = e.target.closest('.mo-cl-delete');
+        if (editBtn) {
+          e.preventDefault();
+          e.stopPropagation();
+          const id = Number(editBtn.getAttribute('data-id'));
+          if (!Number.isFinite(id) || id <= 0) return Utils.toast('Could not open checklist', 'error');
+          let c = list.find((x) => Number(x.id) === id);
+          if (!c) {
+            this.bust('checklists');
+            const fresh = await API.moChecklists();
+            const freshRows = fresh.success ? (fresh.data || []) : [];
+            c = freshRows.find((x) => Number(x.id) === id);
+            if (fresh.success) {
+              this._cache.checklists = fresh;
+              this._cacheAt.checklists = Date.now();
+            }
+          }
+          if (!c) return Utils.toast('Checklist not found — refresh and try again', 'error');
           this._editChecklistId = id;
-          // Instant — no network round-trip, just fill the editor
-          fillEditor(c);
-        });
+          this._editChecklistDraft = c;
+          Utils.toast('Editing "' + c.name + '" — change items above, then Save', 'info');
+          await this.renderChecklists(el);
+          return;
+        }
+        if (delBtn) {
+          e.preventDefault();
+          e.stopPropagation();
+          const id = Number(delBtn.getAttribute('data-id'));
+          const name = delBtn.getAttribute('data-name') || 'this checklist';
+          if (!Number.isFinite(id) || id <= 0) return;
+          if (!confirm('Delete checklist "' + name + '"? This cannot be undone.')) return;
+          delBtn.disabled = true;
+          const out = await API.moDeleteChecklist(id, this.app.user);
+          if (!out.success) {
+            delBtn.disabled = false;
+            return Utils.toast(out.error || 'Delete failed', 'error');
+          }
+          if (Number(this._editChecklistId) === id) {
+            this._editChecklistId = null;
+            this._editChecklistDraft = null;
+          }
+          this.bust('checklists');
+          Utils.toast('Checklist deleted', 'success');
+          await this.renderChecklists(el);
+        }
       });
     },
 

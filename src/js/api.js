@@ -1033,6 +1033,7 @@ const API = {
   moSaveTemplate: (data, actor) => invoke('mo:saveTemplate', data, actor),
   moChecklists: () => invoke('mo:checklists'),
   moSaveChecklist: (data, actor) => invoke('mo:saveChecklist', data, actor),
+  moDeleteChecklist: (id, actor) => invoke('mo:deleteChecklist', id, actor),
   moGetSettings: () => invoke('mo:getSettings'),
   moSaveSettings: (data, actor) => invoke('mo:saveSettings', data, actor),
   moListAccess: (actor) => invoke('mo:listAccess', actor),
