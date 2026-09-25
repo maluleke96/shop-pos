@@ -222,7 +222,7 @@
           if (!r.success) return Utils.toast(r.error || 'Failed', 'error');
           const d = r.data || {};
           Utils.toast(d.message || `Created ${d.created || 0} tasks`, d.created ? 'success' : 'info');
-          this.bust('tasks');
+          this.bust('tasks', 'dashboard');
           await this.go('assign');
         } finally {
           if (btn) { btn.disabled = false; btn.textContent = "Generate today's tasks"; }
