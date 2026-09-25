@@ -1,0 +1,13 @@
+query Deployments($input: DeploymentListInput!, $first: Int) {
+  deployments(input: $input, first: $first) {
+    edges {
+      node {
+        id
+        status
+        staticUrl
+        createdAt
+        serviceId
+      }
+    }
+  }
+}

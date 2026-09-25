@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <title>Register Your Shop</title>
+  <style>
+    :root {
+      --bg: #0b1220;
+      --panel: #152033;
+      --text: #f1f5f9;
+      --muted: #94a3b8;
+      --accent: #38bdf8;
+      --ok: #4ade80;
+      --err: #f87171;
+      --border: #334155;
+      --warn: #fbbf24;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background:
+        radial-gradient(ellipse 80% 50% at 20% 0%, rgba(56,189,248,.18), transparent 55%),
+        radial-gradient(ellipse 60% 40% at 90% 10%, rgba(14,165,233,.12), transparent 50%),
+        linear-gradient(165deg, #0b1220 0%, #0f172a 45%, #0c4a6e 120%);
+      color: var(--text);
+      min-height: 100vh;
+    }
+    .wrap { max-width: 720px; margin: 0 auto; padding: 28px 16px 56px; }
+    .brand { font-size: .78rem; letter-spacing: .12em; text-transform: uppercase; color: var(--accent); margin: 0 0 8px; }
+    h1 { font-size: 1.75rem; margin: 0 0 8px; font-weight: 700; }
+    .lead { color: var(--muted); line-height: 1.55; margin: 0 0 20px; }
+    .notice {
+      border: 1px solid rgba(251,191,36,.35);
+      background: rgba(251,191,36,.08);
+      color: #fde68a;
+      border-radius: 10px;
+      padding: 12px 14px;
+      font-size: .9rem;
+      line-height: 1.45;
+      margin-bottom: 18px;
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid rgba(148,163,184,.22);
+      border-radius: 14px;
+      padding: 20px;
+    }
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    @media (max-width: 640px) { .grid2 { grid-template-columns: 1fr; } }
+    label { display: block; font-size: .8rem; color: var(--muted); margin: 0 0 4px; }
+    .field { margin-bottom: 12px; }
+    input, select, textarea {
+      width: 100%;
+      padding: 11px 12px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: #0b1220;
+      color: var(--text);
+      font: inherit;
+    }
+    textarea { min-height: 90px; resize: vertical; }
+    .addons {
+      max-height: 160px;
+      overflow: auto;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px;
+      background: #0b1220;
+    }
+    .addons label {
+      display: flex;
+      gap: 8px;
+      align-items: flex-start;
+      margin: 0;
+      padding: 6px 4px;
+      color: var(--text);
+      font-size: .9rem;
+      cursor: pointer;
+    }
+    .addons input { width: auto; margin-top: 3px; }
+    button {
+      margin-top: 8px;
+      width: 100%;
+      padding: 14px;
+      border: 0;
+      border-radius: 10px;
+      background: var(--accent);
+      color: #0f172a;
+      font-weight: 700;
+      font: inherit;
+      cursor: pointer;
+    }
+    button:disabled { opacity: .55; cursor: not-allowed; }
+    .err { color: var(--err); margin-top: 12px; }
+    .ok { color: var(--ok); }
+    .success-box {
+      text-align: center;
+      padding: 28px 12px;
+    }
+    .success-box .ref {
+      font-size: 1.25rem;
+      font-weight: 700;
+      letter-spacing: .04em;
+      margin: 12px 0;
+      color: var(--accent);
+    }
+    .foot { margin-top: 16px; font-size: .8rem; color: var(--muted); text-align: center; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <p class="brand">Shop POS · SaaS</p>
+    <h1>Register Your Shop</h1>
+    <p class="lead">Submit an application to request access. This does not create a login, POS access, or shop environment.</p>
+    <div class="notice" id="notice">
+      Submitting this form requests access only. You will not receive login, POS, Admin, or shop access until the platform administrator approves your application.
+    </div>
+    <div class="card" id="panel">Loading…</div>
+    <p class="foot">Platform owner approval is required before provisioning or activation.</p>
+  </div>
+  <script>
+    async function rpc(method, args) {
+      const res = await fetch('/rpc', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ method, args })
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json.success === false) {
+        throw new Error(json.error || ('Request failed (' + res.status + ')'));
+      }
+      return json.data != null ? json.data : json;
+    }
+
+    function esc(s) {
+      return String(s ?? '').replace(/[&<>"']/g, (c) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      }[c]));
+    }
+
+    function showSuccess(data) {
+      document.getElementById('panel').innerHTML = `
+        <div class="success-box">
+          <p class="ok"><strong>Your application has been submitted successfully.</strong></p>
+          <p>Your application is now waiting for approval from the platform administrator.</p>
+          <div class="ref">${esc(data.reference)}</div>
+          <p class="muted" style="color:var(--muted)">Application reference · Status: ${esc(data.status || 'PENDING')}</p>
+          <p style="margin-top:18px;color:var(--muted);font-size:.9rem">
+            No shop login, POS access, activation link, or cloud environment has been created.
+            You will be contacted after review.
+          </p>
+        </div>`;
+    }
+
+    function renderForm(opts) {
+      const pkgs = opts.packages || [];
+      const addons = opts.addons || [];
+      const types = opts.business_types || ['Other'];
+      if (opts.notice) document.getElementById('notice').textContent = opts.notice;
+
+      document.getElementById('panel').innerHTML = `
+        <form id="reg-form" autocomplete="on">
+          <div class="grid2">
+            <div class="field"><label>Business / Shop Name *</label><input name="shop_name" required maxlength="120"></div>
+            <div class="field"><label>Owner Name *</label><input name="owner_name" required maxlength="120"></div>
+            <div class="field"><label>Email *</label><input name="owner_email" type="email" required maxlength="160"></div>
+            <div class="field"><label>WhatsApp Number</label><input name="whatsapp" maxlength="40" placeholder="+27…"></div>
+            <div class="field"><label>Phone Number</label><input name="phone" maxlength="40" placeholder="+27…"></div>
+            <div class="field"><label>Business Type</label>
+              <select name="business_type">
+                <option value="">— select —</option>
+                ${types.map((t) => `<option value="${esc(t)}">${esc(t)}</option>`).join('')}
+              </select>
+            </div>
+            <div class="field"><label>Number of Branches</label><input name="branches" type="number" min="1" max="999" value="1"></div>
+            <div class="field"><label>Package Interested In</label>
+              <select name="package_id">
+                <option value="">— select package —</option>
+                ${pkgs.map((p) => `<option value="${esc(p.id)}">${esc(p.name)}${p.price != null ? ' · ' + esc(p.currency || 'ZAR') + ' ' + esc(p.price) : ''}</option>`).join('')}
+              </select>
+            </div>
+          </div>
+          <div class="field"><label>Business Address</label><input name="address" maxlength="240" placeholder="Street, city"></div>
+          <div class="field"><label>Add-ons / Services Interested In</label>
+            <div class="addons" id="addon-list">
+              ${addons.length ? addons.map((a) => `
+                <label><input type="checkbox" name="addon_ids" value="${esc(a.id)}">
+                  <span><strong>${esc(a.name)}</strong>${a.description ? '<br><span style="color:var(--muted);font-size:.8rem">' + esc(a.description) + '</span>' : ''}</span>
+                </label>`).join('') : '<p style="color:var(--muted);margin:4px;font-size:.85rem">No add-ons listed yet.</p>'}
+            </div>
+          </div>
+          <div class="field"><label>Additional Information</label><textarea name="additional_info" maxlength="4000" placeholder="Anything else we should know"></textarea></div>
+          <button type="submit" id="submit-btn">Submit Application</button>
+          <p class="err" id="err"></p>
+        </form>`;
+
+      document.getElementById('reg-form').addEventListener('submit', async (ev) => {
+        ev.preventDefault();
+        const errEl = document.getElementById('err');
+        const btn = document.getElementById('submit-btn');
+        errEl.textContent = '';
+        const fd = new FormData(ev.target);
+        const addon_ids = [...document.querySelectorAll('input[name="addon_ids"]:checked')].map((el) => el.value);
+        // Never send status / approved / shop_id — server forces PENDING
+        const payload = {
+          shop_name: String(fd.get('shop_name') || '').trim(),
+          owner_name: String(fd.get('owner_name') || '').trim(),
+          owner_email: String(fd.get('owner_email') || '').trim(),
+          whatsapp: String(fd.get('whatsapp') || '').trim(),
+          phone: String(fd.get('phone') || '').trim(),
+          address: String(fd.get('address') || '').trim(),
+          business_type: String(fd.get('business_type') || '').trim(),
+          branches: Number(fd.get('branches') || 1),
+          package_id: String(fd.get('package_id') || '').trim() || null,
+          addon_ids,
+          additional_info: String(fd.get('additional_info') || '').trim()
+        };
+        btn.disabled = true;
+        btn.textContent = 'Submitting…';
+        try {
+          const data = await rpc('platform:submitShopApplication', [payload, {
+            user_agent: navigator.userAgent || ''
+          }]);
+          showSuccess(data);
+        } catch (e) {
+          errEl.textContent = e.message || String(e);
+          btn.disabled = false;
+          btn.textContent = 'Submit Application';
+        }
+      });
+    }
+
+    (async () => {
+      try {
+        const opts = await rpc('platform:registrationOptions', []);
+        renderForm(opts || {});
+      } catch (e) {
+        document.getElementById('panel').innerHTML =
+          `<p class="err">Registration is not available on this deployment.</p><p class="err">${esc(e.message)}</p>`;
+      }
+    })();
+  </script>
+</body>
+</html>

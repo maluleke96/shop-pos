@@ -36,6 +36,27 @@ function todayLocalDate() {
 }
 function parseJson(v, fb) { try { return v ? JSON.parse(v) : fb; } catch (_) { return fb; } }
 
+function ensureDeliveryFeeColumns() {
+  const isPg = (() => {
+    try { return require('../database/pg-db').isPgMode(); } catch (_) { return false; }
+  })();
+  const tables = [
+    ['sales', 'delivery_fee', 'REAL DEFAULT 0'],
+    ['online_orders_local', 'delivery_fee', 'REAL DEFAULT 0'],
+    ['delivery_assignments', 'delivery_fee', 'REAL DEFAULT 0'],
+    ['delivery_branch_settings', 'delivery_fee', 'REAL DEFAULT 0']
+  ];
+  for (const [table, col, decl] of tables) {
+    try {
+      if (isPg) {
+        dbRun(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${col} ${decl.replace('REAL', 'DOUBLE PRECISION')}`);
+      } else {
+        dbRun(`ALTER TABLE ${table} ADD COLUMN ${col} ${decl}`);
+      }
+    } catch (_) { /* exists or table missing */ }
+  }
+}
+
 function ensureSchema() {
   const fs = require('fs');
   const path = require('path');
@@ -62,6 +83,7 @@ function ensureSchema() {
     runPgMig('20260905_driver_claims_profile.sql');
     runPgMig('20260907_driver_payout_schedule.sql');
     runPgMig('20260907_driver_payout_details.sql');
+    ensureDeliveryFeeColumns();
     backfillZeroDeliveryFees();
     return;
   }
@@ -71,6 +93,7 @@ function ensureSchema() {
       try { getDb().exec(fs.readFileSync(mig, 'utf8')); } catch (_) { /* columns may exist */ }
     }
   }
+  ensureDeliveryFeeColumns();
   backfillZeroDeliveryFees();
 }
 

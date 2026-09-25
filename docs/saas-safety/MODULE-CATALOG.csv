@@ -46,6 +46,7 @@ mod.combos,major,Combos & Promos,true,enabled_in_full_product,combos,Admin combo
 mod.careers,major,Careers / Job Apply,true,enabled_in_full_product,recruitment,/apply|mode apply,mod.hr,jobs:*,,job_postings|job_candidates,
 mod.document_hub,major,Document Hub,true,enabled_in_full_product,,main-nav document-hub,,file:*|document hub service,,document_assets|financial_documents,
 mod.ops_compliance,major,Operations & Compliance,true,enabled_in_full_product,opscompliance,Admin opscompliance|main-nav operations,,ops:*|cashup:*,,daily_checklist_*|opening_checklist_templates|closing_checklist_templates|compliance_*,
+mod.manager_operations,major,Manager Operations & Daily Tasks,true,enabled_in_full_product,manager-ops,/manager-ops/|Admin manager-ops|Platform Control modules,app.admin|app.pos|core.users_permissions|core.sync_notify,mo:*|managerOps:*,daily task generation from operating hours,mo_*,Alias manager_operations. Disabling never deletes mo_* history.
 mod.automation,major,Automation Rules,true,enabled_in_full_product,automation,Admin automation,,automation:*,rule evaluation (event-driven),automation_rules,
 mod.donations,feature,Donations,true,enabled_in_full_product,,Admin/ops surfaces,,donations:*,,donations|donation_documents,Feature-sized; confirm if sold separately.
 mod.employee_of_month,feature,Employee of the Month,true,enabled_in_full_product,employee-of-month,Admin employee-of-month,mod.hr,hr/employee-of-month,,employee_of_month|employee_of_month_scores,
@@ -98,6 +99,7 @@ admin.business-manager,admin_submodule,Business Manager,true,enabled_in_full_pro
 admin.device,admin_submodule,Device Settings,false,enabled_in_full_product,device,Admin Panel sidebar,core.device_print,Admin UI section device,,,Treat as part of core Admin / shared; do not sell alone.
 admin.backup,admin_submodule,Backup & Restore,false,enabled_in_full_product,backup,Admin Panel sidebar,core.audit_security,Admin UI section backup,,,Treat as part of core Admin / shared; do not sell alone.
 admin.opscompliance,admin_submodule,Operations & Compliance,true,enabled_in_full_product,opscompliance,Admin Panel sidebar,mod.ops_compliance,Admin UI section opscompliance,,,Candidate to hide/show via package.
+admin.manager-ops,admin_submodule,Manager Operations,true,enabled_in_full_product,manager-ops,Admin Panel sidebar,mod.manager_operations,Admin UI section manager-ops,,,Candidate to hide/show via package.
 admin.combos,admin_submodule,Combos & Promos,true,enabled_in_full_product,combos,Admin Panel sidebar,mod.combos,Admin UI section combos,,,Candidate to hide/show via package.
 admin.menu-builder,admin_submodule,Menu Builder,true,enabled_in_full_product,menu-builder,Admin Panel sidebar,app.studio,Admin UI section menu-builder,,,Candidate to hide/show via package.
 admin.promo-video-builder,admin_submodule,Promo Video Builder,true,enabled_in_full_product,promo-video-builder,Admin Panel sidebar,app.studio,Admin UI section promo-video-builder,,,Candidate to hide/show via package.

@@ -440,26 +440,60 @@ const Utils = {
     return false;
   },
 
-  /** SaaS access blocked overlay — never shows Railway/secrets/internal details */
+  /** SaaS access blocked — shop branding + professional contact options (no setup / login) */
   showAccessBlockedOverlay(payload) {
     const msg = payload?.message || {};
-    const title = msg.title || 'Service Temporarily Unavailable';
-    const body = msg.body || msg.body_text || 'Your shop access has been temporarily suspended.\n\nThis may be due to your subscription status or an administrative action.\n\nPlease contact your administrator for assistance.';
-    const label = msg.contact_label || 'Contact Administrator';
-    const url = payload?.contact_admin_url || '';
+    const title = msg.title || 'Shop access on hold';
+    const body = msg.body || msg.body_text
+      || 'Welcome — your shop is currently suspended, so signing in and operating the till are temporarily unavailable.\n\nPlease contact us and we will help you restore access.';
+    const shopName = payload?.shop_name || payload?.shopName || '';
+    const contact = payload?.contact || {};
+    const phone = String(contact.phone || '').trim();
+    const whatsapp = String(contact.whatsapp || phone || '').trim();
+    const email = String(contact.email || '').trim();
+    const url = String(payload?.contact_admin_url || contact.url || '').trim();
+    const waDigits = whatsapp.replace(/\D/g, '');
+    const telHref = phone ? `tel:${phone.replace(/\s+/g, '')}` : '';
+    const waHref = waDigits
+      ? `https://wa.me/${waDigits}?text=${encodeURIComponent(`Hello, I need help with my shop${shopName ? ' "' + shopName + '"' : ''} (access on hold).`)}`
+      : '';
+    const mailHref = email
+      ? `mailto:${encodeURIComponent(email)}?subject=${encodeURIComponent(`Shop access help${shopName ? ': ' + shopName : ''}`)}&body=${encodeURIComponent(`Hello,\n\nMy shop${shopName ? ' "' + shopName + '"' : ''} currently shows access on hold. Please help me restore access.\n\nThank you.`)}`
+      : (url && /^mailto:/i.test(url) ? url : '');
+
     let el = document.getElementById('saas-access-blocked');
     if (!el) {
       el = document.createElement('div');
       el.id = 'saas-access-blocked';
       el.setAttribute('role', 'alertdialog');
-      el.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(15,23,42,.92);display:flex;align-items:center;justify-content:center;padding:24px;';
+      el.style.cssText = 'position:fixed;inset:0;z-index:99999;background:linear-gradient(165deg,#0f172a 0%,#1e293b 50%,#0c4a6e 100%);display:flex;align-items:center;justify-content:center;padding:24px;';
       document.body.appendChild(el);
     }
     const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-    el.innerHTML = `<div style="max-width:420px;background:#fff;color:#0f172a;padding:28px 24px;border-radius:12px;font-family:Georgia,serif">
-      <h2 style="margin:0 0 12px;font-size:1.35rem">${esc(title)}</h2>
-      <p style="white-space:pre-wrap;line-height:1.5;margin:0 0 20px">${esc(body)}</p>
-      ${url ? `<a href="${esc(url)}" target="_blank" rel="noopener" style="display:inline-block;padding:10px 16px;background:#0f172a;color:#fff;text-decoration:none;border-radius:8px">${esc(label)}</a>` : `<button type="button" style="padding:10px 16px;background:#0f172a;color:#fff;border:0;border-radius:8px" onclick="alert('Please contact your administrator for assistance.')">${esc(label)}</button>`}
+    const logoHtml = payload?.logo_html || '';
+    const btns = [];
+    if (telHref) {
+      btns.push(`<a href="${esc(telHref)}" style="flex:1;min-width:120px;text-align:center;padding:12px 14px;background:#0f172a;color:#fff;text-decoration:none;border-radius:10px;font-weight:600">Call us</a>`);
+    }
+    if (waHref) {
+      btns.push(`<a href="${esc(waHref)}" target="_blank" rel="noopener" style="flex:1;min-width:120px;text-align:center;padding:12px 14px;background:#128C7E;color:#fff;text-decoration:none;border-radius:10px;font-weight:600">WhatsApp</a>`);
+    }
+    if (mailHref) {
+      btns.push(`<a href="${esc(mailHref)}" style="flex:1;min-width:120px;text-align:center;padding:12px 14px;background:#334155;color:#fff;text-decoration:none;border-radius:10px;font-weight:600">Email us</a>`);
+    }
+    if (!btns.length && url) {
+      btns.push(`<a href="${esc(url)}" target="_blank" rel="noopener" style="flex:1;text-align:center;padding:12px 14px;background:#0f172a;color:#fff;text-decoration:none;border-radius:10px;font-weight:600">${esc(msg.contact_label || 'Contact us')}</a>`);
+    }
+    if (!btns.length) {
+      btns.push(`<button type="button" style="flex:1;padding:12px 14px;background:#0f172a;color:#fff;border:0;border-radius:10px;font-weight:600" onclick="alert('Please contact your platform administrator to restore shop access.')">${esc(msg.contact_label || 'Contact us')}</button>`);
+    }
+    el.innerHTML = `<div style="max-width:440px;width:100%;background:#fff;color:#0f172a;padding:28px 24px;border-radius:16px;box-shadow:0 20px 50px rgba(0,0,0,.35);font-family:Georgia,'Times New Roman',serif;text-align:center">
+      <div style="font-size:2.4rem;line-height:1;margin-bottom:10px">${logoHtml || '🏪'}</div>
+      ${shopName ? `<h1 style="margin:0 0 4px;font-size:1.45rem">${esc(shopName)}</h1>
+      <p style="margin:0 0 14px;color:#64748b;font-size:.95rem">Welcome to your shop</p>` : `<h1 style="margin:0 0 14px;font-size:1.35rem">${esc(title)}</h1>`}
+      <p style="white-space:pre-wrap;line-height:1.55;margin:0 0 8px;text-align:left;color:#334155;font-size:.95rem">${esc(body)}</p>
+      <p style="margin:0 0 18px;color:#64748b;font-size:.85rem;text-align:left">We are here to help — choose how you would like to reach us:</p>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;justify-content:center">${btns.join('')}</div>
     </div>`;
   },
 
@@ -516,7 +550,7 @@ const Utils = {
 
   /** Sections managers/supervisors should always see when they have admin access */
   adminManagerSections: new Set([
-    'overview', 'staffhr', 'staffportal', 'hrcontracts', 'recruitment', 'employee-of-month', 'opscompliance', 'combos',
+    'overview', 'staffhr', 'staffportal', 'hrcontracts', 'recruitment', 'employee-of-month', 'opscompliance', 'manager-ops', 'combos',
     'menu-builder', 'promo-video-builder', 'radio', 'communication-center',
     'quotes', 'approvals', 'recipe', 'tax', 'tax-hub', 'cashiers', 'branches',
     'mobile-app', 'business-manager', 'business-modules', 'digital-signage', 'online-orders', 'hr-workspace', 'hr-approvals', 'accounting-workspace',
@@ -626,88 +660,129 @@ const Utils = {
     return `https://wa.me/${num}?text=${encodeURIComponent(message || '')}`;
   },
 
-  canSilentWhatsApp(settings) {
-    const raw = settings?.whatsapp_settings;
-    let parsed = raw;
+  whatsappAppUrl(phone, message) {
+    const digits = String(phone || '').replace(/\D/g, '');
+    if (!digits) return '';
+    const num = digits.startsWith('0') ? `27${digits.slice(1)}` : digits;
+    return `whatsapp://send?phone=${num}&text=${encodeURIComponent(message || '')}`;
+  },
+
+  parseWhatsAppSettings(settings) {
+    let raw = settings?.whatsapp_settings != null ? settings.whatsapp_settings : settings;
     if (typeof raw === 'string') {
-      try { parsed = JSON.parse(raw); } catch { parsed = {}; }
+      try { raw = JSON.parse(raw); } catch { return {}; }
     }
-    return !!(parsed?.api_key_configured || (parsed?.phone_number_id && parsed?.api_key));
+    return raw && typeof raw === 'object' ? raw : {};
+  },
+
+  preferManualWhatsApp(settings) {
+    return Utils.parseWhatsAppSettings(settings).use_cloud_api === false;
+  },
+
+  canSilentWhatsApp(settings) {
+    const parsed = Utils.parseWhatsAppSettings(settings);
+    if (parsed.use_cloud_api === false) return false;
+    return !!(parsed.api_key_configured || (parsed.phone_number_id && parsed.api_key));
   },
 
   openWhatsAppUrl(url) {
     if (!url) return false;
-    try { window.PanelExitGuard?.suspend?.(20000); } catch (_) { /* ignore */ }
-    try {
-      if (window.Capacitor?.Plugins?.Browser?.open) {
-        window.Capacitor.Plugins.Browser.open({ url });
-        return true;
-      }
-    } catch (_) { /* fall through */ }
-    try {
-      if (window.API?.openExternal) {
-        API.openExternal(url);
-        return true;
-      }
-    } catch (_) { /* fall through */ }
-    try {
+    try { window.PanelExitGuard?.suspend?.(45000); } catch (_) { /* ignore */ }
+    let opened = false;
+    const tryOpen = (fn) => {
+      if (opened) return;
+      try { if (fn()) opened = true; } catch (_) { /* next */ }
+    };
+    tryOpen(() => {
+      if (!window.API?.openExternal) return false;
+      Promise.resolve(API.openExternal(url)).catch(() => {});
+      return true;
+    });
+    tryOpen(() => {
+      const AppPlugin = window.Capacitor?.Plugins?.App;
+      if (!AppPlugin?.openUrl) return false;
+      AppPlugin.openUrl({ url });
+      return true;
+    });
+    tryOpen(() => {
       const a = document.createElement('a');
       a.href = url;
       a.target = '_blank';
       a.rel = 'noopener noreferrer';
+      a.style.display = 'none';
       document.body.appendChild(a);
       a.click();
-      a.remove();
+      setTimeout(() => a.remove(), 400);
       return true;
-    } catch (_) { /* fall through */ }
-    try {
-      window.open(url, '_blank', 'noopener,noreferrer');
-      return true;
-    } catch (_) {
-      return false;
+    });
+    tryOpen(() => !!window.open(url, '_blank', 'noopener,noreferrer'));
+    if (!opened) {
+      try {
+        window.Capacitor?.Plugins?.Browser?.open?.({ url });
+        opened = true;
+      } catch (_) { /* */ }
     }
+    return opened;
   },
 
   openWhatsApp(phone, message) {
     const url = Utils.whatsappUrl(phone, message);
     if (!url) return false;
+    try {
+      if (window.Capacitor?.isNativePlatform?.()) {
+        const appUrl = Utils.whatsappAppUrl(phone, message);
+        if (appUrl) Utils.openWhatsAppUrl(appUrl);
+      }
+    } catch (_) { /* ignore */ }
     return Utils.openWhatsAppUrl(url);
   },
 
   async deliverWhatsApp(result, fallbackPhone, fallbackMessage) {
     const data = result?.data || result || {};
+    const fallbackBody = fallbackMessage || data.body || '';
+    const phone = fallbackPhone || data.phone || '';
+    const via = data.via || '';
+    const url = data.url || (phone ? Utils.whatsappUrl(phone, fallbackBody) : '');
+
     if (result && result.success === false) {
-      if (fallbackPhone) {
-        Utils.openWhatsApp(fallbackPhone, fallbackMessage || '');
+      if (phone && Utils.openWhatsApp(phone, fallbackBody)) {
         Utils.toast('WhatsApp opened — tap Send in the chat', 'success');
         return { success: true, fallback: true };
       }
       Utils.toast(result.error || 'WhatsApp failed', 'error');
       return result;
     }
-    if (data.via === 'cloud_api' || (data.status === 'sent' && !data.url)) {
-      Utils.toast('Sent via WhatsApp', 'success');
+
+    // Only claim API sent when Cloud API actually delivered (no wa.me url)
+    if (via === 'cloud_api' && !url && (data.status === 'sent' || data.cloud_message_id)) {
+      Utils.toast('Sent via WhatsApp API', 'success');
       return result || { success: true };
     }
-    const urls = data.url ? [data.url] : (Array.isArray(data.urls) ? data.urls.map((u) => (typeof u === 'string' ? u : u?.url)).filter(Boolean) : []);
+
+    const urls = url
+      ? [url]
+      : (Array.isArray(data.urls) ? data.urls.map((u) => (typeof u === 'string' ? u : u?.url)).filter(Boolean) : []);
     if (urls.length) {
-      for (const url of urls.slice(0, 10)) {
-        if (window.API?.openExternal) await API.openExternal(url);
-        else window.open(url, '_blank', 'noopener,noreferrer');
+      for (const u of urls.slice(0, 10)) Utils.openWhatsAppUrl(u);
+      if (data.id && window.App?.user) {
+        try { await API.markWhatsAppOpened(data.id, window.App.user); } catch (_) { /* ignore */ }
       }
-      if (data.id && (window.App?.user || result?.user)) {
-        try { await API.markWhatsAppOpened(data.id, window.App?.user); } catch (_) { /* ignore */ }
-      }
-      Utils.toast(urls.length > 1 ? `Opened ${Math.min(urls.length, 10)} WhatsApp chat(s)` : 'WhatsApp opened — tap Send in the chat', 'success');
+      Utils.toast(
+        urls.length > 1
+          ? `Opened ${Math.min(urls.length, 10)} WhatsApp chat(s) — tap Send`
+          : 'WhatsApp opened — tap Send in the chat',
+        'success'
+      );
       return result || { success: true };
     }
-    if (fallbackPhone) {
-      Utils.openWhatsApp(fallbackPhone, fallbackMessage || '');
+
+    if (phone && Utils.openWhatsApp(phone, fallbackBody)) {
       Utils.toast('WhatsApp opened — tap Send in the chat', 'success');
       return { success: true, fallback: true };
     }
-    Utils.toast('WhatsApp message prepared', 'success');
-    return result || { success: true };
+
+    Utils.toast('Could not open WhatsApp — check the phone number', 'error');
+    return result || { success: false };
   },
 
   async savePdfBuffer(filename, buf) {
@@ -1145,6 +1220,28 @@ const Utils = {
 
   escHtml(v) {
     return String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  },
+
+  /**
+   * Immediate button feedback + duplicate-click guard.
+   * Usage: await Utils.withBusy(btn, 'Saving…', () => API.save(...))
+   */
+  async withBusy(btn, busyLabel, fn) {
+    const el = typeof btn === 'string' ? document.getElementById(btn) : btn;
+    if (!el) return typeof fn === 'function' ? fn() : undefined;
+    if (el.dataset.busy === '1') return null;
+    const prev = el.textContent;
+    const prevDisabled = el.disabled;
+    el.dataset.busy = '1';
+    el.disabled = true;
+    if (busyLabel) el.textContent = busyLabel;
+    try {
+      return await fn();
+    } finally {
+      el.dataset.busy = '';
+      el.disabled = prevDisabled;
+      el.textContent = prev;
+    }
   },
 
   customerPickerHTML(prefix = 'cust') {

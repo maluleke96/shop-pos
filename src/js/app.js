@@ -134,6 +134,7 @@ const App = {
     'employee-of-month': ['js/pages/admin-employee-month.js'],
     payroll: ['js/pages/admin-payroll.js'],
     opscompliance: ['js/pages/admin-operations.js'],
+    'manager-ops': ['js/pages/admin-manager-ops.js'],
     combos: ['js/pages/admin-combos.js'],
     quotes: ['js/pages/admin-quotes.js'],
     'menu-builder': ['js/pages/admin-menu-builder.js', 'js/promo-poster.js'],
@@ -175,6 +176,7 @@ const App = {
     'js/pages/admin-staff.js',
     'js/pages/admin-hr.js',
     'js/pages/admin-operations.js',
+    'js/pages/admin-manager-ops.js',
     'js/pages/admin-combos.js',
     'js/pages/admin-menu-builder.js',
     'js/pages/admin-promo-video-builder.js',
@@ -245,6 +247,7 @@ const App = {
   /**
    * SaaS customer URL (or ?start=setup): Setup first if needed, then Login only.
    * Never dump a first-time shop into username/password before setup completes.
+   * Suspended shops never show Set Up My Shop — branding + contact only.
    */
   async _bootSetupThenLogin(opts = {}) {
     const forceSetup = !!opts.forceSetup || this._wantsSetupHandoff();
@@ -253,6 +256,9 @@ const App = {
 
     // Do not restore a session into the app when the user is trying to set up.
     if (!forceSetup && await this.tryRestoreSession()) return;
+
+    // Access check first — suspended shops must not enter setup/login.
+    if (await this._maybeShowSuspendedWelcome()) return;
 
     try {
       if (typeof API.adoptExistingBusiness === 'function') {
@@ -266,6 +272,10 @@ const App = {
     }
 
     const res = await API.getSettingsParsed();
+    if (res && (res.code === 'SHOP_SUSPENDED' || res.code === 'SHOP_EXPIRED' || /SHOP_SUSPENDED|SHOP_EXPIRED/i.test(String(res.error || '')))) {
+      await this._showSuspendedFromPayload(res);
+      return;
+    }
     if (!res.success) {
       this.showWelcome({
         needsSetup: true,
@@ -277,6 +287,8 @@ const App = {
     this.settings = res.data;
     this.applyTheme();
     this.syncDeviceSettings().catch(() => {});
+
+    if (await this._maybeShowSuspendedWelcome()) return;
 
     const setupDone = !!Number(this.settings?.setup_complete);
 
@@ -299,6 +311,67 @@ const App = {
     this.startLoginOperatingTimer?.();
     this.prefetchLoginScripts();
     this.checkContractReacceptance?.().catch(() => {});
+  },
+
+  async _maybeShowSuspendedWelcome() {
+    try {
+      const access = typeof API.getShopAccess === 'function'
+        ? await API.getShopAccess()
+        : await API.invoke?.('platform:currentAccess');
+      const data = access?.data != null ? access.data : access;
+      if (data && data.allowed === false) {
+        await this._showSuspendedFromPayload({
+          ...data,
+          code: data.access_state === 'EXPIRED' ? 'SHOP_EXPIRED' : 'SHOP_SUSPENDED',
+          message: data.message,
+          contact: data.contact,
+          contact_admin_url: data.contact_admin_url,
+          shop_name: data.shop_name
+        });
+        return true;
+      }
+    } catch (_) { /* optional */ }
+    return false;
+  },
+
+  async _showSuspendedFromPayload(payload = {}) {
+    // Ensure branding (name/logo) without opening setup
+    try {
+      if (!this.settings) {
+        const res = await API.getSettingsParsed();
+        if (res?.success && res.data) {
+          this.settings = res.data;
+          this.applyTheme?.();
+        }
+      }
+    } catch (_) { /* */ }
+    const rawName = (this.settings?.shop_name || this.settings?.app_display_name || payload.shop_name || '').trim();
+    const shopName = rawName && !/^my shop$/i.test(rawName) ? rawName : (payload.shop_name || 'Your shop');
+    let logoHtml = '🏪';
+    try {
+      const logoPath = this.settings?.logo_path || this.settings?.logo_url || '';
+      if (logoPath && /^https?:|^data:|^\/|^blob:/i.test(String(logoPath))) {
+        logoHtml = `<img src="${String(logoPath).replace(/"/g, '')}" alt="" style="width:72px;height:72px;object-fit:contain;border-radius:12px">`;
+      } else if (document.getElementById('welcome-logo')?.innerHTML) {
+        logoHtml = document.getElementById('welcome-logo').innerHTML;
+      }
+    } catch (_) { /* */ }
+    Utils.hideAccessBlockedOverlay?.();
+    Utils.showAccessBlockedOverlay({
+      ...payload,
+      shop_name: shopName,
+      logo_html: logoHtml,
+      message: payload.message || {
+        title: 'Shop access on hold',
+        body: 'Welcome — your shop is currently suspended, so signing in and operating the till are temporarily unavailable.\n\nPlease contact us and we will help you restore access.',
+        contact_label: 'Contact us'
+      }
+    });
+    // Hide setup/login chrome underneath
+    try {
+      document.querySelectorAll('.screen').forEach((s) => s.classList.add('hidden'));
+    } catch (_) { /* */ }
+    this.hideMobileLoading?.();
   },
 
   isPosKiosk() {
@@ -528,12 +601,12 @@ const App = {
       return;
     }
     const pages = mode === 'pos'
-      ? ['pos', 'returns']
+      ? ['pos']
       : mode === 'delivery'
         ? []
-        : ['pos', 'dashboard', 'admin', 'products', 'stock', 'customers', 'suppliers', 'expenses', 'quotes', 'returns', 'layby', 'giftcards', 'whatsapp'];
+        : ['pos', 'dashboard', 'admin'];
     const run = () => {
-      pages.forEach((p, i) => setTimeout(() => this.ensurePageScripts(p).catch(() => {}), i * 50));
+      pages.forEach((p, i) => setTimeout(() => this.ensurePageScripts(p).catch(() => {}), i * 80));
     };
     if (mode === 'pos') run();
     else if (typeof requestIdleCallback === 'function') requestIdleCallback(run, { timeout: 400 });
@@ -2671,11 +2744,14 @@ const App = {
 
     this.showScreen('app');
     if (!this.isPosKiosk()) {
-      await this.loadEntitlements();
+      // Paint nav immediately from last-known entitlements; refresh in background
       this.renderNav();
       document.getElementById('sidebar-user-role').textContent =
         this.formatSidebarUserRole(this.user);
       this.refreshBranchSwitcher().catch(() => {});
+      this.loadEntitlements()
+        .then(() => { try { this.renderNav(); } catch (_) { /* */ } })
+        .catch(() => {});
     } else {
       this.loadEntitlements().catch(() => {});
     }
@@ -3033,7 +3109,8 @@ const App = {
     // First visit: skip skeleton when we can paint from cache (POS/admin/sidebar)
     const instantPages = new Set([
       'pos', 'admin', 'stock', 'customers', 'suppliers', 'expenses', 'quotes',
-      'returns', 'layby', 'giftcards', 'whatsapp', 'categories'
+      'returns', 'layby', 'giftcards', 'whatsapp', 'categories', 'products',
+      'dashboard', 'staff', 'operations', 'bookkeeping', 'reports'
     ]);
     const canPaintNow = instantPages.has(page)
       || (page === 'products' && !!(
@@ -3149,9 +3226,17 @@ const App = {
         tasks.push(() => API.getStockReport());
       }
       if (page === 'admin') {
-        tasks.push(() => API.getAdminDashboard(from, to));
+        const today = Utils.today?.() || new Date().toISOString().slice(0, 10);
+        tasks.push(async () => {
+          const res = await API.getAdminDashboard(today, today);
+          if (res?.success && res.data) {
+            try { Utils.sessionCacheSet?.(`admin_dash_${today}_${today}`, res.data, 10 * 60 * 1000); } catch (_) { /* */ }
+          }
+          return res;
+        });
         tasks.push(() => API.getCategories({}));
         tasks.push(() => API.getProducts({ admin_list: true }));
+        this.ensurePageScripts('admin').catch(() => {});
         ['stock', 'customers', 'suppliers', 'expenses', 'quotes', 'returns', 'layby', 'giftcards', 'whatsapp']
           .forEach((p) => this.ensurePageScripts(p).catch(() => {}));
       }
@@ -3904,7 +3989,12 @@ const App = {
     this.stopNotificationRefresh();
     if (!this.user) return;
     this.pollNotifications(true);
-    this._notifRefreshInterval = setInterval(() => this.pollNotifications(false), 4000);
+    const isMobile = !!(window.__SHOP_POS_MOBILE__ || Utils.isNative?.());
+    const every = isMobile ? 20000 : 15000;
+    this._notifRefreshInterval = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      this.pollNotifications(false);
+    }, every);
   },
 
   stopNotificationRefresh() {

@@ -270,7 +270,7 @@ const PaymentUI = {
 
     const pointsValue = Utils.loyaltyPointsValue(customerPoints, settings, currency);
 
-    Utils.showModal(title, `
+    const modalOk = Utils.showModal(title, `
       <div style="text-align:center;font-size:28px;font-weight:700;margin-bottom:4px" id="pay-total-display">${Utils.formatMoney(total, currency)}</div>
       ${showDelivery ? `<div class="muted" style="text-align:center;margin-bottom:4px;font-size:13px">Includes delivery${deliveryPlace ? ` (${Utils.escHtml(deliveryPlace)})` : ''}: ${Utils.formatMoney(delFee, currency)}${delFee <= 0 ? ' (free)' : ''}</div>` : ''}
       <div id="pay-due-display" class="muted" style="text-align:center;margin-bottom:12px;font-size:14px"></div>
@@ -280,7 +280,7 @@ const PaymentUI = {
       </div>
       <div id="pay-extra-fields"></div>
       <div class="form-grid" style="margin-top:12px">
-        <div class="field"><label>Amount</label><input type="number" id="pay-amount" step="0.01" value="${total.toFixed(2)}"></div>
+        <div class="field"><label>Amount</label><input type="number" id="pay-amount" step="0.01" value="${Number(total || 0).toFixed(2)}"></div>
         <div class="field" style="display:flex;align-items:flex-end"><button type="button" class="btn btn-primary" id="add-pay" style="width:100%">+ Add Payment</button></div>
       </div>
       <div id="pay-rows" style="margin-top:12px"></div>
@@ -306,6 +306,10 @@ const PaymentUI = {
       </div>` : `
         <button type="button" class="btn btn-ghost btn-sm" id="pay-add-customer" style="margin-top:8px">+ Add Customer (to earn/redeem points)</button>`}`,
       `<button type="button" class="btn btn-success btn-lg" id="confirm-pay" style="min-width:200px">${confirmLabel}</button>`);
+    if (modalOk === false) {
+      Utils.toast('Another dialog is open — close it first, then tap Pay again', 'error');
+      return false;
+    }
 
     const dismissedOnce = { done: false };
     const dismissOnce = () => {
@@ -466,6 +470,7 @@ const PaymentUI = {
 
     updateExtra();
     renderPayRows();
+    return true;
   }
 };
 

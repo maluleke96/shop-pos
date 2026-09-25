@@ -1,0 +1,140 @@
+{
+  "ok": true,
+  "checks": [
+    {
+      "name": "platform asArray helper",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "shops list normalized",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "renderShops uses local shops array",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "tab click try/catch wraps render",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "asArray guards non-array shops payload",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "asArray keeps real shops array",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "processSale skips sticky without code on POS",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "clearSaleReferral exists",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "clearSaleReferral does not delete customers table",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "POS clear does not call clearCustomerAttribution",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "sale persists referral_cleared nulls",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "saleData sends referral_cleared",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "clearSaleReferral exported",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "processSale exported",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "getCustomers exported",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "getCustomers uses slim SELECT",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "getCustomers limited for search",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "perf indexes migration exists",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "idx_customers_name",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "idx_customers_phone",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "Android appId is Shop POS offline",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "Android not referralcommission",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "Gradle applicationId offline",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "APK zip magic (apk)",
+      "pass": true,
+      "detail": "9 MB"
+    },
+    {
+      "name": "APK zip magic (apkLatest)",
+      "pass": true,
+      "detail": "9 MB"
+    },
+    {
+      "name": "EXE MZ magic (winPortable)",
+      "pass": true,
+      "detail": "78 MB"
+    },
+    {
+      "name": "EXE MZ magic (winSetup)",
+      "pass": true,
+      "detail": "88 MB"
+    }
+  ]
+}

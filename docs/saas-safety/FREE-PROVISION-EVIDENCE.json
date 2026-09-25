@@ -1,0 +1,93 @@
+{
+  "shop_id": "shop_muaym1z2_221e2e83",
+  "url": "https://shoppos-production-e106.up.railway.app",
+  "railway_project_id": "86c9a24d-d345-4841-968d-0ff4db828fa2",
+  "cleanup": "left disposable (set E2E_CLEANUP_FREE=1 for future automated teardown)",
+  "results": [
+    {
+      "name": "login",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "FREE package exists",
+      "ok": true,
+      "detail": "pkg_muax3ioa_9154d0"
+    },
+    {
+      "name": "FREE customer created",
+      "ok": true,
+      "detail": "shop_muaym1z2_221e2e83"
+    },
+    {
+      "name": "FREE READY",
+      "ok": true,
+      "detail": "online"
+    },
+    {
+      "name": "FREE not Chisa",
+      "ok": true,
+      "detail": "86c9a24d-d345-4841-968d-0ff4db828fa2"
+    },
+    {
+      "name": "FREE URL",
+      "ok": true,
+      "detail": "https://shoppos-production-e106.up.railway.app"
+    },
+    {
+      "name": "FREE health",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "FREE entitlements synced",
+      "ok": true,
+      "detail": "{\"pos\":true,\"admin\":true,\"staff\":false,\"inventory\":true,\"online\":false,\"delivery\":false,\"driver\":false,\"signage\":false,\"signage_player\":fals"
+    },
+    {
+      "name": "FREE online restricted",
+      "ok": true,
+      "detail": "false"
+    },
+    {
+      "name": "FREE signage restricted",
+      "ok": true,
+      "detail": "false"
+    },
+    {
+      "name": "FREE activation",
+      "ok": true,
+      "detail": "{\"success\":true,\"data\":{\"shop_id\":\"shop_muaym1z2_221e2e83\",\"shop_name\":\"FREE Disposable muaym229\",\"a"
+    },
+    {
+      "name": "FREE owner setup",
+      "ok": true,
+      "detail": "{\"success\":true,\"data\":{\"success\":true}}"
+    },
+    {
+      "name": "FREE login",
+      "ok": true,
+      "detail": "freeowner_muaym229"
+    },
+    {
+      "name": "FREE create product",
+      "ok": true,
+      "detail": "{\"success\":true,\"data\":{\"id\":2,\"name\":\"FREE Keep Me\",\"category_id\":null,\"selling"
+    },
+    {
+      "name": "upgrade FREE→Shop Floor",
+      "ok": true,
+      "detail": "{\"pos\":false,\"admin\":true,\"staff\":false,\"inventory\":true,\"online\":false,\"delivery\":false,\"driver\":fa"
+    },
+    {
+      "name": "shop record preserved",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "product data kept after upgrade",
+      "ok": true,
+      "detail": "FREE Keep Me"
+    }
+  ]
+}

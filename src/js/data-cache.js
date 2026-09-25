@@ -256,7 +256,7 @@ function installApiReadCache() {
   });
   wrap('getKitchenOrders', 'kitchen', 15000, (a) => [a[0] ?? null]);
   wrap('getSettingsParsed', 'settings', 300000, () => []);
-  wrap('getNotifications', 'notifications', 1500, (a) => [a?.id || a?.role || a || null], { swr: true });
+  wrap('getNotifications', 'notifications', 12000, (a) => [a?.id || a?.role || a || null], { swr: true });
   wrap('getAdminDashboard', 'adminDashboard', 45000, (a) => [a[0], a[1]]);
   wrap('getSalesList', 'salesList', 30000, (a) => [a[0] || {}]);
   wrap('getSoldProductsReport', 'soldProductsReport', 60000, (a) => [a[0], a[1]]);

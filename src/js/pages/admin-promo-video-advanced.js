@@ -16,30 +16,27 @@
     qualitySize() {
       const fmt = this.formatSize();
       const q = String(this.draft.quality || 'hd').toLowerCase();
+      // Always export at the selected format's native resolution (never shrink into a padded frame)
       let w = fmt.w;
       let h = fmt.h;
-      let videoBitsPerSecond = 6_000_000;
+      let videoBitsPerSecond = 8_000_000;
       if (q === 'whatsapp' || this.draft.outputWhatsApp) {
-        const scale = Math.min(1, 720 / Math.max(w, h));
-        w = Math.round(w * scale);
-        h = Math.round(h * scale);
-        if (w % 2) w += 1;
-        if (h % 2) h += 1;
-        videoBitsPerSecond = 2_200_000;
+        // Keep full 1080×1920 / 1920×1080 / 1080×1080 — lower bitrate only for share size
+        videoBitsPerSecond = 5_000_000;
       } else if (q === 'standard') {
-        videoBitsPerSecond = 4_000_000;
-      } else if (q === 'hd') {
         videoBitsPerSecond = 6_000_000;
-      } else if (q === 'fullhd') {
+      } else if (q === 'hd') {
         videoBitsPerSecond = 8_000_000;
-      } else if (q === 'hq') {
-        videoBitsPerSecond = 12_000_000;
-      } else if (q === 'tv' || this.draft.outputTv) {
-        w = 1920;
-        h = 1080;
+      } else if (q === 'fullhd') {
         videoBitsPerSecond = 10_000_000;
+      } else if (q === 'hq') {
+        videoBitsPerSecond = 14_000_000;
+      } else if (q === 'tv' || this.draft.outputTv) {
+        videoBitsPerSecond = 12_000_000;
       }
-      return { w, h, videoBitsPerSecond, label: q };
+      if (w % 2) w += 1;
+      if (h % 2) h += 1;
+      return { w, h, videoBitsPerSecond, label: q, format: this.draft.format, ratio: fmt.ratio };
     },
 
     buildPromoCaption() {
@@ -208,6 +205,21 @@
       const freeQty = Number(this.draft.buyGetFreeQty) || 1;
       const key = `${item.kind}-${item.id}`;
       const img = this._itemImgs?.[key];
+      const land = isLand || W > H;
+      const short = Math.min(W, H);
+      const shape = String(this.draft.productImageShape || 'fill');
+      const fullBleed = shape === 'fill' || this.draft.fullScreenFill !== false;
+
+      if (fullBleed && img) {
+        this.drawCover(ctx, img, 0, 0, W, H);
+        const veil = ctx.createLinearGradient(0, 0, 0, H);
+        veil.addColorStop(0, 'rgba(0,0,0,0.5)');
+        veil.addColorStop(0.45, 'rgba(0,0,0,0.2)');
+        veil.addColorStop(1, 'rgba(0,0,0,0.75)');
+        ctx.fillStyle = veil;
+        ctx.fillRect(0, 0, W, H);
+      }
+
       const pad = W * 0.06;
       const bannerH = H * 0.11;
       ctx.fillStyle = t.accent;
@@ -218,8 +230,25 @@
       ctx.font = `bold ${Math.round(W * 0.045)}px system-ui,Segoe UI,sans-serif`;
       ctx.fillText(`BUY ${buyQty} GET ${freeQty} FREE`, W / 2, H * 0.08 + bannerH * 0.62);
 
+      if (fullBleed && img) {
+        ctx.fillStyle = t.text;
+        ctx.font = `bold ${Math.round(short * 0.05)}px system-ui,Segoe UI,sans-serif`;
+        this.wrapFill(ctx, String(item.name || '').toUpperCase(), W / 2, H * 0.55, W * 0.88, Math.round(short * 0.055), 2);
+        if (this.draft.showPrices !== false) {
+          ctx.fillStyle = t.gold;
+          ctx.font = `bold ${Math.round(short * 0.04)}px system-ui,sans-serif`;
+          ctx.fillText(this.money(item.price).replace(/\.00$/, ''), W / 2, H * 0.72);
+        }
+        if (this.draft.promoBadge) {
+          ctx.fillStyle = t.gold;
+          ctx.font = `bold ${Math.round(W * 0.022)}px system-ui,sans-serif`;
+          ctx.fillText(this.draft.promoBadge, W / 2, H * 0.88);
+        }
+        return;
+      }
+
       const boxW = (W - pad * 3) / 2;
-      const boxH = isLand ? H * 0.55 : H * 0.38;
+      const boxH = land ? H * 0.55 : H * 0.38;
       const y0 = H * 0.22;
       const slots = [
         { label: 'BUY', x: pad, img, name: item.name, price: item.price },
@@ -443,14 +472,11 @@
         try {
           if (Math.abs(v.currentTime - t) > 0.08) v.currentTime = t;
         } catch (_) { /* seek */ }
-        ctx.save();
-        this.roundRect(ctx, W * 0.05, H * 0.05, W * 0.9, H * 0.9, 24);
-        ctx.clip();
-        this.drawCover(ctx, v, W * 0.05, H * 0.05, W * 0.9, H * 0.9);
-        ctx.restore();
+        // Edge-to-edge cover — fills whole frame in landscape and vertical
+        this.drawCover(ctx, v, 0, 0, W, H);
       } else {
         ctx.fillStyle = '#1e293b';
-        ctx.fillRect(W * 0.05, H * 0.05, W * 0.9, H * 0.9);
+        ctx.fillRect(0, 0, W, H);
         ctx.fillStyle = '#94a3b8';
         ctx.textAlign = 'center';
         ctx.font = `${Math.round(W * 0.03)}px system-ui,sans-serif`;

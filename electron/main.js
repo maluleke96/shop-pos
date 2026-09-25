@@ -523,7 +523,7 @@ function registerIpc() {
     return store.deleteSupplier(id, user.id, user.username);
   }));
   ipcMain.handle('suppliers:pay', wrap((supplierId, data, actor) => {
-    const user = store.requireActor(actor, ['owner', 'manager']);
+    const user = store.requireActor(actor, ['owner', 'manager', 'supervisor', 'assistant_manager']);
     return store.recordSupplierPayment(supplierId, data, user.id, user.username);
   }));
   ipcMain.handle('suppliers:payments', wrap((supplierId) => store.getSupplierPayments(supplierId)));
@@ -584,6 +584,16 @@ function registerIpc() {
     return store.saveSalesTargets(data, user.id, user.username || user.full_name);
   }));
   ipcMain.handle('settings:getTodayTargetProgress', wrapSync((branchId) => store.getTodayTargetProgress(branchId)));
+  ipcMain.handle('settings:getSalesTargetHistory', wrapSync((opts) => store.getSalesTargetHistory(opts || {})));
+  ipcMain.handle('settings:getSalesTargetInsights', wrapSync((opts) => store.getSalesTargetInsights(opts || {})));
+  ipcMain.handle('settings:saveSalesTargetAlertSettings', wrapSync((alerts, actor) => {
+    const user = store.requireActor(actor, ['owner', 'manager']);
+    return store.saveSalesTargetAlertSettings(alerts, user.id, user.username || user.full_name);
+  }));
+  ipcMain.handle('settings:saveSalesTargetDayNote', wrapSync((payload, actor) => {
+    const user = store.requireActor(actor, ['owner', 'manager']);
+    return store.saveSalesTargetDayNote(payload, user.id, user.username || user.full_name);
+  }));
   ipcMain.handle('settings:getShiftSettings', wrapSync(() => store.getShiftSettings()));
   ipcMain.handle('settings:enforceCashoutDeadlines', wrapSync(() => store.enforceShiftCashoutDeadlines()));
   ipcMain.handle('settings:saveShiftSettings', wrapSync((data, actor) => {
@@ -2383,6 +2393,10 @@ function registerIpc() {
     store.requireBookkeepingAccess(store.getUserSession());
     return store.getFinancialReport(type, from, to);
   }));
+  ipcMain.handle('bookkeeping:yearEndPack', wrapF((from, to) => {
+    store.requireBookkeepingAccess(store.getUserSession());
+    return store.getYearEndPack(from, to);
+  }));
   ipcMain.handle('bookkeeping:performance', wrapF((from, to) => {
     store.requireBookkeepingAccess(store.getUserSession());
     return store.getBusinessPerformance(from, to);
@@ -2433,6 +2447,11 @@ function registerIpc() {
     store.requireBookkeepingAccess(store.getUserSession());
     const s = store.getSettingsParsed();
     return store.buildFinancialReportPdf(type, from, to, s?.shop_name, s?.currency || 'R');
+  }));
+  ipcMain.handle('bookkeeping:yearEndPackPdf', wrapF((from, to) => {
+    store.requireBookkeepingAccess(store.getUserSession());
+    const s = store.getSettingsParsed();
+    return store.buildYearEndPackPdf(from, to, s?.shop_name, s?.currency || 'R');
   }));
 
   // Donations & SARS tax records
@@ -2533,6 +2552,38 @@ function registerIpc() {
   ipcMain.handle('ops:updatePromo', wrapF((id, data, actor) => store.updatePromoRequest(id, data, actor)));
   ipcMain.handle('ops:promoSalesLog', wrapF((filters) => store.getPromoSalesLog(filters)));
   ipcMain.handle('ops:syncPromoStatuses', wrapF(() => { store.syncPromoStatuses(); return true; }));
+
+  // Manager Operations & Daily Tasks
+  ipcMain.handle('mo:dashboard', wrapF((f) => store.ownerDashboard(f?.work_date, f?.branch_id)));
+  ipcMain.handle('mo:home', wrapF((f, a) => store.mobileHome(a, f?.branch_id)));
+  ipcMain.handle('mo:listTasks', wrapF((f, a) => store.listTasks(f || {}, a)));
+  ipcMain.handle('mo:getTask', wrapF((id, a) => store.getTask(id, a)));
+  ipcMain.handle('mo:startTask', wrapF((id, a) => store.startTask(id, a)));
+  ipcMain.handle('mo:completeChecklistItem', wrapF((id, d, a) => store.completeChecklistItem(id, d || {}, a)));
+  ipcMain.handle('mo:completeTask', wrapF((id, d, a) => store.completeTask(id, d || {}, a)));
+  ipcMain.handle('mo:verifyTask', wrapF((id, d, a) => store.verifyTask(id, d || {}, a)));
+  ipcMain.handle('mo:sales', wrapF((branchId) => store.getSalesSummary(branchId)));
+  ipcMain.handle('mo:reportProblem', wrapF((d, a) => store.reportIncident(d || {}, a)));
+  ipcMain.handle('mo:listIncidents', wrapF((f) => store.listIncidents(f || {})));
+  ipcMain.handle('mo:teamHelp', wrapF((f) => store.listTeamHelp(f?.work_date)));
+  ipcMain.handle('mo:requestHelp', wrapF((d, a) => store.requestHelp(d || {}, a)));
+  ipcMain.handle('mo:offerHelp', wrapF((id, a) => store.offerHelp(id, a)));
+  ipcMain.handle('mo:submitReport', wrapF((d, a) => store.submitDailyReport(d || {}, a)));
+  ipcMain.handle('mo:listReports', wrapF((f) => store.listReports(f || {})));
+  ipcMain.handle('mo:getReport', wrapF((id, a) => store.getReport(id, a)));
+  ipcMain.handle('mo:ownerRespond', wrapF((id, msg, a) => store.ownerRespond(id, msg, a)));
+  ipcMain.handle('mo:ackMessage', wrapF((id, a) => store.acknowledgeOwnerMessage(id, a)));
+  ipcMain.handle('mo:evidence', wrapF((id, a) => store.getEvidenceDataUrl(id, a)));
+  ipcMain.handle('mo:attendance', wrapF(() => store.getAttendanceSnapshot()));
+  ipcMain.handle('mo:templates', wrapF(() => store.listTaskTemplates()));
+  ipcMain.handle('mo:saveTemplate', wrapF((d, a) => store.saveTaskTemplate(d || {}, a)));
+  ipcMain.handle('mo:checklists', wrapF(() => store.listChecklistTemplates()));
+  ipcMain.handle('mo:saveChecklist', wrapF((d, a) => store.saveChecklistTemplate(d || {}, a)));
+  ipcMain.handle('mo:getSettings', wrapF(() => store.getMoSettings()));
+  ipcMain.handle('mo:saveSettings', wrapF((d, a) => store.saveMoSettings(d || {}, a)));
+  ipcMain.handle('mo:generateTasks', wrapF((d, a) => store.generateDailyTasks(d?.work_date, a, d?.branch_id)));
+  ipcMain.handle('mo:audit', wrapF((f) => store.listAudit(f || {})));
+  ipcMain.handle('mo:categories', wrapF(() => store.MO_INCIDENT_CATEGORIES || []));
 
   // Combos & Promotions
   ipcMain.handle('combos:get', wrapF((filters) => store.getCombos(filters)));
@@ -2922,6 +2973,8 @@ function registerIpc() {
   ipcMain.handle('referral:unsuspendAgent', wrap((id, actor) => referral.unsuspendAgent(id, actor || refAdmin())));
   ipcMain.handle('referral:updateAgent', wrap((id, data, actor) => referral.updateAgent(id, data || {}, actor || refAdmin())));
   ipcMain.handle('referral:deleteAgent', wrap((id, actor) => referral.deleteAgent(id, actor || refAdmin())));
+  ipcMain.handle('referral:clearAttribution', wrap((data, actor) => referral.clearCustomerAttribution(data || {}, actor || refAdmin())));
+  ipcMain.handle('referral:clearSaleReferral', wrap((saleId, actor) => referral.clearSaleReferral(saleId, actor || refAdmin())));
   ipcMain.handle('referral:awardCommission', wrap((id, data, actor) => referral.awardManualCommission(id, data || {}, actor || refAdmin())));
   ipcMain.handle('referral:listAwardRequests', wrap((filters, actor) => referral.listAwardRequests(filters || {}, actor || refAdmin())));
   ipcMain.handle('referral:getAwardRequest', wrap((id, actor) => referral.getAwardRequest(id, actor || refAdmin())));

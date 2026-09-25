@@ -36,7 +36,13 @@
     const isToday = rangeFrom === Utils.today() && rangeTo === Utils.today();
     const periodLabel = isToday ? 'Today' : `${Utils.formatDate(rangeFrom)} – ${Utils.formatDate(rangeTo)}`;
     const currency = this.settings.currency || 'R';
-    const cached = window.DataCache?.peek?.('adminDashboard', [rangeFrom, rangeTo]);
+    const cached = window.DataCache?.peek?.('adminDashboard', [rangeFrom, rangeTo])
+      || (() => {
+        try {
+          const snap = Utils.sessionCacheGet?.(`admin_dash_${rangeFrom}_${rangeTo}`);
+          return snap ? { data: snap } : null;
+        } catch (_) { return null; }
+      })();
     const paintDashboard = (d) => {
       const alertNav = { inventory: ['products'], shifts: ['staffhr'], returns: ['returnsmgmt'], backup: ['backup'], po: ['purchase-orders'], leave: ['staffhr'] };
       el.innerHTML = `<div class="admin-section"><h3>Business Health Dashboard</h3>
@@ -154,20 +160,37 @@
       Utils.bindDateFilter('biz-dash-filter', (f, t) => this.renderBusinessDashboard(el, f, t));
     }
 
-    const res = await API.getAdminDashboard(rangeFrom, rangeTo);
-    if (!res.success) {
+    // SWR: if we already painted from cache, refresh in background — never block first click
+    const refresh = Promise.resolve(API.getAdminDashboard(rangeFrom, rangeTo)).then((res) => {
+      if (!res?.success) {
+        if (!cached?.data) {
+          el.innerHTML = `<div class="admin-section"><h3>Business Health Dashboard</h3>
+          ${Utils.dateFilterHTML('biz-dash-filter', rangeFrom, rangeTo)}
+          <p style="color:var(--danger)">${res?.error || 'Could not load dashboard data'}</p>
+          <button class="btn btn-primary" id="dash-retry">Retry</button></div>`;
+          Utils.bindDateFilter('biz-dash-filter', (f, t) => this.renderBusinessDashboard(el, f, t));
+          document.getElementById('dash-retry')?.addEventListener('click', () => this.renderBusinessDashboard(el, rangeFrom, rangeTo));
+        }
+        return res;
+      }
+      paintDashboard(res.data || {});
+      try {
+        Utils.sessionCacheSet?.(`admin_dash_${rangeFrom}_${rangeTo}`, res.data || {}, 10 * 60 * 1000);
+      } catch (_) { /* ignore */ }
+      return res;
+    }).catch((err) => {
       if (!cached?.data) {
         el.innerHTML = `<div class="admin-section"><h3>Business Health Dashboard</h3>
-        ${Utils.dateFilterHTML('biz-dash-filter', rangeFrom, rangeTo)}
-        <p style="color:var(--danger)">${res.error || 'Could not load dashboard data'}</p>
-        <button class="btn btn-primary" id="dash-retry">Retry</button></div>`;
-        Utils.bindDateFilter('biz-dash-filter', (f, t) => this.renderBusinessDashboard(el, f, t));
-        document.getElementById('dash-retry')?.addEventListener('click', () => this.renderBusinessDashboard(el, rangeFrom, rangeTo));
+        <p style="color:var(--danger)">${err?.message || 'Could not load dashboard'}</p></div>`;
       }
-      return res;
+      return { success: false, error: err?.message };
+    });
+
+    if (cached?.data) {
+      refresh.catch(() => {});
+      return { success: true, data: cached.data };
     }
-    paintDashboard(res.data || {});
-    return res;
+    return refresh;
   };
 
   AdminPage.renderSalesChart = function (data, currency) {
@@ -298,7 +321,7 @@
           <td>${Utils.formatMoney(s.total,currency)}${fee > 0 && s.order_type === 'delivery' ? `<div class="muted" style="font-size:11px">incl. delivery ${Utils.formatMoney(fee, currency)}</div>` : ''}</td>
           <td>${Utils.formatMoney(s.discount||0,currency)}</td>
           <td>${Utils.formatMoney(s.tax_amount||0,currency)}</td>
-          <td><span class="tag ${s.is_online_pending?'tag-warn':s.status==='void'||s.status==='voided'?'tag-danger':s.status==='completed'?'tag-ok':''}">${s.is_online_pending?'pending':(s.status||'completed')}</span></td>
+          <td><span class="tag ${s.is_online_pending?'tag-warn':s.status==='void'||s.status==='voided'?'tag-danger':s.is_taken_unpaid?'tag-warn':s.status==='completed'?'tag-ok':''}">${s.is_online_pending?'pending':(s.status==='void'||s.status==='voided'?'VOIDED':s.is_taken_unpaid?'Taken unpaid':(s.status||'completed'))}</span></td>
           <td>${s.is_online_pending ? '<span class="muted">Accept on POS</span>' : `<button class="btn btn-sm btn-ghost view-sale" data-id="${s.id}">View</button>
             <button class="btn btn-sm btn-ghost reprint-sale" data-id="${s.id}">Print</button>
             <button class="btn btn-sm btn-ghost invoice-sale" data-id="${s.id}">Invoice</button>
@@ -311,10 +334,22 @@
         }).join('')||`<tr><td colspan="${canDelete ? 16 : 15}" class="muted">${loadError ? Utils.escHtml(loadError) : 'No sales in this date range — try <strong>This Month</strong> or widen the dates above.'}</td></tr>`}
         </tbody>
         <tfoot><tr style="font-weight:700;background:var(--bg-alt, #f5f5f5)">
-          <td colspan="${canDelete ? 11 : 10}">Totals (${sales.length} sale${sales.length === 1 ? '' : 's'})</td>
-          <td>${Utils.formatMoney(sales.reduce((n,s)=>n+Number(s.total||0),0),currency)}</td>
-          <td>${Utils.formatMoney(sales.reduce((n,s)=>n+Number(s.discount||0),0),currency)}</td>
-          <td>${Utils.formatMoney(sales.reduce((n,s)=>n+Number(s.tax_amount||0),0),currency)}</td>
+          <td colspan="${canDelete ? 11 : 10}">Totals (${sales.filter((s) => !['void','voided'].includes(String(s.status||'').toLowerCase()) && !s.is_taken_unpaid).length} counted · Taken–Pay Later unpaid excluded)</td>
+          <td>${Utils.formatMoney(sales.reduce((n,s)=> {
+            if (['void','voided'].includes(String(s.status||'').toLowerCase())) return n;
+            if (s.is_taken_unpaid) return n;
+            return n + Number(s.total||0);
+          },0),currency)}</td>
+          <td>${Utils.formatMoney(sales.reduce((n,s)=> {
+            if (['void','voided'].includes(String(s.status||'').toLowerCase())) return n;
+            if (s.is_taken_unpaid) return n;
+            return n + Number(s.discount||0);
+          },0),currency)}</td>
+          <td>${Utils.formatMoney(sales.reduce((n,s)=> {
+            if (['void','voided'].includes(String(s.status||'').toLowerCase())) return n;
+            if (s.is_taken_unpaid) return n;
+            return n + Number(s.tax_amount||0);
+          },0),currency)}</td>
           <td colspan="2"></td>
         </tr></tfoot></table></div>
         <p class="muted" style="padding:12px">${sales.length} record(s) — includes POS sales and pending online orders. Gift card and loyalty redemptions shown when used.</p></div>`;
@@ -347,7 +382,9 @@
           if (!reason) return Utils.toast('Reason required', 'error');
           const r = await API.voidSale(parseInt(b.dataset.id), reason, this.app.user);
           if (!r.success) return Utils.toast(r.error, 'error');
-          Utils.hideModal(); Utils.toast('Sale voided', 'success');
+          Utils.hideModal();
+          const slip = r.data?.receipt_number || r.data?.order_number || '';
+          Utils.toast(slip ? `Sale voided (${slip}) — stock restored` : 'Sale voided — stock restored', 'success');
           window.DataCache?.invalidate?.('salesList', 'adminDashboard');
           load(lastFrom, lastTo);
         });

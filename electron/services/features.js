@@ -1408,6 +1408,7 @@ function receivePurchaseOrderPartial(poId, items, actorId, actorName, adjustStoc
   if (!po) throw new Error('PO not found');
   if (po.status === 'received') throw new Error('Purchase order has already been received');
   const r = db.prepare('INSERT INTO po_receipts (po_id, user_id) VALUES (?,?)').run(poId, actorId);
+  let receivedValue = 0;
   const txn = db.transaction(() => {
     for (const item of items || []) {
       const poItem = db.prepare('SELECT * FROM purchase_order_items WHERE id = ? AND purchase_order_id = ?')
@@ -1423,6 +1424,7 @@ function receivePurchaseOrderPartial(poId, items, actorId, actorName, adjustStoc
       db.prepare('INSERT INTO po_receipt_items (receipt_id, po_item_id, product_id, quantity_received, quantity_backordered) VALUES (?,?,?,?,?)')
         .run(r.lastInsertRowid, item.po_item_id, poItem.product_id, received, backordered);
       if (received > 0) {
+        receivedValue += received * (Number(poItem.buying_price) || 0);
         db.prepare('UPDATE purchase_order_items SET received_qty = COALESCE(received_qty,0) + ? WHERE id = ?')
           .run(received, item.po_item_id);
         if (poItem.product_id && typeof adjustStockFn === 'function') {
@@ -1432,6 +1434,11 @@ function receivePurchaseOrderPartial(poId, items, actorId, actorName, adjustStoc
           }
         }
       }
+    }
+    if (po.supplier_id && receivedValue > 0) {
+      db.prepare(`
+        UPDATE suppliers SET balance_owed = COALESCE(balance_owed, 0) + ?, updated_at = datetime('now')
+        WHERE id = ?`).run(Math.round(receivedValue * 100) / 100, po.supplier_id);
     }
     const allLines = db.prepare('SELECT quantity, received_qty FROM purchase_order_items WHERE purchase_order_id = ?').all(poId);
     const allReceived = allLines.length > 0 && allLines.every(line =>
@@ -1445,7 +1452,7 @@ function receivePurchaseOrderPartial(poId, items, actorId, actorName, adjustStoc
     return allReceived;
   });
   const complete = txn();
-  return { receiptId: r.lastInsertRowid, complete };
+  return { receiptId: r.lastInsertRowid, complete, received_value: receivedValue };
 }
 
 // ─── Cash-Up ────────────────────────────────────────────────────────────────

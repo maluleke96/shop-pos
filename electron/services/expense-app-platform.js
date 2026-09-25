@@ -164,6 +164,7 @@ function expenseSave(token, data = {}) {
     branch_id: data.branch_id != null ? data.branch_id : u.branch_id,
     line_items: data.line_items || [],
     payment_method: data.payment_method || 'cash',
+    funding_source: data.funding_source || 'business',
     invoice_image: data.invoice_image || null
   }, u.id, u.username);
   const row = store.getExpenseById(id) || { id, user_id: u.id, user_name: u.full_name || u.username };
@@ -172,6 +173,29 @@ function expenseSave(token, data = {}) {
     row.has_invoice = true;
   }
   return mapExpenseRow(row);
+}
+
+function expenseOwnerFundings(token, filters = {}) {
+  const u = resolveSession(token);
+  if (!['owner', 'manager'].includes(u.role)) {
+    throw new Error('Only owners and managers can view owner funding');
+  }
+  const store = require('./store');
+  return store.listOwnerFundings(filters || {});
+}
+
+function expenseRecordOwnerFunding(token, data = {}) {
+  const u = resolveSession(token);
+  if (!['owner', 'manager'].includes(u.role)) {
+    throw new Error('Only owners and managers can record cash injections');
+  }
+  const store = require('./store');
+  return store.recordOwnerFunding(data || {}, {
+    id: u.id,
+    username: u.username,
+    full_name: u.full_name || u.username,
+    role: u.role
+  });
 }
 
 function expenseCategories() {
@@ -328,6 +352,8 @@ module.exports = {
   expenseGet,
   expenseCategories,
   expenseShopSettings,
+  expenseOwnerFundings,
+  expenseRecordOwnerFunding,
   expenseWasteProducts,
   expenseWasteList,
   expenseWasteRecord,

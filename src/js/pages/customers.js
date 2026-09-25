@@ -15,8 +15,9 @@ const CustomersPage = {
       el.innerHTML = `<div class="page-toolbar"><h3>Customers</h3></div><div class="card">${Utils.pageSkeleton(4)}</div>`;
     }
     try {
+      // Paint list first — loyalty sync runs in background and must not delay open
       if (['owner', 'manager'].includes(app.user?.role)) {
-        try { await API.syncMissingLoyaltyPoints(app.user); } catch (_) { /* best effort */ }
+        API.syncMissingLoyaltyPoints(app.user).catch(() => {});
       }
       const res = await API.getCustomers('');
       this._allCustomers = res.data || (Array.isArray(res) ? res : []);
@@ -320,16 +321,25 @@ const CustomersPage = {
     const body = String(message || '').trim();
     if (!body) return Utils.toast('Message is empty', 'error');
     try {
+      // Open chat immediately when API is off (same as POS receipts)
+      const manual = Utils.preferManualWhatsApp(this.app?.settings) || !Utils.canSilentWhatsApp(this.app?.settings);
+      if (manual) {
+        Utils.openWhatsApp(phone, body);
+        Utils.toast('WhatsApp opened — tap Send', 'success');
+      }
       const wa = await API.sendWhatsAppMessage({
         phone,
         body,
         message_type: 'loyalty_gift',
         customer_id: customer.id,
-        recipient_type: 'customer'
+        recipient_type: 'customer',
+        force_wa_me: !!manual,
+        prefer_wa_me: !!manual
       }, this.app.user);
       await Utils.deliverWhatsApp(wa, phone, body);
     } catch (err) {
-      Utils.toast(err.message || 'WhatsApp failed', 'error');
+      if (Utils.openWhatsApp(phone, body)) Utils.toast('WhatsApp opened — tap Send', 'success');
+      else Utils.toast(err.message || 'WhatsApp failed', 'error');
     }
   },
 

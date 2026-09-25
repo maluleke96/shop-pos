@@ -3,20 +3,24 @@ const AdminPage = {
   settings: null,
 
   /** Run an admin save API call and only toast success when it actually worked. */
-  async awaitSave(promise, okMsg, failMsg) {
-    try {
-      const r = await promise;
-      if (!r || r.success === false) {
-        Utils.toast(r?.error || failMsg || 'Save failed', 'error');
+  async awaitSave(promise, okMsg, failMsg, busyBtn) {
+    const run = async () => {
+      try {
+        const r = await promise;
+        if (!r || r.success === false) {
+          Utils.toast(r?.error || failMsg || 'Save failed', 'error');
+          return null;
+        }
+        if (okMsg) Utils.toast(okMsg, 'success');
+        window.DataCache?.invalidate?.('settings', 'products', 'categories', 'customers', 'suppliers', 'dashboard');
+        return r;
+      } catch (err) {
+        Utils.toast(err?.message || failMsg || 'Save failed', 'error');
         return null;
       }
-      if (okMsg) Utils.toast(okMsg, 'success');
-      window.DataCache?.invalidate?.('settings', 'products', 'categories', 'customers', 'suppliers', 'dashboard');
-      return r;
-    } catch (err) {
-      Utils.toast(err?.message || failMsg || 'Save failed', 'error');
-      return null;
-    }
+    };
+    if (busyBtn) return Utils.withBusy(busyBtn, 'Saving…', run);
+    return run();
   },
 
   _adminNavLabel(label) {
@@ -69,6 +73,7 @@ const AdminPage = {
     { id: 'device', label: '💻 Device Settings', icon: 'device' },
     { id: 'backup', label: '💾 Backup & Restore', icon: 'backup' },
     { id: 'opscompliance', label: '📋 Operations & Compliance', icon: 'opscompliance' },
+    { id: 'manager-ops', label: '📱 Manager Operations', icon: 'opscompliance' },
     { id: 'combos', label: '🎁 Combos & Promos', icon: 'combos' },
     { id: 'menu-builder', label: '📋 Menu Builder', icon: 'menu' },
     { id: 'promo-video-builder', label: '🎬 Promo Video Builder', icon: 'signage' },
@@ -157,7 +162,7 @@ const AdminPage = {
       label: 'Restaurant & Operations',
       icon: '🍽️',
       accent: '#d97706',
-      items: ['recipe', 'delivery-dept', 'opscompliance']
+      items: ['manager-ops', 'opscompliance', 'recipe', 'delivery-dept']
     },
     {
       id: 'staff-hr',
@@ -612,7 +617,7 @@ const AdminPage = {
     if (this.section === 'deliveries') this.section = 'delivery-dept';
     const lazySections = new Set([
       'hrcontracts', 'recruitment', 'employee-of-month', 'staffhr', 'hr-workspace', 'hr-approvals', 'staffportal', 'payroll',
-      'opscompliance', 'combos', 'recipe', 'quotes', 'menu-builder', 'promo-video-builder', 'radio', 'communication-center',
+      'opscompliance', 'manager-ops', 'combos', 'recipe', 'quotes', 'menu-builder', 'promo-video-builder', 'radio', 'communication-center',
       'salesmgmt', 'saleexplorer', 'soldproducts', 'returnsmgmt', 'activity',
       'exceptions', 'alerts', 'dailyclose', 'discount-report', 'delivery-dept', 'referral-dept', 'taken-orders'
     ]);
@@ -646,18 +651,23 @@ const AdminPage = {
 
     const renderers = {
       overview: async () => {
+        // Paint dashboard shell immediately; never hold the menu click on network
         if (typeof this.renderBusinessDashboard === 'function') {
-          const dashResult = await this.renderBusinessDashboard(el);
-          let host = el.querySelector('#admin-overview-quick-panel');
-          if (!host) {
-            host = document.createElement('div');
-            host.id = 'admin-overview-quick-panel';
-            host.style.marginTop = '16px';
-            el.appendChild(host);
-          }
-          if (typeof this.renderOverviewQuickPanel === 'function') {
-            await this.renderOverviewQuickPanel(host, { dashboardRes: dashResult });
-          }
+          const dashP = this.renderBusinessDashboard(el);
+          const attachQuick = async (dashResult) => {
+            let host = el.querySelector('#admin-overview-quick-panel');
+            if (!host) {
+              host = document.createElement('div');
+              host.id = 'admin-overview-quick-panel';
+              host.style.marginTop = '16px';
+              el.appendChild(host);
+            }
+            if (typeof this.renderOverviewQuickPanel === 'function') {
+              await this.renderOverviewQuickPanel(host, { dashboardRes: dashResult });
+            }
+          };
+          // If cache/SWR returns sync-fast, attach quick panel soon; else after network
+          Promise.resolve(dashP).then(attachQuick).catch(() => {});
           return;
         }
         return this.renderOverview(el);
@@ -1003,6 +1013,11 @@ const AdminPage = {
         () => this.renderOpsCompliance(el),
         'Operations & Compliance'
       ),
+      'manager-ops': () => tryModule(
+        () => typeof window.AdminManagerOpsPage?.render === 'function',
+        () => window.AdminManagerOpsPage.render(el, this),
+        'Manager Operations'
+      ),
       payroll: () => tryModule(
         () => typeof this.renderPayrollCompliance === 'function',
         () => this.renderPayrollCompliance(el),
@@ -1301,6 +1316,9 @@ const AdminPage = {
 
   async renderPrinter(el) {
     const ps = this.settings.printer_settings || {};
+    // Instant section chrome — printer list can fill in a moment later
+    el.innerHTML = `<div class="admin-section"><h3>Printer Setup</h3>
+      <p class="muted">Loading printers…</p></div>`;
     let printers = [];
     try { const pr = await API.getPrinters(); printers = pr.data || pr || []; } catch { printers = []; }
 
@@ -2689,7 +2707,8 @@ const AdminPage = {
             const r = await API.voidSale(Number(btn.dataset.id), reason, this.app.user);
             if (!r.success) return Utils.toast(r.error || 'Void failed', 'error');
             Utils.hideModal();
-            Utils.toast('Sale voided', 'success');
+            const slip = r.data?.receipt_number || r.data?.order_number || '';
+            Utils.toast(slip ? `Sale voided (${slip}) — stock restored` : 'Sale voided — stock restored', 'success');
             load();
           });
         });
@@ -2907,12 +2926,26 @@ const AdminPage = {
       return [];
     };
 
-    const [br, dash, productCatalogRaw, progressRes] = await Promise.all([
+    // Paint targets UI first — product picker catalog loads in background (was blocking 3s+)
+    const [br, dash, progressRes] = await Promise.all([
       API.getBranches?.().catch(() => null),
       API.getDashboardStats(today, today, this.app.user).catch(() => null),
-      loadTargetProducts(),
       API.getTodayTargetProgress?.(this._salesTargetBranchId === 'all' ? null : this._salesTargetBranchId).catch(() => null)
     ]);
+    let productCatalogRaw = this._stProductCatalogCache || [];
+    if (!Array.isArray(productCatalogRaw)) productCatalogRaw = [];
+    let productCatalog = productCatalogRaw.slice();
+    // Kick off catalog warm without blocking paint — mutate shared array for typeahead
+    loadTargetProducts().then((list) => {
+      this._stProductCatalogCache = list || [];
+      productCatalog.length = 0;
+      (list || []).forEach((p) => productCatalog.push(p));
+      const search = document.getElementById('st-prod-search');
+      if (search && productCatalog.length) {
+        search.placeholder = `Type to find a product (${productCatalog.length} available)…`;
+        search.disabled = false;
+      }
+    }).catch(() => {});
     let branches = [];
     try { branches = br?.success !== false ? (br?.data || br || []) : []; } catch (_) { branches = []; }
     if (!Array.isArray(branches)) branches = [];
@@ -2955,8 +2988,6 @@ const AdminPage = {
       : 0;
     const dailyPct = dailyAmt > 0 ? Math.min(100, Math.round((todaySales / dailyAmt) * 100)) : 0;
     const dailyMet = dailyAmt > 0 && todaySales >= dailyAmt;
-
-    let productCatalog = Array.isArray(productCatalogRaw) ? productCatalogRaw : [];
 
     const productValueTotal = productTargets.reduce(
       (s, p) => s + (Number(p.target_qty) || 0) * (Number(p.selling_price) || 0),
@@ -3073,6 +3104,45 @@ const AdminPage = {
           </tfoot>
         </table></div>
         <button class="btn btn-primary" id="save-targets" style="margin-top:16px">Save Targets</button>
+      </div></div>
+
+      <div class="card" id="st-history-card" style="margin-top:16px"><div class="card-body">
+        <h4 style="margin:0 0 8px">Target vs Result History</h4>
+        <p class="muted" style="margin:0 0 12px">See which days, weeks, months or years you hit or missed your sales goals. Filter by date, then print, share on WhatsApp, or save as PDF.</p>
+        <div class="form-grid" style="align-items:end;margin-bottom:12px">
+          <div class="field"><label>From</label><input type="date" id="st-hist-from" value="${(this._stHistFrom || today.slice(0, 8) + '01')}"></div>
+          <div class="field"><label>To</label><input type="date" id="st-hist-to" value="${this._stHistTo || today}"></div>
+          <div class="field"><label>Group by</label>
+            <select id="st-hist-group">
+              ${[['day','Day'],['week','Week'],['month','Month'],['year','Year']].map(([v, l]) =>
+                `<option value="${v}" ${(this._stHistGroup || 'day') === v ? 'selected' : ''}>${l}</option>`).join('')}
+            </select>
+          </div>
+          <div class="field"><button type="button" class="btn btn-secondary" id="st-hist-load">Load history</button></div>
+        </div>
+        <div id="st-hist-summary" class="muted" style="margin-bottom:10px">Click <strong>Load history</strong> to review results.</div>
+        <div style="overflow:auto;max-height:360px">
+          <table class="table" id="st-hist-table"><thead><tr>
+            <th>Period</th><th>Target</th><th>Achieved</th><th>Variance</th><th>%</th><th>Result</th>
+          </tr></thead><tbody id="st-hist-body">
+            <tr><td colspan="6" class="muted">No history loaded yet</td></tr>
+          </tbody></table>
+        </div>
+        <div class="row" style="gap:8px;flex-wrap:wrap;margin-top:12px">
+          <button type="button" class="btn btn-secondary" id="st-hist-print">Print</button>
+          <button type="button" class="btn btn-secondary" id="st-hist-pdf">Save PDF</button>
+          <button type="button" class="btn btn-secondary" id="st-hist-wa">Share WhatsApp</button>
+        </div>
+      </div></div>
+
+      <div class="card" id="st-insights-card" style="margin-top:16px"><div class="card-body">
+        <h4 style="margin:0 0 8px">Target Insights</h4>
+        <p class="muted" style="margin:0 0 12px">Hourly pace, cashier contribution, category/product mix, streaks, midday alerts, branch compare, and notes on missed days.</p>
+        <div class="form-grid" style="align-items:end;margin-bottom:12px">
+          <div class="field"><label>Day</label><input type="date" id="st-ins-day" value="${this._stInsDay || today}"></div>
+          <div class="field"><button type="button" class="btn btn-secondary" id="st-ins-load">Load insights</button></div>
+        </div>
+        <div id="st-ins-body" class="muted">Click <strong>Load insights</strong> to review the day.</div>
       </div></div>
     </div>`;
 
@@ -3267,6 +3337,406 @@ const AdminPage = {
       try { window.dispatchEvent(new CustomEvent('shop-pos-targets-updated')); } catch (_) { /* */ }
       await this.renderSalesTargets(el);
     });
+
+    const statusLabel = (st) => {
+      const m = {
+        met: '✅ Met',
+        exceeded: '🚀 Exceeded',
+        missed: '❌ Missed',
+        no_target: '— No target'
+      };
+      return m[st] || st || '—';
+    };
+    const paintHistory = (data) => {
+      this._stHistData = data;
+      const body = document.getElementById('st-hist-body');
+      const sumEl = document.getElementById('st-hist-summary');
+      const rows = data?.rows || [];
+      const sum = data?.summary || {};
+      if (sumEl) {
+        sumEl.innerHTML = rows.length
+          ? `<strong>${rows.length}</strong> period(s) · Target <strong>${Utils.formatMoney(sum.target_amount || 0, currency)}</strong>
+             · Achieved <strong>${Utils.formatMoney(sum.achieved_amount || 0, currency)}</strong>
+             · Variance <strong>${Utils.formatMoney(sum.variance || 0, currency)}</strong>
+             · Hit rate <strong>${sum.days_met || 0}</strong> met / <strong>${sum.days_missed || 0}</strong> missed`
+          : 'No rows in this range.';
+      }
+      if (!body) return;
+      if (!rows.length) {
+        body.innerHTML = '<tr><td colspan="6" class="muted">No history for this date range</td></tr>';
+        return;
+      }
+      const group = data.groupBy || 'day';
+      body.innerHTML = rows.map((r) => {
+        const period = group === 'day' ? r.day
+          : (r.period_key || `${r.day_from || ''} → ${r.day_to || ''}`);
+        const pct = r.percentage != null ? `${r.percentage}%` : '—';
+        const varCls = (Number(r.variance) || 0) >= 0 ? 'color:var(--success,#16a34a)' : 'color:var(--danger,#dc2626)';
+        return `<tr>
+          <td>${Utils.escHtml(period)}</td>
+          <td>${Utils.formatMoney(r.target_amount || 0, currency)}</td>
+          <td>${Utils.formatMoney(r.achieved_amount || 0, currency)}</td>
+          <td style="${varCls}">${Utils.formatMoney(r.variance || 0, currency)}</td>
+          <td>${pct}</td>
+          <td>${statusLabel(r.status)}</td>
+        </tr>`;
+      }).join('');
+    };
+    const loadHistory = async () => {
+      this._stHistFrom = document.getElementById('st-hist-from')?.value || today;
+      this._stHistTo = document.getElementById('st-hist-to')?.value || today;
+      this._stHistGroup = document.getElementById('st-hist-group')?.value || 'day';
+      const sumEl = document.getElementById('st-hist-summary');
+      if (sumEl) sumEl.textContent = 'Loading…';
+      try {
+        const res = await API.getSalesTargetHistory({
+          from: this._stHistFrom,
+          to: this._stHistTo,
+          groupBy: this._stHistGroup,
+          branch_id: branchId === 'all' ? null : branchId
+        });
+        const data = res?.success === false ? null : (res?.data || res);
+        if (!data) throw new Error(res?.error || 'Could not load history');
+        paintHistory(data);
+      } catch (err) {
+        if (sumEl) sumEl.textContent = err.message || 'Could not load history';
+        Utils.toast(err.message || 'Could not load history', 'error');
+      }
+    };
+    document.getElementById('st-hist-load')?.addEventListener('click', () => loadHistory());
+    document.getElementById('st-hist-print')?.addEventListener('click', () => {
+      if (!this._stHistData?.rows?.length) return Utils.toast('Load history first', 'error');
+      this.printSalesTargetHistory(this._stHistData, currency);
+    });
+    document.getElementById('st-hist-pdf')?.addEventListener('click', () => {
+      if (!this._stHistData?.rows?.length) return Utils.toast('Load history first', 'error');
+      this.saveSalesTargetHistoryPdf(this._stHistData, currency);
+    });
+    document.getElementById('st-hist-wa')?.addEventListener('click', () => {
+      if (!this._stHistData?.rows?.length) return Utils.toast('Load history first', 'error');
+      this.shareSalesTargetHistoryWhatsApp(this._stHistData, currency);
+    });
+
+    const paceBar = (pct) => {
+      const p = Math.max(0, Math.min(100, Number(pct) || 0));
+      return `<div style="height:8px;background:#e2e8f0;border-radius:4px;overflow:hidden;min-width:80px">
+        <div style="height:100%;width:${p}%;background:${p >= 95 ? '#16a34a' : p >= 50 ? '#ca8a04' : '#dc2626'}"></div>
+      </div>`;
+    };
+    const paintInsights = (data) => {
+      this._stInsData = data;
+      const host = document.getElementById('st-ins-body');
+      if (!host || !data) return;
+      const pace = data.pace || {};
+      const hours = pace.hours || [];
+      const cashiers = data.cashiers || [];
+      const cats = data.mix?.categories || [];
+      const products = data.mix?.products || [];
+      const streaks = data.streaks || {};
+      const alerts = data.alerts || {};
+      const branches = data.branches || [];
+      const note = data.note || {};
+      const tags = Array.isArray(note.reason_tags) ? note.reason_tags : [];
+      const streakLabel = streaks.current?.type === 'met'
+        ? `${streaks.current.count} day met streak`
+        : streaks.current?.type === 'missed'
+          ? `${streaks.current.count} day miss streak`
+          : 'No active streak';
+      const paceCls = pace.on_pace === true ? 'color:#16a34a' : pace.on_pace === false ? 'color:#dc2626' : '';
+      host.innerHTML = `
+        <div style="display:grid;gap:16px">
+          <div>
+            <div class="row" style="gap:12px;flex-wrap:wrap;align-items:baseline;margin-bottom:8px">
+              <strong>Hourly pace</strong>
+              <span class="muted">Target ${Utils.formatMoney(data.daily_target || 0, currency)} · Achieved ${Utils.formatMoney(data.sales_achieved || 0, currency)}</span>
+              <span style="${paceCls}">${pace.pace_pct_of_expected != null ? pace.pace_pct_of_expected + '% of expected by now' : '—'}${pace.on_pace === true ? ' · on pace' : pace.on_pace === false ? ' · behind' : ''}</span>
+            </div>
+            <div style="overflow:auto;max-height:220px">
+              <table class="table-compact"><thead><tr><th>Hour</th><th>Sales</th><th>Cumulative</th><th>Expected</th><th>Pace</th></tr></thead>
+              <tbody>${hours.map((h) => {
+                const ok = h.on_pace === true;
+                const bad = h.on_pace === false;
+                return `<tr>
+                  <td>${Utils.escHtml(h.label)}</td>
+                  <td>${Utils.formatMoney(h.total || 0, currency)}</td>
+                  <td>${Utils.formatMoney(h.cumulative || 0, currency)}</td>
+                  <td>${Utils.formatMoney(h.expected || 0, currency)}</td>
+                  <td style="color:${ok ? '#16a34a' : bad ? '#dc2626' : 'inherit'}">${ok ? 'On pace' : bad ? 'Behind' : '—'}</td>
+                </tr>`;
+              }).join('') || '<tr><td colspan="5" class="muted">No hourly data</td></tr>'}</tbody></table>
+            </div>
+          </div>
+
+          <div>
+            <strong>Cashiers</strong>
+            <div style="overflow:auto;max-height:200px;margin-top:6px">
+              <table class="table-compact"><thead><tr><th>Cashier</th><th>Sales</th><th>Total</th><th>% of day</th><th>% of target</th></tr></thead>
+              <tbody>${cashiers.map((c) => `<tr>
+                <td>${Utils.escHtml(c.name || '—')}${c.role ? ` <span class="muted">(${Utils.escHtml(c.role)})</span>` : ''}</td>
+                <td>${c.sales_count || 0}</td>
+                <td>${Utils.formatMoney(c.total || 0, currency)}</td>
+                <td>${c.share_of_sales != null ? c.share_of_sales + '%' : '—'}</td>
+                <td>${c.share_of_target != null ? c.share_of_target + '%' : '—'}</td>
+              </tr>`).join('') || '<tr><td colspan="5" class="muted">No cashier sales</td></tr>'}</tbody></table>
+            </div>
+          </div>
+
+          <div class="form-grid" style="gap:16px">
+            <div>
+              <strong>Category mix</strong>
+              <div style="overflow:auto;max-height:180px;margin-top:6px">
+                <table class="table-compact"><thead><tr><th>Category</th><th>Revenue</th><th>Share</th></tr></thead>
+                <tbody>${cats.map((c) => `<tr>
+                  <td>${Utils.escHtml(c.category_name)}</td>
+                  <td>${Utils.formatMoney(c.revenue || 0, currency)}</td>
+                  <td><div class="row" style="gap:6px;align-items:center">${c.share}% ${paceBar(c.share)}</div></td>
+                </tr>`).join('') || '<tr><td colspan="3" class="muted">No category sales</td></tr>'}</tbody></table>
+              </div>
+            </div>
+            <div>
+              <strong>Top products</strong>
+              <div style="overflow:auto;max-height:180px;margin-top:6px">
+                <table class="table-compact"><thead><tr><th>Product</th><th>Qty</th><th>Revenue</th><th>Share</th></tr></thead>
+                <tbody>${products.map((p) => `<tr>
+                  <td>${Utils.escHtml(p.product_name)}</td>
+                  <td>${p.qty || 0}</td>
+                  <td>${Utils.formatMoney(p.revenue || 0, currency)}</td>
+                  <td>${p.share != null ? p.share + '%' : '—'}</td>
+                </tr>`).join('') || '<tr><td colspan="4" class="muted">No product sales</td></tr>'}</tbody></table>
+              </div>
+            </div>
+          </div>
+
+          <div class="row" style="gap:16px;flex-wrap:wrap">
+            <div><strong>Streaks</strong>
+              <p style="margin:6px 0 0">${Utils.escHtml(streakLabel)} · Best met ${streaks.best_met || 0} · Best miss ${streaks.best_missed || 0}
+              · Last 90d: ${streaks.days_met || 0} met / ${streaks.days_missed || 0} missed</p>
+            </div>
+          </div>
+
+          <div>
+            <strong>Midday alerts</strong>
+            <div class="form-grid" style="align-items:end;margin-top:8px;max-width:640px">
+              <div class="field" style="flex:0 0 auto">
+                <label style="display:flex;align-items:center;gap:8px;font-weight:normal">
+                  <input type="checkbox" id="st-alert-enabled" ${alerts.enabled ? 'checked' : ''}> Enable below-pace alert
+                </label>
+              </div>
+              <div class="field"><label>Check at hour</label>
+                <input type="number" id="st-alert-hour" min="8" max="18" step="1" value="${alerts.midday_hour || 12}">
+              </div>
+              <div class="field"><label>Threshold % of expected</label>
+                <input type="number" id="st-alert-pct" min="10" max="100" step="5" value="${alerts.threshold_pct || 50}">
+              </div>
+              <div class="field"><button type="button" class="btn btn-secondary" id="st-alert-save">Save alert</button></div>
+            </div>
+            <p class="muted" style="margin:8px 0 0">
+              ${alerts.below_pace
+                ? `⚠ Below pace — achieved ${Utils.formatMoney(alerts.sales_so_far || 0, currency)} vs threshold ${Utils.formatMoney(alerts.threshold_amount || 0, currency)} by ${alerts.midday_hour || 12}:00.`
+                : `On track or before check hour. Expected by midday ≈ ${Utils.formatMoney(alerts.expected_at_midday || 0, currency)}.`}
+              ${alerts.whatsapp_draft ? ` <a href="https://wa.me/?text=${alerts.whatsapp_draft}" target="_blank" rel="noopener">Share WhatsApp alert</a>` : ''}
+            </p>
+          </div>
+
+          <div>
+            <strong>Compare branches</strong>
+            <div style="overflow:auto;max-height:200px;margin-top:6px">
+              <table class="table-compact"><thead><tr><th>Branch</th><th>Target</th><th>Achieved</th><th>%</th><th>Result</th></tr></thead>
+              <tbody>${branches.map((b) => {
+                const st = statusLabel(b.status);
+                return `<tr>
+                  <td>${Utils.escHtml(b.branch_name || '—')}</td>
+                  <td>${Utils.formatMoney(b.target_amount || 0, currency)}</td>
+                  <td>${Utils.formatMoney(b.achieved_amount || 0, currency)}</td>
+                  <td>${b.percentage != null ? b.percentage + '%' : '—'}</td>
+                  <td>${st}</td>
+                </tr>`;
+              }).join('') || '<tr><td colspan="5" class="muted">No branches</td></tr>'}</tbody></table>
+            </div>
+          </div>
+
+          <div>
+            <strong>Notes on this day</strong>
+            <p class="muted" style="margin:4px 0 8px">Why the target was missed (weather, stockouts, events). Saved per day/branch.</p>
+            <div class="field"><label>Note</label>
+              <textarea id="st-note-text" rows="3" style="width:100%" placeholder="e.g. Heavy rain, fridge down, road closure…">${Utils.escHtml(note.note || '')}</textarea>
+            </div>
+            <div class="field" style="margin-top:8px"><label>Reason tags (comma-separated)</label>
+              <input type="text" id="st-note-tags" value="${Utils.escHtml(tags.join(', '))}" placeholder="weather, stockout, event">
+            </div>
+            <div class="row" style="gap:8px;margin-top:8px;align-items:center">
+              <button type="button" class="btn btn-secondary" id="st-note-save">Save note</button>
+              ${note.updated_at ? `<span class="muted" style="font-size:12px">Updated ${Utils.escHtml(String(note.updated_at).slice(0, 16))}${note.actor_name ? ' by ' + Utils.escHtml(note.actor_name) : ''}</span>` : ''}
+            </div>
+          </div>
+        </div>`;
+
+      document.getElementById('st-alert-save')?.addEventListener('click', async () => {
+        const payload = {
+          enabled: !!document.getElementById('st-alert-enabled')?.checked,
+          midday_hour: Number(document.getElementById('st-alert-hour')?.value) || 12,
+          threshold_pct: Number(document.getElementById('st-alert-pct')?.value) || 50
+        };
+        try {
+          const r = await API.saveSalesTargetAlertSettings(payload, this.app.user);
+          if (r?.success === false) throw new Error(r.error || 'Save failed');
+          Utils.toast('Alert settings saved', 'success');
+          loadInsights();
+        } catch (err) {
+          Utils.toast(err.message || 'Could not save alert', 'error');
+        }
+      });
+      document.getElementById('st-note-save')?.addEventListener('click', async () => {
+        const rawTags = String(document.getElementById('st-note-tags')?.value || '');
+        const payload = {
+          day: data.day,
+          branch_id: branchId === 'all' ? null : branchId,
+          note: document.getElementById('st-note-text')?.value || '',
+          reason_tags: rawTags.split(',').map((t) => t.trim()).filter(Boolean)
+        };
+        try {
+          const r = await API.saveSalesTargetDayNote(payload, this.app.user);
+          if (r?.success === false) throw new Error(r.error || 'Save failed');
+          Utils.toast('Day note saved', 'success');
+          loadInsights();
+        } catch (err) {
+          Utils.toast(err.message || 'Could not save note', 'error');
+        }
+      });
+    };
+    const loadInsights = async () => {
+      this._stInsDay = document.getElementById('st-ins-day')?.value || today;
+      const host = document.getElementById('st-ins-body');
+      if (host) host.textContent = 'Loading insights…';
+      try {
+        const res = await API.getSalesTargetInsights({
+          day: this._stInsDay,
+          branch_id: branchId === 'all' ? null : branchId
+        });
+        const data = res?.success === false ? null : (res?.data || res);
+        if (!data) throw new Error(res?.error || 'Could not load insights');
+        paintInsights(data);
+      } catch (err) {
+        if (host) host.textContent = err.message || 'Could not load insights';
+        Utils.toast(err.message || 'Could not load insights', 'error');
+      }
+    };
+    document.getElementById('st-ins-load')?.addEventListener('click', () => loadInsights());
+
+    // Auto-load current month history + today's insights
+    setTimeout(() => { loadHistory(); loadInsights(); }, 50);
+  },
+
+  salesTargetHistoryStatusLabel(st) {
+    const m = { met: 'Met', exceeded: 'Exceeded', missed: 'Missed', no_target: 'No target' };
+    return m[st] || st || '—';
+  },
+
+  printSalesTargetHistory(data, currency) {
+    const shop = this.settings?.shop_name || 'Shop';
+    const rows = data.rows || [];
+    const sum = data.summary || {};
+    const group = data.groupBy || 'day';
+    const html = `<!DOCTYPE html><html><head><title>Sales Target History</title>
+      <style>
+        body{font-family:system-ui,Segoe UI,sans-serif;padding:24px;color:#0f172a}
+        h1{font-size:18px;margin:0 0 4px} .muted{color:#64748b;font-size:12px}
+        table{width:100%;border-collapse:collapse;margin-top:16px;font-size:13px}
+        th,td{border:1px solid #e2e8f0;padding:8px;text-align:left}
+        th{background:#f8fafc}
+        .ok{color:#16a34a}.bad{color:#dc2626}
+      </style></head><body>
+      <h1>${Utils.escHtml(shop)} — Sales Target History</h1>
+      <p class="muted">${Utils.escHtml(data.from)} → ${Utils.escHtml(data.to)} · grouped by ${Utils.escHtml(group)}</p>
+      <p>Target ${Utils.formatMoney(sum.target_amount || 0, currency)} · Achieved ${Utils.formatMoney(sum.achieved_amount || 0, currency)}
+         · Met ${sum.days_met || 0} · Missed ${sum.days_missed || 0}</p>
+      <table><thead><tr><th>Period</th><th>Target</th><th>Achieved</th><th>Variance</th><th>%</th><th>Result</th></tr></thead>
+      <tbody>${rows.map((r) => {
+        const period = group === 'day' ? r.day : (r.period_key || `${r.day_from} → ${r.day_to}`);
+        return `<tr>
+          <td>${Utils.escHtml(period)}</td>
+          <td>${Utils.formatMoney(r.target_amount || 0, currency)}</td>
+          <td>${Utils.formatMoney(r.achieved_amount || 0, currency)}</td>
+          <td class="${(r.variance || 0) >= 0 ? 'ok' : 'bad'}">${Utils.formatMoney(r.variance || 0, currency)}</td>
+          <td>${r.percentage != null ? r.percentage + '%' : '—'}</td>
+          <td>${this.salesTargetHistoryStatusLabel(r.status)}</td>
+        </tr>`;
+      }).join('')}</tbody></table>
+      <script>window.onload=function(){setTimeout(function(){window.print()},200)}<\/script>
+      </body></html>`;
+    const w = window.open('', '_blank', 'noopener,noreferrer,width=900,height=700');
+    if (!w) return Utils.toast('Allow pop-ups to print', 'error');
+    w.document.write(html);
+    w.document.close();
+  },
+
+  async saveSalesTargetHistoryPdf(data, currency) {
+    try {
+      if (!window.jspdf?.jsPDF && !window.jsPDF) {
+        await new Promise((resolve, reject) => {
+          const s = document.createElement('script');
+          s.src = 'https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js';
+          s.onload = resolve;
+          s.onerror = reject;
+          document.head.appendChild(s);
+        });
+      }
+      const JsPDF = window.jspdf?.jsPDF || window.jsPDF;
+      const doc = new JsPDF({ unit: 'mm', format: 'a4' });
+      const shop = this.settings?.shop_name || 'Shop';
+      const rows = data.rows || [];
+      const sum = data.summary || {};
+      let y = 16;
+      doc.setFontSize(14);
+      doc.text(`${shop} — Sales Target History`, 14, y); y += 7;
+      doc.setFontSize(10);
+      doc.text(`${data.from} → ${data.to} · ${data.groupBy || 'day'}`, 14, y); y += 6;
+      doc.text(`Target ${Utils.formatMoney(sum.target_amount || 0, currency)} · Achieved ${Utils.formatMoney(sum.achieved_amount || 0, currency)} · Met ${sum.days_met || 0} · Missed ${sum.days_missed || 0}`, 14, y); y += 8;
+      doc.setFont(undefined, 'bold');
+      doc.text('Period', 14, y);
+      doc.text('Target', 55, y);
+      doc.text('Achieved', 90, y);
+      doc.text('Var', 130, y);
+      doc.text('Result', 160, y);
+      doc.setFont(undefined, 'normal');
+      y += 5;
+      for (const r of rows.slice(0, 40)) {
+        if (y > 280) { doc.addPage(); y = 16; }
+        const period = (data.groupBy || 'day') === 'day' ? r.day : (r.period_key || r.day_from);
+        doc.text(String(period).slice(0, 18), 14, y);
+        doc.text(Utils.formatMoney(r.target_amount || 0, currency), 55, y);
+        doc.text(Utils.formatMoney(r.achieved_amount || 0, currency), 90, y);
+        doc.text(Utils.formatMoney(r.variance || 0, currency), 130, y);
+        doc.text(this.salesTargetHistoryStatusLabel(r.status), 160, y);
+        y += 5;
+      }
+      doc.save(`sales-target-history-${data.from}-${data.to}.pdf`);
+      Utils.toast('PDF saved', 'success');
+    } catch (err) {
+      this.printSalesTargetHistory(data, currency);
+      Utils.toast('PDF unavailable — use Print → Save as PDF', 'info');
+    }
+  },
+
+  shareSalesTargetHistoryWhatsApp(data, currency) {
+    const shop = this.settings?.shop_name || 'Shop';
+    const sum = data.summary || {};
+    const rows = (data.rows || []).slice(0, 12);
+    const lines = [
+      `*${shop} — Sales Target History*`,
+      `${data.from} → ${data.to} (${data.groupBy || 'day'})`,
+      `Target: ${Utils.formatMoney(sum.target_amount || 0, currency)}`,
+      `Achieved: ${Utils.formatMoney(sum.achieved_amount || 0, currency)}`,
+      `Variance: ${Utils.formatMoney(sum.variance || 0, currency)}`,
+      `Met ${sum.days_met || 0} · Missed ${sum.days_missed || 0}`,
+      '',
+      ...rows.map((r) => {
+        const period = (data.groupBy || 'day') === 'day' ? r.day : (r.period_key || r.day_from);
+        return `• ${period}: ${Utils.formatMoney(r.achieved_amount || 0, currency)} / ${Utils.formatMoney(r.target_amount || 0, currency)} — ${this.salesTargetHistoryStatusLabel(r.status)}`;
+      })
+    ];
+    const text = encodeURIComponent(lines.join('\n'));
+    window.open(`https://wa.me/?text=${text}`, '_blank', 'noopener,noreferrer');
   },
 
   bindTopCustomerActions(container, onRefresh) {
@@ -3591,6 +4061,20 @@ const AdminPage = {
           <small class="muted">Falls back to shop phone if empty: ${this.settings?.phone || '—'}</small></div>
         <button class="btn btn-primary btn-sm" id="save-cashout-wa" style="margin-top:12px">Save Cashout WhatsApp Number</button>
       </div></div>
+      <div class="card" style="margin-bottom:16px"><div class="card-body">
+        <strong>POS receipt WhatsApp mode</strong>
+        <p class="muted" style="margin:8px 0;line-height:1.45">How cashiers send receipts and reviews from the POS after a sale.</p>
+        <label style="display:flex;gap:10px;align-items:flex-start;cursor:pointer;font-weight:600">
+          <input type="checkbox" id="admin-wa-use-api" ${this.settings?.whatsapp_settings?.use_cloud_api !== false ? 'checked' : ''} style="width:auto;margin-top:3px">
+          <span>Use WhatsApp Cloud API (automatic)</span>
+        </label>
+        <p class="muted" style="margin:8px 0 0;font-size:13px;line-height:1.45">
+          <strong>ON</strong> — send via API when credentials are saved.<br>
+          <strong>OFF</strong> — regular way: opens WhatsApp so you tap Send (like before).
+        </p>
+        <button class="btn btn-primary btn-sm" id="save-wa-mode" style="margin-top:12px">Save WhatsApp mode</button>
+        <p class="muted" style="margin:10px 0 0;font-size:12px">Full API token settings: Admin → WhatsApp → Settings</p>
+      </div></div>
       ${current ? `<div class="card" style="margin-bottom:16px;border-color:var(--success)"><div class="card-body">
         <strong>Your open shift</strong> — Started ${Utils.formatDateTime(current.opened_at)} — Float: ${Utils.formatMoney(current.opening_float, currency)}
         <button class="btn btn-warning btn-sm" id="close-shift" style="margin-left:12px">Close Shift</button>
@@ -3652,10 +4136,22 @@ const AdminPage = {
       const current = this.settings?.whatsapp_settings || {};
       const r = await API.saveWhatsAppSettings({ ...current, cashout_whatsapp_phone: phone }, this.app.user);
       if (!r.success) return Utils.toast(r.error, 'error');
-      const merged = r.data || { ...current, cashout_whatsapp_phone: phone };
+      const merged = { ...current, ...(r.data || {}), cashout_whatsapp_phone: phone };
       this.settings.whatsapp_settings = merged;
       this.app.settings = { ...this.app.settings, whatsapp_settings: merged };
       Utils.toast('Cashout WhatsApp number saved', 'success');
+    });
+
+    document.getElementById('save-wa-mode')?.addEventListener('click', async () => {
+      const useApi = !!document.getElementById('admin-wa-use-api')?.checked;
+      const current = this.settings?.whatsapp_settings || {};
+      const r = await API.saveWhatsAppSettings({ use_cloud_api: useApi }, this.app.user);
+      if (!r.success) return Utils.toast(r.error, 'error');
+      const merged = { ...current, ...(r.data || {}), use_cloud_api: useApi };
+      this.settings.whatsapp_settings = merged;
+      this.app.settings = { ...this.app.settings, whatsapp_settings: merged };
+      if (window.App?.settings) window.App.settings.whatsapp_settings = merged;
+      Utils.toast(useApi ? 'WhatsApp API mode ON' : 'Regular WhatsApp mode ON (opens chat to Send)', 'success');
     });
 
     document.getElementById('open-shift')?.addEventListener('click', () => {
@@ -4372,16 +4868,23 @@ const AdminPage = {
           const payload = await API.getLoyaltyReminderWhatsApp(parseInt(b.dataset.cid, 10), parseInt(b.dataset.lid, 10));
           const p = payload?.data ?? payload;
           if (!p?.phone) return Utils.toast('Customer has no phone number', 'error');
+          const manual = Utils.preferManualWhatsApp(this.app?.settings) || !Utils.canSilentWhatsApp(this.app?.settings);
+          if (manual) {
+            Utils.openWhatsApp(p.phone, p.message);
+            Utils.toast('WhatsApp opened — tap Send', 'success');
+          }
           const wa = await API.sendWhatsAppMessage({
             phone: p.phone,
             body: p.message,
             message_type: 'loyalty_reminder',
             customer_id: parseInt(b.dataset.cid, 10),
-            recipient_type: 'customer'
+            recipient_type: 'customer',
+            force_wa_me: !!manual,
+            prefer_wa_me: !!manual
           }, this.app.user);
           await Utils.deliverWhatsApp(wa, p.phone, p.message);
           await API.markLoyaltyReminderSent(parseInt(b.dataset.lid, 10), this.app.user);
-          Utils.toast('Reminder sent', 'success');
+          if (!manual) Utils.toast('Reminder sent', 'success');
           this.renderLoyaltyReminders(el);
         } catch (err) {
           Utils.toast(err.message || 'Could not send reminder', 'error');
@@ -5666,6 +6169,7 @@ const AdminPage = {
       device: ['device', 'tablet', 'kiosk'],
       backup: ['restore', 'backup'],
       opscompliance: ['checklist', 'opening', 'closing', 'rules', 'compliance', 'company rules'],
+      'manager-ops': ['manager operations', 'daily tasks', 'manager report', 'evidence', 'incident', 'team help'],
       combos: ['combo', 'meal deal', 'promo meal'],
       'menu-builder': ['menu', 'menu builder', 'flyer menu', 'print menu', 'restaurant menu', 'generate menu', 'pdf menu'],
       'promo-video-builder': ['video', 'promo video', 'reels', 'tiktok', 'whatsapp status video', 'menu video', 'generate video'],

@@ -235,26 +235,29 @@ const RecipeProductionApp = {
     this.pageHistory = [];
     this._open = true;
     const root = document.getElementById('recipe-production-root');
-    // Instant placeholder — never leave a blank screen while session resolves.
+    // Instant shell — never leave a blank screen while session resolves
     if (root) {
       root.innerHTML = '<div class="rp-login-wrap"><p class="rp-muted" style="padding:24px;text-align:center">Opening Recipe &amp; Production…</p></div>';
     }
-    try {
-      if (opts.fromApp && opts.posUser) {
-        const r = await API.recipeSessionFromPos(opts.posUser);
-        if (r.success && r.data) {
+    // Resolve POS session without blocking the open animation
+    const finish = () => { try { this.render(); } catch (_) { /* */ } };
+    if (opts.fromApp && opts.posUser) {
+      Promise.resolve(API.recipeSessionFromPos(opts.posUser)).then((r) => {
+        if (r?.success && r.data) {
           this.user = r.data;
           this.startNotifyPolling();
-          this.render();
-          return;
+        } else if (r?.error) {
+          Utils.toast(r.error || 'No Recipe access for this user — sign in below', 'error');
         }
-        Utils.toast(r.error || 'No Recipe access for this user — sign in below', 'error');
-      }
-    } catch (err) {
-      console.error('[RecipeProductionApp.open]', err);
-      Utils.toast(err.message || 'Could not open Recipe system', 'error');
+        finish();
+      }).catch((err) => {
+        console.error('[RecipeProductionApp.open]', err);
+        Utils.toast(err.message || 'Could not open Recipe system', 'error');
+        finish();
+      });
+      return;
     }
-    this.render();
+    finish();
   },
 
   close() {

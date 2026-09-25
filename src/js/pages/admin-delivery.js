@@ -138,7 +138,7 @@ window.AdminDeliveryPage = {
         if (saved && this.TABS.includes(saved)) this.tab = saved;
       } catch (_) { /* ignore */ }
     }
-    await this.ensureTabData('dashboard').catch(() => {});
+    // Paint chrome first — never wait on RPCs before Delivery UI appears
     this._lastRefresh = new Date();
     el.innerHTML = `<div class="admin-section dd-console">
       <div class="dd-hero">

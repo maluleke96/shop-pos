@@ -75,13 +75,15 @@ const HR_TYPES = new Set([
 const MANAGER_TYPES = new Set(['promotion', 'announcement']);
 const STAFF_SEND_TYPES = new Set([
   'sale_receipt', 'review_request', 'gift_card', 'giftcard', 'flyer_share', 'campaign', 'quotation', 'supplier_payment',
-  'recruitment_hire', 'recruitment_reject', 'recruitment_interview', 'custom',
+  'recruitment_hire', 'recruitment_reject', 'recruitment_interview', 'custom', 'meal_recipe',
   'layby', 'cashout', 'checklist', 'account_receipt', 'thank_you',
-  'delivery_update', 'password_recovery', 'verification'
+  'delivery_update', 'password_recovery', 'verification',
+  'loyalty_gift', 'loyalty_reminder', 'loyalty_points'
 ]);
 const CASHIER_ALLOWED_TYPES = new Set([
   'sale_receipt', 'review_request', 'gift_card', 'giftcard', 'flyer_share', 'campaign', 'quotation',
-  'supplier_payment', 'layby', 'cashout', 'thank_you'
+  'supplier_payment', 'layby', 'cashout', 'thank_you', 'meal_recipe', 'custom',
+  'loyalty_gift', 'loyalty_reminder', 'loyalty_points'
 ]);
 
 function parseJson(v, fb = {}) {
@@ -188,15 +190,19 @@ function renderTemplate(body, vars = {}) {
 function getWhatsAppSettings() {
   const row = getDb().prepare('SELECT whatsapp_settings, phone, branch_id FROM shop_settings WHERE id = 1').get() || {};
   const parsed = parseJson(row.whatsapp_settings, {});
-  const apiKey = parsed.api_key || '';
+  const env = envWhatsAppCreds();
+  const apiKey = parsed.api_key || env.api_key || '';
   return {
     api_key_configured: !!apiKey,
-    phone_number_id: parsed.phone_number_id || '',
-    business_account_id: parsed.business_account_id || '',
+    phone_number_id: parsed.phone_number_id || env.phone_number_id || '',
+    business_account_id: parsed.business_account_id || env.business_account_id || '',
     default_branch_phone: parsed.default_branch_phone || row.phone || '',
     default_branch_id: parsed.default_branch_id ?? row.branch_id ?? null,
     business_group_link: parsed.business_group_link || parsed.whatsapp_business_group_link || '',
     whatsapp_business_group_link: parsed.whatsapp_business_group_link || parsed.business_group_link || '',
+    cashout_whatsapp_phone: parsed.cashout_whatsapp_phone || '',
+    // Default ON (unset) keeps existing Cloud API shops working; set false for wa.me only
+    use_cloud_api: parsed.use_cloud_api !== false,
     enabled: parsed.enabled,
     provider: parsed.provider
   };
@@ -588,11 +594,14 @@ async function sendMessage(data, actor) {
 
   const branchId = data.branch_id ?? actor?.branch_id ?? settings.default_branch_id ?? null;
   const url = buildWaUrl(phone, body);
-  const cloud = await tryWhatsAppCloudSend(phone, body, settings, {
-    templateName: data.template_name || (msgType === 'verification' ? (settings.verification_template || settings.otp_template) : ''),
-    templateLang: data.template_lang || settings.verification_template_lang,
-    code: data.otp_code || data.verification_code
-  });
+  const allowCloud = settings.use_cloud_api !== false && !data.force_wa_me && !data.prefer_wa_me;
+  const cloud = allowCloud
+    ? await tryWhatsAppCloudSend(phone, body, settings, {
+      templateName: data.template_name || (msgType === 'verification' ? (settings.verification_template || settings.otp_template) : ''),
+      templateLang: data.template_lang || settings.verification_template_lang,
+      code: data.otp_code || data.verification_code
+    })
+    : null;
   const sentViaApi = !!(cloud && cloud.ok);
   const status = sentViaApi ? 'sent' : 'pending';
   const meta = {
@@ -601,7 +610,8 @@ async function sendMessage(data, actor) {
     template_slug: data.template_slug || null,
     via: sentViaApi ? 'cloud_api' : 'wa.me',
     cloud_message_id: cloud?.id || null,
-    cloud_error: cloud && !cloud.ok ? cloud.error : null
+    cloud_error: cloud && !cloud.ok ? cloud.error : (allowCloud ? null : 'cloud_api_disabled'),
+    use_cloud_api: allowCloud
   };
 
   const recipientType = normalizeRecipientType(data.recipient_type, msgType);
@@ -719,7 +729,8 @@ async function sendCampaign(campaignId, actor) {
     });
     const body = renderTemplate(template.body, vars);
     const url = buildWaUrl(r.phone, body);
-    const cloud = await tryWhatsAppCloudSend(r.phone, body, settings);
+    const allowCloud = settings.use_cloud_api !== false;
+    const cloud = allowCloud ? await tryWhatsAppCloudSend(r.phone, body, settings) : null;
     const sentViaApi = !!(cloud && cloud.ok);
     const ins = getDb().prepare(`
       INSERT INTO whatsapp_messages (

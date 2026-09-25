@@ -26,6 +26,7 @@ const CUSTOMER_WEB = path.join(ROOT, 'customer-web');
 const MANAGER_WEB = path.join(ROOT, 'manager-web');
 const DRIVER_WEB = path.join(ROOT, 'driver-web');
 const EXPENSE_WEB = path.join(ROOT, 'expense-web');
+const MANAGER_OPS_WEB = path.join(ROOT, 'manager-ops-web');
 const STUDIO_WEB = path.join(ROOT, 'studio-web');
 const RADIO_WEB = path.join(ROOT, 'radio-web');
 const RADIO_STUDIO_WEB = path.join(ROOT, 'radio-studio-web');
@@ -224,6 +225,33 @@ function syncExpenseWebConfig() {
   }
 }
 
+function syncManagerOpsWebConfig() {
+  const railwayDomain = process.env.RAILWAY_PUBLIC_DOMAIN || '';
+  const apiBase = (
+    process.env.SHOP_POS_PUBLIC_URL ||
+    process.env.SHOP_POS_SYNC_URL ||
+    (railwayDomain ? `https://${railwayDomain}` : '') ||
+    ''
+  ).replace(/\/$/, '');
+  const rpc = (
+    process.env.SHOP_POS_PUBLIC_RPC_URL ||
+    process.env.SHOP_POS_RPC_URL ||
+    `${apiBase}/rpc`
+  ).replace(/\/$/, '');
+  const out = `window.__MANAGER_OPS_CONFIG__ = {
+  rpcUrl: ${JSON.stringify(rpc)},
+  apiBase: ${JSON.stringify(apiBase)},
+  managerOpsPath: "/manager-ops/"
+};
+`;
+  try {
+    fs.mkdirSync(path.join(MANAGER_OPS_WEB, 'js'), { recursive: true });
+    fs.writeFileSync(path.join(MANAGER_OPS_WEB, 'js', 'config.js'), out, 'utf8');
+  } catch (e) {
+    console.warn('[manager-ops-web] config write failed:', e.message);
+  }
+}
+
 function syncStudioWebConfig() {
   const railwayDomain = process.env.RAILWAY_PUBLIC_DOMAIN || '';
   const apiBase = (
@@ -319,6 +347,44 @@ function serveExpenseWeb(req, res) {
       res.writeHead(200, {
         'Content-Type': type,
         'Cache-Control': (ext === '.js' || ext === '.css') ? 'no-cache' : 'public, max-age=3600',
+        ...corsHeaders()
+      });
+      res.end(buf);
+    });
+  });
+}
+
+function serveManagerOpsWeb(req, res) {
+  let urlPath = (req.url || '/').split('?')[0];
+  if (urlPath === '/manager-ops') urlPath = '/';
+  else if (urlPath.startsWith('/manager-ops/')) urlPath = urlPath.slice('/manager-ops'.length);
+  if (urlPath === '/') urlPath = '/index.html';
+  const filePath = safeJoin(MANAGER_OPS_WEB, urlPath);
+  if (!filePath) {
+    res.writeHead(403);
+    return res.end('Forbidden');
+  }
+  const sendHtml = (buf) => {
+    const html = injectPanelCacheBust(buf.toString('utf8'), readDeployVersion());
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache', ...corsHeaders() });
+    res.end(html);
+  };
+  fs.stat(filePath, (err, st) => {
+    if (err || !st.isFile()) {
+      const index = path.join(MANAGER_OPS_WEB, 'index.html');
+      return fs.readFile(index, (e2, buf) => {
+        if (e2) { res.writeHead(404); return res.end('Not found'); }
+        sendHtml(buf);
+      });
+    }
+    const ext = path.extname(filePath).toLowerCase();
+    const type = MIME[ext] || 'application/octet-stream';
+    fs.readFile(filePath, (e2, buf) => {
+      if (e2) { res.writeHead(500); return res.end('Read error'); }
+      if (ext === '.html') return sendHtml(buf);
+      res.writeHead(200, {
+        'Content-Type': type,
+        'Cache-Control': (ext === '.js' || ext === '.css' || ext === '.webmanifest') ? 'no-cache' : 'public, max-age=3600',
         ...corsHeaders()
       });
       res.end(buf);
@@ -872,6 +938,7 @@ async function main() {
   syncManagerWebConfig();
   syncDriverWebConfig();
   syncExpenseWebConfig();
+  syncManagerOpsWebConfig();
   syncStudioWebConfig();
   syncRadioWebConfigs();
   syncInvestorWebConfig();
@@ -1411,6 +1478,11 @@ async function main() {
       return serveExpenseWeb(req, res);
     }
 
+    if (urlPath === '/manager-ops' || urlPath.startsWith('/manager-ops/')) {
+      if (denyIfNotEntitled(res, '/manager-ops')) return;
+      return serveManagerOpsWeb(req, res);
+    }
+
     if (urlPath === '/studio' || urlPath.startsWith('/studio/')) {
       if (denyIfNotEntitled(res, '/studio')) return;
       return serveStudioWeb(req, res);
@@ -1477,6 +1549,18 @@ async function main() {
       }
     }
 
+    if (urlPath === '/register-shop' || urlPath.startsWith('/register-shop/')) {
+      if (!platformControlEnabled()) {
+        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8', ...corsHeaders() });
+        return res.end('Shop registration is not enabled on this deployment');
+      }
+      const regFile = path.join(PLATFORM_WEB, 'register-shop.html');
+      if (fs.existsSync(regFile)) {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...corsHeaders() });
+        return res.end(fs.readFileSync(regFile));
+      }
+    }
+
     if (urlPath === '/track' || urlPath.startsWith('/track/')) {
       return serveTrackingWeb(req, res);
     }
@@ -1498,6 +1582,7 @@ async function main() {
     console.log(`  Manager: http://localhost:${PORT}/manager/`);
     console.log(`  Driver:   http://localhost:${PORT}/driver/`);
     console.log(`  Expenses: http://localhost:${PORT}/expenses/`);
+    console.log(`  Manager Ops: http://localhost:${PORT}/manager-ops/`);
     console.log(`  Studio:   http://localhost:${PORT}/studio/`);
     console.log(`  Radio:    http://localhost:${PORT}/radio/main/`);
     console.log(`  Radio Studio: http://localhost:${PORT}/radio-studio/`);
@@ -1508,6 +1593,8 @@ async function main() {
     console.log(`  Player:   http://localhost:${PORT}/signage-player/`);
     console.log(`  Kiosk:    http://localhost:${PORT}/kiosk/`);
     console.log(`  Drive-Thru: http://localhost:${PORT}/drive-thru/`);
+    console.log(`  Platform: http://localhost:${PORT}/platform/`);
+    console.log(`  Register: http://localhost:${PORT}/register-shop`);
     console.log(`  Track:    http://localhost:${PORT}/track/TOKEN`);
     console.log('');
   });

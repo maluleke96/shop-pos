@@ -72,7 +72,20 @@ const invoke = async (channel, ...args) => {
     return { success: false, error: 'Feature unavailable (' + channel + '). Update/reinstall the app.' };
   }
   try {
-    const result = await fn(...args);
+    const slowTimer = setTimeout(() => {
+      try { window.ShopPosConnection?.markSlow?.('Taking longer than expected…'); } catch (_) { /* */ }
+    }, 8000);
+    let result;
+    try {
+      result = await fn(...args);
+    } finally {
+      clearTimeout(slowTimer);
+    }
+    try {
+      if (window.ShopPosConnection && navigator.onLine !== false) {
+        window.ShopPosConnection.set?.('online');
+      }
+    } catch (_) { /* */ }
     const decoded = result && typeof result === 'object' ? decodeRpcValue(result) : result;
     // Cloud RPC often wraps as { success, data }. Login may be { success, user }.
     if (decoded && typeof decoded === 'object' && Object.prototype.hasOwnProperty.call(decoded, 'success')) {
@@ -196,6 +209,8 @@ const API = {
 
   getSettings: () => invoke('settings:get'),
   getSettingsParsed: () => invoke('settings:getParsed'),
+  getShopAccess: () => invoke('platform:currentAccess'),
+  getShopSuspension: () => invoke('platform:shopSuspension'),
   getEntitlements: async () => {
     const res = await invoke('entitlements:get');
     if (res?.data?.flags || res?.data?.modules) return res;
@@ -357,6 +372,10 @@ const API = {
   getSalesTargets: () => invoke('settings:getSalesTargets'),
   saveSalesTargets: (data, actor) => invoke('settings:saveSalesTargets', data, actor),
   getTodayTargetProgress: (branchId) => invoke('settings:getTodayTargetProgress', branchId),
+  getSalesTargetHistory: (opts) => invoke('settings:getSalesTargetHistory', opts || {}),
+  getSalesTargetInsights: (opts) => invoke('settings:getSalesTargetInsights', opts || {}),
+  saveSalesTargetAlertSettings: (alerts, actor) => invoke('settings:saveSalesTargetAlertSettings', alerts, actor),
+  saveSalesTargetDayNote: (payload, actor) => invoke('settings:saveSalesTargetDayNote', payload, actor),
   getShiftSettings: () => invoke('settings:getShiftSettings'),
   enforceCashoutDeadlines: () => invoke('settings:enforceCashoutDeadlines'),
   saveShiftSettings: (data, actor) => invoke('settings:saveShiftSettings', data, actor),
@@ -908,6 +927,7 @@ const API = {
   getPayrollAccounting: (from, to) => invoke('bookkeeping:payrollAccounting', from, to),
   getTaxSummary: (from, to, branchId) => invoke('bookkeeping:taxSummary', from, to, branchId),
   getFinancialReport: (type, from, to) => invoke('bookkeeping:report', type, from, to),
+  getYearEndPack: (from, to) => invoke('bookkeeping:yearEndPack', from, to),
   getBusinessPerformance: (from, to) => invoke('bookkeeping:performance', from, to),
   getBudgets: (month) => invoke('bookkeeping:getBudgets', month),
   saveBudget: (data, actor) => invoke('bookkeeping:saveBudget', data, actor),
@@ -920,6 +940,7 @@ const API = {
   getFinancialNotifications: () => invoke('bookkeeping:notifications'),
   getBookkeepingCategories: () => invoke('bookkeeping:categories'),
   getFinancialReportPdf: (type, from, to) => invoke('bookkeeping:reportPdf', type, from, to),
+  getYearEndPackPdf: (from, to) => invoke('bookkeeping:yearEndPackPdf', from, to),
 
   getDonations: (filters) => invoke('donations:get', filters),
   getDonation: (id) => invoke('donations:getOne', id),
@@ -986,6 +1007,37 @@ const API = {
   updatePromoRequest: (id, data, actor) => invoke('ops:updatePromo', id, data, actor),
   getPromoSalesLog: (filters) => invoke('ops:promoSalesLog', filters),
   syncPromoStatuses: () => invoke('ops:syncPromoStatuses'),
+
+  moDashboard: (f) => invoke('mo:dashboard', f || {}),
+  moHome: (f, actor) => invoke('mo:home', f || {}, actor),
+  moListTasks: (f, actor) => invoke('mo:listTasks', f || {}, actor),
+  moGetTask: (id, actor) => invoke('mo:getTask', id, actor),
+  moStartTask: (id, actor) => invoke('mo:startTask', id, actor),
+  moCompleteChecklistItem: (id, data, actor) => invoke('mo:completeChecklistItem', id, data, actor),
+  moCompleteTask: (id, data, actor) => invoke('mo:completeTask', id, data, actor),
+  moVerifyTask: (id, data, actor) => invoke('mo:verifyTask', id, data, actor),
+  moSales: (branchId) => invoke('mo:sales', branchId),
+  moReportProblem: (data, actor) => invoke('mo:reportProblem', data, actor),
+  moListIncidents: (f) => invoke('mo:listIncidents', f || {}),
+  moTeamHelp: (f) => invoke('mo:teamHelp', f || {}),
+  moRequestHelp: (data, actor) => invoke('mo:requestHelp', data, actor),
+  moOfferHelp: (id, actor) => invoke('mo:offerHelp', id, actor),
+  moSubmitReport: (data, actor) => invoke('mo:submitReport', data, actor),
+  moListReports: (f) => invoke('mo:listReports', f || {}),
+  moGetReport: (id, actor) => invoke('mo:getReport', id, actor),
+  moOwnerRespond: (id, msg, actor) => invoke('mo:ownerRespond', id, msg, actor),
+  moAckMessage: (id, actor) => invoke('mo:ackMessage', id, actor),
+  moEvidence: (id, actor) => invoke('mo:evidence', id, actor),
+  moAttendance: () => invoke('mo:attendance'),
+  moTemplates: () => invoke('mo:templates'),
+  moSaveTemplate: (data, actor) => invoke('mo:saveTemplate', data, actor),
+  moChecklists: () => invoke('mo:checklists'),
+  moSaveChecklist: (data, actor) => invoke('mo:saveChecklist', data, actor),
+  moGetSettings: () => invoke('mo:getSettings'),
+  moSaveSettings: (data, actor) => invoke('mo:saveSettings', data, actor),
+  moGenerateTasks: (data, actor) => invoke('mo:generateTasks', data || {}, actor),
+  moAudit: (f) => invoke('mo:audit', f || {}),
+  moCategories: () => invoke('mo:categories'),
 
   getCombos: (filters) => invoke('combos:get', filters),
   getActiveCombos: (filters) => invoke('combos:getActive', filters),
@@ -1388,6 +1440,8 @@ const API = {
   referralUnsuspendAgent: (id, actor) => invoke('referral:unsuspendAgent', id, actor),
   referralUpdateAgent: (id, data, actor) => invoke('referral:updateAgent', id, data || {}, actor),
   referralDeleteAgent: (id, actor) => invoke('referral:deleteAgent', id, actor),
+  referralClearAttribution: (data, actor) => invoke('referral:clearAttribution', data || {}, actor),
+  referralClearSaleReferral: (saleId, actor) => invoke('referral:clearSaleReferral', saleId, actor),
   referralAwardCommission: (id, data, actor) => invoke('referral:awardCommission', id, data || {}, actor),
   referralListAwardRequests: (filters, actor) => invoke('referral:listAwardRequests', filters || {}, actor),
   referralGetAwardRequest: (id, actor) => invoke('referral:getAwardRequest', id, actor),

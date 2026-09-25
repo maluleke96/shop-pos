@@ -113,6 +113,7 @@ const FLAG_ALIASES = {
   release: 'mod.release',
   referral: 'mod.referral',
   manager: 'app.manager',
+  manager_operations: 'mod.manager_operations',
   restaurant: 'mod.restaurant',
   kds: 'mod.kds'
 };
@@ -194,6 +195,8 @@ const RPC_NAMESPACE_MODULES = {
   customfields: ['core.settings'],
   security: ['core.audit_security'],
   ops: ['mod.ops_compliance'],
+  mo: ['mod.manager_operations'],
+  managerOps: ['mod.manager_operations'],
   entitlements: [], // shop entitlement snapshot — always allowed
   platform: [], // platform control itself
   saas: [] // platform→customer sync (authenticated by secret inside handler)
@@ -229,6 +232,7 @@ const NAV_PAGE_MODULES = {
   'document-hub': ['mod.document_hub'],
   whatsapp: ['mod.communication'],
   operations: ['mod.ops_compliance'],
+  'manager-ops': ['mod.manager_operations'],
   restaurant: ['mod.restaurant'],
   recipe: ['app.recipe'],
   'purchase-orders': ['mod.purchase_orders'],
@@ -255,6 +259,7 @@ const HTTP_MOUNT_MODULES = {
   '/radio-studio': ['mod.radio_studio'],
   '/radio-media': ['mod.radio'],
   '/manager': ['app.manager'],
+  '/manager-ops': ['mod.manager_operations'],
   '/expenses': ['app.expenses'],
   '/studio': ['app.studio'],
   '/kitchen-display.html': ['mod.kds'],
@@ -395,6 +400,11 @@ function computeEffectiveEntitlements(key = shopKey()) {
 
   // Auto-include dependencies
   const expanded = expandDeps(enabled, map);
+  // Manager Operations ships with Admin on every shop (Chisa + city SaaS)
+  if (expanded.has('app.admin') || enabled.has('app.admin')) {
+    if (map['mod.manager_operations']) expanded.add('mod.manager_operations');
+    if (map['admin.manager-ops']) expanded.add('admin.manager-ops');
+  }
   for (const id of expanded) enabled.add(id);
 
   // Force off last (cannot turn off shared core)
@@ -457,10 +467,14 @@ function buildResult(key, enabledSet, shared, meta) {
   if (modules['app.admin'] || shared.has('app.admin')) {
     ['permissions', 'cashiers', 'branches', 'device', 'printer', 'receipt', 'payments',
       'security', 'backup', 'database', 'system-health', 'developer', 'formats', 'tax',
-      'operating', 'shifts', 'customize', 'approvals', 'importexport', 'customfields', 'overview'
+      'operating', 'shifts', 'customize', 'approvals', 'importexport', 'customfields', 'overview',
+      'manager-ops'
     ].forEach((s) => {
       if (admin_sections[s] == null) admin_sections[s] = true;
     });
+  }
+  if (modules['mod.manager_operations'] || modules['admin.manager-ops']) {
+    admin_sections['manager-ops'] = true;
   }
 
   const payload = {
@@ -651,7 +665,9 @@ function isAdminSectionAllowed(sectionId) {
     'business-modules': 'mod.biz_modules_pack',
     'referral-dept': 'mod.referral',
     'business-manager': 'app.manager',
-    'mobile-app': 'app.manager'
+    'mobile-app': 'app.manager',
+    'manager-ops': 'mod.manager_operations',
+    opscompliance: 'mod.ops_compliance'
   };
   if (infer[sectionId]) return isModuleEnabled(infer[sectionId]);
   // Default when enforcement on and section unknown: allow only if app.admin

@@ -3,13 +3,21 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Platform Control — Packages</title>
-  <link rel="stylesheet" href="css/platform.css">
+  <title>Platform Control</title>
+  <style>
+    /* Instant paint — before external CSS */
+    html,body{margin:0;min-height:100%;background:#07111f;color:#f1f5f9;font-family:"Segoe UI",system-ui,sans-serif}
+    #app{min-height:100vh}
+    .pf-boot{padding:28px;opacity:.85}
+    .pf-boot h1{margin:0 0 8px;font-size:1.6rem}
+    .pf-boot p{color:#94a3b8;margin:0}
+  </style>
+  <link rel="stylesheet" href="css/platform.css?v=fast5">
 </head>
 <body>
-  <div id="app"></div>
-  <script src="js/config.js"></script>
-  <script src="js/api.js"></script>
-  <script src="js/app.js"></script>
+  <div id="app"><div class="pf-boot"><h1>Platform Control</h1><p>Loading…</p></div></div>
+  <script src="js/config.js?v=fast5" defer></script>
+  <script src="js/api.js?v=fast5" defer></script>
+  <script src="js/app.js?v=fast5" defer></script>
 </body>
 </html>

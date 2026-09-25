@@ -1163,15 +1163,20 @@ const AccountingApp = {
     el.innerHTML = `
       ${this.sectionHead(this.btn('Refresh', 'refresh'))}
       ${this.filterBarHtml()}
-      ${this.panel('', this.table(['Date', 'Branch', 'Expected', 'Counted', 'Variance', 'Status'],
-        rows.map((r) => `<tr>
-          <td>${this.esc(String(r.date || '').slice(0, 10))}</td>
-          <td>${this.esc(r.branch_name || r.branch || '—')}</td>
-          <td>${this.money(r.expected)}</td>
-          <td>${this.money(r.counted)}</td>
-          <td>${this.money(r.variance)}</td>
-          <td>${this.statusTag(r.status)}</td>
-        </tr>`).join(''), 'No cash-up records'), '', true)}`;
+      ${this.panel('', this.table(['Date', 'Cashier', 'Expected', 'Counted', 'Variance', 'Journal'],
+        rows.map((r) => {
+          const expected = Number(r.expected ?? ((Number(r.expected_cash) || 0) + (Number(r.expected_card) || 0) + (Number(r.expected_eft) || 0)));
+          const counted = Number(r.counted ?? ((Number(r.actual_cash) || 0) + (Number(r.actual_card) || 0) + (Number(r.actual_eft) || 0)));
+          const variance = Number(r.variance ?? r.difference ?? (counted - expected));
+          return `<tr>
+          <td>${this.esc(String(r.date || r.cashup_date || '').slice(0, 10))}</td>
+          <td>${this.esc(r.cashier_name || r.branch_name || r.branch || '—')}</td>
+          <td>${this.money(expected)}</td>
+          <td>${this.money(counted)}</td>
+          <td>${this.money(variance)}</td>
+          <td>${r.journal_id ? this.statusTag('posted') : this.statusTag(r.status || 'recorded')}</td>
+        </tr>`;
+        }).join(''), 'No cash-up records'), '', true)}`;
   },
 
   async renderPettyCash(el) {
@@ -1829,13 +1834,25 @@ const AccountingApp = {
       }, 'Save Expense');
     },
     'txn-payment': function () {
-      this.openForm('Record Payment', this.formPayment('customer'), async () => {
-        const payload = { type: 'customer', date: this.val('acc-txn-date'), party: this.val('acc-txn-party'), reference: this.val('acc-txn-ref'), amount: this.numVal('acc-txn-amount'), method: this.val('acc-txn-method') };
+      const sec = this.section || '';
+      const isSupplier = sec === 'supplier-payments' || sec.includes('supplier');
+      const payType = isSupplier ? 'supplier' : 'customer';
+      this.openForm(isSupplier ? 'Pay Supplier' : 'Record Payment', this.formPayment(payType), async () => {
+        const payload = {
+          type: payType,
+          date: this.val('acc-txn-date'),
+          party: this.val('acc-txn-party'),
+          supplier: isSupplier ? this.val('acc-txn-party') : undefined,
+          customer: !isSupplier ? this.val('acc-txn-party') : undefined,
+          reference: this.val('acc-txn-ref'),
+          amount: this.numVal('acc-txn-amount'),
+          method: this.val('acc-txn-method')
+        };
         const r = await this.apiCall('accSavePayment', payload);
         if (r == null) return false;
-        this.toast('Payment saved', 'success');
+        this.toast(isSupplier ? 'Supplier payment saved' : 'Payment saved', 'success');
         return true;
-      }, 'Save Payment');
+      }, isSupplier ? 'Pay Supplier' : 'Save Payment');
     },
     'txn-bill': function () {
       this.openForm('New Supplier Bill', this.formInvoice('supplier'), async () => {

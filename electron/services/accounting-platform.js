@@ -1102,7 +1102,30 @@ function postFromCashup(cashupId, data = {}) {
     `SELECT * FROM acc_cashup_finance WHERE cashup_id=?`,
     [sourceId]
   );
-  if (existingFinance) return existingFinance;
+  if (existingFinance) {
+    // Allow retry: finance row exists but variance journal was never posted
+    if (!existingFinance.journal_id && Math.abs(num(existingFinance.difference)) >= 0.01) {
+      const d = defaults();
+      const difference = num(existingFinance.difference);
+      const lines = difference < 0
+        ? [
+          { account_id: 43, debit: Math.abs(difference), credit: 0, description: 'Cash-up shortage' },
+          { account_id: d.cash, debit: 0, credit: Math.abs(difference), description: 'Cash-up shortage' }
+        ]
+        : [
+          { account_id: d.cash, debit: difference, credit: 0, description: 'Cash-up overage' },
+          { account_id: 24, debit: 0, credit: difference, description: 'Cash-up overage' }
+        ];
+      const journal = postJournal({
+        date: existingFinance.cashup_date || today(), type: 'cashup', description: 'Cash-up variance',
+        source_type: 'cashup', source_id: sourceId, event_key: 'cashup_var',
+        lines, status: 'posted'
+      }, SYSTEM_ACTOR);
+      dbRun(`UPDATE acc_cashup_finance SET journal_id=? WHERE id=?`, [journal.id, existingFinance.id]);
+      return dbGet(`SELECT * FROM acc_cashup_finance WHERE id=?`, [existingFinance.id]);
+    }
+    return existingFinance;
+  }
   const expected = num(data.expected_cash) + num(data.expected_card) + num(data.expected_eft);
   const actual = num(data.actual_cash) + num(data.actual_card) + num(data.actual_eft);
   const difference = round2(actual - expected);

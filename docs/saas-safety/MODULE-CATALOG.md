@@ -1,8 +1,8 @@
-# MODULE CATALOG - Phase 2
+# MODULE CATALOG — Phase 2
 
-Generated: **2026-09-20T21:40:30.319Z**
+Generated: **2026-09-24T10:01:42.765Z**
 
-Inventory of sellable/gatable surfaces in `shop-pos`. **Documentation only** - no entitlement checks, menu hiding, schema changes, or production deploys.
+Inventory of sellable/gatable surfaces in `shop-pos`. **Documentation only** — no entitlement checks, menu hiding, schema changes, or production deploys.
 
 Companion machine-readable files: `MODULE-CATALOG.json`, `MODULE-CATALOG.csv`.
 
@@ -10,211 +10,211 @@ Companion machine-readable files: `MODULE-CATALOG.json`, `MODULE-CATALOG.csv`.
 
 | Metric | Count |
 |--------|------:|
-| Major modules/apps | 37 |
-| Admin submodules (sidebar sections) | 67 |
+| Major modules/apps | 38 |
+| Admin submodules (sidebar sections) | 68 |
 | Nested features (catalogued) | 20 |
 | Shared/core (non-sellable alone) | 12 |
-| Total catalog entries | 136 |
+| Total catalog entries | 138 |
 | RPC namespaces (gating-relevant) | 73 |
 | HTTP routes / mounts listed | 37 |
 | Background jobs / timers listed | 11 |
 
 ## Kind legend
 
-- **major** - separate app, portal URL, or installable shell
-- **admin_submodule** - Admin sidebar section (`admin.js`)
-- **feature** - nested capability inside a module
-- **shared_core** - must stay with base product; do not disable alone
+- **major** — separate app, portal URL, or installable shell
+- **admin_submodule** — Admin sidebar section (`admin.js`)
+- **feature** — nested capability inside a module
+- **shared_core** — must stay with base product; do not disable alone
 
 ## Shared / core (do not sell independently)
 
-### `core.auth` - Authentication & Sessions
+### `core.auth` — Authentication & Sessions
 Login, logout, PIN, recovery, session verify, installer seed.
 - APIs: auth:*, RPC /rpc
 - Tables: users, mobile_sessions
-- Jobs: -
+- Jobs: —
 
-### `core.users_permissions` - Users & Permissions
+### `core.users_permissions` — Users & Permissions
 User CRUD, roles, cashier/manager permissions.
 - APIs: auth:getUsers, auth:createUser, auth:updateUser
 - Tables: users
-- Jobs: -
+- Jobs: —
 
-### `core.branches` - Branches & Tills
+### `core.branches` — Branches & Tills
 Multi-branch and till device binding.
 - APIs: branches:*
 - Tables: branches, branch_settings, branch_stock
-- Jobs: -
+- Jobs: —
 
-### `core.catalog` - Products / Categories / Stock
+### `core.catalog` — Products / Categories / Stock
 Core catalogue and inventory movements used by POS, Online, Recipe, etc.
 - APIs: products:*, categories:*, stock:*, inventory:*
 - Tables: products, categories, branch_stock, product_modifiers, product_variants
-- Jobs: -
+- Jobs: —
 
-### `core.customers_suppliers` - Customers & Suppliers masters
+### `core.customers_suppliers` — Customers & Suppliers masters
 Party master data shared across sales, PO, delivery, loyalty.
 - APIs: customers:*, suppliers:*
 - Tables: customers, suppliers
-- Jobs: -
+- Jobs: —
 
-### `core.payments` - Payment methods & gateways
+### `core.payments` — Payment methods & gateways
 POS tender types and online payment gateway config/webhooks.
 - APIs: settings payment gateways, HTTP /api/webhooks/payments/*
 - Tables: payment_gateways, payment_transactions, payment_webhook_events
 - Jobs: payment webhook ingest
 
-### `core.device_print` - Device, Printer, Receipt
+### `core.device_print` — Device, Printer, Receipt
 Device settings, printers, receipt designer, cash drawer.
 - APIs: print:*, printers:*, settings device
 - Tables: pos_heartbeats
-- Jobs: -
+- Jobs: —
 
-### `core.settings` - Shop settings & setup
+### `core.settings` — Shop settings & setup
 Shop settings, setup wizard, tax/currency, formats, operating hours, shifts config.
 - APIs: settings:*
 - Tables: shop_settings, bookkeeping_settings
-- Jobs: -
+- Jobs: —
 
-### `core.audit_security` - Audit, Security, Backup, DB tools
+### `core.audit_security` — Audit, Security, Backup, DB tools
 Audit log, security, backup/restore, database manager, system health, developer.
 - APIs: audit:*, backup:*, db:*, dev:*
 - Tables: audit_log, pg_schema_migrations
 - Jobs: storage snapshot every 6h
 
-### `core.sync_notify` - Sync & notifications hub
+### `core.sync_notify` — Sync & notifications hub
 Cloud sync substrate and in-app notification ack hub.
 - APIs: sync:*, notifications:*
 - Tables: notifications, notification_acks, legacy_sync_outbox
-- Jobs: -
+- Jobs: —
 
-### `core.rpc_server` - HTTP RPC & static portal host
+### `core.rpc_server` — HTTP RPC & static portal host
 server.js hosts /rpc, /health, portal static mounts.
 - APIs: POST /rpc, GET /health
-- Tables: -
-- Jobs: -
+- Tables: —
+- Jobs: —
 
-### `core.portals_hub` - Portals hub & shop profiles
+### `core.portals_hub` — Portals hub & shop profiles
 Bookmark hub and multi-shop local profiles.
-- APIs: -
-- Tables: -
-- Jobs: -
+- APIs: —
+- Tables: —
+- Jobs: —
 
 ## Major modules / apps
 
-### `app.admin` - Admin Panel
+### `app.admin` — Admin Panel
 Owner/manager configuration shell hosting all Admin sidebar sections.
 - Appears in: /admin-app.html; mode admin; Windows/Android admin shells
 - Admin menu: (host for all admin sections)
 - APIs: settings:*, auth:*, many module APIs
-- Jobs: -
-- Tables: -
+- Jobs: —
+- Tables: —
 - Dependencies: core.auth, core.users_permissions, core.settings
 - Sellable add-on: **true**
 - Default status: enabled_in_full_product
 - Notes: Usually included; can be sold light vs full via admin_* submodules.
 
-### `app.pos` - POS Till
+### `app.pos` — POS Till
 Cashier sales, payments, held orders, shifts at till.
 - Appears in: /pos-app.html; mode pos; main-nav POS
 - Admin menu: pos-menu + sales sections
 - APIs: sales:*, shifts:*, held:*, print:receipt
-- Jobs: -
+- Jobs: —
 - Tables: sales, sale_items, held_orders, shifts, cash_drops
 - Dependencies: core.catalog, core.payments, core.auth
 - Sellable add-on: **true**
 - Default status: enabled_in_full_product
 
-### `app.staff` - Staff Portal
+### `app.staff` — Staff Portal
 Employee clocking, leave, payslips, self-service HR views.
 - Appears in: /staff-app.html; mode staff; main-nav Staff Portal
 - Admin menu: staffportal / staffhr
 - APIs: staff:*
-- Jobs: -
+- Jobs: —
 - Tables: employees, employee_attendance, employee_leave, employee_portal_feed
 - Dependencies: core.auth, mod.hr
 - Sellable add-on: **true**
 - Default status: enabled_in_full_product
 
-### `app.manager` - Business Manager (mobile)
+### `app.manager` — Business Manager (mobile)
 Mobile manager dashboard PWA for ops overview.
 - Appears in: /manager/; manager shells
 - Admin menu: business-manager / mobile-app
 - APIs: mobile:*
-- Jobs: -
+- Jobs: —
 - Tables: mobile_app_users, mobile_devices, mobile_notifications, mobile_sessions
 - Dependencies: core.auth, app.admin
 - Sellable add-on: **true**
 - Default status: enabled_in_full_product
 
-### `app.mgr_hr` - Mgr / Supervisor HR Portal
+### `app.mgr_hr` — Mgr / Supervisor HR Portal
 Manager/supervisor cases, recordings, staff HR ops portal.
 - Appears in: /mgr-hr-app.html; mode mgr-hr
 - Admin menu: staffhr → mgr-* tabs
 - APIs: mgrHr:*
-- Jobs: -
+- Jobs: —
 - Tables: manager_hr_*
 - Dependencies: mod.hr, app.staff
 - Sellable add-on: **true**
 - Default status: enabled_in_full_product
 
-### `app.recipe` - Recipe & Production
+### `app.recipe` — Recipe & Production
 Recipes, prep, production planning, waste, costing.
 - Appears in: /recipe-app.html; mode recipe; main-nav recipe
 - Admin menu: recipe
 - APIs: recipe:*, waste:*
-- Jobs: -
+- Jobs: —
 - Tables: product_recipe_items, production_batches, production_batch_items
 - Dependencies: core.catalog
 - Sellable add-on: **true**
 - Default status: enabled_in_full_product
 
-### `app.hr` - HR, Payroll & Documents
+### `app.hr` — HR, Payroll & Documents
 Full HR workspace: payroll, contracts, training, compliance.
 - Appears in: mode hr; HR shells
 - Admin menu: hr-workspace / hr-approvals / hrcontracts / payroll
 - APIs: hr:*, payroll:*, jobs:*
-- Jobs: -
+- Jobs: —
 - Tables: hr_*, employee_*, payroll_compliance_submissions
 - Dependencies: app.staff, core.auth
 - Sellable add-on: **true**
 - Default status: enabled_in_full_product
 - Notes: Overlaps Staff Portal; decide bundle vs separate SKUs.
 
-### `app.accounting` - Business Accounting
+### `app.accounting` — Business Accounting
 Ledgers, journals, banking, AR/AP, financial reports.
 - Appears in: /accounting-app.html; mode accounting; main-nav bookkeeping
 - Admin menu: accounting-workspace
 - APIs: acc:*, bookkeeping:*
-- Jobs: -
+- Jobs: —
 - Tables: acc_*, ledger_entries
 - Dependencies: core.catalog, core.payments
 - Sellable add-on: **true**
 - Default status: enabled_in_full_product
 
-### `app.delivery` - Delivery Department
+### `app.delivery` — Delivery Department
 Dispatch desk for delivery orders, drivers, payouts.
 - Appears in: /delivery-app.html; mode delivery
 - Admin menu: delivery-dept
 - APIs: delivery:*
-- Jobs: -
+- Jobs: —
 - Tables: delivery_*
 - Dependencies: mod.online, app.driver
 - Sellable add-on: **true**
 - Default status: enabled_in_full_product
 
-### `app.driver` - Driver App
+### `app.driver` — Driver App
 Driver login, jobs, earnings, register/track pages.
 - Appears in: /driver/; /driver/register.html; /driver/track.html
 - Admin menu: delivery-dept
 - APIs: driver:*, HTTP /api/driver-doc/*
-- Jobs: -
+- Jobs: —
 - Tables: delivery_drivers, delivery_driver_sessions, delivery_assignments
 - Dependencies: app.delivery
 - Sellable add-on: **true**
 - Default status: enabled_in_full_product
 
-### `mod.online` - Online Ordering
+### `mod.online` — Online Ordering
 Customer web shop for delivery/collection.
 - Appears in: /order/; customer-web; order shells
 - Admin menu: online-orders / customer-reports
@@ -225,74 +225,74 @@ Customer web shop for delivery/collection.
 - Sellable add-on: **true**
 - Default status: enabled_in_full_product
 
-### `mod.branding` - Online / App Branding
+### `mod.branding` — Online / App Branding
 Logo, theme colors, banners, menu highlights for customer-facing surfaces.
 - Appears in: Admin customize + online settings + menu builder
 - Admin menu: customize / online-orders / menu-builder
 - APIs: settings:save, HTTP /api/logo, settings:getMenuHighlights
-- Jobs: -
+- Jobs: —
 - Tables: shop_settings, branch_online_settings
 - Dependencies: mod.online
 - Sellable add-on: **true**
 - Default status: enabled_in_full_product
 - Notes: Candidate add-on; partially exists today without a single dedicated editor SKU.
 
-### `app.expenses` - Expense Capture
+### `app.expenses` — Expense Capture
 Mobile expense/waste submission portal + Admin expenses.
 - Appears in: /expenses/; main-nav expenses
 - Admin menu: (expenses via accounting/nav)
 - APIs: expenses:*, HTTP /api/expense-*
-- Jobs: -
+- Jobs: —
 - Tables: expenses, expense_*, owner_fundings
 - Dependencies: core.auth, app.accounting
 - Sellable add-on: **true**
 - Default status: enabled_in_full_product
 
-### `app.studio` - Menu & Promo Studio
+### `app.studio` — Menu & Promo Studio
 Staff studio login into menu builder and promo video tools.
 - Appears in: /studio/; studio-builder mode
 - Admin menu: menu-builder / promo-video-builder
 - APIs: studio platform APIs via RPC/settings
-- Jobs: -
+- Jobs: —
 - Tables: flyer_templates, promotion_flyers, signage media overlap
 - Dependencies: core.catalog, mod.combos
 - Sellable add-on: **true**
 - Default status: enabled_in_full_product
 
-### `app.referral_agent` - Referral Agent App
+### `app.referral_agent` — Referral Agent App
 Agent-facing referral registration and earnings.
 - Appears in: /referral-app.html; mode referral
 - Admin menu: referral-dept
 - APIs: referral:*
-- Jobs: -
+- Jobs: —
 - Tables: mkt_referral_*, mkt_agent_*, marketing_*
 - Dependencies: mod.referral
 - Sellable add-on: **true**
 - Default status: enabled_in_full_product
 
-### `app.referral_commission` - Referral & Commission Desk
+### `app.referral_commission` — Referral & Commission Desk
 Owner/manager commission department app.
 - Appears in: /referral-commission-app.html; mode referral-commission
 - Admin menu: referral-dept
 - APIs: referral:*
-- Jobs: -
+- Jobs: —
 - Tables: mkt_commissions, mkt_commission_*, mkt_agent_wallets
 - Dependencies: mod.referral
 - Sellable add-on: **true**
 - Default status: enabled_in_full_product
 
-### `mod.referral` - Referral & Commission (platform)
-Referral rules, agents, wallets, fraud, audits - Admin + apps.
+### `mod.referral` — Referral & Commission (platform)
+Referral rules, agents, wallets, fraud, audits — Admin + apps.
 - Appears in: Admin referral-dept; both referral apps
 - Admin menu: referral-dept
 - APIs: referral:*
-- Jobs: -
+- Jobs: —
 - Tables: mkt_*, marketing_*
-- Dependencies: -
+- Dependencies: —
 - Sellable add-on: **true**
 - Default status: enabled_in_full_product
 
-### `mod.signage` - Digital Signage Centre
+### `mod.signage` — Digital Signage Centre
 Manage screens, media, playlists, schedules, pairing.
 - Appears in: /signage/
 - Admin menu: digital-signage / business-modules overview
@@ -303,74 +303,74 @@ Manage screens, media, playlists, schedules, pairing.
 - Sellable add-on: **true**
 - Default status: enabled_in_full_product
 
-### `mod.signage_player` - Signage TV Player
+### `mod.signage_player` — Signage TV Player
 Full-screen player; pairing code UX.
 - Appears in: /signage-player/
 - Admin menu: digital-signage (approve pairing)
 - APIs: signage:requestPairing, signage:pairingStatus, SSE
-- Jobs: -
+- Jobs: —
 - Tables: signage_devices, signage_device_pairings
 - Dependencies: mod.signage
 - Sellable add-on: **true**
 - Default status: enabled_in_full_product
 - Notes: Usually bundled with Signage Centre.
 
-### `mod.kiosk` - Self-Service Kiosk
+### `mod.kiosk` — Self-Service Kiosk
 In-store customer kiosk ordering with pairing.
 - Appears in: /kiosk/
 - Admin menu: business-modules → kiosk
 - APIs: kiosk:*, HTTP /kiosk-media/*
-- Jobs: -
+- Jobs: —
 - Tables: kiosk_*
 - Dependencies: core.catalog, mod.online
 - Sellable add-on: **true**
 - Default status: enabled_in_full_product
 
-### `mod.drive_thru` - Drive-Thru Station
+### `mod.drive_thru` — Drive-Thru Station
 Lane station UI, tokens, audio signals.
 - Appears in: /drive-thru/
 - Admin menu: business-modules → drive-thru
 - APIs: drive-thru platform (biz modules)
-- Jobs: -
+- Jobs: —
 - Tables: drive_thru_*
 - Dependencies: core.catalog, app.pos
 - Sellable add-on: **true**
 - Default status: enabled_in_full_product
 
-### `mod.investor` - Investor Portal
+### `mod.investor` — Investor Portal
 Investor login and equity/investment views.
 - Appears in: /investor/
 - Admin menu: business-modules → investors
 - APIs: investor:*
-- Jobs: -
+- Jobs: —
 - Tables: investors, investor_*, investment_*
 - Dependencies: core.auth
 - Sellable add-on: **true**
 - Default status: enabled_in_full_product
 
-### `mod.release` - App Release Centre
+### `mod.release` — App Release Centre
 Release notes / rollout centre portal.
 - Appears in: /release/
 - Admin menu: business-modules → release-users
 - APIs: release:*, HTTP /api/mobile-releases.json
-- Jobs: -
+- Jobs: —
 - Tables: release_* (centre users)
-- Dependencies: -
+- Dependencies: —
 - Sellable add-on: **true**
 - Default status: enabled_in_full_product
 
-### `mod.meeting` - AI Meeting Centre
+### `mod.meeting` — AI Meeting Centre
 Meeting recording, notes, transcripts portal.
 - Appears in: /meeting/
 - Admin menu: business-modules → meeting-users
 - APIs: meeting:*
 - Jobs: optional AI transcription if API key set
 - Tables: meetings, meeting_*
-- Dependencies: -
+- Dependencies: —
 - Sellable add-on: **true**
 - Default status: enabled_in_full_product
 
-### `mod.radio` - Connection Radio (public)
+### `mod.radio` — Connection Radio (public)
 Public listen/chat/call/order radio site.
 - Appears in: /radio/; /radio/:slug/
 - Admin menu: radio
@@ -381,133 +381,145 @@ Public listen/chat/call/order radio site.
 - Sellable add-on: **true**
 - Default status: enabled_in_full_product
 
-### `mod.radio_studio` - Radio Studio
+### `mod.radio_studio` — Radio Studio
 Live mic, music, announcements, GO LIVE.
 - Appears in: /radio-studio/
 - Admin menu: radio
 - APIs: radio:*
-- Jobs: -
+- Jobs: —
 - Tables: radio_broadcast_state, radio_media_files, radio_playlists
-- Dependencies: -
+- Dependencies: —
 - Sellable add-on: **true**
 - Default status: enabled_in_full_product
 
-### `mod.kds` - Kitchen Display (KDS)
+### `mod.kds` — Kitchen Display (KDS)
 Full-screen kitchen order queue.
 - Appears in: /kitchen-display.html; Restaurant → Kitchen
 - Admin menu: restaurant (main-nav)
 - APIs: kitchen:*, tables:*
-- Jobs: -
+- Jobs: —
 - Tables: kitchen_orders, kitchen_order_items
 - Dependencies: app.pos, mod.restaurant
 - Sellable add-on: **true**
 - Default status: enabled_in_full_product
 
-### `mod.customer_display` - Customer Display
+### `mod.customer_display` — Customer Display
 Guest-facing order progress board.
 - Appears in: /customer-display.html; Restaurant → Customer
-- Admin menu: -
+- Admin menu: —
 - APIs: customer:openDisplay
-- Jobs: -
+- Jobs: —
 - Tables: kitchen_orders
 - Dependencies: mod.kds, app.pos
 - Sellable add-on: **true**
 - Default status: enabled_in_full_product
 
-### `mod.restaurant` - Restaurant / Tables
+### `mod.restaurant` — Restaurant / Tables
 Table service, in-app KDS/customer tabs.
 - Appears in: main-nav restaurant
-- Admin menu: -
+- Admin menu: —
 - APIs: tables:*
-- Jobs: -
+- Jobs: —
 - Tables: kitchen_orders
 - Dependencies: app.pos
 - Sellable add-on: **true**
 - Default status: enabled_in_full_product
 
-### `mod.communication` - Communication Center
+### `mod.communication` — Communication Center
 Multi-channel messaging: WhatsApp, SMS, email, social, campaigns.
 - Appears in: Admin communication-center; main-nav whatsapp
 - Admin menu: communication-center / whatsapp
 - APIs: cc:*, whatsapp:*, HTTP /api/webhooks/whatsapp
 - Jobs: cc_queue processing, whatsapp webhook ingest, scheduled campaigns
 - Tables: cc_*, comm_*, whatsapp_*
-- Dependencies: -
+- Dependencies: —
 - Sellable add-on: **true**
 - Default status: enabled_in_full_product
 
-### `mod.loyalty` - Loyalty & Gift Cards
+### `mod.loyalty` — Loyalty & Gift Cards
 Points, gift cards, first-online gift, rewards.
 - Appears in: Admin loyalty; main-nav giftcards; POS checkout
 - Admin menu: loyalty
 - APIs: loyalty:*, giftcards:*, rewards:*
-- Jobs: -
+- Jobs: —
 - Tables: loyalty_*, gift_cards, gift_card_transactions, first_online_gift_*, customer_reward_*
 - Dependencies: app.pos, mod.online
 - Sellable add-on: **true**
 - Default status: enabled_in_full_product
 
-### `mod.combos` - Combos & Promos
+### `mod.combos` — Combos & Promos
 Combo deals, promo approvals, recipe promos.
 - Appears in: Admin combos
 - Admin menu: combos
 - APIs: combos:*, vouchers:*
-- Jobs: -
+- Jobs: —
 - Tables: combos, combo_items, combo_sale_log, product_promo_requests
 - Dependencies: core.catalog, app.pos
 - Sellable add-on: **true**
 - Default status: enabled_in_full_product
 
-### `mod.careers` - Careers / Job Apply
+### `mod.careers` — Careers / Job Apply
 Public job application + recruitment pipeline.
 - Appears in: /apply; mode apply
 - Admin menu: recruitment
 - APIs: jobs:*
-- Jobs: -
+- Jobs: —
 - Tables: job_postings, job_candidates
 - Dependencies: mod.hr
 - Sellable add-on: **true**
 - Default status: enabled_in_full_product
 
-### `mod.document_hub` - Document Hub
+### `mod.document_hub` — Document Hub
 Central documents store for shop ops.
 - Appears in: main-nav document-hub
-- Admin menu: -
+- Admin menu: —
 - APIs: file:*, document hub service
-- Jobs: -
+- Jobs: —
 - Tables: document_assets, financial_documents
-- Dependencies: -
+- Dependencies: —
 - Sellable add-on: **true**
 - Default status: enabled_in_full_product
 
-### `mod.ops_compliance` - Operations & Compliance
+### `mod.ops_compliance` — Operations & Compliance
 Opening/closing checklists, signed rules, ops compliance.
 - Appears in: Admin opscompliance; main-nav operations
 - Admin menu: opscompliance
 - APIs: ops:*, cashup:*
-- Jobs: -
+- Jobs: —
 - Tables: daily_checklist_*, opening_checklist_templates, closing_checklist_templates, compliance_*
-- Dependencies: -
+- Dependencies: —
 - Sellable add-on: **true**
 - Default status: enabled_in_full_product
 
-### `mod.automation` - Automation Rules
+### `mod.manager_operations` — Manager Operations & Daily Tasks
+Mobile manager daily duties, role-based checklists, photo evidence, incidents, sales monitoring from POS, and daily reports to the owner.
+- Appears in: /manager-ops/; Admin manager-ops; Platform Control modules
+- Admin menu: manager-ops
+- APIs: mo:*, managerOps:*
+- Jobs: daily task generation from operating hours
+- Tables: mo_*
+- Dependencies: app.admin, app.pos, core.users_permissions, core.sync_notify
+- Sellable add-on: **true**
+- Default status: enabled_in_full_product
+- Notes: Alias manager_operations. Disabling never deletes mo_* history.
+
+### `mod.automation` — Automation Rules
 Configurable automation rules engine.
 - Appears in: Admin automation
 - Admin menu: automation
 - APIs: automation:*
 - Jobs: rule evaluation (event-driven)
 - Tables: automation_rules
-- Dependencies: -
+- Dependencies: —
 - Sellable add-on: **true**
 - Default status: enabled_in_full_product
 
-### `mod.biz_modules_pack` - Business Modules (pack host)
+### `mod.biz_modules_pack` — Business Modules (pack host)
 Admin host for Investor/Release/Meeting/Kiosk/Drive-Thru toggles.
 - Appears in: Admin business-modules
 - Admin menu: business-modules
 - APIs: biz module settings
-- Jobs: -
+- Jobs: —
 - Tables: biz_module_settings
 - Dependencies: mod.investor, mod.release, mod.meeting, mod.kiosk, mod.drive_thru
 - Sellable add-on: **false**
@@ -561,6 +573,7 @@ Admin host for Investor/Release/Meeting/Kiosk/Drive-Thru toggles.
 | `admin.device` | Device Settings | no (core) | core.device_print |
 | `admin.backup` | Backup & Restore | no (core) | core.audit_security |
 | `admin.opscompliance` | Operations & Compliance | yes | mod.ops_compliance |
+| `admin.manager-ops` | Manager Operations | yes | mod.manager_operations |
 | `admin.combos` | Combos & Promos | yes | mod.combos |
 | `admin.menu-builder` | Menu Builder | yes | app.studio |
 | `admin.promo-video-builder` | Promo Video Builder | yes | app.studio |
@@ -588,26 +601,26 @@ Admin host for Investor/Release/Meeting/Kiosk/Drive-Thru toggles.
 
 ## Nested features (selected)
 
-- **`mod.donations`** - Donations: Donation recording/approvals feature. _(Feature-sized; confirm if sold separately.)_
-- **`mod.employee_of_month`** - Employee of the Month: Awards and scoring.
-- **`mod.on_account`** - On Account & Taken Orders: Customer credit accounts and unpaid/taken orders.
-- **`mod.layby_quotes`** - Lay-Bye & Quotes: Lay-bye plans and quotes conversion.
-- **`mod.purchase_orders`** - Purchase Orders: PO create/receive flows.
-- **`mod.reports`** - Reports suite: Sales/profit/stock and many operational reports. _(Often bundled with Admin+POS.)_
-- **`mod.web_analytics`** - Web / Customer analytics: Visitor events and customer issue reports for online.
-- **`feat.loyalty.points`** - Loyalty Points: Points earn/burn. _(Sub-feature of loyalty.)_
-- **`feat.loyalty.first_gift`** - First Online Customer Gift: First-order gift campaigns.
-- **`feat.delivery.drivers`** - Driver pool & payouts: Driver management and payout claims.
-- **`feat.hr.payroll_sars`** - Payroll SARS compliance (UIF/PAYE/SDL/COIDA): Compliance tabs inside payroll. _(May be sold as HR Compliance add-on.)_
-- **`feat.signage.schedules`** - Signage schedules & emergency: Scheduling and emergency announce.
-- **`feat.meeting.ai_transcript`** - AI transcription: Optional AI transcript for meetings. _(Requires server API key; confirm packaging.)_
-- **`feat.accounting.ocr`** - Document OCR: OCR for accounting documents/bank statements.
-- **`feat.expenses.recurring_budgets`** - Expense budgets & recurring: Budgets, recurring posts, owner funding.
-- **`feat.biz.investor_toggle`** - investor_enabled toggle: biz_module_settings flag.
-- **`feat.biz.release_toggle`** - release_enabled toggle: biz_module_settings flag.
-- **`feat.biz.meeting_toggle`** - meeting_enabled toggle: biz_module_settings flag.
-- **`feat.marketing_legacy`** - Legacy marketing_* tables: Older marketing schema present in DB (mostly empty). _(UNCERTAIN: confirm if still used vs mkt_* referral platform.)_
-- **`feat.owner_salary`** - Owner salary: Owner salary periods/payments inside staff elevated UI.
+- **`mod.donations`** — Donations: Donation recording/approvals feature. _(Feature-sized; confirm if sold separately.)_
+- **`mod.employee_of_month`** — Employee of the Month: Awards and scoring.
+- **`mod.on_account`** — On Account & Taken Orders: Customer credit accounts and unpaid/taken orders.
+- **`mod.layby_quotes`** — Lay-Bye & Quotes: Lay-bye plans and quotes conversion.
+- **`mod.purchase_orders`** — Purchase Orders: PO create/receive flows.
+- **`mod.reports`** — Reports suite: Sales/profit/stock and many operational reports. _(Often bundled with Admin+POS.)_
+- **`mod.web_analytics`** — Web / Customer analytics: Visitor events and customer issue reports for online.
+- **`feat.loyalty.points`** — Loyalty Points: Points earn/burn. _(Sub-feature of loyalty.)_
+- **`feat.loyalty.first_gift`** — First Online Customer Gift: First-order gift campaigns.
+- **`feat.delivery.drivers`** — Driver pool & payouts: Driver management and payout claims.
+- **`feat.hr.payroll_sars`** — Payroll SARS compliance (UIF/PAYE/SDL/COIDA): Compliance tabs inside payroll. _(May be sold as HR Compliance add-on.)_
+- **`feat.signage.schedules`** — Signage schedules & emergency: Scheduling and emergency announce.
+- **`feat.meeting.ai_transcript`** — AI transcription: Optional AI transcript for meetings. _(Requires server API key; confirm packaging.)_
+- **`feat.accounting.ocr`** — Document OCR: OCR for accounting documents/bank statements.
+- **`feat.expenses.recurring_budgets`** — Expense budgets & recurring: Budgets, recurring posts, owner funding.
+- **`feat.biz.investor_toggle`** — investor_enabled toggle: biz_module_settings flag.
+- **`feat.biz.release_toggle`** — release_enabled toggle: biz_module_settings flag.
+- **`feat.biz.meeting_toggle`** — meeting_enabled toggle: biz_module_settings flag.
+- **`feat.marketing_legacy`** — Legacy marketing_* tables: Older marketing schema present in DB (mostly empty). _(UNCERTAIN: confirm if still used vs mkt_* referral platform.)_
+- **`feat.owner_salary`** — Owner salary: Owner salary periods/payments inside staff elevated UI.
 
 ## APIs & jobs relevant to future module gating
 
@@ -678,7 +691,7 @@ Admin host for Investor/Release/Meeting/Kiosk/Drive-Thru toggles.
 - **Communication ↔ many modules:** Turning off Comms should stop WhatsApp/SMS/email jobs globally even if other modules remain.
 - **Accounting ↔ Expenses / Sales:** Accounting journals may still receive posts from sales/expenses; gating must decide whether to stop posting or only hide UI.
 - **Recipe ↔ Products:** Recipe components hang off products; disabling Recipe should not delete products.
-- **Business Modules toggles:** investor_enabled / release_enabled / meeting_enabled already exist in biz_module_settings - precursor to entitlements.
+- **Business Modules toggles:** investor_enabled / release_enabled / meeting_enabled already exist in biz_module_settings — precursor to entitlements.
 - **marketing_* vs mkt_*:** Two marketing schemas in DB; confirm which is live before gating Referral.
 
 ## Decisions needed from you
@@ -690,12 +703,12 @@ Admin host for Investor/Release/Meeting/Kiosk/Drive-Thru toggles.
 - When Accounting is off: hide UI only, or also suppress automatic journal posts from POS/expenses?
 - Treat legacy marketing_* tables as dead (ignore) or still part of Referral?
 - Is Apprentice Centre expected later? (not present in codebase today)
-- Donations / Owner salary / EOM - add-ons or free with HR?
+- Donations / Owner salary / EOM — add-ons or free with HR?
 
 ## Explicitly not found
 
-- **Apprentice Centre** - not present as an app/portal in this codebase.
-- Separate “Digital Signature” product - Digital **Signage** exists; no distinct e-signature centre module beyond admin signatures inside ops/HR flows.
+- **Apprentice Centre** — not present as an app/portal in this codebase.
+- Separate “Digital Signature” product — Digital **Signage** exists; no distinct e-signature centre module beyond admin signatures inside ops/HR flows.
 
 ## STOP
 

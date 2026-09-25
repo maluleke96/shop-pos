@@ -14,8 +14,13 @@ const ExpenseApp = {
     notes: '',
     lineItems: [{ _id: 1, name: '', qty: '1', price: '' }],
     invoicePreview: '',
-    invoiceDataUrl: ''
+    invoiceDataUrl: '',
+    payment_method: 'cash',
+    funding_source: 'business'
   },
+  ownerFundings: [],
+  _loadingFunding: false,
+  _fundingError: '',
   _saving: false,
   _loadingHistory: false,
   _historyError: '',
@@ -289,8 +294,33 @@ const ExpenseApp = {
       notes: '',
       lineItems: [{ _id: 1, name: '', qty: '1', price: '' }],
       invoicePreview: '',
-      invoiceDataUrl: ''
+      invoiceDataUrl: '',
+      payment_method: 'cash',
+      funding_source: 'business'
     };
+  },
+
+  isOwnerOrManager() {
+    return ['owner', 'manager'].includes(this.user?.role);
+  },
+
+  syncOwnerNav() {
+    const show = this.isOwnerOrManager();
+    document.querySelectorAll('#exp-nav .nav-owner-only').forEach((btn) => {
+      btn.classList.toggle('hidden', !show);
+    });
+    if (!show && this.tab === 'funding') {
+      this.tab = 'new';
+      document.querySelectorAll('#exp-nav [data-tab]').forEach((b) => {
+        b.classList.toggle('active', b.dataset.tab === 'new');
+      });
+    }
+  },
+
+  fundLabel(source) {
+    return String(source || 'business').toLowerCase() === 'owner'
+      ? 'Owner pocket'
+      : 'Business';
   },
 
   async fileToDataUrl(file, maxW = 1400, quality = 0.82) {
@@ -338,12 +368,16 @@ const ExpenseApp = {
       });
       if (this.tab === 'history') await this.loadHistory(true);
       if (this.tab === 'waste') await this.loadWaste(true);
+      if (this.tab === 'funding') await this.loadFunding(true);
       if (this.tab === 'new') this.ensureCatalog().catch(() => {});
       this.paintBody();
     });
     window.addEventListener('portal-offline-flushed', () => {
       if (this.tab === 'history' && this.view === 'main') {
         this.loadHistory(true).then(() => this.paintBody()).catch(() => {});
+      }
+      if (this.tab === 'funding' && this.view === 'main') {
+        this.loadFunding(true).then(() => this.paintBody()).catch(() => {});
       }
     });
   },
@@ -388,6 +422,7 @@ const ExpenseApp = {
       else if (this.tab === 'new') hdr.textContent = 'New expense';
       else if (this.tab === 'waste') hdr.textContent = 'Waste / Damage';
       else if (this.tab === 'history') hdr.textContent = 'Recent expenses';
+      else if (this.tab === 'funding') hdr.textContent = 'Owner funding';
       else hdr.textContent = 'Your profile';
     }
     if (body) {
@@ -398,6 +433,9 @@ const ExpenseApp = {
 
   async bootstrap() {
     document.getElementById('exp-nav')?.classList.remove('hidden');
+    this.view = 'main';
+    // Paint shell immediately — settings load in background
+    this.render();
     try {
       const [settings, categories, profile] = await Promise.all([
         ExpenseAPI.settings().catch(() => this.settings),
@@ -408,8 +446,11 @@ const ExpenseApp = {
       this.categories = categories?.length ? categories : ['other'];
       this.user = profile || this.user;
       this.applyBranding();
+      this.syncOwnerNav();
       localStorage.setItem('expense_user', JSON.stringify(this.user));
       if (this.tab === 'history') await this.loadHistory();
+      if (this.tab === 'funding') await this.loadFunding();
+      this.paintBody();
     } catch (err) {
       this.token = '';
       this.user = null;
@@ -418,8 +459,8 @@ const ExpenseApp = {
       this.view = 'login';
       document.getElementById('exp-nav')?.classList.add('hidden');
       this.toast(err.message || 'Session expired', 'error');
+      this.render();
     }
-    this.render();
   },
 
   async loadHistory(force = false) {
@@ -455,7 +496,10 @@ const ExpenseApp = {
     if (!root) return;
     root.innerHTML = this.view === 'login' ? this.renderLogin() : this.renderShell();
     if (this.view === 'login') this.bindLogin();
-    else this.bindMain();
+    else {
+      this.syncOwnerNav();
+      this.bindMain();
+    }
   },
 
   showPermissionGrant(username, password) {
@@ -507,10 +551,17 @@ const ExpenseApp = {
   },
 
   renderShell() {
+    const titles = {
+      new: 'New expense',
+      waste: 'Waste / Damage',
+      history: 'Recent expenses',
+      funding: 'Owner funding',
+      profile: 'Your profile'
+    };
     return `
       <header class="hdr">
         <div class="hdr-title">
-          <h2>${this.tab === 'new' ? 'New expense' : this.tab === 'waste' ? 'Waste / Damage' : this.tab === 'history' ? 'Recent expenses' : 'Your profile'}</h2>
+          <h2>${titles[this.tab] || 'Expenses'}</h2>
           <p>${this.esc(this.settings.shop_name || 'Shop POS')}</p>
         </div>
         ${this.settings.logo_path ? `<div class="shop-badge"><img src="${this.esc(this.settings.logo_path)}" alt="" onerror="this.style.display='none'"><span>${this.esc(this.settings.shop_name)}</span></div>` : ''}
@@ -523,6 +574,7 @@ const ExpenseApp = {
     if (this.tab === 'history') return this.renderHistory();
     if (this.tab === 'profile') return this.renderProfile();
     if (this.tab === 'waste') return this.renderWaste();
+    if (this.tab === 'funding') return this.renderFunding();
     return this.renderForm();
   },
 
@@ -676,6 +728,12 @@ const ExpenseApp = {
             <option value="eft" ${this.form.payment_method === 'eft' ? 'selected' : ''}>EFT / Bank transfer</option>
             <option value="other" ${this.form.payment_method === 'other' ? 'selected' : ''}>Other</option>
           </select>
+          <label style="margin-top:12px">Who paid? (funding source)</label>
+          <div class="fund-chip-row" id="exp-fund-chips">
+            <button type="button" class="fund-chip${this.form.funding_source !== 'owner' ? ' active' : ''}" data-fund="business">Business money</button>
+            <button type="button" class="fund-chip${this.form.funding_source === 'owner' ? ' active' : ''}" data-fund="owner">My pocket (owner)</button>
+          </div>
+          <p class="muted" style="font-size:0.8rem;margin:6px 0 0;line-height:1.4">Choose <strong>My pocket</strong> when you paid with personal money so Admin records it as owner funding.</p>
         </div>
       </div>
 
@@ -727,6 +785,11 @@ const ExpenseApp = {
         <p class="muted" style="margin:0 0 4px">${this.esc(e.expense_date || '')} · ${this.catLabel(e.category)}</p>
         <h3 style="margin:0 0 8px">${this.fmt(Number(e.amount) || 0)}</h3>
         ${e.description ? `<p class="muted" style="margin:0">${this.esc(e.description)}</p>` : ''}
+        <p style="margin:10px 0 0">
+          <span class="${String(e.funding_source || '').toLowerCase() === 'owner' ? 'exp-fund-owner' : 'exp-fund-biz'}">
+            Funded by ${this.fundLabel(e.funding_source)}
+          </span>
+        </p>
         <p class="muted" style="margin:8px 0 0;font-size:0.85rem">By ${this.esc(e.user_name || '—')}</p>
       </div>
       <div class="form-card">
@@ -796,6 +859,7 @@ const ExpenseApp = {
           ${this.renderLineItemsSummary(e.line_items)}
           <span class="exp-meta">${this.esc(e.expense_date || '')}${e.user_name ? ` · ${this.esc(e.user_name)}` : ''}${e.branch_name ? ` · ${this.esc(e.branch_name)}` : ''}</span>
           <span class="tag">${this.catLabel(e.category)}</span>${pending}
+          <span class="${String(e.funding_source || '').toLowerCase() === 'owner' ? 'exp-fund-owner' : 'exp-fund-biz'}" style="margin-left:6px">${this.fundLabel(e.funding_source)}</span>
           <span class="invoice-link">Tap to view full details →</span>
         </span>
       </button>`;
@@ -826,6 +890,82 @@ const ExpenseApp = {
         <div class="info-row"><span>Recorded as</span><span>${this.esc(this.user?.full_name || this.user?.username)}</span></div>
       </div>
       <button type="button" class="btn btn-danger" id="exp-logout-btn">Sign out</button>`;
+  },
+
+  async loadFunding(force = false) {
+    if (!this.isOwnerOrManager()) {
+      this.ownerFundings = [];
+      return;
+    }
+    if (this._loadingFunding && !force) return;
+    this._loadingFunding = true;
+    this._fundingError = '';
+    try {
+      const from = new Date();
+      from.setDate(1);
+      const [data] = await Promise.all([
+        ExpenseAPI.ownerFundings({
+          from: from.toLocaleDateString('en-CA'),
+          to: this.today(),
+          limit: 100
+        }),
+        this.loadHistory(force).catch(() => {})
+      ]);
+      this.ownerFundings = Array.isArray(data) ? data : (data?.rows || []);
+    } catch (err) {
+      this._fundingError = err.message || 'Could not load funding';
+      this.ownerFundings = [];
+      this.toast(this._fundingError, 'error');
+    } finally {
+      this._loadingFunding = false;
+    }
+  },
+
+  renderFunding() {
+    if (!this.isOwnerOrManager()) {
+      return `<div class="empty"><div class="ico">🔒</div><p>Owner funding is only available to owners and managers.</p></div>`;
+    }
+    if (this._loadingFunding) {
+      return `<div class="empty"><div class="ico">⏳</div><p>Loading funding…</p></div>`;
+    }
+    const funds = this.ownerFundings || [];
+    const total = funds.reduce((s, f) => s + (Number(f.amount) || 0), 0);
+    const ownerExps = (this.expenses || []).filter(
+      (e) => String(e.funding_source || '').toLowerCase() === 'owner'
+    );
+    const list = funds.length ? funds.map((f) => `
+      <div class="form-card" style="padding:12px;margin-bottom:8px">
+        <div style="display:flex;justify-content:space-between;gap:8px">
+          <strong>${this.fmt(Number(f.amount) || 0)}</strong>
+          <span class="tag">${f.funding_type === 'cash_injection' ? 'Cash in' : 'Purchase'}</span>
+        </div>
+        <p class="muted" style="margin:6px 0 0;font-size:0.85rem">${this.esc(f.funding_date || '')} · ${this.esc(f.description || '—')}</p>
+        <p class="muted" style="margin:4px 0 0;font-size:0.8rem">By ${this.esc(f.created_by_name || '—')}</p>
+      </div>`).join('') : `<div class="empty"><div class="ico">💼</div><p>${this._fundingError ? this.esc(this._fundingError) : 'No owner funding this month yet.'}</p></div>`;
+
+    return `
+      <div class="form-card">
+        <p style="margin:0 0 10px;line-height:1.45">When you buy with <strong>your own money</strong>, mark the expense as <em>My pocket</em>. Use the form below only when you put cash into the till or bank (not for purchases).</p>
+        <div class="summary-row" style="margin-bottom:12px">
+          <div class="stat-card"><span>Funding this month</span><strong>${this.fmt(total)}</strong></div>
+          <div class="stat-card"><span>Owner-funded expenses</span><strong>${ownerExps.length}</strong></div>
+        </div>
+        <div class="field">
+          <label for="exp-of-date">Date</label>
+          <input id="exp-of-date" type="date" value="${this.esc(this.today())}">
+        </div>
+        <div class="field">
+          <label for="exp-of-amt">Amount</label>
+          <input id="exp-of-amt" type="number" step="0.01" min="0" inputmode="decimal" placeholder="0.00">
+        </div>
+        <div class="field">
+          <label for="exp-of-desc">Description</label>
+          <input id="exp-of-desc" placeholder="Cash into till / bank deposit">
+        </div>
+        <button type="button" class="btn btn-primary" id="exp-of-save">Record cash injection</button>
+      </div>
+      <p class="section-label">This month’s funding ledger</p>
+      ${list}`;
   },
 
   bindLogin() {
@@ -875,11 +1015,23 @@ const ExpenseApp = {
       });
     });
 
+    document.getElementById('exp-fund-chips')?.addEventListener('click', (e) => {
+      const chip = e.target.closest('[data-fund]');
+      if (!chip) return;
+      this.form.funding_source = chip.dataset.fund === 'owner' ? 'owner' : 'business';
+      document.querySelectorAll('#exp-fund-chips .fund-chip').forEach((c) => {
+        c.classList.toggle('active', c.dataset.fund === this.form.funding_source);
+      });
+    });
+
     document.getElementById('exp-date')?.addEventListener('change', (e) => {
       this.form.expense_date = e.target.value;
     });
     document.getElementById('exp-notes')?.addEventListener('input', (e) => {
       this.form.notes = e.target.value;
+    });
+    document.getElementById('exp-payment')?.addEventListener('change', (e) => {
+      this.form.payment_method = e.target.value;
     });
 
     document.getElementById('exp-line-list')?.addEventListener('input', () => this.updateTotalDisplay());
@@ -891,6 +1043,31 @@ const ExpenseApp = {
 
     document.getElementById('exp-save-btn')?.addEventListener('click', () => this.saveExpense());
     document.getElementById('exp-logout-btn')?.addEventListener('click', () => this.logout());
+
+    document.getElementById('exp-of-save')?.addEventListener('click', async () => {
+      if (this._savingFunding) return;
+      const amount = parseFloat(document.getElementById('exp-of-amt')?.value || '0');
+      if (!(amount > 0)) return this.toast('Enter an amount', 'error');
+      this._savingFunding = true;
+      const btn = document.getElementById('exp-of-save');
+      if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+      try {
+        await ExpenseAPI.recordOwnerFunding({
+          funding_date: document.getElementById('exp-of-date')?.value || this.today(),
+          amount,
+          funding_type: 'cash_injection',
+          description: document.getElementById('exp-of-desc')?.value?.trim() || 'Owner cash into business'
+        });
+        this.toast('Owner cash injection recorded');
+        await this.loadFunding(true);
+        this.paintBody();
+      } catch (err) {
+        this.toast(err.message || 'Could not record funding', 'error');
+      } finally {
+        this._savingFunding = false;
+        if (btn) { btn.disabled = false; btn.textContent = 'Record cash injection'; }
+      }
+    });
 
     document.getElementById('exp-detail-back')?.addEventListener('click', () => {
       this.historyDetail = null;
@@ -1040,6 +1217,7 @@ const ExpenseApp = {
 
     try {
       const payment_method = document.getElementById('exp-payment')?.value || this.form.payment_method || 'cash';
+      const funding_source = this.form.funding_source === 'owner' ? 'owner' : 'business';
       const saved = await ExpenseAPI.save({
         category,
         amount,
@@ -1048,6 +1226,7 @@ const ExpenseApp = {
         description: notes,
         line_items,
         payment_method,
+        funding_source,
         invoice_image: this.form.invoiceDataUrl || null
       });
       if (saved?.__offlineQueued) {
@@ -1058,12 +1237,14 @@ const ExpenseApp = {
           description: notes,
           notes,
           line_items,
+          payment_method,
+          funding_source,
           invoice_url: this.form.invoiceDataUrl || '',
           has_invoice: !!this.form.invoiceDataUrl
         });
         this.toast('Saved offline — will sync when online');
       } else {
-        this.toast('Expense submitted');
+        this.toast(funding_source === 'owner' ? 'Expense submitted — recorded as owner-funded' : 'Expense submitted');
       }
       this.resetForm();
       this.tab = 'history';

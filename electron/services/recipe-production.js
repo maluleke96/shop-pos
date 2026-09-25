@@ -2981,7 +2981,12 @@ function ensureMealOptionModifiers(productId, items) {
 
 /** Open an existing POS product and its per-meal ingredient list. */
 function getProductMealRecipe(productId, actor, opts = {}) {
-  canAccessRecipeModule(actor);
+  // Customer-facing share from POS till: any signed-in staff can read meal instructions
+  if (opts.for_share || opts.for_customer) {
+    assertUserActor(actor, null);
+  } else {
+    canAccessRecipeModule(actor);
+  }
   const p = getDb().prepare(`
     SELECT p.*, c.name AS category_name FROM products p
     LEFT JOIN categories c ON c.id = p.category_id WHERE p.id = ?

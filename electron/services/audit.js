@@ -4,8 +4,17 @@ const branchesSvc = require('./branches');
 
 function getSalesList(filters = {}) {
   const db = getDb();
+  try { require('./taken-orders').ensureSchema(); } catch (_) { /* optional */ }
   const flags = branchesSvc.ensureBranchSchema();
   const branchSelect = flags.sales ? 's.branch_id' : 'NULL as branch_id';
+  let takenFlagSql = '0 as is_taken_unpaid';
+  try {
+    db.prepare('SELECT 1 FROM taken_orders LIMIT 1').get();
+    takenFlagSql = `EXISTS (
+        SELECT 1 FROM taken_orders t
+        WHERE t.sale_id = s.id AND UPPER(COALESCE(t.status,'')) = 'UNPAID'
+      ) as is_taken_unpaid`;
+  } catch (_) { /* table missing */ }
   let sql = `
     SELECT s.id, s.receipt_number, s.order_number, s.created_at, s.subtotal, s.discount, s.tax_amount, s.total,
       s.amount_paid, s.change_amount, s.status, s.void_reason, ${branchSelect}, s.notes, s.order_type, s.table_name, s.delivery_address,
@@ -15,7 +24,8 @@ function getSalesList(filters = {}) {
       (SELECT payment_type FROM sale_payments WHERE sale_id = s.id LIMIT 1) as primary_payment,
       (SELECT GROUP_CONCAT(product_name || ' x' || quantity, ', ') FROM sale_items WHERE sale_id = s.id LIMIT 5) as item_summary,
       (SELECT COALESCE(SUM(amount), 0) FROM sale_payments WHERE sale_id = s.id AND payment_type = 'giftcard') as gift_card_amount,
-      (SELECT COALESCE(SUM(ABS(points)), 0) FROM loyalty_transactions WHERE sale_id = s.id AND type = 'redeem') as loyalty_points_redeemed
+      (SELECT COALESCE(SUM(ABS(points)), 0) FROM loyalty_transactions WHERE sale_id = s.id AND type = 'redeem') as loyalty_points_redeemed,
+      ${takenFlagSql}
     FROM sales s
     LEFT JOIN users u ON s.user_id = u.id
     LEFT JOIN customers c ON s.customer_id = c.id
@@ -109,15 +119,25 @@ function mapOnlineOrderAsSaleRow(order) {
 
 function getSalesListLite(filters = {}) {
   const db = getDb();
+  try { require('./taken-orders').ensureSchema(); } catch (_) { /* optional */ }
   const flags = branchesSvc.ensureBranchSchema();
   const branchSelect = flags.sales ? 's.branch_id' : 'NULL as branch_id';
+  let takenFlagSql = '0 as is_taken_unpaid';
+  try {
+    db.prepare('SELECT 1 FROM taken_orders LIMIT 1').get();
+    takenFlagSql = `EXISTS (
+        SELECT 1 FROM taken_orders t
+        WHERE t.sale_id = s.id AND UPPER(COALESCE(t.status,'')) = 'UNPAID'
+      ) as is_taken_unpaid`;
+  } catch (_) { /* table missing */ }
   let sql = `
     SELECT s.id, s.receipt_number, s.order_number, s.created_at, s.subtotal, s.discount, s.tax_amount, s.total,
       s.status, ${branchSelect}, s.notes, s.order_type, s.order_source, s.table_name, s.delivery_address,
       s.delivery_fee, s.delivery_place,
       u.full_name as cashier_name, c.name as customer_name,
       (SELECT payment_type FROM sale_payments WHERE sale_id = s.id LIMIT 1) as primary_payment,
-      (SELECT GROUP_CONCAT(product_name || ' x' || quantity, ', ') FROM sale_items WHERE sale_id = s.id LIMIT 3) as item_summary
+      (SELECT GROUP_CONCAT(product_name || ' x' || quantity, ', ') FROM sale_items WHERE sale_id = s.id LIMIT 3) as item_summary,
+      ${takenFlagSql}
     FROM sales s
     LEFT JOIN users u ON s.user_id = u.id
     LEFT JOIN customers c ON s.customer_id = c.id
@@ -221,15 +241,34 @@ function voidSale(saleId, reason, actorId, actorName) {
     console.warn('[voidSale] accounting reversal:', err.message || err);
   }
   db.prepare(`INSERT INTO audit_log (user_id, username, action, entity_type, entity_id, details) VALUES (?,?,?,?,?,?)`)
-    .run(actorId, actorName, 'void_sale', 'sale', saleId, JSON.stringify({ receipt_number: sale.receipt_number, reason, total: sale.total }));
-  return { success: true };
+    .run(actorId, actorName, 'void_sale', 'sale', saleId, JSON.stringify({
+      receipt_number: sale.receipt_number,
+      order_number: sale.order_number,
+      reason,
+      total: sale.total
+    }));
+  // Mark matching taken-order unpaid row cancelled so it never hits cash-up
+  try {
+    db.prepare(`
+      UPDATE taken_orders SET status='CANCELLED', updated_at=datetime('now'), notes=COALESCE(notes,'') || ' [voided]'
+      WHERE sale_id=? AND UPPER(status)='UNPAID'
+    `).run(saleId);
+  } catch (_) { /* optional */ }
+  return {
+    success: true,
+    id: saleId,
+    receipt_number: sale.receipt_number,
+    order_number: sale.order_number || sale.receipt_number,
+    status: 'voided',
+    void_reason: reason || 'Voided'
+  };
 }
 
 function updateSaleRecord(saleId, patch, actorId, actorName) {
   const db = getDb();
   const sale = db.prepare('SELECT * FROM sales WHERE id = ?').get(saleId);
   if (!sale) throw new Error('Sale not found');
-  const allowed = ['notes', 'customer_id', 'table_name', 'delivery_address', 'receipt_number'];
+  const allowed = ['notes', 'customer_id', 'table_name', 'delivery_address', 'receipt_number', 'order_number'];
   const updates = {};
   for (const key of allowed) {
     if (patch[key] !== undefined) updates[key] = patch[key];
@@ -238,6 +277,8 @@ function updateSaleRecord(saleId, patch, actorId, actorName) {
   if (updates.receipt_number != null) {
     const dup = db.prepare('SELECT id FROM sales WHERE receipt_number = ? AND id != ?').get(updates.receipt_number, saleId);
     if (dup) throw new Error('Receipt number already in use');
+    // Keep order_number in lockstep so POS / Admin / voids always share one slip id
+    updates.order_number = updates.receipt_number;
   }
   const cols = Object.keys(updates).map((k) => `${k} = ?`).join(', ');
   db.prepare(`UPDATE sales SET ${cols} WHERE id = ?`).run(...Object.values(updates), saleId);

@@ -524,9 +524,20 @@ const WhatsAppPage = {
 
   async renderSettings(panel) {
     const s = this.settings;
+    const useApi = s.use_cloud_api !== false;
     panel.innerHTML = `<div class="card" style="margin-top:12px"><div class="card-body">
       <h4 style="margin:0 0 12px">WhatsApp sending</h4>
-      <p class="muted">Without API credentials, Shop POS opens a WhatsApp chat (wa.me) for you to tap Send. If Phone Number ID + Access Token are saved, it tries Meta Cloud API first and only opens wa.me if that fails.</p>
+      <p class="muted">Choose how POS and Admin send receipts and messages.</p>
+      <div class="card" style="margin:12px 0;padding:14px;background:var(--bg-secondary,rgba(0,0,0,.04));border:1px solid var(--border)">
+        <label style="display:flex;gap:12px;align-items:flex-start;cursor:pointer;font-weight:600">
+          <input type="checkbox" id="wa-set-use-api" ${useApi ? 'checked' : ''} style="width:auto;margin-top:3px">
+          <span>Use WhatsApp Cloud API (automatic send)</span>
+        </label>
+        <p class="muted" style="margin:8px 0 0;font-size:13px;line-height:1.45">
+          <strong>ON</strong> — sends through Meta API when Phone Number ID + Access Token are saved (no leave POS).<br>
+          <strong>OFF</strong> — regular way: opens WhatsApp chat so you tap Send yourself (like before).
+        </p>
+      </div>
       <div class="form-grid">
         <div class="field"><label>Access Token</label><input id="wa-set-api" type="password" value="${this.esc(s.api_key || '')}" placeholder="Meta Cloud API token"></div>
         <div class="field"><label>Phone Number ID</label><input id="wa-set-phone-id" value="${this.esc(s.phone_number_id || '')}"></div>
@@ -543,6 +554,7 @@ const WhatsAppPage = {
 
     document.getElementById('wa-save-settings').addEventListener('click', async () => {
       const data = {
+        use_cloud_api: !!document.getElementById('wa-set-use-api')?.checked,
         api_key: document.getElementById('wa-set-api').value.trim(),
         phone_number_id: document.getElementById('wa-set-phone-id').value.trim(),
         business_account_id: document.getElementById('wa-set-biz-id').value.trim(),
@@ -552,8 +564,15 @@ const WhatsAppPage = {
       };
       const r = await API.saveWhatsAppSettings(data, this.app.user);
       if (!r.success) return Utils.toast(r.error, 'error');
-      Utils.toast('WhatsApp settings saved', 'success');
-      this.settings = r.data || data;
+      Utils.toast(data.use_cloud_api ? 'WhatsApp API enabled' : 'Regular WhatsApp (open chat) enabled', 'success');
+      this.settings = { ...(r.data || {}), ...data, api_key: data.api_key || this.settings.api_key };
+      // Keep POS / rest of app in sync without full reload
+      if (this.app?.settings) {
+        const ws = { ...(this.app.settings.whatsapp_settings || {}), ...this.settings };
+        // Never leave raw api_key in client settings blob if empty placeholder
+        this.app.settings.whatsapp_settings = ws;
+        if (window.App?.settings) window.App.settings.whatsapp_settings = ws;
+      }
     });
   }
 };

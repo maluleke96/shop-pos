@@ -50,15 +50,15 @@ const BookkeepingPage = {
     const tabs = [
       ['dashboard', 'Dashboard'], ['ledger', 'Auto Ledger'], ['income', 'Income'], ['expenses', 'Expenses'],
       ['cashbook', 'Cash Book'], ['bankbook', 'Bank Book'], ['payroll', 'Payroll'], ['tax', 'Tax'],
-      ['donations', 'Donations'], ['reports', 'Reports'], ['performance', 'Performance'], ['documents', 'Documents'],
-      ['audit', 'Audit Trail'], ['budgets', 'Budgets'], ['alerts', 'Alerts'], ['accounting', 'Accounting'],
-      ['settings', 'Settings']
+      ['yearend', 'Year-End & Tax'], ['donations', 'Donations'], ['reports', 'Reports'], ['performance', 'Performance'],
+      ['documents', 'Documents'], ['audit', 'Audit Trail'], ['budgets', 'Budgets'], ['alerts', 'Alerts'],
+      ['accounting', 'Accounting'], ['settings', 'Settings']
     ];
 
     el.innerHTML = `<div class="page-toolbar" style="align-items:flex-start">
       <div>
         <h3 style="margin:0">Bookkeeping &amp; Financial Management</h3>
-        <p class="muted" style="margin:4px 0 0;font-size:13px">Live ledger from sales, expenses, payroll, stock &amp; more — sync to refresh</p>
+        <p class="muted" style="margin:4px 0 0;font-size:13px">Live ledger from sales, expenses, payroll, cash-up &amp; more — Year-End pack for income statement, balance sheet &amp; cash flow</p>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
         ${branchFilter}
@@ -83,7 +83,7 @@ const BookkeepingPage = {
     });
     document.getElementById('bk-sync').addEventListener('click', async () => {
       await API.syncBookkeeping(this.from, this.to);
-      Utils.toast('Ledger synced from sales, expenses, payroll & more', 'success');
+      Utils.toast('Ledger synced from sales, expenses, payroll, cash-up & more', 'success');
       this.renderTab();
     });
     document.getElementById('bk-branch-filter')?.addEventListener('change', () => this.renderTab());
@@ -130,6 +130,7 @@ const BookkeepingPage = {
         bankbook: () => this.renderBankBook(content),
         payroll: () => this.renderPayroll(content),
         tax: () => this.renderTax(content),
+        yearend: () => this.renderYearEnd(content),
         donations: () => this.renderDonations(content),
         reports: () => this.renderReports(content),
         performance: () => this.renderPerformance(content),
@@ -378,30 +379,171 @@ const BookkeepingPage = {
   },
 
   async renderTax(el) {
-    const res = await API.getTaxSummary(this.from, this.to);
+    const res = await API.getTaxSummary(this.from, this.to, this.branchFilterValue?.());
     const t = res.data || {};
     const c = this.currency();
-    el.innerHTML = `<div class="stats-grid" style="grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px">
-      ${this.statCard('VAT (' + (t.vatRate || 15) + '%)', Utils.formatMoney(t.vat, c), t.vatRegistered ? 'Registered' : 'Not registered')}
-      ${this.statCard('PAYE', Utils.formatMoney(t.paye, c))}
-      ${this.statCard('UIF', Utils.formatMoney(t.uif, c))}
-      ${this.statCard('SDL', Utils.formatMoney(t.sdl, c))}
-      ${this.statCard('COIDA', Utils.formatMoney(t.coida, c))}
-      ${this.statCard('Taxable Sales', Utils.formatMoney(t.taxableSales, c))}
-    </div>`;
+    el.innerHTML = `
+      <div class="stats-grid" style="grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px;margin-bottom:16px">
+        ${this.statCard('Output VAT', Utils.formatMoney(t.outputVat ?? t.vat, c), (t.vatRate || 15) + '%')}
+        ${this.statCard('Input VAT', Utils.formatMoney(t.inputVat, c), 'From purchases')}
+        ${this.statCard('Net VAT', Utils.formatMoney(t.netVat, c), t.netVat >= 0 ? 'Payable' : 'Refundable')}
+        ${this.statCard('PAYE', Utils.formatMoney(t.paye, c))}
+        ${this.statCard('UIF', Utils.formatMoney(t.uif, c))}
+        ${this.statCard('SDL', Utils.formatMoney(t.sdl, c))}
+        ${this.statCard('COIDA', Utils.formatMoney(t.coida, c))}
+        ${this.statCard('Taxable Sales', Utils.formatMoney(t.taxableSales, c), t.vatRegistered ? 'VAT registered' : 'Not VAT registered')}
+      </div>
+      <div class="card" style="margin-bottom:12px"><div class="card-header"><h3>VAT201 worksheet (summary)</h3></div>
+        <div class="card-body table-wrap"><table><tbody>
+          <tr><td>Standard-rated sales (incl. VAT)</td><td>${Utils.formatMoney(t.taxableSales, c)}</td></tr>
+          <tr><td>Sales excluding VAT</td><td>${Utils.formatMoney(t.salesExcl || t.salesAfterTax, c)}</td></tr>
+          <tr><td>Output tax</td><td>${Utils.formatMoney(t.outputVat ?? t.vat, c)}</td></tr>
+          <tr><td>Input tax (purchases)</td><td>${Utils.formatMoney(t.inputVat, c)}</td></tr>
+          <tr style="font-weight:700"><td>VAT payable / (refundable)</td><td>${Utils.formatMoney(t.netVat, c)}</td></tr>
+        </tbody></table></div></div>
+      <div class="card"><div class="card-header"><h3>EMP201 worksheet (payroll taxes)</h3>
+        <button class="btn btn-sm btn-ghost" id="bk-tax-pdf">PDF</button></div>
+        <div class="card-body table-wrap"><table><tbody>
+          <tr><td>PAYE</td><td>${Utils.formatMoney(t.paye, c)}</td></tr>
+          <tr><td>UIF</td><td>${Utils.formatMoney(t.uif, c)}</td></tr>
+          <tr><td>SDL</td><td>${Utils.formatMoney(t.sdl, c)}</td></tr>
+          <tr><td>COIDA (period)</td><td>${Utils.formatMoney(t.coida, c)}</td></tr>
+          <tr style="font-weight:700"><td>Total payroll taxes</td><td>${Utils.formatMoney((Number(t.paye)||0)+(Number(t.uif)||0)+(Number(t.sdl)||0)+(Number(t.coida)||0), c)}</td></tr>
+        </tbody></table>
+        <p class="muted" style="margin-top:10px;font-size:13px">These worksheets support SARS VAT201 / EMP201 filing — they do not e-file for you. Open <strong>Year-End &amp; Tax</strong> for the full three financial statements.</p>
+        </div></div>`;
+    document.getElementById('bk-tax-pdf')?.addEventListener('click', async () => {
+      await Utils.savePdfBuffer(`tax-report-${this.from}.pdf`, await API.getFinancialReportPdf('tax_report', this.from, this.to));
+    });
+  },
+
+  branchFilterValue() {
+    const el = document.getElementById('bk-branch-filter');
+    return el?.value || 'all';
+  },
+
+  async renderYearEnd(el) {
+    el.innerHTML = '<p class="muted">Building year-end pack…</p>';
+    const res = await API.getYearEndPack(this.from, this.to);
+    const pack = res.data || {};
+    const c = this.currency();
+    const docs = pack.documents || {};
+    const is = docs.income_statement || {};
+    const bs = docs.balance_sheet || {};
+    const cf = docs.cash_flow || {};
+    const checklist = pack.checklist || [];
+
+    const sectionHtml = (report) => {
+      if (!report?.sections) return '<p class="muted">No data</p>';
+      return `<div class="table-wrap"><table><tbody>${report.sections.map((sec) => {
+        const lines = (sec.lines || []).map((l) =>
+          `<tr><td style="padding-left:16px">${Utils.escHtml(l.label)}</td><td style="text-align:right">${Utils.formatMoney(l.amount, c)}</td></tr>`
+        ).join('');
+        const totalRow = sec.total != null
+          ? `<tr style="font-weight:${sec.isTotal || sec.isSubtotal ? 700 : 600}"><td>${Utils.escHtml(sec.title)}</td><td style="text-align:right">${Utils.formatMoney(sec.total, c)}</td></tr>`
+          : `<tr><td colspan="2"><strong>${Utils.escHtml(sec.title)}</strong></td></tr>`;
+        return `${sec.lines?.length ? `<tr><td colspan="2"><strong>${Utils.escHtml(sec.title)}</strong></td></tr>${lines}` : ''}${totalRow}`;
+      }).join('')}</tbody></table></div>`;
+    };
+
+    const bsHtml = () => {
+      if (!bs.assets) return '<p class="muted">No data</p>';
+      const row = (label, amt, bold) =>
+        `<tr style="${bold ? 'font-weight:700' : ''}"><td>${Utils.escHtml(label)}</td><td style="text-align:right">${Utils.formatMoney(amt, c)}</td></tr>`;
+      return `<div class="table-wrap"><table><tbody>
+        <tr><td colspan="2"><strong>Assets</strong></td></tr>
+        ${(bs.assets.current || []).map((l) => row('  ' + l.label, l.amount)).join('')}
+        ${row('Total assets', bs.assets.total, true)}
+        <tr><td colspan="2"><strong>Liabilities</strong></td></tr>
+        ${(bs.liabilities?.current || []).map((l) => row('  ' + l.label, l.amount)).join('')}
+        ${row('Total liabilities', bs.liabilities?.total, true)}
+        <tr><td colspan="2"><strong>Equity</strong></td></tr>
+        ${(bs.equity?.lines || []).map((l) => row('  ' + l.label, l.amount)).join('')}
+        ${row('Total equity', bs.equity?.total, true)}
+        <tr><td colspan="2" class="muted" style="font-size:12px">${bs.check?.balanced ? '✓ Statement balances' : '⚠ Review balances'}</td></tr>
+      </tbody></table></div>`;
+    };
+
+    el.innerHTML = `
+      <div class="card" style="margin-bottom:14px"><div class="card-header">
+        <h3 style="margin:0">Year-End &amp; Tax Support Pack</h3>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button class="btn btn-sm btn-primary" id="bk-ye-pdf">Download full pack (PDF)</button>
+          <button class="btn btn-sm btn-ghost" id="bk-ye-is">Income Statement PDF</button>
+          <button class="btn btn-sm btn-ghost" id="bk-ye-bs">Balance Sheet PDF</button>
+          <button class="btn btn-sm btn-ghost" id="bk-ye-cf">Cash Flow PDF</button>
+        </div>
+      </div>
+      <div class="card-body">
+        <p class="muted" style="margin:0 0 10px">Period <strong>${Utils.escHtml(this.from)}</strong> → <strong>${Utils.escHtml(this.to)}</strong>
+          · Shop: <strong>${Utils.escHtml(pack.shop?.name || '—')}</strong>
+          ${pack.shop?.vat_number ? ` · VAT ${Utils.escHtml(pack.shop.vat_number)}` : ''}</p>
+        <div class="stats-grid" style="grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;margin-bottom:12px">
+          ${this.statCard('Revenue', Utils.formatMoney(is.summary?.revenue, c))}
+          ${this.statCard('Gross Profit', Utils.formatMoney(is.summary?.grossProfit, c))}
+          ${this.statCard('Net Profit', Utils.formatMoney(is.summary?.netProfit, c))}
+          ${this.statCard('Net VAT', Utils.formatMoney(pack.tax?.netVat, c))}
+        </div>
+        <h4 style="margin:8px 0">Government / filing checklist</h4>
+        <div class="table-wrap"><table><thead><tr><th>Document</th><th>Status</th><th>Note</th></tr></thead>
+          <tbody>${checklist.map((item) => `<tr>
+            <td>${Utils.escHtml(item.label)}</td>
+            <td>${item.ready ? '✓ Ready' : '○ Setup needed'}</td>
+            <td class="muted">${Utils.escHtml(item.note || '')}</td>
+          </tr>`).join('')}</tbody></table></div>
+      </div></div>
+
+      <div class="card" style="margin-bottom:12px"><div class="card-header"><h3>1. Income Statement</h3></div>
+        <div class="card-body">${sectionHtml(is)}</div></div>
+      <div class="card" style="margin-bottom:12px"><div class="card-header"><h3>2. Balance Sheet</h3></div>
+        <div class="card-body">${bsHtml()}</div></div>
+      <div class="card"><div class="card-header"><h3>3. Cash Flow Statement</h3></div>
+        <div class="card-body">${sectionHtml(cf)}
+          <p class="muted" style="margin-top:8px">Opening cash ≈ ${Utils.formatMoney(cf.openingCash, c)} · Closing ≈ ${Utils.formatMoney(cf.closingCash, c)} · Net change ${Utils.formatMoney(cf.netChange, c)}</p>
+        </div></div>`;
+
+    document.getElementById('bk-ye-pdf')?.addEventListener('click', async () => {
+      await Utils.savePdfBuffer(`year-end-pack-${this.from}-${this.to}.pdf`, await API.getYearEndPackPdf(this.from, this.to));
+      Utils.toast('Year-end pack downloaded', 'success');
+    });
+    document.getElementById('bk-ye-is')?.addEventListener('click', async () => {
+      await Utils.savePdfBuffer(`income-statement-${this.from}.pdf`, await API.getFinancialReportPdf('income_statement', this.from, this.to));
+    });
+    document.getElementById('bk-ye-bs')?.addEventListener('click', async () => {
+      await Utils.savePdfBuffer(`balance-sheet-${this.to}.pdf`, await API.getFinancialReportPdf('balance_sheet', this.from, this.to));
+    });
+    document.getElementById('bk-ye-cf')?.addEventListener('click', async () => {
+      await Utils.savePdfBuffer(`cash-flow-${this.from}.pdf`, await API.getFinancialReportPdf('cash_flow', this.from, this.to));
+    });
   },
 
   async renderReports(el) {
     const reportTypes = [
-      ['profit_loss', 'Profit & Loss'], ['income_statement', 'Income Statement'], ['balance_sheet', 'Balance Sheet'],
+      ['income_statement', 'Income Statement'], ['profit_loss', 'Profit & Loss'], ['balance_sheet', 'Balance Sheet'],
       ['cash_flow', 'Cash Flow'], ['trial_balance', 'Trial Balance'], ['general_ledger', 'General Ledger'],
       ['expense_report', 'Expense Report'], ['income_report', 'Income Report'], ['payroll_report', 'Payroll Report'],
       ['tax_report', 'Tax Report'], ['supplier_report', 'Supplier Report'], ['customer_report', 'Customer Report']
     ];
-    el.innerHTML = `<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px">
+    el.innerHTML = `<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px">
       ${reportTypes.map(([id, label]) => `<button class="btn btn-ghost bk-rpt" data-type="${id}">${label}</button>`).join('')}
-    </div><div id="bk-rpt-out"><p class="muted">Select a report above</p></div>`;
+    </div>
+    <p class="muted" style="margin:0 0 12px;font-size:13px">Tip: use <strong>Year-End &amp; Tax</strong> for the three official statements in one pack.</p>
+    <div id="bk-rpt-out"><p class="muted">Select a report above</p></div>`;
     el.querySelectorAll('.bk-rpt').forEach(b => b.addEventListener('click', () => this.runReport(b.dataset.type)));
+  },
+
+  statementSectionHtml(report, c) {
+    if (!report?.sections) return null;
+    return `<div class="table-wrap"><table><tbody>${report.sections.map((sec) => {
+      const lines = (sec.lines || []).map((l) =>
+        `<tr><td style="padding-left:16px">${Utils.escHtml(l.label || '')}</td><td style="text-align:right">${Utils.formatMoney(l.amount, c)}</td></tr>`
+      ).join('');
+      const head = `<tr><td colspan="2"><strong>${Utils.escHtml(sec.title)}</strong></td></tr>`;
+      const total = sec.total != null
+        ? `<tr style="font-weight:${sec.isTotal || sec.isSubtotal ? 700 : 600}"><td>${Utils.escHtml(sec.isTotal ? sec.title : 'Total')}</td><td style="text-align:right">${Utils.formatMoney(sec.total, c)}</td></tr>`
+        : '';
+      return `${head}${lines}${total}`;
+    }).join('')}</tbody></table></div>`;
   },
 
   async runReport(type) {
@@ -410,33 +552,67 @@ const BookkeepingPage = {
     const res = await API.getFinancialReport(type, this.from, this.to);
     const data = res.data;
     const c = this.currency();
-    let html = `<div class="card"><div class="card-header"><h3>${type.replace(/_/g, ' ').toUpperCase()}</h3>
+    let html = `<div class="card"><div class="card-header"><h3>${Utils.escHtml((data?.title || type).replace(/_/g, ' '))}</h3>
       <div style="display:flex;gap:6px">
         <button class="btn btn-sm btn-ghost" id="bk-rpt-pdf">PDF</button>
         <button class="btn btn-sm btn-primary" id="bk-rpt-print">Print</button>
       </div></div><div class="card-body">`;
 
-    if (type === 'balance_sheet') {
-      html += `<h4>Assets</h4><ul><li>Cash: ${Utils.formatMoney(data.assets?.cash, c)}</li>
-        <li>Bank: ${Utils.formatMoney(data.assets?.bank, c)}</li><li>Inventory: ${Utils.formatMoney(data.assets?.inventory, c)}</li>
-        <li>Receivable: ${Utils.formatMoney(data.assets?.receivable, c)}</li></ul>
-        <h4>Liabilities</h4><ul><li>Payable: ${Utils.formatMoney(data.liabilities?.payable, c)}</li>
-        <li>Payroll Pending: ${Utils.formatMoney(data.liabilities?.payrollPending, c)}</li></ul>`;
-    } else if (type === 'cash_flow') {
-      html += `<p>Cash closing: ${Utils.formatMoney(data.cash?.closingBalance, c)} · Bank closing: ${Utils.formatMoney(data.bank?.closingBalance, c)}</p>`;
+    const structured = this.statementSectionHtml(data, c);
+    if (structured && (type === 'income_statement' || type === 'profit_loss' || type === 'cash_flow')) {
+      html += structured;
+      if (type === 'cash_flow') {
+        html += `<p class="muted" style="margin-top:8px">Opening ${Utils.formatMoney(data.openingCash, c)} · Closing ${Utils.formatMoney(data.closingCash, c)} · Net change ${Utils.formatMoney(data.netChange, c)}</p>`;
+      }
+    } else if (type === 'balance_sheet' && data?.assets) {
+      const row = (label, amt, bold) =>
+        `<tr style="${bold ? 'font-weight:700' : ''}"><td>${Utils.escHtml(label)}</td><td style="text-align:right">${Utils.formatMoney(amt, c)}</td></tr>`;
+      html += `<div class="table-wrap"><table><tbody>
+        <tr><td colspan="2"><strong>Assets</strong></td></tr>
+        ${(data.assets.current || []).map((l) => row(l.label, l.amount)).join('')}
+        ${row('Total assets', data.assets.total, true)}
+        <tr><td colspan="2"><strong>Liabilities</strong></td></tr>
+        ${(data.liabilities?.current || []).map((l) => row(l.label, l.amount)).join('')}
+        ${row('Total liabilities', data.liabilities?.total, true)}
+        <tr><td colspan="2"><strong>Equity</strong></td></tr>
+        ${(data.equity?.lines || []).map((l) => row(l.label, l.amount)).join('')}
+        ${row('Total equity', data.equity?.total, true)}
+      </tbody></table></div>`;
     } else if (type === 'payroll_report') {
-      html += `<pre>${JSON.stringify(data, null, 2)}</pre>`;
+      html += `<div class="table-wrap"><table><thead><tr><th>Item</th><th>Amount</th></tr></thead><tbody>
+        ${[
+          ['Employee Salaries (Net)', data.net], ['Basic Salaries', data.basic], ['PAYE', data.paye],
+          ['UIF (Employee)', data.uif_emp], ['UIF (Employer)', data.uif_er], ['SDL', data.sdl], ['COIDA', data.coida],
+          ['Salary Advances Recovered', data.advances], ['Loan Recoveries', data.loans], ['Damage Deductions', data.damage],
+          ['Pension', data.pension], ['Medical Aid', data.medical], ['Owner Salary Paid', data.ownerSalary]
+        ].map(([label, val]) => `<tr><td>${label}</td><td>${Utils.formatMoney(val || 0, c)}</td></tr>`).join('')}
+      </tbody></table></div>`;
     } else if (type === 'tax_report') {
-      html += `<p>VAT: ${Utils.formatMoney(data.vat, c)} · PAYE: ${Utils.formatMoney(data.paye, c)} · UIF: ${Utils.formatMoney(data.uif, c)}</p>`;
+      html += `<div class="table-wrap"><table><tbody>
+        <tr><td>Output VAT</td><td>${Utils.formatMoney(data.outputVat ?? data.vat, c)}</td></tr>
+        <tr><td>Input VAT</td><td>${Utils.formatMoney(data.inputVat, c)}</td></tr>
+        <tr><td>Net VAT</td><td>${Utils.formatMoney(data.netVat, c)}</td></tr>
+        <tr><td>PAYE</td><td>${Utils.formatMoney(data.paye, c)}</td></tr>
+        <tr><td>UIF</td><td>${Utils.formatMoney(data.uif, c)}</td></tr>
+        <tr><td>SDL</td><td>${Utils.formatMoney(data.sdl, c)}</td></tr>
+        <tr><td>COIDA</td><td>${Utils.formatMoney(data.coida, c)}</td></tr>
+        <tr><td>Taxable sales</td><td>${Utils.formatMoney(data.taxableSales, c)}</td></tr>
+      </tbody></table></div>`;
+    } else if (type === 'trial_balance' && data?.lines) {
+      html += `<div class="table-wrap"><table><thead><tr><th>Category</th><th>Direction</th><th>Total</th><th>Count</th></tr></thead>
+        <tbody>${data.lines.map((l) => `<tr><td>${Utils.escHtml(l.category)}</td><td>${l.direction}</td><td>${Utils.formatMoney(l.total, c)}</td><td>${l.count || ''}</td></tr>`).join('')}</tbody></table></div>
+        <p class="muted">In ${Utils.formatMoney(data.totals?.credit, c)} · Out ${Utils.formatMoney(data.totals?.debit, c)}</p>`;
     } else if (Array.isArray(data)) {
-      html += `<div class="table-wrap"><table><tbody>${data.map(r => `<tr>${Object.values(r).map(v => `<td>${typeof v === 'number' ? Utils.formatMoney(v, c) : v}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
+      const keys = data[0] ? Object.keys(data[0]) : [];
+      html += `<div class="table-wrap"><table><thead><tr>${keys.map((k) => `<th>${Utils.escHtml(k)}</th>`).join('')}</tr></thead>
+        <tbody>${data.map((r) => `<tr>${keys.map((k) => `<td>${typeof r[k] === 'number' ? Utils.formatMoney(r[k], c) : Utils.escHtml(r[k] ?? '')}</td>`).join('')}</tr>`).join('') || '<tr><td class="muted">No rows</td></tr>'}</tbody></table></div>`;
     } else if (data?.lines) {
       html += `<div class="table-wrap"><table><thead><tr><th>Category</th><th>Direction</th><th>Total</th></tr></thead>
-        <tbody>${data.lines.map(l => `<tr><td>${l.category}</td><td>${l.direction}</td><td>${Utils.formatMoney(l.total, c)}</td></tr>`).join('')}</tbody></table></div>`;
+        <tbody>${data.lines.map((l) => `<tr><td>${Utils.escHtml(l.category || l.label || '')}</td><td>${l.direction || ''}</td><td>${Utils.formatMoney(l.total ?? l.amount, c)}</td></tr>`).join('')}</tbody></table></div>`;
     } else if (type === 'general_ledger') {
-      html += `<p>${(data || []).length} ledger entries — see Auto Ledger tab for full list.</p>`;
+      html += `<p>${(Array.isArray(data) ? data : []).length} ledger entries — see Auto Ledger tab for the full list.</p>`;
     } else {
-      html += `<p>Net profit: ${Utils.formatMoney(data.summary?.netProfit || 0, c)}</p>`;
+      html += `<p>Net profit: ${Utils.formatMoney(data?.summary?.netProfit || data?.summary?.net || 0, c)}</p>`;
     }
     html += '</div></div>';
     out.innerHTML = html;

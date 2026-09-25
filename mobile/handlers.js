@@ -504,7 +504,7 @@ function buildHandlers(store) {
     return s.deleteSupplier(id, user.id, user.username);
   }));
   add('suppliers:pay', wrapSync((supplierId, data, actor) => {
-    const user = s.requireActor(actor, ['owner', 'manager']);
+    const user = s.requireActor(actor, ['owner', 'manager', 'supervisor', 'assistant_manager']);
     return s.recordSupplierPayment(supplierId, data, user.id, user.username);
   }));
   add('suppliers:payments', wrapSync(id => s.getSupplierPayments(id)));
@@ -575,6 +575,16 @@ function buildHandlers(store) {
     return s.saveSalesTargets(d, user.id, user.username || user.full_name);
   }));
   add('settings:getTodayTargetProgress', wrapSync((branchId) => s.getTodayTargetProgress(branchId)));
+  add('settings:getSalesTargetHistory', wrapSync((opts) => s.getSalesTargetHistory(opts || {})));
+  add('settings:getSalesTargetInsights', wrapSync((opts) => s.getSalesTargetInsights(opts || {})));
+  add('settings:saveSalesTargetAlertSettings', wrapSync((alerts, a) => {
+    const user = s.requireActor(a, ['owner', 'manager']);
+    return s.saveSalesTargetAlertSettings(alerts, user.id, user.username || user.full_name);
+  }));
+  add('settings:saveSalesTargetDayNote', wrapSync((payload, a) => {
+    const user = s.requireActor(a, ['owner', 'manager']);
+    return s.saveSalesTargetDayNote(payload, user.id, user.username || user.full_name);
+  }));
   add('settings:getShiftSettings', wrapSync(() => s.getShiftSettings()));
   add('settings:enforceCashoutDeadlines', wrapSync(() => s.enforceShiftCashoutDeadlines()));
   add('settings:saveShiftSettings', wrapSync((d, a) => {
@@ -1971,9 +1981,9 @@ function buildHandlers(store) {
     s.syncLedger(f, t);
     return true;
   }));
-  add('bookkeeping:dashboard', wrapSync((f, t) => {
+  add('bookkeeping:dashboard', wrapSync((f, t, branchId) => {
     s.requireBookkeepingAccess(s.getUserSession?.());
-    return s.getFinancialDashboard(f, t);
+    return s.getFinancialDashboard(f, t, branchId);
   }));
   add('bookkeeping:search', wrapSync(f => {
     s.requireBookkeepingAccess(s.getUserSession?.());
@@ -2019,6 +2029,10 @@ function buildHandlers(store) {
   add('bookkeeping:report', wrapSync((type, f, t) => {
     s.requireBookkeepingAccess(s.getUserSession?.());
     return s.getFinancialReport(type, f, t);
+  }));
+  add('bookkeeping:yearEndPack', wrapSync((f, t) => {
+    s.requireBookkeepingAccess(s.getUserSession?.());
+    return s.getYearEndPack(f, t);
   }));
   add('bookkeeping:performance', wrapSync((f, t) => {
     s.requireBookkeepingAccess(s.getUserSession?.());
@@ -2070,6 +2084,11 @@ function buildHandlers(store) {
     s.requireBookkeepingAccess(s.getUserSession?.());
     const st = s.getSettingsParsed();
     return s.buildFinancialReportPdf(type, f, t, st?.shop_name, st?.currency || 'R');
+  }));
+  add('bookkeeping:yearEndPackPdf', wrapSync((f, t) => {
+    s.requireBookkeepingAccess(s.getUserSession?.());
+    const st = s.getSettingsParsed();
+    return s.buildYearEndPackPdf(f, t, st?.shop_name, st?.currency || 'R');
   }));
 
   add('donations:get', wrapSync(f => { requireSession(); return s.getDonations(f); }));
@@ -2599,6 +2618,8 @@ function buildHandlers(store) {
   add('referral:unsuspendAgent', wrapSync((id, a) => ref.unsuspendAgent(id, a || requireUserSession(['owner', 'manager', 'assistant_manager']))));
   add('referral:updateAgent', wrapSync((id, d, a) => ref.updateAgent(id, d || {}, a || requireUserSession(['owner', 'manager', 'assistant_manager']))));
   add('referral:deleteAgent', wrapSync((id, a) => ref.deleteAgent(id, a || requireUserSession(['owner', 'manager', 'assistant_manager']))));
+  add('referral:clearAttribution', wrapSync((d, a) => ref.clearCustomerAttribution(d || {}, a || requireUserSession(['owner', 'manager', 'assistant_manager', 'cashier', 'supervisor']))));
+  add('referral:clearSaleReferral', wrapSync((saleId, a) => ref.clearSaleReferral(saleId, a || requireUserSession(['owner', 'manager', 'assistant_manager', 'cashier', 'supervisor']))));
   add('referral:awardCommission', wrapSync((id, d, a) => ref.awardManualCommission(id, d || {}, a || requireUserSession(['owner', 'manager', 'assistant_manager']))));
   add('referral:listAwardRequests', wrapSync((f, a) => ref.listAwardRequests(f || {}, a || requireUserSession(['owner', 'manager', 'assistant_manager']))));
   add('referral:getAwardRequest', wrapSync((id, a) => ref.getAwardRequest(id, a || requireUserSession(['owner', 'manager', 'assistant_manager']))));
@@ -3393,6 +3414,30 @@ add('web:adminAnalytics', wrapSync((filters, actor) => {
     return s.platformSetAccessMessage(key, d || {}, a);
   }));
 
+  // ─── Public shop registration (APPLICATION only — no auth / no provision) ──
+  add('platform:registrationOptions', wrapSync(() => s.platformRegistrationOptions()));
+  add('platform:submitShopApplication', wrapSync((d, meta) => {
+    // Public: never accept session tokens as authority; ignore any status/approved flags in d
+    return s.platformSubmitShopApplication(d || {}, meta || {});
+  }));
+  add('platform:listApplications', wrapSync((tok, f) => {
+    platformActor(tok);
+    return s.platformListApplications(f || {});
+  }));
+  add('platform:getApplication', wrapSync((tok, id) => {
+    platformActor(tok);
+    return s.platformGetApplication(id);
+  }));
+  add('platform:setApplicationStatus', wrapSync((tok, id, status, opts) => {
+    const a = platformActor(tok);
+    // Server rejects APPROVED here — must use approveApplication
+    return s.platformSetApplicationStatus(id, status, a, opts || {});
+  }));
+  add('platform:approveApplication', wrapAsync(async (tok, id, opts) => {
+    const a = platformActor(tok);
+    return s.platformApproveApplication(id, a, opts || {});
+  }));
+
   // Shop-local entitlement snapshot (ONE source of truth for UI)
   add('entitlements:status', wrapSync(() => s.entitlementsStatus()));
   add('entitlements:get', wrapSync(() => s.entitlementsGet()));
@@ -3554,6 +3599,64 @@ add('web:adminAnalytics', wrapSync((filters, actor) => {
   add('expenseApp:wasteProducts', wrapSync((tok) => expenseApp.expenseWasteProducts(tok)));
   add('expenseApp:wasteList', wrapSync((tok, f) => expenseApp.expenseWasteList(tok, f || {})));
   add('expenseApp:wasteRecord', wrapSync((tok, d) => expenseApp.expenseWasteRecord(tok, d || {})));
+  add('expenseApp:ownerFundings', wrapSync((tok, f) => expenseApp.expenseOwnerFundings(tok, f || {})));
+  add('expenseApp:recordOwnerFunding', wrapSync((tok, d) => expenseApp.expenseRecordOwnerFunding(tok, d || {})));
+
+  // ─── Manager Operations & Daily Tasks ───────────────────────────────────────
+  const managerOps = require('../electron/services/manager-operations');
+  const moActor = (a) => (a && a.id != null ? a : requireSession());
+  const moPortal = (tok) => managerOps.resolvePortalSession(tok);
+  add('mo:dashboard', wrapSync((f, a) => { moActor(a); return managerOps.ownerDashboard(f?.work_date, f?.branch_id); }));
+  add('mo:home', wrapSync((f, a) => managerOps.mobileHome(moActor(a), f?.branch_id)));
+  add('mo:listTasks', wrapSync((f, a) => managerOps.listTasks(f || {}, moActor(a))));
+  add('mo:getTask', wrapSync((id, a) => managerOps.getTask(id, moActor(a))));
+  add('mo:startTask', wrapSync((id, a) => managerOps.startTask(id, moActor(a))));
+  add('mo:completeChecklistItem', wrapSync((id, d, a) => managerOps.completeChecklistItem(id, d || {}, moActor(a))));
+  add('mo:completeTask', wrapSync((id, d, a) => managerOps.completeTask(id, d || {}, moActor(a))));
+  add('mo:verifyTask', wrapSync((id, d, a) => managerOps.verifyTask(id, d || {}, moActor(a))));
+  add('mo:sales', wrapSync((branchId) => { requireSession(); return managerOps.getSalesSummary(branchId); }));
+  add('mo:reportProblem', wrapSync((d, a) => managerOps.reportIncident(d || {}, moActor(a))));
+  add('mo:listIncidents', wrapSync((f) => { requireSession(); return managerOps.listIncidents(f || {}); }));
+  add('mo:teamHelp', wrapSync((f) => { requireSession(); return managerOps.listTeamHelp(f?.work_date); }));
+  add('mo:requestHelp', wrapSync((d, a) => managerOps.requestHelp(d || {}, moActor(a))));
+  add('mo:offerHelp', wrapSync((id, a) => managerOps.offerHelp(id, moActor(a))));
+  add('mo:submitReport', wrapSync((d, a) => managerOps.submitDailyReport(d || {}, moActor(a))));
+  add('mo:listReports', wrapSync((f) => { requireSession(); return managerOps.listReports(f || {}); }));
+  add('mo:getReport', wrapSync((id, a) => managerOps.getReport(id, moActor(a))));
+  add('mo:ownerRespond', wrapSync((id, msg, a) => managerOps.ownerRespond(id, msg, moActor(a))));
+  add('mo:ackMessage', wrapSync((id, a) => managerOps.acknowledgeOwnerMessage(id, moActor(a))));
+  add('mo:evidence', wrapSync((id, a) => managerOps.getEvidenceDataUrl(id, moActor(a))));
+  add('mo:attendance', wrapSync(() => { requireSession(); return managerOps.getAttendanceSnapshot(); }));
+  add('mo:templates', wrapSync(() => { requireSession(); return managerOps.listTaskTemplates(); }));
+  add('mo:saveTemplate', wrapSync((d, a) => managerOps.saveTaskTemplate(d || {}, moActor(a))));
+  add('mo:checklists', wrapSync(() => { requireSession(); return managerOps.listChecklistTemplates(); }));
+  add('mo:saveChecklist', wrapSync((d, a) => managerOps.saveChecklistTemplate(d || {}, moActor(a))));
+  add('mo:getSettings', wrapSync(() => { requireSession(); return managerOps.getMoSettings(); }));
+  add('mo:saveSettings', wrapSync((d, a) => managerOps.saveMoSettings(d || {}, moActor(a))));
+  add('mo:generateTasks', wrapSync((d, a) => managerOps.generateDailyTasks(d?.work_date, moActor(a), d?.branch_id)));
+  add('mo:audit', wrapSync((f) => { requireSession(); return managerOps.listAudit(f || {}); }));
+  add('mo:categories', wrapSync(() => managerOps.INCIDENT_CATEGORIES));
+  add('managerOps:login', wrapSync((u, p, d) => managerOps.portalLogin(u, p, d || {})));
+  add('managerOps:logout', wrapSync((tok) => managerOps.portalLogout(tok)));
+  add('managerOps:home', wrapSync((tok, f) => managerOps.mobileHome(moPortal(tok), f?.branch_id)));
+  add('managerOps:listTasks', wrapSync((tok, f) => managerOps.listTasks(f || {}, moPortal(tok))));
+  add('managerOps:getTask', wrapSync((tok, id) => managerOps.getTask(id, moPortal(tok))));
+  add('managerOps:startTask', wrapSync((tok, id) => managerOps.startTask(id, moPortal(tok))));
+  add('managerOps:completeChecklistItem', wrapSync((tok, id, d) => managerOps.completeChecklistItem(id, d || {}, moPortal(tok))));
+  add('managerOps:completeTask', wrapSync((tok, id, d) => managerOps.completeTask(id, d || {}, moPortal(tok))));
+  add('managerOps:sales', wrapSync((tok, branchId) => { moPortal(tok); return managerOps.getSalesSummary(branchId); }));
+  add('managerOps:reportProblem', wrapSync((tok, d) => managerOps.reportIncident(d || {}, moPortal(tok))));
+  add('managerOps:teamHelp', wrapSync((tok) => { moPortal(tok); return managerOps.listTeamHelp(); }));
+  add('managerOps:requestHelp', wrapSync((tok, d) => managerOps.requestHelp(d || {}, moPortal(tok))));
+  add('managerOps:offerHelp', wrapSync((tok, id) => managerOps.offerHelp(id, moPortal(tok))));
+  add('managerOps:submitReport', wrapSync((tok, d) => managerOps.submitDailyReport(d || {}, moPortal(tok))));
+  add('managerOps:ownerMessages', wrapSync((tok) => {
+    const u = moPortal(tok);
+    return managerOps.mobileHome(u).owner_messages;
+  }));
+  add('managerOps:ackMessage', wrapSync((tok, id) => managerOps.acknowledgeOwnerMessage(id, moPortal(tok))));
+  add('managerOps:evidence', wrapSync((tok, id) => managerOps.getEvidenceDataUrl(id, moPortal(tok))));
+  add('managerOps:attendance', wrapSync((tok) => { moPortal(tok); return managerOps.getAttendanceSnapshot(); }));
 
   const studioApp = require('../electron/services/studio-app-platform');
   add('studioApp:login', wrapSync((u, p, d) => studioApp.studioLogin(u, p, d || {})));

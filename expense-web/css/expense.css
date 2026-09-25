@@ -733,6 +733,50 @@ body {
   margin-bottom: 2px;
 }
 
+.fund-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.fund-chip {
+  border: 1px solid var(--border);
+  background: var(--card2);
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 8px 14px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.fund-chip.active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: #c7d2fe;
+}
+
+.exp-fund-owner {
+  display: inline-block;
+  background: #78350f;
+  color: #fde68a;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 6px;
+}
+
+.exp-fund-biz {
+  display: inline-block;
+  background: rgba(99, 102, 241, 0.2);
+  color: #c7d2fe;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 6px;
+}
+
 .grant-card { text-align: left; }
 .grant-video-wrap { margin: 8px 0; }
 .grant-video-wrap video {

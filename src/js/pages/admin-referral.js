@@ -707,9 +707,9 @@ window.AdminReferralPage = {
       return;
     }
     if (act === 'delete-agent') {
-      if (!confirm('Permanently delete this agent account? They will not be able to sign in again.')) return;
+      if (!confirm('Permanently delete this agent? They will be fully removed — customers and unpaid orders will no longer sit under them. Paid commission history is kept for audit.')) return;
       await this.api(API.referralDeleteAgent(parseInt(ds.id, 10), actor), 'Failed');
-      this.toast('Agent deleted', 'success');
+      this.toast('Agent deleted and unlinked', 'success');
       await this.renderSection();
       return;
     }

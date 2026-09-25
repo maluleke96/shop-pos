@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="theme-color" content="#14532d">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>Manager Operations</title>
+  <link rel="icon" href="/api/logo">
+  <link rel="apple-touch-icon" href="/api/logo">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="stylesheet" href="css/manager-ops.css">
+</head>
+<body>
+  <div id="app"></div>
+  <nav id="mo-nav" class="nav hidden" aria-label="Manager Operations">
+    <button type="button" data-tab="home" class="active"><span class="nav-ico">⌂</span>Home</button>
+    <button type="button" data-tab="tasks"><span class="nav-ico">☑</span>Tasks</button>
+    <button type="button" data-tab="add" class="nav-center"><span class="nav-ico">＋</span>Report</button>
+    <button type="button" data-tab="team"><span class="nav-ico">👥</span>Team</button>
+    <button type="button" data-tab="more"><span class="nav-ico">☰</span>More</button>
+  </nav>
+  <div id="toast-root"></div>
+  <script src="js/config.js"></script>
+  <script src="js/api.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

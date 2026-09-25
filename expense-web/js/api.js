@@ -6,7 +6,7 @@ const ExpenseAPI = {
       this._queue = new PortalOfflineQueue({
         dbName: 'expense-offline-queue',
         namespace: 'expense',
-        isWrite: (m) => /^expenseApp:save$/i.test(String(m || ''))
+        isWrite: (m) => /^expenseApp:(save|recordOwnerFunding)$/i.test(String(m || ''))
       });
       this._queue.bind((method, args) => this._callDirect(method, args));
     }
@@ -89,7 +89,9 @@ const ExpenseAPI = {
   grantAccess: (d) => ExpenseAPI.call('expenseApp:grantAccess', [d || {}]),
   wasteProducts: () => ExpenseAPI.call('expenseApp:wasteProducts', []),
   wasteList: (f) => ExpenseAPI.call('expenseApp:wasteList', [f || {}]),
-  wasteRecord: (d) => ExpenseAPI.call('expenseApp:wasteRecord', [d || {}])
+  wasteRecord: (d) => ExpenseAPI.call('expenseApp:wasteRecord', [d || {}]),
+  ownerFundings: (f) => ExpenseAPI.call('expenseApp:ownerFundings', [f || {}]),
+  recordOwnerFunding: (d) => ExpenseAPI.call('expenseApp:recordOwnerFunding', [d || {}])
 };
 
 window.ExpenseAPI = ExpenseAPI;

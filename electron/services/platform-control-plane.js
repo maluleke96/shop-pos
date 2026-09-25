@@ -148,11 +148,26 @@ function seedDefaults() {
        VALUES (?,?,?,?,?,?,?)`,
       [
         uid('msg'), 'suspended',
-        'Service Temporarily Unavailable',
-        'Your shop access has been temporarily suspended.\n\nThis may be due to your subscription status or an administrative action.\n\nPlease contact your administrator for assistance.',
-        'Contact Administrator', now, 'system'
+        'Shop access on hold',
+        'Welcome — your shop is currently suspended, so signing in and operating the till are temporarily unavailable.\n\nThis is usually related to subscription or an administrative review. Please contact us and we will help you get back online.',
+        'Contact us', now, 'system'
       ]
     );
+  } else {
+    // Keep wording professional if still on the older default title
+    try {
+      const row = dbGet('SELECT title FROM platform_access_messages WHERE message_key = ?', ['suspended']);
+      if (row && /Service Temporarily Unavailable/i.test(row.title || '')) {
+        dbRun(
+          `UPDATE platform_access_messages SET title=?, body_text=?, contact_label=?, updated_at=? WHERE message_key=?`,
+          [
+            'Shop access on hold',
+            'Welcome — your shop is currently suspended, so signing in and operating the till are temporarily unavailable.\n\nThis is usually related to subscription or an administrative review. Please contact us and we will help you get back online.',
+            'Contact us', now, 'suspended'
+          ]
+        );
+      }
+    } catch (_) { /* */ }
   }
   if (!dbGet('SELECT id FROM platform_access_messages WHERE message_key = ?', ['expired'])) {
     dbRun(
@@ -160,9 +175,9 @@ function seedDefaults() {
        VALUES (?,?,?,?,?,?,?)`,
       [
         uid('msg'), 'expired',
-        'Subscription Expired',
-        'Your shop subscription has expired. Protected operations are unavailable until the subscription is renewed.\n\nPlease contact your administrator for assistance.',
-        'Contact Administrator', now, 'system'
+        'Subscription needs renewal',
+        'Welcome — your shop subscription has ended, so protected operations are paused for now.\n\nPlease contact us to renew or reactivate. We are here to help you continue serving your customers.',
+        'Contact us', now, 'system'
       ]
     );
   }
@@ -412,6 +427,36 @@ function listAccessMessages() {
   return { success: true, data: dbAll('SELECT * FROM platform_access_messages ORDER BY message_key') };
 }
 
+function platformContactChannels(shopRow = null) {
+  const phone = String(
+    process.env.PLATFORM_CONTACT_PHONE
+    || process.env.PLATFORM_SUPPORT_PHONE
+    || ''
+  ).trim();
+  const whatsappRaw = String(
+    process.env.PLATFORM_CONTACT_WHATSAPP
+    || process.env.PLATFORM_SUPPORT_WHATSAPP
+    || phone
+    || ''
+  ).trim();
+  const email = String(
+    process.env.PLATFORM_CONTACT_EMAIL
+    || process.env.PLATFORM_SUPPORT_EMAIL
+    || ''
+  ).trim();
+  const url = String(
+    shopRow?.contact_admin_url
+    || process.env.PLATFORM_CONTACT_ADMIN_URL
+    || ''
+  ).trim();
+  return {
+    phone,
+    whatsapp: whatsappRaw,
+    email,
+    url
+  };
+}
+
 /**
  * Evaluate shop access from server/DB state.
  * Returns { allowed, access_state, days_remaining, grace_active, message, contact_admin_url, ... }
@@ -437,7 +482,8 @@ function evaluateShopAccess(shopRow, opts = {}) {
     daysRemaining = Math.ceil((expiryMs - now) / (24 * 60 * 60 * 1000));
   }
 
-  const contactUrl = shopRow?.contact_admin_url || process.env.PLATFORM_CONTACT_ADMIN_URL || '';
+  const channels = platformContactChannels(shopRow);
+  const contactUrl = channels.url;
   const customMsg = String(shopRow?.suspension_message || '').trim();
 
   const blockedPayload = (access_state, msgKey) => {
@@ -454,6 +500,12 @@ function evaluateShopAccess(shopRow, opts = {}) {
       suspended_at: shopRow?.suspended_at || null,
       activation_status: shopRow?.activation_status || 'pending',
       contact_admin_url: contactUrl,
+      contact: {
+        phone: channels.phone,
+        whatsapp: channels.whatsapp,
+        email: channels.email
+      },
+      shop_name: shopRow?.shop_name || '',
       message: customMsg
         ? { title: msg.title, body: customMsg, body_text: customMsg, contact_label: msg.contact_label }
         : msg,
@@ -1070,7 +1122,12 @@ function generateReadableCode() {
 
 function buildActivationLink(shop, linkToken, shopId) {
   const shopUrl = String(shop?.shop_url || '').replace(/\/$/, '');
-  const platformBase = String(process.env.PLATFORM_PUBLIC_BASE_URL || '').replace(/\/$/, '');
+  const platformBase = String(
+    process.env.PLATFORM_PUBLIC_BASE_URL
+    || process.env.SHOP_POS_PUBLIC_URL
+    || (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : '')
+    || ''
+  ).replace(/\/$/, '');
   // Prefer customer shop URL so the customer stays on their app domain; fall back to platform public URL.
   const base = shopUrl || platformBase;
   if (!base) return null;
@@ -2102,27 +2159,306 @@ async function fetchCustomerFeeReport(shopId, { from = null, to = null, limit = 
   };
 }
 
+/** Customer-facing app links — paths relative to the customer's own shop_url only. */
+const CUSTOMER_APP_LINK_DEFS = [
+  { id: 'open_shop', label: 'Open Shop', path: '/', modules: ['app.admin', 'app.pos', 'core.auth'], always_if_provisioned: true },
+  { id: 'customer_login', label: 'Customer Login', path: '/', modules: ['core.auth'], always_if_provisioned: true },
+  { id: 'pos', label: 'POS', path: '/?page=pos', modules: ['app.pos'] },
+  { id: 'admin', label: 'Admin Panel', path: '/?page=admin', modules: ['app.admin'] },
+  { id: 'staff', label: 'Staff Portal', path: '/?page=staff', modules: ['app.staff'] },
+  { id: 'online', label: 'Online Ordering', path: '/order/', modules: ['mod.online'] },
+  { id: 'public_order', label: 'Customer / Public Ordering', path: '/order/', modules: ['mod.online'] },
+  { id: 'driver', label: 'Driver / Delivery', path: '/driver/', modules: ['app.driver'] },
+  { id: 'signage', label: 'Digital Signage', path: '/signage/', modules: ['mod.signage'] },
+  { id: 'radio', label: 'Radio', path: '/radio/', modules: ['mod.radio'] },
+  { id: 'menu_builder', label: 'Menu Builder', path: '/?page=menu-builder', modules: ['admin.menu-builder', 'app.studio', 'mod.branding', 'app.admin'] },
+  { id: 'promo_video', label: 'Promo Video Builder', path: '/?page=promo-video-builder', modules: ['admin.promo-video-builder', 'app.studio', 'app.admin'] },
+  { id: 'comms', label: 'Communication Center', path: '/?page=communication-center', modules: ['admin.communication-center', 'mod.communication'] },
+  { id: 'manager_ops', label: 'Manager Operations', path: '/manager-ops/', modules: ['mod.manager_operations', 'admin.manager-ops'] },
+  { id: 'reports', label: 'Reports', path: '/?page=reports', modules: ['mod.reports', 'app.admin'] },
+  { id: 'setup', label: 'Shop Setup', path: '/?start=setup', modules: ['core.settings'], always_if_provisioned: true }
+];
+
+function isForbiddenCustomerUrl(url) {
+  const s = String(url || '').toLowerCase();
+  return /chisafood|peaceful-motivation|chisanyama|chisa\s*food/.test(s);
+}
+
+/**
+ * Resolve the customer's provisioned public base URL.
+ * Never falls back to Chisa / a global lab URL.
+ */
+function resolveCustomerBaseUrl(shop) {
+  const raw = String(shop?.shop_url || '').trim();
+  if (!raw) return null;
+  if (isForbiddenCustomerUrl(raw)) return null;
+  try {
+    const withProto = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+    const u = new URL(withProto);
+    if (isForbiddenCustomerUrl(u.hostname) || isForbiddenCustomerUrl(u.href)) return null;
+    return `${u.protocol}//${u.host}`.replace(/\/$/, '');
+  } catch (_) {
+    return null;
+  }
+}
+
+function moduleEnabled(entitlements, moduleIds) {
+  const mods = entitlements?.modules || {};
+  const flags = entitlements?.flags || {};
+  const pages = entitlements?.pages || {};
+  const admin = entitlements?.admin_sections || {};
+  return (moduleIds || []).some((id) => {
+    if (mods[id] === true) return true;
+    // flag aliases
+    if (id === 'app.pos' && flags.pos) return true;
+    if (id === 'mod.online' && flags.online) return true;
+    if (id === 'mod.signage' && (flags.signage || flags.signage_player)) return true;
+    if (id === 'mod.radio' && flags.radio) return true;
+    if (id === 'app.driver' && flags.delivery) return true;
+    if (id === 'app.admin' && (pages.admin || pages.dashboard)) return true;
+    if (id === 'app.staff' && pages.staff) return true;
+    if (id === 'mod.reports' && pages.reports) return true;
+    if (id === 'mod.communication' && (pages.whatsapp || admin['communication-center'])) return true;
+    if (String(id).startsWith('admin.') && admin[String(id).slice(6)]) return true;
+    return false;
+  });
+}
+
+function buildCustomerAppLinks(shop, entitlements, access, health) {
+  const base = resolveCustomerBaseUrl(shop);
+  const deploy = String(shop.deployment_status || '').toUpperCase();
+  const sub = String(access?.subscription_status || shop.subscription_status || '').toUpperCase();
+  const accessState = String(access?.access_state || sub || '').toUpperCase();
+  const suspended = sub === 'SUSPENDED' || accessState === 'SUSPENDED' || shop.is_active === false;
+  const provisioning = ['PROVISIONING', 'DATABASE_CREATING', 'DEPLOYING', 'HEALTH_CHECK', 'WAITING_HEALTH', 'SYNCING_ENTITLEMENTS'].includes(deploy)
+    || deploy === 'NOT_PROVISIONED';
+  const healthOk = health?.ok === true || health?.reachable === true;
+  const healthFail = health && health.ok === false && !provisioning;
+
+  return CUSTOMER_APP_LINK_DEFS.map((def) => {
+    // always_if_provisioned = core surface once an environment exists (not a package upsell)
+    const included = def.always_if_provisioned
+      ? true
+      : moduleEnabled(entitlements, def.modules);
+
+    let status = 'unavailable';
+    let status_label = 'Unavailable';
+    let status_icon = '🔴';
+    let url = null;
+    let action = null;
+    let note = '';
+
+    if (!included) {
+      status = 'not_included';
+      status_label = 'Not Included';
+      status_icon = '🔒';
+      action = 'upgrade';
+      note = 'Upgrade / Add-on Required';
+    } else if (!base) {
+      if (provisioning || !shop.shop_url) {
+        status = 'provisioning';
+        status_label = 'Provisioning';
+        status_icon = '🟡';
+        note = shop.shop_url
+          ? 'Customer environment URL is invalid or blocked'
+          : 'No provisioned shop URL yet';
+      } else if (isForbiddenCustomerUrl(shop.shop_url)) {
+        status = 'unavailable';
+        status_label = 'Unavailable';
+        status_icon = '🔴';
+        note = 'Protected production URL blocked — not used as customer link';
+      } else {
+        status = 'unavailable';
+        status_label = 'Unavailable';
+        status_icon = '🔴';
+        note = 'Customer environment URL missing';
+      }
+    } else if (suspended) {
+      status = 'suspended';
+      status_label = 'Suspended';
+      status_icon = '⏸️';
+      url = `${base}${def.path}`;
+      action = 'open';
+      note = 'Shop is suspended — link may show access gate';
+    } else if (provisioning && !healthOk) {
+      status = 'provisioning';
+      status_label = 'Provisioning';
+      status_icon = '🟡';
+      url = `${base}${def.path}`;
+      action = 'open';
+      note = 'Environment still provisioning';
+    } else if (healthFail) {
+      status = 'unavailable';
+      status_label = 'Unavailable';
+      status_icon = '🔴';
+      url = `${base}${def.path}`;
+      action = 'open';
+      note = (health.errors || []).join(', ') || 'Health check failed';
+    } else {
+      status = 'available';
+      status_label = 'Available';
+      status_icon = '🟢';
+      url = `${base}${def.path}`;
+      action = 'open';
+    }
+
+    return {
+      id: def.id,
+      label: def.label,
+      path: def.path,
+      modules: def.modules,
+      included,
+      status,
+      status_label,
+      status_icon,
+      url,
+      action,
+      note
+    };
+  });
+}
+
 function getCustomerControl(shopId) {
   requireEnabled();
   ensureSchema();
   const shops = shopsMod();
   if (!shops?.getShop) throw new Error('platform-shops unavailable');
-  const shop = shops.getShop(shopId).data;
+  const shopRes = shops.getShop(shopId);
+  const shop = shopRes?.data || shopRes;
+  if (!shop?.id) throw new Error('Shop not found');
+
+  // Hard isolation: never open protected Chisa production as a SaaS customer
+  // Only block by known production URL / project — do not match arbitrary shop names.
+  const chisaProject = String(process.env.CHISA_FOOD_RAILWAY_PROJECT_ID || '0296f469-4b4e-4b3f-99fb-063b03535e39');
+  if (
+    isForbiddenCustomerUrl(shop.shop_url)
+    || String(shop.railway_project_id || '') === chisaProject
+    || /^chisa[-_]?food$/i.test(String(shop.id || ''))
+  ) {
+    throw new Error('Chisa Food / protected production cannot be opened as a SaaS customer in Platform Control');
+  }
+
+  const entitlements = shop.entitlements || null;
+  let health = null;
+
+  let access = { subscription_status: shop.subscription_status, access_state: shop.subscription_status };
+  try {
+    const row = dbGet('SELECT * FROM platform_shops WHERE id = ?', [shopId]);
+    if (row) access = evaluateShopAccess(row) || access;
+  } catch (_) { /* keep soft access */ }
+
+  const links = buildCustomerAppLinks(shop, entitlements, access, health);
+  const baseUrl = resolveCustomerBaseUrl(shop);
+
+  let contract = {};
+  try { contract = getShopContractStatus(shopId)?.data || {}; } catch (_) { contract = {}; }
+  let countdown = {};
+  try { countdown = getCountdown(shopId)?.data || {}; } catch (_) { countdown = {}; }
+  let activations = [];
+  try { activations = listActivations(shopId)?.data || []; } catch (_) { activations = []; }
+  let devices = [];
+  try { devices = listDevices(shopId)?.data || []; } catch (_) { devices = []; }
+  let fee = { enabled: false, config: {} };
+  try { fee = getEffectiveServiceFee({ package_id: shop.package_id, shop_id: shopId }) || fee; } catch (_) { /* */ }
+  let audit = [];
+  try { audit = shops.listAuditForShop?.(shopId, 40)?.data || []; } catch (_) { audit = []; }
+
+  let provisionJobs = [];
+  try {
+    const p = require('./provisioner');
+    provisionJobs = p.listJobs?.(shopId)?.data || p.listJobs?.(shopId) || [];
+    if (provisionJobs?.data) provisionJobs = provisionJobs.data;
+  } catch (_) { provisionJobs = []; }
+
+  let notifications = [];
+  try { notifications = listNotificationLog(shopId, 20)?.data || []; } catch (_) { notifications = []; }
+
+  const documents = {
+    profile: true,
+    contracts: !!(contract?.history?.length || contract?.accepted),
+    signed_terms: !!(contract?.latest_acceptance || contract?.accepted),
+    subscription: true,
+    activation: (activations || []).length > 0,
+    devices: (devices || []).length > 0,
+    audit: (audit || []).length > 0,
+    fees: !!fee,
+    invoices: false,
+    uploaded: false
+  };
+
+  const actions = [
+    { id: 'edit_customer', label: 'Edit Customer', available: true },
+    { id: 'change_package', label: 'Change Package', available: true },
+    { id: 'manage_addons', label: 'Add / Remove Add-ons', available: true },
+    { id: 'manage_entitlements', label: 'Manage Entitlements', available: true },
+    { id: 'manage_subscription', label: 'Manage Subscription', available: true },
+    { id: 'manage_activation', label: 'Manage Activation', available: true },
+    { id: 'generate_activation', label: 'Generate Activation Link', available: !!baseUrl || !!shop.shop_url || true },
+    { id: 'revoke_activation', label: 'Revoke Activation Link', available: (activations || []).some((a) => a.status === 'active') },
+    { id: 'manage_devices', label: 'Manage Devices', available: true },
+    { id: 'view_devices', label: 'View Devices', available: true },
+    { id: 'suspend', label: 'Suspend Customer', available: String(shop.subscription_status).toUpperCase() !== 'SUSPENDED' },
+    { id: 'reactivate', label: 'Reactivate Customer', available: String(shop.subscription_status).toUpperCase() === 'SUSPENDED' },
+    { id: 'manage_fees', label: 'Manage Service Fees', available: true },
+    { id: 'view_contracts', label: 'View Contracts / T&Cs', available: true },
+    { id: 'view_signed', label: 'View Signed Agreements', available: !!documents.signed_terms },
+    { id: 'view_documents', label: 'View Documents', available: true },
+    { id: 'view_audit', label: 'View Audit Log', available: true },
+    { id: 'view_provisioning', label: 'View Provisioning History', available: true },
+    { id: 'check_health', label: 'Check Health', available: !!baseUrl },
+    { id: 'sync_entitlements', label: 'Sync Entitlements', available: !!baseUrl },
+    { id: 'retry_provision', label: 'Retry Failed Provisioning', available: true }
+  ];
+
   return {
     success: true,
     data: {
       customer: shop,
-      contract: getShopContractStatus(shopId).data,
+      info: {
+        shop_name: shop.shop_name,
+        owner_name: shop.owner_name,
+        owner_email: shop.owner_email,
+        whatsapp: shop.whatsapp,
+        phone: shop.contact_phone || shop.shop_phone,
+        address: shop.shop_address || shop.address,
+        shop_id: shop.id,
+        customer_id: shop.id,
+        package_id: shop.package_id,
+        package_name: shop.package_name,
+        addon_ids: shop.addon_ids || [],
+        addon_names: shop.addon_names || [],
+        subscription_status: shop.subscription_status,
+        subscription_start: shop.subscription_start,
+        subscription_expiry: shop.subscription_expiry,
+        grace_days: shop.grace_days,
+        account_status: shop.is_active ? 'active' : 'inactive',
+        activation_status: shop.activation_status,
+        provisioning_status: shop.deployment_status,
+        railway_project_id: shop.railway_project_id || null,
+        railway_service_id: shop.railway_service_id || null,
+        railway_environment_id: shop.railway_environment_id || null,
+        environment_label: shop.railway_environment_id
+          ? `env:${String(shop.railway_environment_id).slice(0, 12)}…`
+          : (baseUrl ? 'provisioned' : 'not_provisioned'),
+        shop_url: baseUrl,
+        last_health: health
+      },
+      open_customer_shop_url: baseUrl || null,
+      links,
+      actions,
+      documents,
+      contract,
       package: shop.package_id,
       addons: shop.addon_ids,
-      subscription: getCountdown(shopId).data,
-      activation: listActivations(shopId).data,
-      devices: listDevices(shopId).data,
-      service_fee: getEffectiveServiceFee({ package_id: shop.package_id, shop_id: shopId }),
-      notifications: listNotificationLog(shopId, 20).data,
-      health: null,
-      access: evaluateShopAccess(dbGet('SELECT * FROM platform_shops WHERE id = ?', [shopId])),
-      audit: shops.listAuditForShop(shopId, 40).data,
+      subscription: countdown,
+      activation: activations,
+      devices,
+      service_fee: fee,
+      notifications,
+      health,
+      access,
+      audit,
+      provision_jobs: Array.isArray(provisionJobs) ? provisionJobs.slice(0, 20) : [],
       renewal: {
         package_id: shop.package_id,
         package_name: shop.package_name,
@@ -2130,11 +2466,19 @@ function getCustomerControl(shopId) {
         subscription_status: shop.subscription_status,
         subscription_start: shop.subscription_start,
         subscription_expiry: shop.subscription_expiry,
-        days_remaining: getCountdown(shopId).data?.days_remaining,
-        service_fee: getEffectiveServiceFee({ package_id: shop.package_id, shop_id: shopId }),
-        contract: getShopContractStatus(shopId).data,
-        show_contract_on_renewal: !!(getShopContractStatus(shopId).data?.needs_reacceptance)
-      }
+        days_remaining: countdown?.days_remaining,
+        service_fee: fee,
+        contract,
+        show_contract_on_renewal: !!(contract?.needs_reacceptance)
+      },
+      entitlements_summary: entitlements
+        ? {
+          package_id: entitlements.package_id,
+          addon_ids: entitlements.addon_ids,
+          flags: entitlements.flags || {},
+          module_count: Object.values(entitlements.modules || {}).filter(Boolean).length
+        }
+        : null
     }
   };
 }
@@ -2198,5 +2542,8 @@ module.exports = {
   listNotificationLog,
   processSubscriptionNotifications,
   // aggregate
-  getCustomerControl
+  getCustomerControl,
+  buildCustomerAppLinks,
+  resolveCustomerBaseUrl,
+  CUSTOMER_APP_LINK_DEFS
 };

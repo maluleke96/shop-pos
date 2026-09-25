@@ -131,7 +131,7 @@ function _syncLedgerLegacy(from, to) {
         amount: r.total_refund || 0, direction: 'out',
         payment_method: r.refund_method || 'cash', account_type: accountTypeForPayment(r.refund_method),
         reference_type: 'return', reference_id: r.id, customer_id: r.customer_id, is_auto: 1,
-        branch: branchLabelForId(s.branch_id)
+        branch: branchLabelForId(r.branch_id)
       });
     });
   });
@@ -239,6 +239,33 @@ function _syncLedgerLegacy(from, to) {
         category: bt.txn_type, description: bt.description || bt.txn_type, amount: bt.amount,
         direction: bt.direction, account_type: 'bank', reference_type: 'bank_transaction', reference_id: bt.id,
         is_auto: 1, created_by_name: bt.created_by_name
+      });
+    });
+  });
+
+  // Cash-up variance → bookkeeping ledger (connects Ops Cash-Up to Bookkeeping)
+  run('cashups', () => {
+    db.prepare(`
+      SELECT * FROM cashup_sessions
+      WHERE date(created_at) BETWEEN date(?) AND date(?)`).all(...range).forEach((cu) => {
+      const diff = Number(cu.difference) || 0;
+      if (Math.abs(diff) < 0.01) return;
+      const shortage = diff < 0;
+      upsertLedger({
+        txn_number: `CU-${cu.id}`,
+        txn_date: String(cu.created_at || '').slice(0, 10),
+        txn_type: 'cashup',
+        category: shortage ? 'Cash Shortage' : 'Cash Overage',
+        subcategory: 'Cash-Up',
+        description: `Cash-up #${cu.id} variance${cu.notes ? ` — ${cu.notes}` : ''}`,
+        amount: Math.abs(diff),
+        direction: shortage ? 'out' : 'in',
+        payment_method: 'cash',
+        account_type: 'cash',
+        reference_type: 'cashup_session',
+        reference_id: cu.id,
+        is_auto: 1,
+        branch: branchLabelForId(cu.branch_id)
       });
     });
   });
@@ -602,47 +629,279 @@ function getTaxSummary(from, to, branchId) {
   };
 }
 
+function moneyRound(n) {
+  return Math.round((Number(n) || 0) * 100) / 100;
+}
+
+function categoryTotals(from, to, direction) {
+  return getDb().prepare(`
+    SELECT category, COALESCE(SUM(amount),0) as total, COUNT(*) as count
+    FROM ledger_entries
+    WHERE direction=? AND txn_date BETWEEN ? AND ?
+    GROUP BY category ORDER BY total DESC`).all(direction, from, to);
+}
+
+function buildIncomeStatement(from, to) {
+  const dash = getFinancialDashboard(from, to);
+  const incomeCats = categoryTotals(from, to, 'in');
+  const expenseCats = categoryTotals(from, to, 'out');
+
+  const COST_CATS = new Set(['Stock Purchases', 'Cost of Goods', 'COGS']);
+  const REVENUE_CATS = new Set(['Sales Income', 'Customer Payments']);
+
+  const revenueLines = [];
+  const otherIncomeLines = [];
+  incomeCats.forEach((r) => {
+    const line = { label: r.category, amount: moneyRound(r.total), count: r.count };
+    if (REVENUE_CATS.has(r.category)) revenueLines.push(line);
+    else otherIncomeLines.push(line);
+  });
+  // Prefer POS revenue for the face of the statement (tax / annual return)
+  const salesRevenue = moneyRound(dash.revenue);
+  if (salesRevenue > 0) {
+    revenueLines.length = 0;
+    revenueLines.push({ label: 'Sales Income (POS)', amount: salesRevenue, count: null });
+  }
+
+  const cogsLines = expenseCats.filter((r) => COST_CATS.has(r.category))
+    .map((r) => ({ label: r.category, amount: moneyRound(r.total), count: r.count }));
+  const cogsFromStock = moneyRound(dash.cogs);
+  if (cogsFromStock > 0 && !cogsLines.length) {
+    cogsLines.push({ label: 'Cost of Goods Sold (stock)', amount: cogsFromStock, count: null });
+  } else if (cogsFromStock > 0) {
+    // Prefer inventory COGS for statement accuracy
+    cogsLines.length = 0;
+    cogsLines.push({ label: 'Cost of Goods Sold', amount: cogsFromStock, count: null });
+  }
+
+  const opExLines = expenseCats
+    .filter((r) => !COST_CATS.has(r.category))
+    .map((r) => ({ label: r.category, amount: moneyRound(r.total), count: r.count }));
+
+  const revenueTotal = salesRevenue > 0
+    ? salesRevenue
+    : moneyRound(revenueLines.reduce((s, l) => s + l.amount, 0));
+  const cogsTotal = cogsFromStock > 0
+    ? cogsFromStock
+    : moneyRound(cogsLines.reduce((s, l) => s + l.amount, 0));
+  const grossProfit = moneyRound(revenueTotal - cogsTotal);
+  const otherIncomeTotal = moneyRound(otherIncomeLines.reduce((s, l) => s + l.amount, 0));
+  const operatingExpenses = moneyRound(opExLines.reduce((s, l) => s + l.amount, 0));
+  const netProfit = moneyRound(grossProfit + otherIncomeTotal - operatingExpenses);
+
+  const sections = [
+    { id: 'revenue', title: 'Revenue', lines: revenueLines.length ? revenueLines : [{ label: 'Sales Income', amount: revenueTotal }], total: revenueTotal },
+    { id: 'cogs', title: 'Cost of Sales', lines: cogsLines.length ? cogsLines : [{ label: 'Cost of Goods Sold', amount: cogsTotal }], total: cogsTotal },
+    { id: 'gross', title: 'Gross Profit', lines: [], total: grossProfit, isSubtotal: true },
+    { id: 'other_income', title: 'Other Income', lines: otherIncomeLines, total: otherIncomeTotal },
+    { id: 'expenses', title: 'Operating Expenses', lines: opExLines, total: operatingExpenses },
+    { id: 'net', title: 'Net Profit / (Loss)', lines: [], total: netProfit, isTotal: true }
+  ];
+
+  return {
+    type: 'income_statement',
+    title: 'Income Statement (Statement of Profit or Loss)',
+    from, to,
+    sections,
+    summary: {
+      revenue: revenueTotal,
+      cogs: cogsTotal,
+      grossProfit,
+      otherIncome: otherIncomeTotal,
+      operatingExpenses,
+      netProfit,
+      grossMargin: revenueTotal > 0 ? moneyRound((grossProfit / revenueTotal) * 100) : 0,
+      netMargin: revenueTotal > 0 ? moneyRound((netProfit / revenueTotal) * 100) : 0
+    },
+    lines: expenseCats.concat(incomeCats) // back-compat for old UI
+  };
+}
+
+function buildBalanceSheet(from, to) {
+  const dash = getFinancialDashboard(from, to);
+  const cash = moneyRound(dash.cashBalance);
+  const bank = moneyRound(dash.bankBalance);
+  const inventory = moneyRound(dash.inventoryValue);
+  const receivable = moneyRound(dash.accountsReceivable);
+  const currentAssets = [
+    { label: 'Cash on hand', amount: cash },
+    { label: 'Bank', amount: bank },
+    { label: 'Inventory', amount: inventory },
+    { label: 'Accounts receivable (customers)', amount: receivable }
+  ];
+  const totalAssets = moneyRound(cash + bank + inventory + receivable);
+
+  const payable = moneyRound(dash.accountsPayable);
+  const payrollPending = moneyRound(dash.payrollPending);
+  const ownerOutstanding = moneyRound(dash.ownerOutstanding);
+  const currentLiab = [
+    { label: 'Accounts payable (suppliers)', amount: payable },
+    { label: 'Payroll payable', amount: payrollPending },
+    { label: 'Owner salary outstanding', amount: ownerOutstanding }
+  ];
+  const totalLiabilities = moneyRound(payable + payrollPending + ownerOutstanding);
+
+  const netProfit = moneyRound(dash.netProfit);
+  const equity = moneyRound(totalAssets - totalLiabilities);
+  const retained = netProfit;
+  const capital = moneyRound(equity - retained);
+
+  return {
+    type: 'balance_sheet',
+    title: 'Balance Sheet (Statement of Financial Position)',
+    from, to,
+    asOf: to,
+    assets: {
+      current: currentAssets,
+      total: totalAssets
+    },
+    liabilities: {
+      current: currentLiab,
+      total: totalLiabilities
+    },
+    equity: {
+      lines: [
+        { label: 'Owner / Retained earnings (period)', amount: retained },
+        { label: 'Capital & reserves (balancing)', amount: capital }
+      ],
+      total: equity,
+      netProfit: retained
+    },
+    check: {
+      assets: totalAssets,
+      liabilitiesPlusEquity: moneyRound(totalLiabilities + equity),
+      balanced: Math.abs(totalAssets - (totalLiabilities + equity)) < 0.02
+    },
+    // back-compat
+    summary: dash
+  };
+}
+
+function buildCashFlowStatement(from, to) {
+  const dash = getFinancialDashboard(from, to);
+  const settings = getBookkeepingSettings();
+  const cash = getCashBook(from, to);
+  const bank = getBankBook(from, to);
+
+  const operatingIn = moneyRound(sumLedger(
+    `SELECT COALESCE(SUM(amount),0) as v FROM ledger_entries
+     WHERE direction='in' AND txn_date BETWEEN ? AND ?
+       AND category IN ('Sales Income','Customer Payments','Cash Overage','Miscellaneous Income')`,
+    [from, to]
+  ));
+  const operatingOut = moneyRound(sumLedger(
+    `SELECT COALESCE(SUM(amount),0) as v FROM ledger_entries
+     WHERE direction='out' AND txn_date BETWEEN ? AND ?
+       AND category NOT IN ('Owner Investment','Owner Salary','Owner Drawings','Equipment')`,
+    [from, to]
+  ));
+  const investingOut = moneyRound(sumLedger(
+    `SELECT COALESCE(SUM(amount),0) as v FROM ledger_entries
+     WHERE direction='out' AND txn_date BETWEEN ? AND ? AND category IN ('Equipment','Repairs & Maintenance')`,
+    [from, to]
+  ));
+  const financingIn = moneyRound(sumLedger(
+    `SELECT COALESCE(SUM(amount),0) as v FROM ledger_entries
+     WHERE direction='in' AND txn_date BETWEEN ? AND ? AND category IN ('Owner Investment')`,
+    [from, to]
+  ));
+  const financingOut = moneyRound(sumLedger(
+    `SELECT COALESCE(SUM(amount),0) as v FROM ledger_entries
+     WHERE direction='out' AND txn_date BETWEEN ? AND ? AND category IN ('Owner Salary','Owner Drawings')`,
+    [from, to]
+  ));
+
+  const netOperating = moneyRound(operatingIn - operatingOut);
+  const netInvesting = moneyRound(0 - investingOut);
+  const netFinancing = moneyRound(financingIn - financingOut);
+  const netChange = moneyRound(netOperating + netInvesting + netFinancing);
+
+  const cashClosing = moneyRound(dash.cashBalance);
+  const bankClosing = moneyRound(dash.bankBalance);
+  const closing = moneyRound(cashClosing + bankClosing);
+  const opening = moneyRound(
+    (Number(settings.cash_opening_balance) || 0) +
+    (Number(settings.bank_opening_balance) || 0) +
+    (closing - netChange)
+  );
+
+  return {
+    type: 'cash_flow',
+    title: 'Cash Flow Statement',
+    from, to,
+    sections: [
+      {
+        id: 'operating',
+        title: 'Operating activities',
+        lines: [
+          { label: 'Cash received from customers & sales', amount: operatingIn },
+          { label: 'Cash paid to suppliers & expenses', amount: -operatingOut }
+        ],
+        total: netOperating
+      },
+      {
+        id: 'investing',
+        title: 'Investing activities',
+        lines: [
+          { label: 'Equipment & capital spend', amount: -investingOut }
+        ],
+        total: netInvesting
+      },
+      {
+        id: 'financing',
+        title: 'Financing activities',
+        lines: [
+          { label: 'Owner investment', amount: financingIn },
+          { label: 'Owner salary / drawings', amount: -financingOut }
+        ],
+        total: netFinancing
+      }
+    ],
+    netChange,
+    openingCash: opening,
+    closingCash: closing,
+    cashBook: cash,
+    bankBook: bank,
+    // back-compat
+    cash, bank
+  };
+}
+
 function getFinancialReport(type, from, to) {
   syncLedger(from, to);
   const db = getDb();
-  const dash = getFinancialDashboard(from, to);
 
   if (type === 'profit_loss' || type === 'income_statement') {
-    const byCategory = db.prepare(`
-      SELECT category, direction, COALESCE(SUM(amount),0) as total FROM ledger_entries
-      WHERE txn_date BETWEEN ? AND ? GROUP BY category, direction ORDER BY total DESC`).all(from, to);
-    return { type, from, to, summary: dash, lines: byCategory };
+    return buildIncomeStatement(from, to);
   }
   if (type === 'balance_sheet') {
-    return {
-      type, from, to,
-      assets: { cash: dash.cashBalance, bank: dash.bankBalance, inventory: dash.inventoryValue, receivable: dash.accountsReceivable },
-      liabilities: { payable: dash.accountsPayable, payrollPending: dash.payrollPending, ownerOutstanding: dash.ownerOutstanding },
-      equity: dash.netProfit
-    };
+    return buildBalanceSheet(from, to);
   }
   if (type === 'cash_flow') {
-    const cash = getCashBook(from, to);
-    const bank = getBankBook(from, to);
-    return { type, from, to, cash, bank };
+    return buildCashFlowStatement(from, to);
   }
   if (type === 'trial_balance') {
-    return db.prepare(`
+    const rows = db.prepare(`
       SELECT category, direction, COALESCE(SUM(amount),0) as total, COUNT(*) as count
       FROM ledger_entries WHERE txn_date BETWEEN ? AND ? GROUP BY category, direction ORDER BY category`).all(from, to);
+    const debit = moneyRound(rows.filter((r) => r.direction === 'out').reduce((s, r) => s + Number(r.total), 0));
+    const credit = moneyRound(rows.filter((r) => r.direction === 'in').reduce((s, r) => s + Number(r.total), 0));
+    return {
+      type: 'trial_balance',
+      title: 'Trial Balance',
+      from, to,
+      lines: rows,
+      totals: { debit, credit, difference: moneyRound(credit - debit) }
+    };
   }
   if (type === 'general_ledger') {
     return searchLedger({ from, to });
   }
   if (type === 'expense_report') {
-    return db.prepare(`
-      SELECT category, COALESCE(SUM(amount),0) as total, COUNT(*) as count FROM ledger_entries
-      WHERE direction='out' AND txn_date BETWEEN ? AND ? GROUP BY category ORDER BY total DESC`).all(from, to);
+    return categoryTotals(from, to, 'out');
   }
   if (type === 'income_report') {
-    return db.prepare(`
-      SELECT category, COALESCE(SUM(amount),0) as total, COUNT(*) as count FROM ledger_entries
-      WHERE direction='in' AND txn_date BETWEEN ? AND ? GROUP BY category ORDER BY total DESC`).all(from, to);
+    return categoryTotals(from, to, 'in');
   }
   if (type === 'payroll_report') return getPayrollAccounting(from, to);
   if (type === 'tax_report') return getTaxSummary(from, to);
@@ -656,6 +915,227 @@ function getFinancialReport(type, from, to) {
     return db.prepare(`SELECT name, phone, balance FROM customers WHERE balance > 0 ORDER BY balance DESC`).all();
   }
   return { type, from, to, data: [] };
+}
+
+/** Bundle of the three annual/tax-ready statements + tax & payroll summaries */
+function getYearEndPack(from, to) {
+  syncLedger(from, to);
+  const db = getDb();
+  let shop = {};
+  try {
+    shop = db.prepare(`
+      SELECT shop_name, address, phone, email, vat_number, tax_rate, tax_enabled, currency
+      FROM shop_settings WHERE id = 1`).get() || {};
+  } catch (_) { /* */ }
+  const settings = getBookkeepingSettings();
+  const incomeStatement = buildIncomeStatement(from, to);
+  const balanceSheet = buildBalanceSheet(from, to);
+  const cashFlow = buildCashFlowStatement(from, to);
+  const tax = getTaxSummary(from, to);
+  const payroll = getPayrollAccounting(from, to);
+
+  return {
+    from,
+    to,
+    generatedAt: new Date().toISOString(),
+    shop: {
+      name: shop.shop_name || 'Shop',
+      address: shop.address || '',
+      phone: shop.phone || '',
+      email: shop.email || '',
+      vat_number: shop.vat_number || '',
+      currency: shop.currency || 'R',
+      vat_rate: Number(settings.vat_rate) || Number(shop.tax_rate) || 15,
+      vat_registered: !!(settings.vat_registered != null ? settings.vat_registered : shop.tax_enabled),
+      fiscal_year_start: settings.fiscal_year_start || '03-01'
+    },
+    documents: {
+      income_statement: incomeStatement,
+      balance_sheet: balanceSheet,
+      cash_flow: cashFlow
+    },
+    tax,
+    payroll,
+    checklist: [
+      { id: 'income_statement', label: 'Income Statement', ready: true, note: 'Required for annual financial statements / CIPC annual return support pack' },
+      { id: 'balance_sheet', label: 'Balance Sheet', ready: true, note: 'Statement of financial position as at period end' },
+      { id: 'cash_flow', label: 'Cash Flow Statement', ready: true, note: 'Operating, investing & financing cash movements' },
+      { id: 'vat201', label: 'VAT summary (VAT201 worksheet)', ready: !!tax.vatRegistered, note: tax.vatRegistered ? `Net VAT payable/refundable: ${tax.netVat}` : 'Mark VAT registered in Bookkeeping → Settings' },
+      { id: 'emp201', label: 'Payroll tax summary (EMP201 worksheet)', ready: Number(tax.paye || 0) + Number(tax.uif || 0) + Number(tax.sdl || 0) > 0, note: 'PAYE + UIF + SDL for the period' },
+      { id: 'coida', label: 'COIDA earnings note', ready: Number(tax.coida || 0) > 0, note: 'Use with Return of Earnings (annual)' }
+    ]
+  };
+}
+
+function statementRowsForPdf(report, currency) {
+  const cur = currency || 'R';
+  const fmt = (n) => `${cur}${Number(n || 0).toFixed(2)}`;
+  const rows = [];
+  if (report?.sections) {
+    report.sections.forEach((sec) => {
+      rows.push([sec.title, '', '']);
+      (sec.lines || []).forEach((l) => {
+        rows.push(['  ' + (l.label || ''), '', fmt(l.amount)]);
+      });
+      if (sec.total != null) {
+        rows.push([sec.isTotal || sec.isSubtotal ? sec.title + ' — total' : '  Total ' + sec.title, '', fmt(sec.total)]);
+      }
+      rows.push(['', '', '']);
+    });
+    return rows;
+  }
+  if (report?.type === 'balance_sheet') {
+    rows.push(['ASSETS', '', '']);
+    (report.assets?.current || []).forEach((l) => rows.push(['  ' + l.label, '', fmt(l.amount)]));
+    rows.push(['Total assets', '', fmt(report.assets?.total)]);
+    rows.push(['', '', '']);
+    rows.push(['LIABILITIES', '', '']);
+    (report.liabilities?.current || []).forEach((l) => rows.push(['  ' + l.label, '', fmt(l.amount)]));
+    rows.push(['Total liabilities', '', fmt(report.liabilities?.total)]);
+    rows.push(['', '', '']);
+    rows.push(['EQUITY', '', '']);
+    (report.equity?.lines || []).forEach((l) => rows.push(['  ' + l.label, '', fmt(l.amount)]));
+    rows.push(['Total equity', '', fmt(report.equity?.total)]);
+    return rows;
+  }
+  return rows;
+}
+
+function buildFinancialReportPdf(type, from, to, shopName, currency) {
+  const exportSvc = require('./export');
+  const report = getFinancialReport(type, from, to);
+  const cur = currency || 'R';
+  let headers = ['Description', 'Notes', 'Amount'];
+  let rows = [];
+
+  if (type === 'profit_loss' || type === 'income_statement' || type === 'cash_flow') {
+    rows = statementRowsForPdf(report, cur);
+  } else if (type === 'balance_sheet') {
+    rows = statementRowsForPdf(report, cur);
+  } else if (type === 'trial_balance') {
+    headers = ['Category', 'Direction', 'Total', 'Count'];
+    const lines = report.lines || report || [];
+    rows = lines.map((l) => [l.category, l.direction || '—', `${cur}${Number(l.total).toFixed(2)}`, l.count || '']);
+  } else if (type === 'expense_report' || type === 'income_report') {
+    headers = ['Category', 'Total', 'Count'];
+    rows = (Array.isArray(report) ? report : []).map((l) => [l.category, `${cur}${Number(l.total).toFixed(2)}`, l.count || '']);
+  } else if (type === 'general_ledger') {
+    headers = ['Date', 'Txn#', 'Type', 'Category', 'Amount', 'Direction'];
+    rows = (report || []).slice(0, 200).map((l) => [l.txn_date, l.txn_number, l.txn_type, l.category, `${cur}${Number(l.amount).toFixed(2)}`, l.direction]);
+  } else if (type === 'tax_report') {
+    headers = ['Item', 'Amount'];
+    rows = [
+      ['Output VAT', `${cur}${Number(report.outputVat || report.vat || 0).toFixed(2)}`],
+      ['Input VAT', `${cur}${Number(report.inputVat || 0).toFixed(2)}`],
+      ['Net VAT', `${cur}${Number(report.netVat || 0).toFixed(2)}`],
+      ['PAYE', `${cur}${Number(report.paye || 0).toFixed(2)}`],
+      ['UIF', `${cur}${Number(report.uif || 0).toFixed(2)}`],
+      ['SDL', `${cur}${Number(report.sdl || 0).toFixed(2)}`],
+      ['COIDA', `${cur}${Number(report.coida || 0).toFixed(2)}`],
+      ['Taxable sales', `${cur}${Number(report.taxableSales || 0).toFixed(2)}`]
+    ];
+  } else if (type === 'payroll_report') {
+    headers = ['Item', 'Amount'];
+    rows = Object.entries(report || {}).map(([k, v]) => [k, typeof v === 'number' ? `${cur}${Number(v).toFixed(2)}` : String(v)]);
+  } else {
+    headers = ['Metric', 'Value'];
+    rows = [['Net Profit', `${cur}${Number(report.summary?.netProfit || report.sections?.find?.((s) => s.id === 'net')?.total || 0).toFixed(2)}`]];
+  }
+
+  const title = (report.title || type.replace(/_/g, ' ')).toUpperCase();
+  return exportSvc.buildPdfBuffer(`${title} (${from} – ${to})`, headers, rows, {
+    shop_name: shopName,
+    dateRange: `${from} – ${to}`
+  });
+}
+
+function buildYearEndPackPdf(from, to, shopName, currency) {
+  const pack = getYearEndPack(from, to);
+  const cur = currency || pack.shop.currency || 'R';
+  const name = shopName || pack.shop.name || 'Shop';
+  const docs = [
+    ['INCOME STATEMENT', pack.documents.income_statement],
+    ['BALANCE SHEET', pack.documents.balance_sheet],
+    ['CASH FLOW STATEMENT', pack.documents.cash_flow]
+  ];
+  // Build one combined multi-section PDF via sequential tables in one doc
+  const { jsPDF } = require('jspdf');
+  require('jspdf-autotable');
+  const { pdfBytes } = require('./pdf-bytes');
+  const doc = new jsPDF();
+  let y = 16;
+  doc.setFontSize(16);
+  doc.setFont(undefined, 'bold');
+  doc.text(name, 14, y);
+  y += 7;
+  doc.setFontSize(11);
+  doc.text('Year-End / Tax Support Pack', 14, y);
+  y += 6;
+  doc.setFont(undefined, 'normal');
+  doc.setFontSize(9);
+  doc.text(`Period: ${from} – ${to}`, 14, y);
+  y += 5;
+  if (pack.shop.vat_number) {
+    doc.text(`VAT: ${pack.shop.vat_number}`, 14, y);
+    y += 5;
+  }
+  doc.text(`Generated: ${new Date().toLocaleString()}`, 14, y);
+  y += 8;
+
+  docs.forEach(([label, report], idx) => {
+    if (idx > 0) {
+      doc.addPage();
+      y = 16;
+    }
+    doc.setFontSize(13);
+    doc.setFont(undefined, 'bold');
+    doc.text(label, 14, y);
+    y += 4;
+    doc.setFont(undefined, 'normal');
+    const rows = statementRowsForPdf(report, cur);
+    doc.autoTable({
+      head: [['Description', 'Notes', 'Amount']],
+      body: rows.length ? rows : [['No data', '', '']],
+      startY: y + 2,
+      styles: { fontSize: 8 },
+      headStyles: { fillColor: [37, 99, 235] }
+    });
+  });
+
+  // Tax worksheet page
+  doc.addPage();
+  y = 16;
+  doc.setFontSize(13);
+  doc.setFont(undefined, 'bold');
+  doc.text('TAX WORKSHEET (VAT + PAYROLL)', 14, y);
+  y += 6;
+  doc.setFont(undefined, 'normal');
+  const t = pack.tax || {};
+  doc.autoTable({
+    head: [['Item', 'Amount']],
+    body: [
+      ['Output VAT', `${cur}${Number(t.outputVat || t.vat || 0).toFixed(2)}`],
+      ['Input VAT', `${cur}${Number(t.inputVat || 0).toFixed(2)}`],
+      ['Net VAT (payable / refundable)', `${cur}${Number(t.netVat || 0).toFixed(2)}`],
+      ['PAYE', `${cur}${Number(t.paye || 0).toFixed(2)}`],
+      ['UIF', `${cur}${Number(t.uif || 0).toFixed(2)}`],
+      ['SDL', `${cur}${Number(t.sdl || 0).toFixed(2)}`],
+      ['COIDA', `${cur}${Number(t.coida || 0).toFixed(2)}`],
+      ['Taxable sales (incl.)', `${cur}${Number(t.taxableSales || 0).toFixed(2)}`]
+    ],
+    startY: y,
+    styles: { fontSize: 9 },
+    headStyles: { fillColor: [22, 163, 74] }
+  });
+
+  const pageCount = doc.internal.getNumberOfPages();
+  for (let i = 1; i <= pageCount; i++) {
+    doc.setPage(i);
+    doc.setFontSize(8);
+    doc.setTextColor(128);
+    doc.text(`${name} — Year-End Pack — Page ${i} of ${pageCount}`, 14, 290);
+  }
+  return pdfBytes(doc);
 }
 
 function getBusinessPerformance(from, to) {
@@ -811,26 +1291,6 @@ function Utils_today() {
   return new Date().toLocaleDateString('en-CA');
 }
 
-function buildFinancialReportPdf(type, from, to, shopName, currency) {
-  const exportSvc = require('./export');
-  const report = getFinancialReport(type, from, to);
-  let headers, rows;
-  if (type === 'profit_loss' || type === 'income_statement') {
-    headers = ['Category', 'Direction', 'Amount'];
-    rows = (report.lines || []).map(l => [l.category, l.direction, `${currency}${Number(l.total).toFixed(2)}`]);
-  } else if (type === 'trial_balance' || type === 'expense_report' || type === 'income_report') {
-    headers = ['Category', 'Direction', 'Total', 'Count'];
-    rows = (report || []).map(l => [l.category, l.direction || '—', `${currency}${Number(l.total).toFixed(2)}`, l.count || '']);
-  } else if (type === 'general_ledger') {
-    headers = ['Date', 'Txn#', 'Type', 'Category', 'Amount', 'Direction'];
-    rows = (report || []).slice(0, 100).map(l => [l.txn_date, l.txn_number, l.txn_type, l.category, `${currency}${Number(l.amount).toFixed(2)}`, l.direction]);
-  } else {
-    headers = ['Metric', 'Value'];
-    rows = [['Net Profit', `${currency}${Number(report.summary?.netProfit || 0).toFixed(2)}`]];
-  }
-  return exportSvc.buildPdfBuffer(`${type.replace(/_/g, ' ').toUpperCase()} (${from} – ${to})`, headers, rows, { shop_name: shopName, dateRange: `${from} – ${to}` });
-}
-
 module.exports = {
   EXPENSE_CATEGORIES, INCOME_TYPES,
   getBookkeepingSettings, saveBookkeepingSettings,
@@ -838,9 +1298,9 @@ module.exports = {
   getIncomeEntries, saveIncomeEntry, deleteIncomeEntry,
   getBankTransactions, saveBankTransaction,
   getCashBook, getBankBook, getPayrollAccounting, getTaxSummary,
-  getFinancialReport, getBusinessPerformance,
+  getFinancialReport, getYearEndPack, getBusinessPerformance,
   getBudgets, saveBudget, deleteBudget, getBudgetVsActual,
   getFinancialDocuments, saveFinancialDocument, deleteFinancialDocument,
   getFinancialAuditTrail, getFinancialNotifications,
-  buildFinancialReportPdf
+  buildFinancialReportPdf, buildYearEndPackPdf
 };

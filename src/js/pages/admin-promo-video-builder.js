@@ -82,7 +82,8 @@ window.AdminPromoVideoBuilderPage = {
     thumbnailTime: 0,
     clipTrimStart: 0,
     clipTrimEnd: 5,
-    productImageShape: 'circle', // circle | square
+    productImageShape: 'fill', // fill | circle | square
+    fullScreenFill: true,
     outroContactScale: 1,
     outroBranchScale: 1,
     outroDeliveryScale: 1,
@@ -111,9 +112,9 @@ window.AdminPromoVideoBuilderPage = {
   ],
 
   FORMATS: {
-    vertical: { w: 1080, h: 1920, label: '9:16 Vertical (WhatsApp / Reels / TikTok)', cls: '' },
-    landscape: { w: 1920, h: 1080, label: '16:9 Landscape (TV / YouTube / Facebook)', cls: 'is-landscape' },
-    square: { w: 1080, h: 1080, label: '1:1 Square (Social feed)', cls: 'is-square' }
+    vertical: { w: 1080, h: 1920, label: 'PORTRAIT 9:16 · 1080×1920 (WhatsApp / Reels / TikTok)', cls: '', ratio: '9:16' },
+    landscape: { w: 1920, h: 1080, label: 'LANDSCAPE 16:9 · 1920×1080 (TV / YouTube / Facebook)', cls: 'is-landscape', ratio: '16:9' },
+    square: { w: 1080, h: 1080, label: 'SQUARE 1:1 · 1080×1080 (Social feed)', cls: 'is-square', ratio: '1:1' }
   },
 
   THEMES: {
@@ -143,7 +144,7 @@ window.AdminPromoVideoBuilderPage = {
   toast(msg, type) { if (typeof Utils !== 'undefined' && Utils.toast) Utils.toast(msg, type || 'info'); },
 
   ensureCss() {
-    const href = 'css/promo-video-builder.css?v=11';
+    const href = 'css/promo-video-builder.css?v=12';
     let l = document.getElementById('promo-video-builder-css');
     if (l) { l.href = href; return; }
     l = document.createElement('link');
@@ -809,11 +810,13 @@ window.AdminPromoVideoBuilderPage = {
             ).join('')}
           </select>
         </div>
-        <div class="pvb-field"><label>Product picture shape</label>
+        <div class="pvb-field"><label>Product picture on video</label>
           <select id="pvb-img-shape">
-            <option value="circle" ${this.draft.productImageShape !== 'square' ? 'selected' : ''}>Circle</option>
-            <option value="square" ${this.draft.productImageShape === 'square' ? 'selected' : ''}>Square</option>
+            <option value="fill" ${!this.draft.productImageShape || this.draft.productImageShape === 'fill' ? 'selected' : ''}>Full screen (edge to edge)</option>
+            <option value="square" ${this.draft.productImageShape === 'square' ? 'selected' : ''}>Square frame</option>
+            <option value="circle" ${this.draft.productImageShape === 'circle' ? 'selected' : ''}>Circle frame</option>
           </select>
+          <p class="pvb-sub">Full screen fills the whole video left-to-right and top-to-bottom (landscape &amp; vertical). No empty bars on the sides.</p>
         </div>
         <div class="pvb-field">
           <label>Music &amp; voice tracks</label>
@@ -857,8 +860,9 @@ window.AdminPromoVideoBuilderPage = {
               `<option value="${v}" ${this.draft.quality === v ? 'selected' : ''}>${l}</option>`
             ).join('')}
           </select>
-          ${this.toggle('pvb-out-wa', 'Optimise for WhatsApp', !!this.draft.outputWhatsApp)}
-          ${this.toggle('pvb-out-tv', 'Store TV mode (16:9 landscape + loop)', !!this.draft.outputTv)}
+          ${this.toggle('pvb-out-wa', 'WhatsApp-friendly bitrate (keeps full format size)', !!this.draft.outputWhatsApp)}
+          ${this.toggle('pvb-out-tv', 'Store TV bitrate + loop preview (does not change format)', !!this.draft.outputTv)}
+          <p class="pvb-sub">Export always uses the selected format size above (e.g. Portrait = 1080×1920). Content fills the canvas with COVER (crop, no black bars, no stretch).</p>
           ${this.toggle('pvb-loop', 'Loop preview', !!this.draft.loopPreview)}
         </div>
         <div class="pvb-field">
@@ -1226,7 +1230,10 @@ window.AdminPromoVideoBuilderPage = {
     if (g('pvb-quality')) this.draft.quality = g('pvb-quality').value;
     if (g('pvb-watermark-text')) this.draft.watermarkText = g('pvb-watermark-text').value || '';
     if (g('pvb-theme')) this.draft.theme = g('pvb-theme').value;
-    if (g('pvb-img-shape')) this.draft.productImageShape = g('pvb-img-shape').value || 'circle';
+    if (g('pvb-img-shape')) {
+      this.draft.productImageShape = g('pvb-img-shape').value || 'fill';
+      this.draft.fullScreenFill = this.draft.productImageShape === 'fill';
+    }
     if (g('pvb-voice-text')) this.draft.voiceText = g('pvb-voice-text').value || '';
     if (g('pvb-promo-caption')) this.draft.promoCaption = g('pvb-promo-caption').value || '';
     if (g('pvb-voice-gender')) this.draft.voiceGender = g('pvb-voice-gender').value || 'female';
@@ -1877,69 +1884,97 @@ window.AdminPromoVideoBuilderPage = {
     const img = this._itemImgs?.[key];
     const land = isLand || W > H;
     const short = Math.min(W, H);
-    const ken = 1 + 0.06 * Math.sin((local / Math.max(0.1, dur)) * Math.PI);
-    const shape = String(this.draft.productImageShape || 'circle');
-    const imgBox = land
-      ? { x: W * 0.05, y: H * 0.1, w: W * 0.4, h: H * 0.8 }
-      : { x: W * 0.1, y: H * 0.12, w: W * 0.8, h: H * 0.4 };
+    const ken = 1 + 0.08 * Math.sin((local / Math.max(0.1, dur)) * Math.PI);
+    const shape = String(this.draft.productImageShape || 'fill');
+    const fullBleed = shape === 'fill' || this.draft.fullScreenFill !== false;
 
-    // Image frame
-    const pad = Math.round(short * 0.012);
-    const ix = imgBox.x + pad;
-    const iy = imgBox.y + pad;
-    const iw = imgBox.w - pad * 2;
-    const ih = imgBox.h - pad * 2;
-    const side = land ? Math.min(iw, ih) : Math.min(iw, ih);
-    const drawX = land ? ix + (iw - side) / 2 : ix + (iw - side) / 2;
-    const drawY = land ? iy + (ih - side) / 2 : iy;
-    const drawS = land ? side : Math.min(iw, ih * 0.95);
-
-    ctx.fillStyle = 'rgba(255,255,255,0.06)';
-    this.roundRect(ctx, imgBox.x, imgBox.y, imgBox.w, imgBox.h, 24);
-    ctx.fill();
-
-    ctx.save();
-    if (shape === 'square') {
-      this.roundRect(ctx, drawX, drawY, drawS, drawS, Math.round(short * 0.03));
-      ctx.clip();
-    } else {
-      ctx.beginPath();
-      ctx.arc(drawX + drawS / 2, drawY + drawS / 2, drawS / 2, 0, Math.PI * 2);
-      ctx.closePath();
-      ctx.clip();
-    }
-    if (img) {
-      const cx = drawX + drawS / 2;
-      const cy = drawY + drawS / 2;
+    // Full-screen fill: product photo covers the whole frame (no empty side bars)
+    if (fullBleed && img) {
+      ctx.save();
+      const cx = W / 2;
+      const cy = H / 2;
       ctx.translate(cx, cy);
       ctx.scale(ken, ken);
       ctx.translate(-cx, -cy);
-      this.drawCover(ctx, img, drawX, drawY, drawS, drawS);
-    } else {
-      ctx.fillStyle = '#334155';
-      ctx.fillRect(drawX, drawY, drawS, drawS);
-    }
-    ctx.restore();
+      this.drawCover(ctx, img, 0, 0, W, H);
+      ctx.restore();
 
-    // Soft ring for circle
-    if (shape !== 'square') {
-      ctx.strokeStyle = 'rgba(255,255,255,0.28)';
-      ctx.lineWidth = Math.max(3, short * 0.006);
-      ctx.beginPath();
-      ctx.arc(drawX + drawS / 2, drawY + drawS / 2, drawS / 2, 0, Math.PI * 2);
-      ctx.stroke();
+      const veil = ctx.createLinearGradient(0, 0, 0, H);
+      veil.addColorStop(0, 'rgba(0,0,0,0.45)');
+      veil.addColorStop(0.35, 'rgba(0,0,0,0.15)');
+      veil.addColorStop(0.55, 'rgba(0,0,0,0.25)');
+      veil.addColorStop(1, 'rgba(0,0,0,0.78)');
+      ctx.fillStyle = veil;
+      ctx.fillRect(0, 0, W, H);
+      if (land) {
+        const side = ctx.createLinearGradient(0, 0, W, 0);
+        side.addColorStop(0, 'rgba(0,0,0,0.55)');
+        side.addColorStop(0.45, 'rgba(0,0,0,0)');
+        side.addColorStop(0.55, 'rgba(0,0,0,0)');
+        side.addColorStop(1, 'rgba(0,0,0,0.55)');
+        ctx.fillStyle = side;
+        ctx.fillRect(0, 0, W, H);
+      }
+    } else {
+      // Framed circle / square (optional legacy layout)
+      const imgBox = land
+        ? { x: W * 0.05, y: H * 0.1, w: W * 0.4, h: H * 0.8 }
+        : { x: W * 0.1, y: H * 0.12, w: W * 0.8, h: H * 0.4 };
+      const pad = Math.round(short * 0.012);
+      const ix = imgBox.x + pad;
+      const iy = imgBox.y + pad;
+      const iw = imgBox.w - pad * 2;
+      const ih = imgBox.h - pad * 2;
+      const side = Math.min(iw, ih);
+      const drawX = ix + (iw - side) / 2;
+      const drawY = land ? iy + (ih - side) / 2 : iy;
+      const drawS = land ? side : Math.min(iw, ih * 0.95);
+
+      ctx.fillStyle = 'rgba(255,255,255,0.06)';
+      this.roundRect(ctx, imgBox.x, imgBox.y, imgBox.w, imgBox.h, 24);
+      ctx.fill();
+
+      ctx.save();
+      if (shape === 'square') {
+        this.roundRect(ctx, drawX, drawY, drawS, drawS, Math.round(short * 0.03));
+        ctx.clip();
+      } else {
+        ctx.beginPath();
+        ctx.arc(drawX + drawS / 2, drawY + drawS / 2, drawS / 2, 0, Math.PI * 2);
+        ctx.closePath();
+        ctx.clip();
+      }
+      if (img) {
+        const cxi = drawX + drawS / 2;
+        const cyi = drawY + drawS / 2;
+        ctx.translate(cxi, cyi);
+        ctx.scale(ken, ken);
+        ctx.translate(-cxi, -cyi);
+        this.drawCover(ctx, img, drawX, drawY, drawS, drawS);
+      } else {
+        ctx.fillStyle = '#334155';
+        ctx.fillRect(drawX, drawY, drawS, drawS);
+      }
+      ctx.restore();
+
+      if (shape !== 'square') {
+        ctx.strokeStyle = 'rgba(255,255,255,0.28)';
+        ctx.lineWidth = Math.max(3, short * 0.006);
+        ctx.beginPath();
+        ctx.arc(drawX + drawS / 2, drawY + drawS / 2, drawS / 2, 0, Math.PI * 2);
+        ctx.stroke();
+      }
     }
 
     const nameAppear = this.ease(Math.min(1, Math.max(0, (local - 0.12) / 0.4)));
     const priceAppear = this.ease(Math.min(1, Math.max(0, (local - 0.4) / 0.35)));
-    const textX = land ? W * 0.52 : W / 2;
-    const textAlign = land ? 'left' : 'center';
-    const textMaxW = land ? W * 0.42 : W * 0.86;
+    const textX = fullBleed && img ? (land ? W * 0.06 : W / 2) : (land ? W * 0.52 : W / 2);
+    const textAlign = fullBleed && img ? (land ? 'left' : 'center') : (land ? 'left' : 'center');
+    const textMaxW = fullBleed && img ? (land ? W * 0.88 : W * 0.9) : (land ? W * 0.42 : W * 0.86);
     ctx.textAlign = textAlign;
 
-    let ty = land ? H * 0.22 : H * 0.58;
+    let ty = fullBleed && img ? (land ? H * 0.55 : H * 0.62) : (land ? H * 0.22 : H * 0.58);
 
-    // Badge / special offer
     const badge = item.badge || this.draft.promoBadge || '';
     if (badge) {
       ctx.globalAlpha = nameAppear;
@@ -1949,7 +1984,6 @@ window.AdminPromoVideoBuilderPage = {
       ty += short * 0.055;
     }
 
-    // Product / combo name
     ctx.globalAlpha = nameAppear;
     ctx.fillStyle = t.text;
     ctx.font = `bold ${Math.round(short * (land ? 0.065 : 0.055))}px system-ui,Segoe UI,sans-serif`;
@@ -1957,7 +1991,6 @@ window.AdminPromoVideoBuilderPage = {
     this.wrapFill(ctx, String(item.name || 'Item').toUpperCase(), textX, ty, textMaxW, nameLine, land ? 2 : 2);
     ty += nameLine * 2.1;
 
-    // Description
     const desc = String(item.description || '').trim();
     if (desc) {
       ctx.globalAlpha = nameAppear * 0.95;
@@ -1970,7 +2003,6 @@ window.AdminPromoVideoBuilderPage = {
       ty += short * 0.02;
     }
 
-    // Price block — sits cleanly on its own row
     if (this.draft.showPrices !== false) {
       ctx.globalAlpha = priceAppear;
       const wn = this.itemWasNow?.(item);
@@ -1981,14 +2013,14 @@ window.AdminPromoVideoBuilderPage = {
         ctx.font = `bold ${Math.round(short * 0.05)}px system-ui,Segoe UI,sans-serif`;
         const pw = Math.max(short * 0.28, ctx.measureText(price).width + short * 0.08);
         const ph = Math.round(short * 0.09);
-        const px = land ? textX : (W - pw) / 2;
-        const py = Math.min(ty, H * 0.86 - ph);
+        const px = textAlign === 'left' ? textX : (W - pw) / 2;
+        const py = Math.min(ty, H * 0.9 - ph);
         ctx.fillStyle = t.accent;
         this.roundRect(ctx, px, py, pw, ph, 14);
         ctx.fill();
         ctx.fillStyle = '#fff';
-        ctx.textAlign = land ? 'left' : 'center';
-        ctx.fillText(price, land ? px + short * 0.035 : W / 2, py + ph * 0.68);
+        ctx.textAlign = textAlign === 'left' ? 'left' : 'center';
+        ctx.fillText(price, textAlign === 'left' ? px + short * 0.035 : W / 2, py + ph * 0.68);
       }
     }
     ctx.globalAlpha = 1;
@@ -2191,11 +2223,17 @@ window.AdminPromoVideoBuilderPage = {
   drawCover(ctx, img, x, y, w, h) {
     if (window.PromoPoster?.drawCoverImage) return PromoPoster.drawCoverImage(ctx, img, x, y, w, h);
     if (!img) return;
-    const ir = img.width / img.height;
+    const iw = Number(img.videoWidth || img.naturalWidth || img.width) || 0;
+    const ih = Number(img.videoHeight || img.naturalHeight || img.height) || 0;
+    if (!(iw > 0 && ih > 0) || !(w > 0 && h > 0)) {
+      try { ctx.drawImage(img, x, y, w, h); } catch (_) { /* */ }
+      return;
+    }
+    const ir = iw / ih;
     const dr = w / h;
     let sw, sh, sx, sy;
-    if (ir > dr) { sh = img.height; sw = sh * dr; sx = (img.width - sw) / 2; sy = 0; }
-    else { sw = img.width; sh = sw / dr; sx = 0; sy = (img.height - sh) / 2; }
+    if (ir > dr) { sh = ih; sw = sh * dr; sx = (iw - sw) / 2; sy = 0; }
+    else { sw = iw; sh = sw / dr; sx = 0; sy = (ih - sh) / 2; }
     ctx.drawImage(img, sx, sy, sw, sh, x, y, w, h);
   },
 
@@ -2433,12 +2471,17 @@ window.AdminPromoVideoBuilderPage = {
   async generateVideo() {
     if (this.generating) return;
     this.readDraftFromDom();
+    // Never override the user's selected format — TV/WhatsApp only affect bitrate / loop
     if (this.draft.outputTv || this.draft.quality === 'tv') {
-      this.draft.format = 'landscape';
       this.draft.loopPreview = true;
     }
     if (this.draft.outputWhatsApp || this.draft.quality === 'whatsapp') {
       this.draft.outputWhatsApp = true;
+    }
+    // Always full-bleed cover for promo exports
+    this.draft.fullScreenFill = true;
+    if (!this.draft.productImageShape || this.draft.productImageShape === 'fill') {
+      this.draft.productImageShape = 'fill';
     }
     const items = this.selectedItems();
     const hasClips = (this.timeline || []).some((s) => s.type === 'clip');
@@ -2464,11 +2507,28 @@ window.AdminPromoVideoBuilderPage = {
     try {
       await this.ensureAssets();
       const fmt = this.formatSize();
-      const qSize = typeof this.qualitySize === 'function' ? this.qualitySize() : { w: fmt.w, h: fmt.h, videoBitsPerSecond: 6_000_000 };
+      // Export canvas MUST match selected format exactly (editor + file agree)
+      const qSize = typeof this.qualitySize === 'function' ? this.qualitySize() : { w: fmt.w, h: fmt.h, videoBitsPerSecond: 8_000_000 };
+      const exportW = Math.max(2, Number(qSize.w) || fmt.w);
+      const exportH = Math.max(2, Number(qSize.h) || fmt.h);
+      // Guard: aspect must match format (never letterbox by mismatching size)
+      const fmtRatio = fmt.w / fmt.h;
+      const expRatio = exportW / exportH;
+      let w = exportW;
+      let h = exportH;
+      if (Math.abs(fmtRatio - expRatio) > 0.02) {
+        w = fmt.w;
+        h = fmt.h;
+      }
+      if (w % 2) w += 1;
+      if (h % 2) h += 1;
       const canvas = document.createElement('canvas');
-      canvas.width = qSize.w;
-      canvas.height = qSize.h;
-      const ctx = canvas.getContext('2d');
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d', { alpha: false });
+      // Opaque black clear — then every frame paints full cover (no empty margins)
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, w, h);
       const fps = 30;
       const totalSec = this.totalDuration();
       const stream = canvas.captureStream(fps);
@@ -2493,7 +2553,8 @@ window.AdminPromoVideoBuilderPage = {
           ? 'video/webm;codecs=vp8,opus'
           : 'video/webm');
       const chunks = [];
-      const recorder = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: qSize.videoBitsPerSecond || 6_000_000 });
+      const bits = Math.max(4_000_000, Number(qSize.videoBitsPerSecond) || 8_000_000);
+      const recorder = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: bits });
       recorder.ondataavailable = (e) => { if (e.data?.size) chunks.push(e.data); };
       const done = new Promise((resolve) => { recorder.onstop = () => resolve(); });
       recorder.start(100);
@@ -2501,7 +2562,9 @@ window.AdminPromoVideoBuilderPage = {
       const frames = Math.ceil(totalSec * fps);
       for (let i = 0; i <= frames; i++) {
         const t = i / fps;
-        this.renderFrame(ctx, canvas.width, canvas.height, t);
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, w, h);
+        this.renderFrame(ctx, w, h, t);
         this.generateProgress = (i / frames) * 100;
         const bar = document.getElementById('pvb-progress');
         if (bar) bar.style.width = `${Math.round(this.generateProgress)}%`;
@@ -2516,9 +2579,16 @@ window.AdminPromoVideoBuilderPage = {
       this.generatedBlob = new Blob(chunks, { type: mime });
       if (this.generatedUrl) URL.revokeObjectURL(this.generatedUrl);
       this.generatedUrl = URL.createObjectURL(this.generatedBlob);
-      // Poster from last canvas
-      this._lastPoster = canvas.toDataURL('image/jpeg', 0.85);
-      this.toast('Video generated — preview, download or save', 'success');
+      this._exportMeta = {
+        width: w,
+        height: h,
+        format: this.draft.format,
+        ratio: fmt.ratio || `${fmt.w}:${fmt.h}`,
+        bitrate: bits,
+        fps
+      };
+      this._lastPoster = canvas.toDataURL('image/jpeg', 0.92);
+      this.toast(`Video generated ${w}×${h} (${fmt.ratio || this.draft.format}) — preview, download or save`, 'success');
       this.paint();
     } catch (err) {
       console.error(err);
@@ -2533,9 +2603,11 @@ window.AdminPromoVideoBuilderPage = {
 
   downloadGenerated() {
     if (!this.generatedBlob) return this.toast('Generate a video first', 'error');
+    const meta = this._exportMeta || this.formatSize();
     const a = document.createElement('a');
     a.href = this.generatedUrl || URL.createObjectURL(this.generatedBlob);
-    a.download = `${String(this.draft.title || 'promo-video').replace(/\W+/g, '-')}.webm`;
+    const tag = `${meta.width || meta.w}x${meta.height || meta.h}`;
+    a.download = `${String(this.draft.title || 'promo-video').replace(/\W+/g, '-')}-${tag}.webm`;
     a.click();
   },
 

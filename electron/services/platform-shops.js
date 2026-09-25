@@ -52,6 +52,9 @@ function ensureSchema() {
     }
   }
   try { controlPlane?.ensureSchema?.(); } catch (_) { /* */ }
+  try { dbRun('CREATE INDEX IF NOT EXISTS idx_ps_shops_created ON platform_shops(created_at)'); } catch (_) { /* */ }
+  try { dbRun('CREATE INDEX IF NOT EXISTS idx_ps_shops_status ON platform_shops(subscription_status)'); } catch (_) { /* */ }
+  try { dbRun('CREATE INDEX IF NOT EXISTS idx_ps_shops_active ON platform_shops(is_active)'); } catch (_) { /* */ }
 }
 
 function audit(actor, action, shopId, detail) {
@@ -169,26 +172,84 @@ function mapShop(row) {
   };
 }
 
+function mapShopListItem(row, packageNameById = {}) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    shop_name: row.shop_name,
+    owner_name: row.owner_name || '',
+    owner_email: row.owner_email || '',
+    contact_phone: row.contact_phone || '',
+    whatsapp: row.whatsapp || '',
+    shop_url: row.shop_url || '',
+    railway_project_id: row.railway_project_id || '',
+    deployment_status: row.deployment_status || 'not_provisioned',
+    package_id: row.package_id || null,
+    package_name: row.package_id ? (packageNameById[row.package_id] || null) : null,
+    addon_ids: [],
+    addon_names: [],
+    subscription_status: row.subscription_status || 'TRIAL',
+    subscription_start: row.subscription_start || null,
+    subscription_expiry: row.subscription_expiry || null,
+    trial_start: row.trial_start || null,
+    trial_end: row.trial_end || null,
+    grace_days: row.grace_days != null ? Number(row.grace_days) : 3,
+    is_active: Number(row.is_active) !== 0,
+    notes: row.notes || '',
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    activation_status: row.activation_status || 'pending',
+    address: row.address || '',
+    branch_info: row.branch_info || ''
+  };
+}
+
 function listShops(filter = {}) {
   requireEnabled();
   ensureSchema();
-  let rows = dbAll('SELECT * FROM platform_shops ORDER BY created_at DESC');
   const q = String(filter.q || '').trim().toLowerCase();
+  const limit = Math.min(Math.max(Number(filter.limit) || 50, 1), 200);
+  const offset = Math.max(Number(filter.offset) || 0, 0);
+  const params = [];
+  let where = ' WHERE 1=1';
   if (q) {
-    rows = rows.filter((r) =>
-      `${r.shop_name} ${r.owner_name} ${r.owner_email} ${r.id} ${r.shop_url} ${r.subscription_status}`
-        .toLowerCase().includes(q));
+    where += ` AND (
+      LOWER(COALESCE(shop_name,'')) LIKE ? OR LOWER(COALESCE(owner_name,'')) LIKE ?
+      OR LOWER(COALESCE(owner_email,'')) LIKE ? OR LOWER(COALESCE(id,'')) LIKE ?
+      OR LOWER(COALESCE(shop_url,'')) LIKE ? OR LOWER(COALESCE(subscription_status,'')) LIKE ?
+    )`;
+    const like = `%${q}%`;
+    params.push(like, like, like, like, like, like);
   }
   if (filter.subscription_status) {
-    rows = rows.filter((r) => r.subscription_status === filter.subscription_status);
+    where += ' AND subscription_status = ?';
+    params.push(filter.subscription_status);
   }
   if (filter.deployment_status) {
-    rows = rows.filter((r) => r.deployment_status === filter.deployment_status);
+    where += ' AND deployment_status = ?';
+    params.push(filter.deployment_status);
   }
   if (filter.active_only) {
-    rows = rows.filter((r) => Number(r.is_active) !== 0 && r.subscription_status !== 'SUSPENDED');
+    where += ` AND COALESCE(is_active,1) != 0 AND subscription_status != 'SUSPENDED'`;
   }
-  return { success: true, data: rows.map(mapShop), total: rows.length };
+  const countRow = dbGet(`SELECT COUNT(*) AS c FROM platform_shops${where}`, params) || { c: 0 };
+  const total = Number(countRow.c) || 0;
+  const rows = dbAll(
+    `SELECT id, shop_name, owner_name, owner_email, contact_phone, whatsapp, shop_url,
+            railway_project_id, deployment_status, package_id, subscription_status,
+            subscription_start, subscription_expiry, trial_start, trial_end, grace_days,
+            is_active, notes, created_at, updated_at, activation_status, address, branch_info
+     FROM platform_shops${where}
+     ORDER BY created_at DESC
+     LIMIT ? OFFSET ?`,
+    [...params, limit, offset]
+  );
+  const packageNameById = {};
+  try {
+    dbAll('SELECT id, name FROM platform_packages').forEach((p) => { packageNameById[p.id] = p.name; });
+  } catch (_) { /* */ }
+  const page = (rows || []).map((r) => mapShopListItem(r, packageNameById));
+  return { success: true, data: page, total, limit, offset };
 }
 
 function getShop(id) {

@@ -1,15 +1,15 @@
 {
   "schema_version": 1,
   "phase": 2,
-  "generated_at": "2026-09-20T21:40:30.319Z",
+  "generated_at": "2026-09-24T10:01:42.765Z",
   "source": "shop-pos codebase inventory (admin.js, app.js, app-mode.js, server.js, mobile/handlers.js, electron/services, portals, backup table index)",
   "protection_note": "Catalog only. No entitlement checks deployed. Chisa Food production not modified. Intended for shoppos-saas-lab packaging work.",
   "counts": {
-    "major": 37,
-    "admin_submodule": 67,
+    "major": 38,
+    "admin_submodule": 68,
     "feature": 20,
     "shared_core": 12,
-    "total_catalog_entries": 136,
+    "total_catalog_entries": 138,
     "rpc_namespaces": 73,
     "http_routes": 37,
     "background_jobs": 11
@@ -1361,6 +1361,37 @@
       "default_status": "enabled_in_full_product",
       "sellable_addon": true,
       "related_apis": [
+        "mo:*",
+        "managerOps:*"
+      ],
+      "related_jobs": [
+        "daily task generation from operating hours"
+      ],
+      "database_tables": [
+        "mo_*"
+      ],
+      "dependencies": [
+        "app.admin",
+        "app.pos",
+        "core.users_permissions",
+        "core.sync_notify"
+      ],
+      "admin_menu": "manager-ops",
+      "appears_in": [
+        "/manager-ops/",
+        "Admin manager-ops",
+        "Platform Control modules"
+      ],
+      "notes": "Alias manager_operations. Disabling never deletes mo_* history.",
+      "id": "mod.manager_operations",
+      "kind": "major",
+      "name": "Manager Operations & Daily Tasks",
+      "description": "Mobile manager daily duties, role-based checklists, photo evidence, incidents, sales monitoring from POS, and daily reports to the owner."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
         "automation:*"
       ],
       "related_jobs": [
@@ -2484,6 +2515,27 @@
       "kind": "admin_submodule",
       "name": "Operations & Compliance",
       "description": "Ops compliance."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "Admin UI section manager-ops"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "mod.manager_operations"
+      ],
+      "admin_menu": "manager-ops",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Candidate to hide/show via package.",
+      "id": "admin.manager-ops",
+      "kind": "admin_submodule",
+      "name": "Manager Operations",
+      "description": "Daily tasks, checklists, reports, evidence."
     },
     {
       "default_status": "enabled_in_full_product",

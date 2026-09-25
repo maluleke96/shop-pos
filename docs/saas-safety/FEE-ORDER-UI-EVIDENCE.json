@@ -1,0 +1,24 @@
+{
+  "shop_id": "shop_muay8exk_8e822da9",
+  "shop_url": "https://shoppos-production-de1c.up.railway.app",
+  "fee": {
+    "config": "percent_plus_fixed 2.5% + 5",
+    "cart": {
+      "subtotal": 100,
+      "tax": 15,
+      "fee_base": 115,
+      "service_fee": 7.88,
+      "label": "Platform service fee",
+      "valid": true
+    },
+    "platform_calc_same_base": 7.88,
+    "match": true
+  },
+  "ui": {
+    "order_page_http": 200,
+    "order_js_contains_service_fee_line": true,
+    "browser_opened_order": true,
+    "checkout_fee_line": "Rendered when quote.service_fee > 0 via customer-web/js/app.js updateCheckoutTotalsDom — same amount as web:validateCart / platform:calcServiceFee"
+  },
+  "verified_at": "2026-09-21T08:55:00.000Z"
+}

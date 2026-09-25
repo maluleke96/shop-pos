@@ -52,11 +52,17 @@ const PromoPoster = {
 
   drawCoverImage(ctx, img, x, y, w, h) {
     if (!img) return;
-    const ir = img.width / img.height;
+    const iw = Number(img.videoWidth || img.naturalWidth || img.width) || 0;
+    const ih = Number(img.videoHeight || img.naturalHeight || img.height) || 0;
+    if (!(iw > 0 && ih > 0) || !(w > 0 && h > 0)) {
+      try { ctx.drawImage(img, x, y, w, h); } catch (_) { /* */ }
+      return;
+    }
+    const ir = iw / ih;
     const dr = w / h;
     let sw, sh, sx, sy;
-    if (ir > dr) { sh = img.height; sw = sh * dr; sx = (img.width - sw) / 2; sy = 0; }
-    else { sw = img.width; sh = sw / dr; sx = 0; sy = (img.height - sh) / 2; }
+    if (ir > dr) { sh = ih; sw = sh * dr; sx = (iw - sw) / 2; sy = 0; }
+    else { sw = iw; sh = sw / dr; sx = 0; sy = (ih - sh) / 2; }
     ctx.drawImage(img, sx, sy, sw, sh, x, y, w, h);
   },
 

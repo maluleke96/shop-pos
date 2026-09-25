@@ -364,7 +364,9 @@ const POSPage = {
       const achieved = Number(progress.sales_achieved) || 0;
       const remaining = Number(progress.remaining) || 0;
       const pct = Number(progress.percentage) || 0;
-      const products = progress.product_targets_active ? (progress.products || []) : [];
+      const products = (progress.product_targets_active !== false && Array.isArray(progress.products))
+        ? progress.products
+        : [];
       const prodTargetQty = Number(progress.product_target_qty) || products.reduce((s, p) => s + (Number(p.target_qty) || 0), 0);
       const prodSoldQty = Number(progress.product_sold_qty) || products.reduce((s, p) => s + (Number(p.sold_qty) || 0), 0);
       const prodTargetVal = Number(progress.product_target_value) || products.reduce((s, p) => s + (Number(p.target_value) || 0), 0);
@@ -639,6 +641,13 @@ const POSPage = {
       try { await this.renderTargetBanner?.(); } catch (_) { /* */ }
       this.updateShiftBar().catch(() => {});
     });
+    // Phone POS: re-show product targets when app comes back to foreground
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState !== 'visible') return;
+      if (!document.getElementById('pos-target-banner')) return;
+      this._targetProgressCache = null;
+      this.renderTargetBanner?.().catch(() => {});
+    });
   },
 
   _bindCatalogLiveSync() {
@@ -686,10 +695,16 @@ const POSPage = {
       }, 4000);
     }
     if (!this._catalogServerPollTimer) {
+      // Stamp-only when possible; full reload at most every 30s via cache (never force-bypass)
       this._catalogServerPollTimer = setInterval(() => {
         if (typeof document !== 'undefined' && document.hidden) return;
-        this.reloadCatalog?.(true).catch(() => {});
-      }, 6000);
+        const stamp = this._catalogStamp();
+        if (stamp && stamp === this._lastCatalogStamp && stamp === this._lastCatalogReloadStamp) return;
+        if (stamp && stamp !== this._lastCatalogStamp) {
+          this._lastCatalogStamp = stamp;
+        }
+        this.reloadCatalog?.(false).catch(() => {});
+      }, 30000);
     }
   },
 
@@ -716,7 +731,7 @@ const POSPage = {
     const currency = this.app.settings?.currency || 'R';
     const dailyTarget = this.activeDailyTargetAmount();
     let progress = this._targetProgressCache?.data;
-    const cacheFresh = this._targetProgressCache?.data && (Date.now() - (this._targetProgressCache.at || 0)) < 45000;
+    const cacheFresh = this._targetProgressCache?.data && (Date.now() - (this._targetProgressCache.at || 0)) < 12000;
     if (!cacheFresh) {
       try {
         const branchId = this.app?.user?.branch_id || null;
@@ -727,7 +742,8 @@ const POSPage = {
         }
       } catch (_) { /* keep cache */ }
     }
-    const productActive = !!(progress?.product_targets_active && (progress.products || []).length);
+    const productActive = Array.isArray(progress?.products) && progress.products.length > 0
+      && progress?.product_targets_active !== false;
     if (dailyTarget <= 0 && !productActive) {
       targetBanner.style.display = 'none';
       targetBanner.classList.add('hidden');
@@ -1350,7 +1366,8 @@ const POSPage = {
                 <span id="pos-table-label" class="pos-table-label muted hidden"></span>
               </div>
               <div class="field" style="margin:6px 0 0;position:relative">
-                <input type="text" id="pos-referral-code" placeholder="Referral code (optional)" autocomplete="off" style="width:100%;text-transform:uppercase;font-size:13px">
+                <input type="text" id="pos-referral-code" placeholder="Referral code (optional)" autocomplete="off" style="width:100%;text-transform:uppercase;font-size:13px;padding-right:56px">
+                <button type="button" id="pos-referral-clear" class="btn btn-ghost btn-sm" title="Remove referral person from this order" style="position:absolute;right:4px;top:50%;transform:translateY(-50%);padding:2px 8px;font-size:11px;z-index:41">Clear</button>
                 <div id="pos-referral-dropdown" class="search-dropdown hidden" style="position:absolute;left:0;right:0;top:100%;z-index:40"></div>
                 <p id="pos-referral-hint" class="muted" style="margin:4px 0 0;font-size:11px;min-height:14px"></p>
               </div>
@@ -1517,7 +1534,7 @@ const POSPage = {
                 </button>
                 <button type="button" class="pos-more-tool" id="pos-sales-history">
                   <span class="pos-more-tool-icon">📊</span>
-                  <span class="pos-more-tool-text"><strong>Sales</strong><small>Today&apos;s POS sales</small></span>
+                  <span class="pos-more-tool-text"><strong>Sales</strong><small>Today &amp; by date</small></span>
                 </button>
                 <button type="button" class="pos-more-tool pos-more-tool-danger hidden" id="pos-kiosk-logout">
                   <span class="pos-more-tool-icon">⎋</span>
@@ -1544,6 +1561,7 @@ const POSPage = {
             <button class="btn btn-primary btn-lg" id="pos-success-print">🖨️ Print Receipt</button>
             <button class="btn btn-ghost btn-lg" id="pos-success-wa">💬 Send Receipt on WhatsApp</button>
             <button class="btn btn-ghost btn-lg" id="pos-success-review">⭐ Request Review</button>
+            <button class="btn btn-ghost btn-lg hidden" id="pos-success-recipe">📖 Send Recipe on WhatsApp</button>
             <button class="btn btn-success btn-lg" id="pos-success-new">New Sale</button>
           </div>
         </div>
@@ -1666,12 +1684,22 @@ const POSPage = {
     };
 
     const runSearch = async (q) => {
-      const res = await API.getCustomers(q);
-      this.customers = res.data || [];
-      showResults(this.customers);
+      const gen = ++this._customerSearchGen || (this._customerSearchGen = 1);
+      const myGen = this._customerSearchGen;
+      try {
+        const res = await API.getCustomers(q);
+        if (myGen !== this._customerSearchGen) return; // stale keystrokes ignored
+        this.customers = res?.data || res || [];
+        if (!Array.isArray(this.customers)) this.customers = [];
+        showResults(this.customers);
+      } catch (_) {
+        if (myGen !== this._customerSearchGen) return;
+        showResults([]);
+      }
     };
 
     if (this._customerSearchTimer) clearTimeout(this._customerSearchTimer);
+    this._customerSearchGen = 0;
     input.oninput = () => {
       if (this._customerSearchTimer) clearTimeout(this._customerSearchTimer);
       const q = input.value.trim();
@@ -1683,7 +1711,7 @@ const POSPage = {
         dropdown.classList.add('hidden');
         return;
       }
-      this._customerSearchTimer = setTimeout(() => runSearch(q), 250);
+      this._customerSearchTimer = setTimeout(() => runSearch(q), 180);
     };
 
     input.onfocus = () => {
@@ -1970,13 +1998,22 @@ const POSPage = {
     const stamp = this._catalogStamp();
     if (!force && stamp && stamp === this._lastCatalogReloadStamp) return;
     try {
-      const filters = { for_pos: true, actor: this.app.user };
-      const uncached = (fn, ...args) => (fn?._uncached ? fn._uncached(...args) : fn(...args));
+      const filters = { for_pos: true, actor: this.app.user, omit_images: true };
+      // Prefer DataCache (SWR/dedupe). Only bypass when force=true after a real catalog mutation stamp.
+      const fetchCat = force && API.getCategories?._uncached
+        ? API.getCategories._uncached(filters)
+        : API.getCategories(filters);
+      const fetchProd = force && API.getProducts?._uncached
+        ? API.getProducts._uncached(filters)
+        : API.getProducts(filters);
+      const fetchHl = force && API.getMenuHighlightSettings?._uncached
+        ? API.getMenuHighlightSettings._uncached()
+        : API.getMenuHighlightSettings();
       const [catRes, prodRes, comboRes, hlRes] = await Promise.all([
-        uncached(API.getCategories, filters),
-        uncached(API.getProducts, filters),
-        this.fetchPosCombos(true),
-        uncached(API.getMenuHighlightSettings).catch(() => null)
+        fetchCat,
+        fetchProd,
+        this.fetchPosCombos(!!force),
+        fetchHl.catch(() => null)
       ]);
       if (hlRes?.success && hlRes.data) {
         this.app.settings = this.app.settings || {};
@@ -3324,12 +3361,27 @@ const POSPage = {
     const input = document.getElementById('pos-referral-code');
     const drop = document.getElementById('pos-referral-dropdown');
     const hint = document.getElementById('pos-referral-hint');
+    const clearBtn = document.getElementById('pos-referral-clear');
     if (!input || input.dataset.refBound) return;
     input.dataset.refBound = '1';
     let timer = null;
+    this.referralCleared = false;
     const hide = () => drop?.classList.add('hidden');
+    const clearReferral = async () => {
+      input.value = '';
+      this.referralCleared = true;
+      hide();
+      if (hint) hint.textContent = 'Referral removed from this order — customer account kept';
+      // Do NOT clear sticky customer→agent attribution globally — only this order
+    };
+    clearBtn?.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      clearReferral();
+    });
     const pick = (row) => {
       input.value = String(row.code || '').toUpperCase();
+      this.referralCleared = false;
       if (hint) hint.textContent = row.agent_name ? `Order under: ${row.agent_name}` : '';
       hide();
     };
@@ -3337,9 +3389,10 @@ const POSPage = {
       const q = String(input.value || '').trim();
       if (!q) {
         hide();
-        if (hint) hint.textContent = '';
+        if (hint) hint.textContent = this.referralCleared ? 'Referral removed from this order — customer account kept' : '';
         return;
       }
+      this.referralCleared = false;
       let rows = [];
       try {
         const res = await API.referralSearchCodes(q);
@@ -3374,6 +3427,12 @@ const POSPage = {
     };
     input.addEventListener('input', () => {
       clearTimeout(timer);
+      if (!String(input.value || '').trim()) {
+        this.referralCleared = true;
+        if (hint) hint.textContent = 'Referral removed from this order — customer account kept';
+        hide();
+        return;
+      }
       timer = setTimeout(run, 180);
     });
     input.addEventListener('blur', () => setTimeout(hide, 200));
@@ -3879,11 +3938,18 @@ const POSPage = {
         const r = await API.voidSale(saleRes.data.id, reason, this.app.user, code || null);
         if (!r.success) throw new Error(r.error || 'Void failed');
         Utils.hideModal();
-        Utils.toast('Sale voided — stock restored', 'success');
+        Utils.toast(`Sale voided (${saleRes.data.order_number || saleRes.data.receipt_number || receipt}) — stock restored`, 'success');
+        if (this.lastSale?.id === saleRes.data.id) this.lastSale = { ...this.lastSale, status: 'voided' };
+        window.DataCache?.invalidate?.('salesList', 'adminDashboard');
         const prodRes = await API.getProducts({ for_pos: true, actor: this.app.user });
         this.products = prodRes.data || [];
         this.rebuildProductLookups();
         this.renderProducts();
+        // Refresh POS sales list if open
+        try {
+          const histOpen = document.getElementById('pos-sales-date');
+          if (histOpen) this.showPosSalesHistory(histOpen.value);
+        } catch (_) { /* */ }
       } catch (err) {
         if (btn) { btn.disabled = false; btn.textContent = 'Void Sale'; }
         Utils.toast(err.message || 'Void failed', 'error');
@@ -4049,15 +4115,40 @@ const POSPage = {
     });
   },
 
-  async showPosSalesHistory() {
+  async showPosSalesHistory(selectedDate) {
     const today = Utils.today();
+    const date = String(selectedDate || today).slice(0, 10) || today;
+    const isToday = date === today;
     const currency = this.app.settings?.currency || 'R';
-    Utils.showModal('POS Sales Today', '<p class="muted">Loading today\'s sales…</p>', '<button class="btn btn-ghost" id="pos-sales-history-close">Close</button>');
+    const title = isToday ? 'POS Sales Today' : `POS Sales — ${date}`;
+    Utils.showModal(title, '<p class="muted">Loading sales…</p>', '<button class="btn btn-ghost" id="pos-sales-history-close">Close</button>');
     document.getElementById('pos-sales-history-close')?.addEventListener('click', () => Utils.hideModal());
-    const res = await API.getSalesList({ from: today, to: today, limit: 40, pos_only: true });
-    const rows = Array.isArray(res?.data) ? res.data : (Array.isArray(res) ? res : []);
-    Utils.showModal('POS Sales Today', `
-      <p class="muted" style="margin:0 0 12px">Counter sales only (excludes web online orders). Reprint, resend the WhatsApp slip, or send a review request with your online order link.</p>
+
+    let rows = [];
+    try {
+      const res = await API.getSalesList({ from: date, to: date, limit: 100, pos_only: true });
+      rows = Array.isArray(res?.data) ? res.data : (Array.isArray(res) ? res : []);
+    } catch (err) {
+      Utils.showModal(title, `<p class="muted">${Utils.escHtml(err.message || 'Could not load sales')}</p>`,
+        '<button class="btn btn-ghost" id="pos-sales-history-close">Close</button>');
+      document.getElementById('pos-sales-history-close')?.addEventListener('click', () => Utils.hideModal());
+      return;
+    }
+
+    const emptyMsg = isToday
+      ? 'No POS sales recorded today yet.'
+      : `No POS sales on ${date}.`;
+
+    Utils.showModal(title, `
+      <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-bottom:12px">
+        <div class="field" style="margin:0;flex:1;min-width:140px">
+          <label for="pos-sales-date">Date</label>
+          <input type="date" id="pos-sales-date" value="${Utils.escHtml(date)}" max="${Utils.escHtml(today)}" style="width:100%">
+        </div>
+        <button type="button" class="btn btn-ghost btn-sm" id="pos-sales-today-btn" ${isToday ? 'disabled' : ''}>Today</button>
+        <button type="button" class="btn btn-primary btn-sm" id="pos-sales-refresh">Show</button>
+      </div>
+      <p class="muted" style="margin:0 0 12px">Counter sales only. Tap a sale to reprint or <strong>Send Receipt</strong> on WhatsApp (same as after checkout).</p>
       <div style="max-height:420px;overflow:auto">
         ${rows.length ? rows.map((s) => {
           const otype = ({ delivery: 'Delivery', takeaway: 'Takeaway', sit_in: 'Sit-in', online: 'Online' })[s.order_type] || s.order_type || 'Walk-in';
@@ -4066,71 +4157,101 @@ const POSPage = {
           const feeNote = s.order_type === 'delivery'
             ? (fee > 0 ? ` · Delivery ${Utils.formatMoney(fee, currency)}${place}` : ` · Delivery free${place}`)
             : '';
-          return `<div class="list-row" style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--border)">
+          const time = String(s.created_at || '').slice(11, 16) || '—';
+          return `<button type="button" class="list-row pos-sale-open" data-id="${s.id}" style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 0;border:0;border-bottom:1px solid var(--border);background:transparent;width:100%;text-align:left;cursor:pointer;color:inherit;font:inherit">
           <div style="min-width:0">
-            <strong>${Utils.escHtml(s.receipt_number || s.order_number || `#${s.id}`)}</strong>
-            <div class="muted" style="font-size:12px">${Utils.escHtml(String(s.created_at || '').slice(11, 16))} · ${Utils.escHtml(otype)}${feeNote} · ${Utils.escHtml(s.cashier_name || s.customer_name || '—')}</div>
-            <div class="muted" style="font-size:12px">${Utils.escHtml(s.item_summary || '')}</div>
+            <strong>${Utils.escHtml(s.order_number || s.receipt_number || `#${s.id}`)}</strong>
+            ${['void', 'voided'].includes(String(s.status || '').toLowerCase())
+              ? '<span style="margin-left:6px;font-size:11px;font-weight:700;color:#b91c1c;background:#fee2e2;padding:2px 6px;border-radius:999px">VOIDED</span>'
+              : ''}
+            <div class="muted" style="font-size:12px">${Utils.escHtml(time)} · ${Utils.escHtml(otype)}${feeNote} · ${Utils.escHtml(s.cashier_name || s.customer_name || '—')}</div>
+            <div class="muted" style="font-size:12px">${Utils.escHtml(s.item_summary || '')}${s.receipt_number && s.order_number && s.receipt_number !== s.order_number ? ` · Receipt ${Utils.escHtml(s.receipt_number)}` : ''}</div>
           </div>
           <div style="text-align:right;white-space:nowrap">
-            <div style="font-weight:700">${Utils.formatMoney(s.total, currency)}</div>
-            <div style="display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap;margin-top:6px">
-              <button type="button" class="btn btn-primary btn-sm pos-reprint-sale" data-id="${s.id}">Reprint</button>
-              <button type="button" class="btn btn-ghost btn-sm pos-wa-sale" data-id="${s.id}">WhatsApp</button>
-              <button type="button" class="btn btn-ghost btn-sm pos-review-sale" data-id="${s.id}">⭐ Review</button>
-            </div>
+            <div style="font-weight:700;${['void', 'voided'].includes(String(s.status || '').toLowerCase()) ? 'text-decoration:line-through;opacity:.7' : ''}">${Utils.formatMoney(s.total, currency)}</div>
+            <div class="muted" style="font-size:11px;margin-top:4px">${['void', 'voided'].includes(String(s.status || '').toLowerCase()) ? (s.void_reason || 'Voided') : 'Tap → Send receipt'}</div>
           </div>
-        </div>`;
-        }).join('') : '<p class="muted">No POS sales recorded today yet.</p>'}
+        </button>`;
+        }).join('') : `<p class="muted">${Utils.escHtml(emptyMsg)}</p>`}
       </div>`,
       '<button class="btn btn-ghost" id="pos-sales-history-close">Close</button>');
+
     document.getElementById('pos-sales-history-close')?.addEventListener('click', () => Utils.hideModal());
-    document.querySelectorAll('.pos-reprint-sale').forEach((btn) => {
-      btn.addEventListener('click', async () => {
-        btn.disabled = true;
-        try {
-          const saleRes = await API.getSale(parseInt(btn.dataset.id, 10));
-          const sale = saleRes?.data || saleRes?.sale || saleRes;
-          if (!sale?.id) throw new Error('Sale not found');
-          await Receipt.print(sale, this.app.settings);
-          Utils.toast('Sent to printer', 'success');
-        } catch (err) {
-          Utils.toast(err.message || 'Reprint failed', 'error');
-        } finally {
-          btn.disabled = false;
-        }
+    const reload = (d) => this.showPosSalesHistory(d);
+    document.getElementById('pos-sales-refresh')?.addEventListener('click', () => {
+      const d = document.getElementById('pos-sales-date')?.value || today;
+      reload(d);
+    });
+    document.getElementById('pos-sales-today-btn')?.addEventListener('click', () => reload(today));
+    document.getElementById('pos-sales-date')?.addEventListener('change', (e) => {
+      const d = e.target?.value;
+      if (d) reload(d);
+    });
+    document.querySelectorAll('.pos-sale-open').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const id = parseInt(btn.dataset.id, 10);
+        if (id) this.showPosSaleActions(id, date);
       });
     });
-    document.querySelectorAll('.pos-wa-sale').forEach((btn) => {
-      btn.addEventListener('click', async () => {
-        btn.disabled = true;
-        const prev = btn.textContent;
-        btn.textContent = 'Sending…';
+  },
+
+  async showPosSaleActions(saleId, returnDate) {
+    const currency = this.app.settings?.currency || 'R';
+    Utils.showModal('Sale', '<p class="muted">Loading…</p>', '<button class="btn btn-ghost" id="pos-sale-act-back">Back</button>');
+    document.getElementById('pos-sale-act-back')?.addEventListener('click', () => this.showPosSalesHistory(returnDate));
+
+    let sale;
+    try {
+      const saleRes = await API.getSale(saleId);
+      sale = saleRes?.data || saleRes?.sale || saleRes;
+      if (!sale?.id) throw new Error('Sale not found');
+    } catch (err) {
+      Utils.toast(err.message || 'Sale not found', 'error');
+      return this.showPosSalesHistory(returnDate);
+    }
+
+    const otype = ({ delivery: 'Delivery', takeaway: 'Takeaway', sit_in: 'Sit-in', online: 'Online' })[sale.order_type] || sale.order_type || 'Walk-in';
+    const items = (sale.items || []).map((i) =>
+      `${i.quantity}× ${Utils.escHtml(Receipt.itemLabel?.(i) || i.product_name || i.name || 'Item')}`
+    ).join('<br>') || Utils.escHtml(sale.item_summary || '—');
+    const time = String(sale.created_at || '').replace('T', ' ').slice(0, 16);
+
+    Utils.showModal(`Receipt #${sale.receipt_number || sale.order_number || sale.id}`, `
+      <p class="muted" style="margin:0 0 8px">${Utils.escHtml(time)} · ${Utils.escHtml(otype)} · ${Utils.escHtml(sale.cashier_name || sale.customer_name || '—')}</p>
+      <p style="font-size:22px;font-weight:700;margin:0 0 12px">${Utils.formatMoney(sale.total, currency)}</p>
+      <div class="muted" style="font-size:13px;margin-bottom:16px;line-height:1.45">${items}</div>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <button type="button" class="btn btn-primary btn-lg" id="pos-sale-act-wa">💬 Send Receipt on WhatsApp</button>
+        <button type="button" class="btn btn-ghost btn-lg" id="pos-sale-act-review">⭐ Request Review</button>
+        <button type="button" class="btn btn-ghost btn-lg" id="pos-sale-act-print">🖨️ Print Receipt</button>
+      </div>
+    `, `<button class="btn btn-ghost" id="pos-sale-act-back">← Back to list</button>`);
+
+    document.getElementById('pos-sale-act-back')?.addEventListener('click', () => this.showPosSalesHistory(returnDate));
+
+    const runBtn = (id, fn, busy) => {
+      const el = document.getElementById(id);
+      el?.addEventListener('click', async () => {
+        if (!el) return;
+        el.disabled = true;
+        const prev = el.textContent;
+        el.textContent = busy;
         try {
-          await this.resendSaleWhatsApp(parseInt(btn.dataset.id, 10));
+          await fn();
         } catch (err) {
-          Utils.toast(err.message || 'WhatsApp failed', 'error');
+          Utils.toast(err.message || 'Action failed', 'error');
         } finally {
-          btn.disabled = false;
-          btn.textContent = prev;
+          el.disabled = false;
+          el.textContent = prev;
         }
       });
-    });
-    document.querySelectorAll('.pos-review-sale').forEach((btn) => {
-      btn.addEventListener('click', async () => {
-        btn.disabled = true;
-        const prev = btn.textContent;
-        btn.textContent = 'Opening…';
-        try {
-          await this.resendSaleReview(parseInt(btn.dataset.id, 10));
-        } catch (err) {
-          Utils.toast(err.message || 'Review WhatsApp failed', 'error');
-        } finally {
-          btn.disabled = false;
-          btn.textContent = prev;
-        }
-      });
-    });
+    };
+    runBtn('pos-sale-act-wa', () => this.resendSaleWhatsApp(sale.id), 'Sending…');
+    runBtn('pos-sale-act-review', () => this.resendSaleReview(sale.id), 'Opening…');
+    runBtn('pos-sale-act-print', async () => {
+      await Receipt.print(sale, this.app.settings);
+      Utils.toast('Sent to printer', 'success');
+    }, 'Printing…');
   },
 
   async resendSaleWhatsApp(saleId) {
@@ -4146,7 +4267,7 @@ const POSPage = {
     await this._openOrSendWhatsApp({
       phone: recipient.phone,
       body,
-      busyLabel: 'Sending WhatsApp…',
+      busyLabel: 'Opening WhatsApp…',
       doneLabel: 'WhatsApp',
       payload: {
         customer_id: recipient.id,
@@ -4167,7 +4288,6 @@ const POSPage = {
         template_slug: 'sale_receipt'
       }
     });
-    Utils.toast('WhatsApp slip ready', 'success');
   },
 
   async resendSaleReview(saleId) {
@@ -4200,7 +4320,6 @@ const POSPage = {
         template_slug: 'review_request'
       }
     });
-    Utils.toast('Review request ready', 'success');
   },
 
   async showReprint() {
@@ -5106,6 +5225,8 @@ const POSPage = {
           })),
           customer_id: this.selectedCustomer?.id || null,
           referral_code: (document.getElementById('pos-referral-code')?.value || '').trim().toUpperCase() || null,
+          referral_cleared: !!this.referralCleared && !(document.getElementById('pos-referral-code')?.value || '').trim(),
+          skip_referral: !!this.referralCleared && !(document.getElementById('pos-referral-code')?.value || '').trim(),
           loyalty_redeem: loyaltyRedeem || 0,
           subtotal: this.totals.subtotal,
           discount: this.totals.discount,
@@ -5152,22 +5273,63 @@ const POSPage = {
         if (res.offlineQueued) {
           // Treat as accepted till-side: cart must clear so cashier cannot Pay again (duplicate).
           Utils.forceHideModal();
+          const cartSnapshot = (this.cart || []).map((i) => ({ ...i }));
+          const offlineSale = {
+            id: null,
+            offline: true,
+            receipt_number: 'Offline/pending',
+            total: this.totals?.total ?? total,
+            subtotal: this.totals?.subtotal,
+            discount: this.totals?.discount,
+            tax_amount: this.totals?.tax_amount,
+            amount_paid: paid,
+            change_amount: change,
+            payments,
+            customer_id: this.selectedCustomer?.id || null,
+            customer_name: this.selectedCustomer?.name || this.selectedCustomer?.full_name || null,
+            customer_phone: this.selectedCustomer?.phone || null,
+            delivery_address: this.orderType === 'delivery' ? (this.deliveryAddress || null) : null,
+            items: cartSnapshot.map((i) => ({
+              product_id: i.product_id,
+              product_name: i.product_name,
+              quantity: i.quantity,
+              unit_price: i.unit_price,
+              total: i.total,
+              has_recipe: !!(i.has_recipe || i.item_type === 'restaurant'),
+              item_type: i.item_type || null,
+              modifiers_text: i.modifiers_text || null
+            }))
+          };
           this.applyLocalSaleStockDeduction(this.cart);
-        this.cart = [];
-        this.discount = 0;
-        this.discountApprover = null;
-        this.discountManagerPin = null;
-        this.orderType = null;
-        this.selectedTable = null;
-        this.updateTableLabel?.();
-        this.selectedCustomer = null;
-        this.clearCustomer?.();
-        this.loadedQuoteId = null;
+          this.lastSale = offlineSale;
+          this.lastSaleCustomer = this.selectedCustomer ? { ...this.selectedCustomer } : null;
+          const giftCardPayment = (payments || []).find(p => (p.type || p.payment_type) === 'giftcard' && p.gift_card_code);
+          this.lastSaleGiftCardCode = giftCardPayment?.gift_card_code || null;
+          this.lastSaleGiftCardAmount = Number(giftCardPayment?.amount) || 0;
+          this.cart = [];
+          this.discount = 0;
+          this.discountApprover = null;
+          this.discountManagerPin = null;
+          this.orderType = null;
+          this.selectedTable = null;
+          this.updateTableLabel?.();
+          this.selectedCustomer = null;
+          this.clearCustomer?.();
+          this.loadedQuoteId = null;
           this.renderCart?.();
           this.renderProducts?.();
           Utils.toast(
             res.message || 'Sale saved offline — it will sync when internet returns (no duplicate).',
             'warning'
+          );
+          this.showOrderSuccess(
+            offlineSale,
+            change,
+            payments,
+            0,
+            loyaltyRedeem || 0,
+            loyaltyDiscount || 0,
+            this.lastSaleCustomer
           );
           return;
         }
@@ -5200,6 +5362,26 @@ const POSPage = {
           this.updatePosBadges();
         }
         Utils.forceHideModal();
+        // Carry meal flags from cart so success screen can offer Send Recipe
+        const cartRecipeMap = new Map(
+          (this.cart || []).map((i) => [String(i.product_id), !!(i.has_recipe || i.item_type === 'restaurant')])
+        );
+        if (Array.isArray(sale.items)) {
+          sale.items = sale.items.map((it) => ({
+            ...it,
+            has_recipe: !!(it.has_recipe || cartRecipeMap.get(String(it.product_id)) || it.item_type === 'restaurant')
+          }));
+        } else if (this.cart?.length) {
+          sale.items = this.cart.map((i) => ({
+            product_id: i.product_id,
+            product_name: i.product_name,
+            quantity: i.quantity,
+            unit_price: i.unit_price,
+            total: i.total,
+            has_recipe: !!(i.has_recipe || i.item_type === 'restaurant'),
+            item_type: i.item_type || null
+          }));
+        }
         this.lastSale = sale;
         this.lastSaleCustomer = this.selectedCustomer ? { ...this.selectedCustomer } : null;
         const giftCardPayment = (payments || []).find(p => (p.type || p.payment_type) === 'giftcard' && p.gift_card_code);
@@ -5470,7 +5652,7 @@ const POSPage = {
       '',
       `Thank you for shopping with ${shop}. Here is your receipt:`,
       '',
-      `🧾 Receipt #${sale.order_number || sale.receipt_number}`,
+      `🧾 ${sale.order_number || sale.receipt_number}`,
       delivery ? `📍 Deliver to: ${delivery}` : '',
       receiptLines,
       '',
@@ -5518,50 +5700,83 @@ const POSPage = {
     ].join('\n');
   },
 
-  _openOrSendWhatsApp({ phone, body, payload, btn, busyLabel, doneLabel }) {
-    try { window.PanelExitGuard?.suspend?.(20000); } catch (_) { /* ignore */ }
+  async refreshWhatsAppMode() {
+    try {
+      const r = await API.getWhatsAppSettings();
+      const data = r?.data || r || {};
+      if (!this.app.settings) this.app.settings = {};
+      const prev = this.app.settings.whatsapp_settings || {};
+      this.app.settings.whatsapp_settings = {
+        ...prev,
+        ...data,
+        use_cloud_api: data.use_cloud_api !== false
+      };
+      if (window.App?.settings) window.App.settings.whatsapp_settings = this.app.settings.whatsapp_settings;
+    } catch (_) { /* keep cached */ }
+  },
+
+  async _openOrSendWhatsApp({ phone, body, payload, btn, busyLabel, doneLabel }) {
+    try { window.PanelExitGuard?.suspend?.(45000); } catch (_) { /* ignore */ }
     if (this._successPayload?.sale) this._persistSuccessState(this._successPayload);
     if (btn) {
       btn.disabled = true;
       const prev = btn.textContent;
-      btn.textContent = busyLabel;
+      btn.textContent = busyLabel || 'Opening WhatsApp…';
       setTimeout(() => {
         btn.disabled = false;
         btn.textContent = doneLabel || prev;
-      }, 900);
+      }, 1200);
     }
-    const silent = Utils.canSilentWhatsApp(this.app?.settings);
+
+    // Always re-read Admin toggle so POS does not keep a stale “API on” setting
+    await this.refreshWhatsAppMode();
+    const manual = Utils.preferManualWhatsApp(this.app?.settings) || !Utils.canSilentWhatsApp(this.app?.settings);
     const url = Utils.whatsappUrl(phone, body);
-    if (!silent && url) {
+
+    // Regular mode: open WhatsApp immediately on the user tap (do not wait for API)
+    if (manual && url) {
       Utils.openWhatsAppUrl(url);
-      Utils.toast('WhatsApp opened — tap Send, then come back here. This receipt stays on screen.', 'success');
-    } else {
-      Utils.toast(silent ? 'Sending on WhatsApp…' : 'Opening WhatsApp…', 'info');
+      Utils.toast('WhatsApp opened — tap Send, then come back here', 'success');
     }
-    const sendP = API.sendWhatsAppMessage({ ...payload, phone, body }, this.app.user)
-      .then((r) => {
-        if (silent) {
-          if (r?.data?.via === 'cloud_api' || (r?.success !== false && r?.data?.status === 'sent' && !r?.data?.url)) {
-            Utils.toast('Sent on WhatsApp', 'success');
-            return r;
-          }
-          const openUrl = r?.data?.url || url;
-          if (openUrl) {
-            Utils.openWhatsAppUrl(openUrl);
-            Utils.toast('WhatsApp opened — tap Send, then come back here', 'success');
-          } else {
-            Utils.toast(r?.error || 'WhatsApp failed', 'error');
-          }
-        }
-        return r;
-      })
-      .catch(() => {
-        if (silent && url) {
-          Utils.openWhatsAppUrl(url);
+
+    const sendPayload = {
+      ...payload,
+      phone,
+      body,
+      force_wa_me: !!manual,
+      prefer_wa_me: !!manual
+    };
+
+    try {
+      const r = await API.sendWhatsAppMessage(sendPayload, this.app.user);
+      const data = r?.data || r || {};
+      const via = data.via || '';
+      const openUrl = data.url || url;
+
+      if (!manual) {
+        // API mode
+        if (via === 'cloud_api' && !openUrl) {
+          Utils.toast('Sent via WhatsApp API', 'success');
+        } else if (openUrl) {
+          Utils.openWhatsAppUrl(openUrl);
           Utils.toast('WhatsApp opened — tap Send, then come back here', 'success');
+        } else {
+          Utils.toast(r?.error || data.cloud_error || 'WhatsApp failed', 'error');
         }
-      });
-    return sendP;
+      } else if (openUrl && via === 'wa.me') {
+        // Ensure chat opened even if the first open was blocked
+        Utils.openWhatsAppUrl(openUrl);
+      }
+      return r;
+    } catch (err) {
+      if (url) {
+        Utils.openWhatsAppUrl(url);
+        Utils.toast('WhatsApp opened — tap Send, then come back here', 'success');
+      } else {
+        Utils.toast(err?.message || 'WhatsApp failed', 'error');
+      }
+      return null;
+    }
   },
 
   resetPosSaleUi(opts = {}) {
@@ -5586,11 +5801,25 @@ const POSPage = {
     const screen = document.getElementById('pos-success-screen');
     if (!screen) return;
     screen.classList.remove('hidden');
-    document.getElementById('pos-success-receipt').textContent = `Receipt #${sale.receipt_number}`;
-    document.getElementById('pos-success-total').textContent = Utils.formatMoney(sale.total, currency);
-    document.getElementById('pos-success-change').textContent = change > 0
-      ? `Change: ${Utils.formatMoney(change, currency)}` : '';
-    const loyaltyEl = document.getElementById('pos-success-loyalty');
+
+    const q = (sel) => screen.querySelector(sel);
+    const receiptEl = q('#pos-success-receipt');
+    const totalEl = q('#pos-success-total');
+    const changeEl = q('#pos-success-change');
+    const loyaltyEl = q('#pos-success-loyalty');
+    const paymentsEl = q('#pos-success-payments');
+    const waBtn = q('#pos-success-wa');
+    const reviewBtn = q('#pos-success-review');
+    const recipeBtn = q('#pos-success-recipe');
+    const printBtn = q('#pos-success-print');
+    const newBtn = q('#pos-success-new');
+
+    if (receiptEl) receiptEl.textContent = `${sale?.order_number || sale?.receipt_number || '—'}`;
+    if (totalEl) totalEl.textContent = Utils.formatMoney(sale?.total, currency);
+    if (changeEl) {
+      changeEl.textContent = change > 0
+        ? `Change: ${Utils.formatMoney(change, currency)}` : '';
+    }
     if (loyaltyEl) {
       const parts = [];
       const cust = customer || this.lastSaleCustomer;
@@ -5611,15 +5840,15 @@ const POSPage = {
       }
       loyaltyEl.textContent = parts.length ? `⭐ ${parts.join(' · ')}` : '';
     }
-    document.getElementById('pos-success-payments').innerHTML = (payments || sale.payments || []).map(p => {
-      const type = p.type || p.payment_type;
-      const code = p.gift_card_code ? ` · code ${p.gift_card_code}` : '';
-      return `${labels[type] || type}${code}: ${Utils.formatMoney(p.amount, currency)}`;
-    }).join(' · ');
+    if (paymentsEl) {
+      paymentsEl.innerHTML = (payments || sale?.payments || []).map(p => {
+        const type = p.type || p.payment_type;
+        const code = p.gift_card_code ? ` · code ${p.gift_card_code}` : '';
+        return `${labels[type] || type}${code}: ${Utils.formatMoney(p.amount, currency)}`;
+      }).join(' · ');
+    }
 
     const waRecipient = this.resolveWhatsAppCustomer(sale, customer);
-    const waBtn = document.getElementById('pos-success-wa');
-    const reviewBtn = document.getElementById('pos-success-review');
     reviewBtn?.classList.remove('hidden');
 
     const giftLine = this.lastSaleGiftCardCode
@@ -5628,7 +5857,7 @@ const POSPage = {
     this._persistSuccessState({
       sale,
       change,
-      payments: payments || sale.payments || [],
+      payments: payments || sale?.payments || [],
       loyaltyEarned: loyaltyPointsEarned,
       loyaltyRedeemed: loyaltyPointsRedeemed,
       loyaltyDiscount,
@@ -5637,10 +5866,18 @@ const POSPage = {
       giftCardAmount: this.lastSaleGiftCardAmount || 0
     });
 
+    const recipeItems = (sale?.items || []).filter((i) =>
+      i && (i.has_recipe || i.item_type === 'restaurant') && i.product_id
+    );
+    if (recipeBtn) {
+      recipeBtn.classList.toggle('hidden', !recipeItems.length);
+      recipeBtn.onclick = null;
+    }
+
     const sendReceiptWhatsApp = async () => {
       const recipient = await this.ensureWhatsAppRecipient(sale, { ...waRecipient });
       if (!recipient?.phone) return;
-      if (recipient.phone) reviewBtn?.classList.remove('hidden');
+      reviewBtn?.classList.remove('hidden');
       const receiptLines = Receipt.buildWhatsAppLines(sale, this.app.settings);
       const body = this._buildReceiptWhatsAppText(sale, recipient, {
         loyaltyEarned: loyaltyPointsEarned,
@@ -5656,7 +5893,7 @@ const POSPage = {
         phone: recipient.phone,
         body,
         btn: waBtn,
-        busyLabel: 'Sending WhatsApp…',
+        busyLabel: 'Opening WhatsApp…',
         doneLabel: '💬 Send Receipt on WhatsApp',
         payload: {
           customer_id: recipient.id,
@@ -5685,52 +5922,122 @@ const POSPage = {
       Receipt.downloadPdf(sale, this.app.settings).catch(() => {});
     };
 
-    waBtn.onclick = () => sendReceiptWhatsApp();
+    if (waBtn) waBtn.onclick = () => sendReceiptWhatsApp();
     reviewBtn?.classList.remove('hidden');
-    reviewBtn.onclick = async () => {
-      const recipient = await this.ensureWhatsAppRecipient(sale, { ...waRecipient });
-      if (!recipient?.phone) return;
-      reviewBtn?.classList.remove('hidden');
-      const { orderUrl } = this._shopIdentity();
-      const body = this._buildReviewWhatsAppText(sale, recipient);
-      this._openOrSendWhatsApp({
-        phone: recipient.phone,
-        body,
-        btn: reviewBtn,
-        busyLabel: 'Opening WhatsApp…',
-        doneLabel: '⭐ Request Review',
-        payload: {
-          customer_id: recipient.id,
-          recipient_type: 'customer',
-          recipient_name: recipient.name,
-          customer_name: recipient.name,
-          branch: this.activeBranch?.name || this.app.settings?.shop_name,
-          phone_shop: this.app.settings?.phone,
-          order_number: sale.order_number || sale.receipt_number,
-          receipt_number: sale.receipt_number,
-          total_purchase: sale.total,
-          sale_id: sale.id,
-          order_url: orderUrl,
-          online_order_url: orderUrl,
-          message_type: 'review_request',
-          template_slug: 'review_request'
-        }
-      });
-    };
+    if (reviewBtn) {
+      reviewBtn.onclick = async () => {
+        const recipient = await this.ensureWhatsAppRecipient(sale, { ...waRecipient });
+        if (!recipient?.phone) return;
+        reviewBtn?.classList.remove('hidden');
+        const { orderUrl } = this._shopIdentity();
+        const body = this._buildReviewWhatsAppText(sale, recipient);
+        this._openOrSendWhatsApp({
+          phone: recipient.phone,
+          body,
+          btn: reviewBtn,
+          busyLabel: 'Opening WhatsApp…',
+          doneLabel: '⭐ Request Review',
+          payload: {
+            customer_id: recipient.id,
+            recipient_type: 'customer',
+            recipient_name: recipient.name,
+            customer_name: recipient.name,
+            branch: this.activeBranch?.name || this.app.settings?.shop_name,
+            phone_shop: this.app.settings?.phone,
+            order_number: sale.order_number || sale.receipt_number,
+            receipt_number: sale.receipt_number,
+            total_purchase: sale.total,
+            sale_id: sale.id,
+            order_url: orderUrl,
+            online_order_url: orderUrl,
+            message_type: 'review_request',
+            template_slug: 'review_request'
+          }
+        });
+      };
+    }
 
-    document.getElementById('pos-success-print').onclick = async () => {
+    if (recipeBtn && recipeItems.length) {
+      recipeBtn.onclick = async () => {
+        const recipient = await this.ensureWhatsAppRecipient(sale, { ...waRecipient });
+        if (!recipient?.phone) return;
+        const body = await this._buildMealRecipeWhatsAppText(sale, recipeItems);
+        if (!body) {
+          Utils.toast('No recipe details found for these meals', 'warning');
+          return;
+        }
+        this._openOrSendWhatsApp({
+          phone: recipient.phone,
+          body,
+          btn: recipeBtn,
+          busyLabel: 'Opening WhatsApp…',
+          doneLabel: '📖 Send Recipe on WhatsApp',
+          payload: {
+            customer_id: recipient.id,
+            recipient_type: 'customer',
+            recipient_name: recipient.name,
+            customer_name: recipient.name,
+            branch: this.activeBranch?.name || this.app.settings?.shop_name,
+            phone_shop: this.app.settings?.phone,
+            order_number: sale.order_number || sale.receipt_number,
+            receipt_number: sale.receipt_number,
+            sale_id: sale.id,
+            message_type: 'meal_recipe',
+            template_slug: 'custom',
+            custom_message: body
+          }
+        });
+      };
+    }
+
+    if (printBtn) {
+      printBtn.onclick = async () => {
+        try {
+          await Receipt.print(sale, this.app.settings);
+          Utils.toast('Receipt sent to printer', 'success');
+        } catch (err) {
+          Utils.toast(err.message || 'Print failed', 'error');
+        }
+      };
+    }
+    if (newBtn) {
+      newBtn.onclick = () => {
+        this.resetPosSaleUi({ dismissSuccess: true });
+        this.setMobilePanel('menu');
+        document.getElementById('pos-search')?.focus();
+      };
+    }
+  },
+
+  async _buildMealRecipeWhatsAppText(sale, recipeItems) {
+    const shop = this.app.settings?.shop_name || 'Us';
+    const blocks = [];
+    const seen = new Set();
+    for (const item of recipeItems || []) {
+      const pid = Number(item.product_id);
+      if (!pid || seen.has(pid)) continue;
+      seen.add(pid);
       try {
-        await Receipt.print(sale, this.app.settings);
-        Utils.toast('Receipt sent to printer', 'success');
-      } catch (err) {
-        Utils.toast(err.message || 'Print failed', 'error');
-      }
-    };
-    document.getElementById('pos-success-new').onclick = () => {
-      this.resetPosSaleUi({ dismissSuccess: true });
-      this.setMobilePanel('menu');
-      document.getElementById('pos-search')?.focus();
-    };
+        const res = await API.recipeGetMeal(pid, this.app.user, { for_editor: true, for_share: true });
+        const data = res?.data != null ? res.data : res;
+        if (!data || res?.success === false) continue;
+        const product = data.product || {};
+        const profile = data.recipe_profile || {};
+        const name = profile.name || product.name || item.product_name || 'Meal';
+        const instructions = String(profile.instructions || '').trim();
+        const allergens = String(profile.allergens || product.allergens || '').trim();
+        const notes = String(profile.notes || '').trim();
+        if (!instructions && !allergens && !notes) continue;
+        const lines = [`🍽️ *${name}*`];
+        if (instructions) lines.push('', instructions);
+        if (allergens) lines.push('', `⚠️ Allergens: ${allergens}`);
+        if (notes) lines.push('', `📝 Kitchen notes: ${notes}`);
+        blocks.push(lines.join('\n'));
+      } catch (_) { /* skip meals without shareable recipe */ }
+    }
+    if (!blocks.length) return '';
+    const receipt = sale?.receipt_number ? ` (Receipt #${sale.receipt_number})` : '';
+    return `📖 *Recipe from ${shop}*${receipt}\n\n${blocks.join('\n\n—\n\n')}\n\nEnjoy! 🙏`;
   },
 
   handleCustomerRewardNotifications(reward, currency) {

@@ -221,6 +221,32 @@
   color: var(--mb-ink);
   box-shadow: 0 1px 3px rgba(15,23,42,.12);
 }
+.mb-pos-pad {
+  display: grid;
+  grid-template-columns: repeat(3, 40px);
+  gap: 4px;
+  width: max-content;
+  padding: 6px;
+  background: var(--mb-bg);
+  border: 1px solid var(--mb-line);
+  border-radius: 12px;
+}
+.mb-pos-btn {
+  width: 40px;
+  height: 36px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+  font-size: 15px;
+  color: var(--mb-muted);
+}
+.mb-pos-btn.active {
+  background: #fff;
+  color: var(--mb-ink);
+  box-shadow: 0 1px 3px rgba(15,23,42,.12);
+  font-weight: 700;
+}
 .mb-offers { display: flex; flex-direction: column; gap: 12px; }
 .mb-offer-card {
   border: 1px solid var(--mb-line);

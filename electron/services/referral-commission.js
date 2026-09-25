@@ -1178,9 +1178,27 @@ function deleteAgent(id, actor) {
   if (!a) throw new Error('Agent not found');
   if (String(a.status).toUpperCase() === 'DELETED') return { success: true, already: true };
 
+  // Fully unlink so customers/orders are no longer under this person
+  try {
+    dbRun(`DELETE FROM referral_customer_attributions WHERE agent_id=?`, [id]);
+  } catch (_) { /* table may not exist on older DBs */ }
+  try {
+    dbRun(`UPDATE sales SET referral_agent_id=NULL, referral_code=NULL WHERE referral_agent_id=?`, [id]);
+  } catch (_) { /* optional columns */ }
+  try {
+    // Keep paid history for audit; remove unpaid so orders/wallet no longer sit under this agent
+    dbRun(
+      `DELETE FROM referral_commissions WHERE agent_id=? AND UPPER(COALESCE(status,'')) NOT LIKE 'PAID%'`,
+      [id]
+    );
+  } catch (_) { /* optional */ }
+  try {
+    dbRun(`UPDATE referral_agents SET referral_code=NULL WHERE id=?`, [id]);
+  } catch (_) { /* */ }
+
   const tombUsername = `deleted_${id}_${Date.now().toString(36)}`;
   dbRun(
-    `UPDATE referral_agents SET status='DELETED', username=?, referral_link=NULL, suspended_at=?, updated_at=? WHERE id=?`,
+    `UPDATE referral_agents SET status='DELETED', username=?, referral_link=NULL, referral_code=NULL, suspended_at=?, updated_at=? WHERE id=?`,
     [tombUsername, now(), now(), id]
   );
   dbRun(`UPDATE referral_codes SET status='disabled' WHERE agent_id=?`, [id]);
@@ -1194,8 +1212,31 @@ function deleteAgent(id, actor) {
       try { dbRun(`UPDATE users SET is_active=0 WHERE id=?`, [a.user_id]); } catch (__) { /* optional */ }
     }
   }
-  audit('agent_deleted', 'referral_agent', id, { status: a.status, username: a.username }, { status: 'DELETED' }, actor);
-  return { success: true };
+  audit('agent_deleted', 'referral_agent', id, { status: a.status, username: a.username }, { status: 'DELETED', unlinked: true }, actor);
+  return { success: true, unlinked: true };
+}
+
+/** Remove sticky customer→agent link so future orders are not under that person. */
+function clearCustomerAttribution({ customerId, webCustomerId, agentId } = {}, actor) {
+  ensureSchema();
+  let cleared = 0;
+  if (customerId) {
+    const r = dbRun(`DELETE FROM referral_customer_attributions WHERE customer_id=?`, [customerId]);
+    cleared += Number(r?.changes) || 0;
+  }
+  if (webCustomerId) {
+    const r = dbRun(`DELETE FROM referral_customer_attributions WHERE web_customer_id=?`, [webCustomerId]);
+    cleared += Number(r?.changes) || 0;
+  }
+  if (agentId && !customerId && !webCustomerId) {
+    const r = dbRun(`DELETE FROM referral_customer_attributions WHERE agent_id=?`, [agentId]);
+    cleared += Number(r?.changes) || 0;
+  }
+  if (actor) {
+    audit('attribution_cleared', 'referral_attribution', customerId || webCustomerId || agentId || 0,
+      null, { customerId, webCustomerId, agentId, cleared }, actor);
+  }
+  return { success: true, cleared };
 }
 
 /**
@@ -1608,6 +1649,16 @@ function processSale(saleId) {
   if (dbGet('SELECT id FROM referral_commissions WHERE sale_id=?', [saleId])) return null; // idempotent
 
   let code = text(sale.referral_code);
+  // POS / till sales without a referral code (and no agent id) must NOT inherit sticky customer→agent attribution.
+  // Sticky attribution is for online repeat orders only.
+  if (!code && (sale.referral_agent_id == null || sale.referral_agent_id === '')) {
+    let isOnlineLinked = false;
+    try {
+      isOnlineLinked = !!dbGet('SELECT id FROM online_orders_local WHERE sale_id=?', [saleId]);
+    } catch (_) { isOnlineLinked = false; }
+    if (!isOnlineLinked) return null;
+  }
+
   let attr = null;
   if (code) {
     try {
@@ -1622,7 +1673,9 @@ function processSale(saleId) {
       console.warn('[referral] attribute on sale:', err.message);
     }
   }
-  if (!attr && sale.customer_id) attr = resolveAgentForCustomer(sale.customer_id);
+  // Sticky customer attribution ONLY when this sale has an explicit code (or is online)
+  // Never apply sticky when cashier cleared the referral code for this order.
+  if (!attr && code && sale.customer_id) attr = resolveAgentForCustomer(sale.customer_id);
   // Online orders may have attributed the web customer before a POS customer_id existed
   if (!attr) {
     try {
@@ -1662,6 +1715,7 @@ function processSale(saleId) {
     }
   }
   if (!attr) return null;
+  // Skip deleted / inactive agents — never attribute new sales under them
   if (attr.agent_status && attr.agent_status !== 'APPROVED') return null;
 
   const agentId = attr.agent_id;
@@ -1820,6 +1874,40 @@ function reverseCommissionForSale(saleId, ratio = 1, reason = 'refund', actor = 
   }
   audit('commission_reversed', 'referral_commission', c.id, c, { status: 'REVERSED', reason: reasonText }, actor);
   return { success: true };
+}
+
+/**
+ * Clear referral association from ONE sale/order only.
+ * Does NOT delete the customer account or other customers' history.
+ * Reverses unpaid commission on that sale if present.
+ */
+function clearSaleReferral(saleId, actor = null) {
+  ensureSchema();
+  const id = Number(saleId);
+  if (!id) throw new Error('Sale id required');
+  const sale = dbGet('SELECT * FROM sales WHERE id=?', [id]);
+  if (!sale) throw new Error('Sale not found');
+  const before = {
+    referral_code: sale.referral_code || null,
+    referral_agent_id: sale.referral_agent_id || null
+  };
+  try {
+    dbRun(`UPDATE sales SET referral_code=NULL, referral_agent_id=NULL WHERE id=?`, [id]);
+  } catch (_) {
+    try { dbRun(`UPDATE sales SET referral_code=NULL WHERE id=?`, [id]); } catch (__) { /* */ }
+  }
+  try {
+    reverseCommissionForSale(id, 1, 'referral cleared on order', actor);
+  } catch (_) { /* no commission or already reversed */ }
+  // Remove unpaid commission rows still linked so order lists stay clean
+  try {
+    dbRun(
+      `DELETE FROM referral_commissions WHERE sale_id=? AND UPPER(COALESCE(status,'')) NOT LIKE 'PAID%'`,
+      [id]
+    );
+  } catch (_) { /* */ }
+  audit('sale_referral_cleared', 'sale', id, before, { referral_code: null, referral_agent_id: null }, actor);
+  return { success: true, sale_id: id, customer_id: sale.customer_id || null, cleared: true };
 }
 
 function approveCommission(id, actor) {
@@ -2376,6 +2464,7 @@ module.exports = {
   unsuspendAgent,
   updateAgent,
   deleteAgent,
+  clearCustomerAttribution,
   awardManualCommission,
   listAwardRequests,
   getAwardRequest,
@@ -2389,6 +2478,7 @@ module.exports = {
   adminResetAgentPassword,
   listAgents,
   attributeCustomer,
+  clearSaleReferral,
   resolveAgentForCustomer,
   resolveCode,
   recordClick,

@@ -92,7 +92,7 @@
     }
     const el = ensureEl();
     const text = el.querySelector('.conn-text');
-    el.classList.remove('conn-online', 'conn-offline', 'conn-syncing', 'conn-hidden');
+    el.classList.remove('conn-online', 'conn-offline', 'conn-syncing', 'conn-hidden', 'conn-slow');
     if (state === 'hidden') {
       el.classList.add('conn-hidden');
       return;
@@ -102,6 +102,11 @@
       if (text) text.textContent = detail || 'Offline';
       return;
     }
+    if (state === 'slow') {
+      el.classList.add('conn-slow', 'conn-syncing');
+      if (text) text.textContent = detail || 'Weak connection — still working…';
+      return;
+    }
     if (state === 'syncing') {
       el.classList.add('conn-syncing');
       if (text) text.textContent = detail || 'Syncing…';
@@ -109,6 +114,14 @@
     }
     el.classList.add('conn-online');
     if (text) text.textContent = detail || 'Online';
+  }
+
+  function markSlow(label) {
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      set('offline', 'Offline');
+      return;
+    }
+    set('slow', label || 'Taking longer than expected…');
   }
 
   function refreshPosBadge() {
@@ -138,5 +151,5 @@
     boot();
   }
 
-  window.ShopPosConnection = { set, setPos, refreshPosBadge, ensureEl, dataMode };
+  window.ShopPosConnection = { set, setPos, refreshPosBadge, ensureEl, dataMode, markSlow };
 })();

@@ -44,6 +44,16 @@ window.AdminMenuBuilderPage = {
     orderFontScale: 1, // ORDER NOW + WhatsApp + link
     deliveryScale: 1, // free-delivery circle size
     itemNameScale: 1, // product name size (all items)
+    priceScale: 1, // product price size
+    // Name + price placement on each product card (simple shared position)
+    textPosition: 'bottom-center', // 9-point: top-left … bottom-right
+    namePosition: '', // optional independent override
+    pricePosition: '', // optional independent override
+    nameColor: '',
+    priceColor: '',
+    textAlign: 'center', // left | center | right
+    textBackground: true,
+    textPadding: 1, // relative padding scale
     priceOverrides: {}, // { [productId]: number }
     buyGetOffers: [{ buyIds: [], freeIds: [], freeImageDataUrl: '' }],
     // Buy X Get Free block — independent element sizing (does not resize other menu sections)
@@ -190,7 +200,7 @@ window.AdminMenuBuilderPage = {
   toast(msg, type) { if (typeof Utils !== 'undefined' && Utils.toast) Utils.toast(msg, type || 'info'); },
 
   ensureCss() {
-    const href = `css/menu-builder.css?v=11`;
+    const href = `css/menu-builder.css?v=12`;
     let l = document.getElementById('menu-builder-css');
     if (l) {
       if (!String(l.getAttribute('href') || '').includes('v=11')) l.href = href;
@@ -212,6 +222,21 @@ window.AdminMenuBuilderPage = {
     ];
     return `<div class="mb-align-group" role="group" aria-label="Alignment">
       ${opts.map((o) => `<button type="button" class="mb-align-btn ${cur === o.v ? 'active' : ''}" data-align-name="${name}" data-align="${o.v}" title="${o.title}">${o.icon}</button>`).join('')}
+    </div>`;
+  },
+
+  /** 9-point position pad for name/price on product cards */
+  positionPad(name, value) {
+    const cur = value || 'bottom-center';
+    const cells = [
+      ['top-left', '↖', 'Top left'], ['top-center', '↑', 'Top centre'], ['top-right', '↗', 'Top right'],
+      ['middle-left', '←', 'Middle left'], ['center', '●', 'Centre'], ['middle-right', '→', 'Middle right'],
+      ['bottom-left', '↙', 'Bottom left'], ['bottom-center', '↓', 'Bottom centre'], ['bottom-right', '↘', 'Bottom right']
+    ];
+    return `<div class="mb-pos-pad" role="group" aria-label="Text position" data-pos-name="${name}">
+      ${cells.map(([v, icon, title]) =>
+        `<button type="button" class="mb-pos-btn ${cur === v ? 'active' : ''}" data-pos-name="${name}" data-pos="${v}" title="${title}">${icon}</button>`
+      ).join('')}
     </div>`;
   },
 
@@ -910,8 +935,36 @@ window.AdminMenuBuilderPage = {
             <label><input type="radio" name="mb-prod-shape" value="square" ${this.draft.productImageShape === 'square' ? 'checked' : ''}> Square</label>
           </div>
         </div>
-        ${this.sliderField('mb-img-scale', 'Product picture size', this.draft.imageScale, 'Product photo size on the menu.', 60, 160)}
-        ${this.sliderField('mb-item-name', 'Product name size (all items)', this.draft.itemNameScale, 'Changes every product name on the menu at once.', 70, 200)}
+        ${this.sliderField('mb-img-scale', 'Product picture size', this.draft.imageScale, 'Drag smaller or larger — photos can be tiny or dominate the card.', 25, 280)}
+        ${this.sliderField('mb-item-name', 'Product name size', this.draft.itemNameScale, 'Name text size on every product card.', 50, 250)}
+        ${this.sliderField('mb-price-scale', 'Product price size', this.draft.priceScale || 1, 'Price badge text size.', 50, 250)}
+        <div class="field"><label>Name + price position</label>
+          ${this.positionPad('textPosition', this.draft.textPosition || 'bottom-center')}
+          <p class="mb-field-hint">Moves name and price together on the product card.</p>
+        </div>
+        <div class="field"><label>Text alignment</label>
+          ${this.alignIcons('textAlign', this.draft.textAlign || 'center')}
+        </div>
+        <div class="form-grid" style="gap:8px">
+          <div class="field"><label>Name colour</label>
+            <input type="color" id="mb-name-color" value="${this.esc(this.draft.nameColor || '#f8fafc')}">
+          </div>
+          <div class="field"><label>Price colour</label>
+            <input type="color" id="mb-price-color" value="${this.esc(this.draft.priceColor || '#ffffff')}">
+          </div>
+        </div>
+        ${this.toggleRow('mb-text-bg', 'Text background pill', this.draft.textBackground !== false)}
+        ${this.sliderField('mb-text-pad', 'Text padding', this.draft.textPadding || 1, 'Space around name/price.', 50, 180)}
+        <details class="mb-advanced" style="margin-top:10px">
+          <summary style="cursor:pointer;font-weight:600">Advanced · separate name &amp; price position</summary>
+          <div class="field" style="margin-top:8px"><label>Name position</label>
+            ${this.positionPad('namePosition', this.draft.namePosition || this.draft.textPosition || 'bottom-center')}
+          </div>
+          <div class="field"><label>Price position</label>
+            ${this.positionPad('pricePosition', this.draft.pricePosition || this.draft.textPosition || 'bottom-center')}
+          </div>
+          <p class="mb-field-hint">Leave advanced positions unused to keep name + price moving together.</p>
+        </details>
         <p class="mb-field-hint">For Buy X Get Free offers, use the Buy &amp; Free tab.</p>`;
     }
     if (tab === 'offers') {
@@ -1072,7 +1125,8 @@ window.AdminMenuBuilderPage = {
       ['mb-inc-order', 'includeOrderLink'],
       ['mb-inc-qr', 'includeQr'],
       ['mb-inc-socials', 'includeSocials'],
-      ['mb-center-single', 'centerSingle']
+      ['mb-center-single', 'centerSingle'],
+      ['mb-text-bg', 'textBackground']
     ];
     toggleMap.forEach(([id, key]) => {
       const el = document.getElementById(id);
@@ -1084,6 +1138,8 @@ window.AdminMenuBuilderPage = {
     setIf('mb-social-tt', (el) => { this.draft.socialTiktok = el.value || ''; });
     setIf('mb-social-wa', (el) => { this.draft.socialWhatsapp = el.value || ''; });
     setIf('mb-social-web', (el) => { this.draft.socialWebsite = el.value || ''; });
+    setIf('mb-name-color', (el) => { this.draft.nameColor = el.value || ''; });
+    setIf('mb-price-color', (el) => { this.draft.priceColor = el.value || ''; });
     const logoShape = document.querySelector('input[name="mb-logo-shape"]:checked');
     if (logoShape) {
       this.draft.logoShape = logoShape.value === 'square' ? 'square' : 'circle';
@@ -1098,12 +1154,14 @@ window.AdminMenuBuilderPage = {
       this.draft[key] = Math.max(min, Math.min(max, (Number(el.value) || 100) / 100));
     };
     scaleOf('mb-info-font', 0.7, 2.2, 'infoFontScale');
-    scaleOf('mb-img-scale', 0.6, 1.6, 'imageScale');
+    scaleOf('mb-img-scale', 0.25, 2.8, 'imageScale');
     scaleOf('mb-shop-name', 0.7, 2, 'shopNameScale');
     scaleOf('mb-slogan-scale', 0.6, 2, 'sloganScale');
     scaleOf('mb-order-font', 0.7, 2, 'orderFontScale');
     scaleOf('mb-delivery-scale', 0.7, 2, 'deliveryScale');
-    scaleOf('mb-item-name', 0.7, 2, 'itemNameScale');
+    scaleOf('mb-item-name', 0.5, 2.5, 'itemNameScale');
+    scaleOf('mb-price-scale', 0.5, 2.5, 'priceScale');
+    scaleOf('mb-text-pad', 0.5, 1.8, 'textPadding');
     scaleOf('mb-qr-scale', 0.6, 1.8, 'qrScale');
     scaleOf('mb-date-scale', 0.7, 2.2, 'dateScale');
     // Buy & Free block settings
@@ -1252,6 +1310,31 @@ window.AdminMenuBuilderPage = {
         }
         this.paintBuilder();
       });
+    });
+    this.el?.querySelectorAll('[data-pos-name][data-pos]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const key = btn.dataset.posName;
+        const val = btn.dataset.pos;
+        if (!key || !val) return;
+        this.readDraftFromDom();
+        this.draft[key] = val;
+        // Shared pad: sync independent if they were following shared
+        if (key === 'textPosition') {
+          if (!this.draft.namePosition) this.draft.namePosition = val;
+          if (!this.draft.pricePosition) this.draft.pricePosition = val;
+        }
+        this.paintBuilder();
+      });
+    });
+    ['mb-name-color', 'mb-price-color'].forEach((id) => {
+      document.getElementById(id)?.addEventListener('input', () => {
+        this.readDraftFromDom();
+        this.paintBuilder();
+      });
+    });
+    document.getElementById('mb-text-bg')?.addEventListener('change', () => {
+      this.readDraftFromDom();
+      this.paintBuilder();
     });
     document.getElementById('mb-offer-add')?.addEventListener('click', () => {
       this.readDraftFromDom();
@@ -1485,6 +1568,8 @@ window.AdminMenuBuilderPage = {
     bindSlider('mb-order-font', 'mb-order-font-val', 'orderFontScale');
     bindSlider('mb-delivery-scale', 'mb-delivery-scale-val', 'deliveryScale');
     bindSlider('mb-item-name', 'mb-item-name-val', 'itemNameScale');
+    bindSlider('mb-price-scale', 'mb-price-scale-val', 'priceScale');
+    bindSlider('mb-text-pad', 'mb-text-pad-val', 'textPadding');
     bindSlider('mb-qr-scale', 'mb-qr-scale-val', 'qrScale');
     bindSlider('mb-date-scale', 'mb-date-scale-val', 'dateScale');
     this.bindPriceInputs();
@@ -1690,8 +1775,8 @@ window.AdminMenuBuilderPage = {
     // Shrink image/name scales instead so everything stays inside the card.
     const minCellH = Math.round(H * 0.22);
     const minCellW = Math.round(W * 0.12);
-    let imgScale = Math.max(0.55, Math.min(1.35, Number(this.draft.imageScale) || 1));
-    let itemNameScale = Math.max(0.65, Math.min(1.5, Number(this.draft.itemNameScale) || 1));
+    let imgScale = Math.max(0.25, Math.min(2.8, Number(this.draft.imageScale) || 1));
+    let itemNameScale = Math.max(0.5, Math.min(2.5, Number(this.draft.itemNameScale) || 1));
     let shopNameScale = Math.max(0.7, Math.min(1.4, Number(this.draft.shopNameScale) || 1));
     let infoFontScale = Math.max(0.7, Math.min(1.3, Number(this.draft.infoFontScale) || 1));
     let orderScale = Math.max(0.7, Math.min(1.4, Number(this.draft.orderFontScale) || 1));
@@ -1699,14 +1784,17 @@ window.AdminMenuBuilderPage = {
     let qrScale = Math.max(0.55, Math.min(1.2, Number(this.draft.qrScale) || 1));
     let dateScale = Math.max(0.7, Math.min(1.6, Number(this.draft.dateScale) || 1));
 
-    // Auto-fit: if cell is small, pull image/name down; if large, allow boost
+    // Soft auto-fit only when user has not pushed image size hard
     const cellScore = Math.min(cellW / (W * 0.2), cellH / (H * 0.35));
-    if (cellScore < 0.85) {
-      imgScale *= 0.85;
-      itemNameScale *= 0.9;
-    } else if (cellScore > 1.2 && n <= 4) {
-      imgScale = Math.min(1.45, imgScale * 1.12);
-      itemNameScale = Math.min(1.45, itemNameScale * 1.08);
+    const userBoosted = imgScale > 1.4 || imgScale < 0.55;
+    if (!userBoosted) {
+      if (cellScore < 0.85) {
+        imgScale *= 0.85;
+        itemNameScale *= 0.9;
+      } else if (cellScore > 1.2 && n <= 4) {
+        imgScale = Math.min(1.45, imgScale * 1.12);
+        itemNameScale = Math.min(1.45, itemNameScale * 1.08);
+      }
     }
 
     // Layout safety: ensure footer doesn't collide — if grid too short, trim header/footer slightly
@@ -2246,7 +2334,7 @@ window.AdminMenuBuilderPage = {
     const type = this.draft.menuType;
     const isLandscape = false;
     const infoScale = Math.max(0.7, Math.min(2.2, Number(this.draft.infoFontScale) || 1));
-    const imgScale = Math.max(0.6, Math.min(1.6, Number(this.draft.imageScale) || 1));
+    const imgScale = Math.max(0.25, Math.min(2.8, Number(this.draft.imageScale) || 1));
     const nameScale = Math.max(0.7, Math.min(2, Number(this.draft.shopNameScale) || 1));
     const sloganScale = Math.max(0.6, Math.min(2, Number(this.draft.sloganScale) || 1));
     const orderScale = Math.max(0.7, Math.min(2, Number(this.draft.orderFontScale) || 1));
@@ -2908,14 +2996,36 @@ window.AdminMenuBuilderPage = {
     );
   },
 
+  /**
+   * Map 9-point position key → { ax, ay } anchors in 0..1 within a box.
+   */
+  textAnchor(pos) {
+    const p = String(pos || 'bottom-center');
+    const map = {
+      'top-left': [0, 0], 'top-center': [0.5, 0], 'top-right': [1, 0],
+      'middle-left': [0, 0.5], center: [0.5, 0.5], 'middle-right': [1, 0.5],
+      'bottom-left': [0, 1], 'bottom-center': [0.5, 1], 'bottom-right': [1, 1]
+    };
+    return map[p] || map['bottom-center'];
+  },
+
   paintProductCard(ctx, slot, x, y, w, h, t, currency, imgScale = 1, itemNameScale = 1, prodShape = 'circle', cardOpts = {}) {
     const p = slot.product;
     const img = slot.img;
     const type = this.draft.menuType;
-    const scale = Math.max(0.6, Math.min(1.6, Number(imgScale) || 1));
-    const nameScale = Math.max(0.7, Math.min(2, Number(itemNameScale) || 1));
+    const scale = Math.max(0.2, Math.min(3, Number(imgScale) || 1));
+    const nameScale = Math.max(0.45, Math.min(2.8, Number(itemNameScale) || 1));
+    const priceScale = Math.max(0.45, Math.min(2.8, Number(this.draft.priceScale) || 1));
     const shape = prodShape === 'square' || this.draft.productImageShape === 'square' ? 'square' : 'circle';
     const fitContain = cardOpts?.fit === 'contain';
+    const padScale = Math.max(0.5, Math.min(1.8, Number(this.draft.textPadding) || 1));
+    const sharedPos = this.draft.textPosition || 'bottom-center';
+    const namePos = this.draft.namePosition || sharedPos;
+    const pricePos = this.draft.pricePosition || sharedPos;
+    const textAlign = this.draft.textAlign || 'center';
+    const useTextBg = this.draft.textBackground !== false;
+    const nameColor = this.draft.nameColor || t.text;
+    const priceFg = this.draft.priceColor || '#fff';
 
     if (type === 'specials' || type === 'buyget') {
       ctx.fillStyle = 'rgba(251, 191, 36, 0.08)';
@@ -2938,15 +3048,20 @@ window.AdminMenuBuilderPage = {
     const stockPrice = Number(p.selling_price) || 0;
     const nowPrice = this.menuPrice(p);
     const showWas = stockPrice > 0 && Math.abs(stockPrice - nowPrice) > 0.001;
-    const priceH = Math.max(22, Math.round(h * (showWas ? 0.18 : 0.14)));
-    const priceGap = Math.round(h * 0.04);
-    const priceY = y + h - priceH - Math.round(h * 0.05);
-    const textBottom = priceY - priceGap;
-    const imgTop = y + h * 0.05;
-    const baseImg = Math.min(w * 0.55, (textBottom - imgTop) * 0.68, h * 0.48);
-    const imgSize = Math.min(w * 0.92, baseImg * scale);
+    const pad = Math.round(Math.min(w, h) * 0.04 * padScale);
+    const priceH = Math.max(18, Math.round(h * (showWas ? 0.16 : 0.12) * priceScale));
+    const nameH = Math.max(16, Math.round(h * 0.12 * nameScale));
+
+    // Image size — freely resizable; can be very small or fill most of the card
+    const maxImg = Math.min(w - pad * 2, h - pad * 2);
+    const baseImg = Math.min(w * 0.72, h * 0.58, maxImg);
+    const imgSize = Math.max(12, Math.min(maxImg, baseImg * scale));
     const ix = x + (w - imgSize) / 2;
-    const iy = imgTop;
+    // Keep image near top by default; when text is top-positioned, nudge image down a bit
+    const nameIsTop = String(namePos).startsWith('top');
+    const iy = nameIsTop
+      ? y + pad + nameH + Math.round(h * 0.02)
+      : y + Math.round(h * 0.05);
 
     ctx.save();
     if (shape === 'square') {
@@ -2976,25 +3091,35 @@ window.AdminMenuBuilderPage = {
       ctx.stroke();
     }
 
-    const nameTop = iy + imgSize + h * 0.035;
-    const nameMaxH = Math.max(16, textBottom - nameTop);
-    const nameSize = Math.min(Math.round(w * 0.085 * nameScale), Math.round(nameMaxH * 0.42));
-    ctx.fillStyle = t.text;
-    ctx.font = `bold ${nameSize}px system-ui,Segoe UI,sans-serif`;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'top';
-    const name = String(p.name || 'Item');
-    const lineH = Math.round(nameSize * 1.15);
-    const maxNameLines = Math.max(1, Math.min(2, Math.floor(nameMaxH / lineH) - (p.description ? 1 : 0)));
-    this.wrapText(ctx, name, x + w / 2, nameTop, w * 0.88, lineH, maxNameLines);
+    const placeBlock = (posKey, blockW, blockH) => {
+      const [ax, ay] = this.textAnchor(posKey);
+      let bx = x + pad + (w - pad * 2 - blockW) * ax;
+      let by = y + pad + (h - pad * 2 - blockH) * ay;
+      bx = Math.max(x + pad / 2, Math.min(x + w - blockW - pad / 2, bx));
+      by = Math.max(y + pad / 2, Math.min(y + h - blockH - pad / 2, by));
+      return { bx, by };
+    };
 
-    const desc = p.description || p.category_name || '';
-    if (desc && nameMaxH > lineH * 2) {
-      ctx.fillStyle = t.muted;
-      const dSize = Math.round(nameSize * 0.72);
-      ctx.font = `${dSize}px system-ui,Segoe UI,sans-serif`;
-      this.wrapText(ctx, String(desc), x + w / 2, nameTop + lineH * maxNameLines + 2, w * 0.85, Math.round(dSize * 1.1), 1);
+    const name = String(p.name || 'Item');
+    const nameSize = Math.min(Math.round(w * 0.085 * nameScale), Math.round(nameH * 0.7));
+    ctx.font = `bold ${nameSize}px system-ui,Segoe UI,sans-serif`;
+    const lineH = Math.round(nameSize * 1.15);
+    const nameBlockH = lineH * 2;
+    const nameBlockW = Math.min(w - pad * 2, w * 0.92);
+    const { bx: nameX, by: nameY } = placeBlock(namePos, nameBlockW, nameBlockH);
+
+    if (useTextBg && String(namePos) !== String(pricePos)) {
+      ctx.fillStyle = 'rgba(15,23,42,0.55)';
+      this.roundRect(ctx, nameX - 4, nameY - 2, nameBlockW + 8, nameBlockH + 4, 6);
+      ctx.fill();
     }
+
+    ctx.fillStyle = nameColor;
+    ctx.textAlign = textAlign === 'left' ? 'left' : (textAlign === 'right' ? 'right' : 'center');
+    ctx.textBaseline = 'top';
+    const nameCx = textAlign === 'left' ? nameX
+      : (textAlign === 'right' ? nameX + nameBlockW : nameX + nameBlockW / 2);
+    this.wrapText(ctx, name, nameCx, nameY, nameBlockW, lineH, 2);
 
     if (Number(p.selling_price) === 0 && String(p.name || '').toLowerCase().includes('free')) {
       return;
@@ -3004,40 +3129,42 @@ window.AdminMenuBuilderPage = {
     const wasLabel = showWas
       ? `${this.L('was')} ${this.money(stockPrice).replace(/\.00$/, '')}`
       : '';
-    ctx.font = `bold ${Math.round(Math.min(w * 0.1, priceH * (showWas ? 0.42 : 0.55)))}px system-ui,Segoe UI,sans-serif`;
+    ctx.font = `bold ${Math.round(Math.min(w * 0.1, priceH * (showWas ? 0.42 : 0.55)) * priceScale)}px system-ui,Segoe UI,sans-serif`;
     const priceW = ctx.measureText(price).width;
     let wasW = 0;
     if (showWas) {
-      ctx.font = `600 ${Math.round(Math.min(w * 0.07, priceH * 0.28))}px system-ui,Segoe UI,sans-serif`;
+      ctx.font = `600 ${Math.round(Math.min(w * 0.07, priceH * 0.28) * priceScale)}px system-ui,Segoe UI,sans-serif`;
       wasW = ctx.measureText(wasLabel).width;
     }
-    const pw = Math.max(w * 0.48, Math.max(priceW, wasW) + w * 0.14);
-    const px = x + (w - pw) / 2;
+    const pw = Math.max(w * 0.4, Math.max(priceW, wasW) + w * 0.12 * padScale);
+    const { bx: px, by: priceY } = placeBlock(pricePos, pw, priceH);
     ctx.fillStyle = type === 'specials' || type === 'buyget' ? (t.gold || '#fbbf24') : t.accent;
-    this.roundRect(ctx, px, priceY, pw, priceH, 8);
-    ctx.fill();
+    if (useTextBg || true) {
+      this.roundRect(ctx, px, priceY, pw, priceH, 8);
+      ctx.fill();
+    }
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     if (showWas) {
       ctx.fillStyle = type === 'specials' || type === 'buyget' ? 'rgba(15,23,42,0.55)' : 'rgba(255,255,255,0.75)';
-      ctx.font = `600 ${Math.round(Math.min(w * 0.07, priceH * 0.28))}px system-ui,Segoe UI,sans-serif`;
+      ctx.font = `600 ${Math.round(Math.min(w * 0.07, priceH * 0.28) * priceScale)}px system-ui,Segoe UI,sans-serif`;
       const wy = priceY + priceH * 0.32;
-      ctx.fillText(wasLabel, x + w / 2, wy);
+      ctx.fillText(wasLabel, px + pw / 2, wy);
       const strikeY = wy;
       const sw = ctx.measureText(wasLabel).width;
       ctx.strokeStyle = type === 'specials' || type === 'buyget' ? 'rgba(15,23,42,0.55)' : 'rgba(255,255,255,0.75)';
       ctx.lineWidth = Math.max(1.5, w * 0.006);
       ctx.beginPath();
-      ctx.moveTo(x + w / 2 - sw / 2 - 2, strikeY);
-      ctx.lineTo(x + w / 2 + sw / 2 + 2, strikeY);
+      ctx.moveTo(px + pw / 2 - sw / 2 - 2, strikeY);
+      ctx.lineTo(px + pw / 2 + sw / 2 + 2, strikeY);
       ctx.stroke();
-      ctx.fillStyle = type === 'specials' || type === 'buyget' ? '#0f172a' : '#fff';
-      ctx.font = `bold ${Math.round(Math.min(w * 0.095, priceH * 0.42))}px system-ui,Segoe UI,sans-serif`;
-      ctx.fillText(price, x + w / 2, priceY + priceH * 0.7);
+      ctx.fillStyle = type === 'specials' || type === 'buyget' ? '#0f172a' : priceFg;
+      ctx.font = `bold ${Math.round(Math.min(w * 0.095, priceH * 0.42) * priceScale)}px system-ui,Segoe UI,sans-serif`;
+      ctx.fillText(price, px + pw / 2, priceY + priceH * 0.7);
     } else {
-      ctx.fillStyle = type === 'specials' || type === 'buyget' ? '#0f172a' : '#fff';
-      ctx.font = `bold ${Math.round(Math.min(w * 0.1, priceH * 0.55))}px system-ui,Segoe UI,sans-serif`;
-      ctx.fillText(price, x + w / 2, priceY + priceH / 2);
+      ctx.fillStyle = type === 'specials' || type === 'buyget' ? '#0f172a' : priceFg;
+      ctx.font = `bold ${Math.round(Math.min(w * 0.1, priceH * 0.55) * priceScale)}px system-ui,Segoe UI,sans-serif`;
+      ctx.fillText(price, px + pw / 2, priceY + priceH / 2);
     }
   },
 

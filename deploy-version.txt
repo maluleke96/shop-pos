@@ -1,1 +1,1 @@
-deploy-20260921-saas-consolidated-v1
+deploy-20260925-platform-mo-receipts-v1

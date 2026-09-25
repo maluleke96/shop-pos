@@ -272,6 +272,15 @@
         };
       }
       const res = await sendRpc(key, callArgs, { clientRequestId: saleRequestId || undefined });
+      if (res && (res.code === 'SHOP_SUSPENDED' || res.code === 'SHOP_EXPIRED')) {
+        try {
+          if (typeof Utils !== 'undefined' && Utils.showAccessBlockedOverlay) {
+            Utils.showAccessBlockedOverlay(res);
+          } else if (window.App && typeof window.App._showSuspendedFromPayload === 'function') {
+            window.App._showSuspendedFromPayload(res);
+          }
+        } catch (_) { /* */ }
+      }
       if (store?.isReadMethod?.(key) && looksLikeNetworkFailure(res)) {
         const cached = await store.getRpc(key, callArgs);
         if (cached) return cached;

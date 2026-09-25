@@ -1,0 +1,14 @@
+mutation ProjectCreate($input: ProjectCreateInput!) {
+  projectCreate(input: $input) {
+    id
+    name
+    environments {
+      edges {
+        node {
+          id
+          name
+        }
+      }
+    }
+  }
+}

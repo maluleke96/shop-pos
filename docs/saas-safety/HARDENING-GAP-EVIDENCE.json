@@ -1,0 +1,108 @@
+{
+  "shop_id": "shop_muay8exk_8e822da9",
+  "shop_url": "https://shoppos-production-de1c.up.railway.app",
+  "railway_project_id": "c1e8e12b-28ce-43a7-93ee-cf5b8d542fb4",
+  "owner_username": "gapowner_muay8f3z",
+  "results": [
+    {
+      "name": "lab login",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "packages",
+      "ok": true,
+      "detail": "floor=true online=true free=true"
+    },
+    {
+      "name": "create disposable customer",
+      "ok": true,
+      "detail": "shop_muay8exk_8e822da9"
+    },
+    {
+      "name": "provision READY",
+      "ok": true,
+      "detail": "online"
+    },
+    {
+      "name": "not Chisa project",
+      "ok": true,
+      "detail": "c1e8e12b-28ce-43a7-93ee-cf5b8d542fb4"
+    },
+    {
+      "name": "customer URL",
+      "ok": true,
+      "detail": "https://shoppos-production-de1c.up.railway.app"
+    },
+    {
+      "name": "customer health after saas-web deploy",
+      "ok": true,
+      "detail": "https://shoppos-production-de1c.up.railway.app"
+    },
+    {
+      "name": "entitlement sync",
+      "ok": true,
+      "detail": "{\"success\":true,\"data\":{\"ok\":true,\"pushed\":{\"success\":true,\"shop_key\":\"shop_muay8exk_8e822da9\",\"package_id\":\"pkg_muaf1mul_8787e7\",\"addon_ids\":[\"addon_muagipbj_d"
+    },
+    {
+      "name": "ACTIVE allows entitlements",
+      "ok": true,
+      "detail": "200"
+    },
+    {
+      "name": "SUSPENDED blocks RPC",
+      "ok": true,
+      "detail": "SHOP_SUSPENDED"
+    },
+    {
+      "name": "SUSPENDED rich message.title",
+      "ok": true,
+      "detail": "Service Temporarily Unavailable"
+    },
+    {
+      "name": "SUSPENDED rich message.body",
+      "ok": true,
+      "detail": "Your shop access has been temporarily suspended.\n\nThis may be due to your subscr"
+    },
+    {
+      "name": "SUSPENDED no internals",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "reactivation restores access",
+      "ok": true,
+      "detail": "200"
+    },
+    {
+      "name": "OVERDUE countdown/access_state",
+      "ok": true,
+      "detail": "{\"shop_id\":\"shop_muay8exk_8e822da9\",\"start_date\":\"2026-09-21T07:54:01.727Z\",\"expiry_date\":\"2026-09-20T07:58:44.708Z\",\"days_remaining\":-1,\"st"
+    },
+    {
+      "name": "EXPIRED blocks RPC",
+      "ok": true,
+      "detail": "SHOP_SUSPENDED"
+    },
+    {
+      "name": "EXPIRED rich message",
+      "ok": true,
+      "detail": "Service Temporarily Unavailable"
+    },
+    {
+      "name": "activation on saas-web customer",
+      "ok": true,
+      "detail": "{\"shop_id\":\"shop_muay8exk_8e822da9\",\"shop_name\":\"Hardening Gap muay8f3z\",\"activation_status\":\"activa"
+    },
+    {
+      "name": "owner setup on saas-web image",
+      "ok": true,
+      "detail": "{\"success\":true,\"data\":{\"success\":true}}"
+    },
+    {
+      "name": "owner login",
+      "ok": true,
+      "detail": "gapowner_muay8f3z"
+    }
+  ]
+}

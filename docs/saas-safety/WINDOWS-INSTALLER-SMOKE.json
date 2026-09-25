@@ -1,0 +1,24 @@
+{
+  "installer": "dist/ShopPOS-Portable-x64.exe",
+  "size_bytes": 92416036,
+  "dated": "2026-08-26",
+  "smoke": {
+    "launches": true,
+    "process_names": ["ShopPOS-Portable-x64", "Shop POS"],
+    "main_window_title": "Shop POS",
+    "responding": true,
+    "installation_nsis": "NOT AUTOMATED — used existing portable binary (no NSIS wizard run this pass)",
+    "application_opens": true,
+    "unactivated_cannot_access_shop": {
+      "api": "license:evaluateOffline without lease → allowed:false reason=no_lease",
+      "activate_page": "GET /activate on customer returns 200",
+      "ui_gate": "API path proven; full native UI shop-lock click-through NOT AUTOMATED"
+    },
+    "activation_flow": {
+      "api": "PASS — activation:redeem + device registration verified on saas-web customer image (hardening gaps)",
+      "ui": "NOT AUTOMATED — /activate page served; native installer activation wizard not fully UI-automated"
+    }
+  },
+  "verified_at": "2026-09-21T09:00:00.000Z",
+  "chisa_food": "untouched"
+}
