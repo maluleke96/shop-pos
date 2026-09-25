@@ -263,17 +263,47 @@ function notifyAssignee(task, assignee, actor, opts = {}) {
       try {
         const wa = require('./whatsapp');
         const body = `Manager Operations\n\nHi ${assignee.full_name || assignee.username},\n\n${message}\n\nOpen Manager Ops or Staff Portal to complete it.`;
-        // fire-and-forget sync wrapper — sendMessage is async
+        const sendActor = actor && ['owner', 'manager', 'assistant_manager', 'supervisor'].includes(String(actor.role || '').toLowerCase())
+          ? actor
+          : { id: actor?.id || 0, role: 'owner', username: actor?.username || 'system', full_name: actor?.full_name || 'System' };
         Promise.resolve(wa.sendMessage({
           phone,
           body,
           message_type: 'custom',
           recipient_name: assignee.full_name || assignee.username,
-          recipient_type: 'staff'
-        }, actor || { role: 'system' })).then((r) => {
-          logTaskNotification(task.id, assignee.id, 'whatsapp', title, body, r?.status || 'sent', { phone });
+          recipient_type: 'staff',
+          prefer_wa_me: !!opts.prefer_wa_me
+        }, sendActor)).then((r) => {
+          logTaskNotification(task.id, assignee.id, 'whatsapp', title, body, r?.status || 'sent', {
+            phone,
+            via: r?.via || r?.meta?.via || null,
+            url: r?.url || r?.meta?.url || null
+          });
         }).catch((e) => {
-          logTaskNotification(task.id, assignee.id, 'whatsapp', title, body, 'failed', { phone, error: String(e.message || e) });
+          // Fallback: create wa.me pending message so WhatsApp still works offline API
+          try {
+            Promise.resolve(wa.sendMessage({
+              phone,
+              body,
+              message_type: 'custom',
+              recipient_name: assignee.full_name || assignee.username,
+              recipient_type: 'staff',
+              prefer_wa_me: true,
+              force_wa_me: true
+            }, sendActor)).then((r2) => {
+              logTaskNotification(task.id, assignee.id, 'whatsapp', title, body, r2?.status || 'pending', {
+                phone, fallback: true, url: r2?.url || r2?.meta?.url || null
+              });
+            }).catch((e2) => {
+              logTaskNotification(task.id, assignee.id, 'whatsapp', title, body, 'failed', {
+                phone, error: String(e2.message || e2 || e.message || e)
+              });
+            });
+          } catch (e2) {
+            logTaskNotification(task.id, assignee.id, 'whatsapp', title, body, 'failed', {
+              phone, error: String(e2.message || e2 || e.message || e)
+            });
+          }
         });
         out.whatsapp = true;
       } catch (e) {
@@ -1196,6 +1226,59 @@ function assignDailyTask(taskId, data, actor) {
   return updated;
 }
 
+/** Assign many tasks to one person in one call (fast Assign Staff board). */
+function assignManyTasks(data, actor) {
+  assertModuleEnabled();
+  requireAdmin(actor);
+  ensureSchema();
+  const ids = (data.task_ids || []).map(Number).filter((id) => Number.isFinite(id) && id > 0);
+  if (!ids.length) throw new Error('Select at least one task');
+  const userId = data.assigned_user_id;
+  if (userId == null || userId === '') throw new Error('Select a staff member');
+  const assignee = lookupUser(userId);
+  if (!assignee) throw new Error('Staff member not found');
+  const manager = data.manager_user_id != null && data.manager_user_id !== ''
+    ? lookupUser(data.manager_user_id) : null;
+  const titles = [];
+  for (const id of ids) {
+    const task = dbGet('SELECT * FROM mo_daily_tasks WHERE id = ?', [id]);
+    if (!task) continue;
+    dbRun(
+      `UPDATE mo_daily_tasks SET
+        assigned_user_id=?, assigned_user_name=?, manager_user_id=COALESCE(?, manager_user_id),
+        manager_user_name=COALESCE(?, manager_user_name),
+        assigned_role=COALESCE(?, assigned_role), updated_at=?
+       WHERE id=?`,
+      [
+        assignee.id,
+        assignee.full_name || assignee.username,
+        manager?.id || null,
+        manager ? (manager.full_name || manager.username) : null,
+        data.assigned_role || assignee.role || null,
+        nowIso(),
+        id
+      ]
+    );
+    titles.push(task.title);
+    moAudit(actor, 'task_assigned', 'mo_daily_task', id, { assigned_user_id: assignee.id, batch: true });
+  }
+  const sample = dbGet('SELECT * FROM mo_daily_tasks WHERE id = ?', [ids[0]]);
+  if (sample) {
+    notifyAssignee(sample, assignee, actor, {
+      whatsapp: data.notify_whatsapp !== false,
+      title: titles.length > 1 ? `${titles.length} tasks assigned` : 'New daily task assigned',
+      message: titles.length > 1
+        ? `You have ${titles.length} tasks today:\n• ${titles.slice(0, 8).join('\n• ')}${titles.length > 8 ? '\n…' : ''}\n\nOpen Manager Ops or Staff Portal.`
+        : `${titles[0]} was assigned to you. Open Manager Operations or Staff Portal to complete it.`
+    });
+  }
+  return {
+    assigned: titles.length,
+    user: { id: assignee.id, full_name: assignee.full_name, username: assignee.username },
+    titles
+  };
+}
+
 /** Admin marks a staff task complete (optionally on their behalf) — photo required when task needs evidence. */
 function adminCompleteTask(taskId, data, actor) {
   assertModuleEnabled();
@@ -1857,6 +1940,7 @@ module.exports = {
   saveChecklistTemplate,
   createDailyTask,
   assignDailyTask,
+  assignManyTasks,
   adminCompleteTask,
   listAssignablePeople,
   listTaskNotifications,

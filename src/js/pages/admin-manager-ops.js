@@ -27,6 +27,58 @@
 
   const AdminManagerOpsPage = {
     tab: 'dashboard',
+    _cache: {},
+    _cacheAt: {},
+
+    async cached(key, loader, ttlMs = 45000) {
+      const now = Date.now();
+      if (this._cache[key] != null && (now - (this._cacheAt[key] || 0)) < ttlMs) return this._cache[key];
+      const val = await loader();
+      this._cache[key] = val;
+      this._cacheAt[key] = now;
+      return val;
+    },
+
+    bust(...keys) {
+      for (const k of keys) {
+        delete this._cache[k];
+        delete this._cacheAt[k];
+      }
+    },
+
+    content() {
+      return this._root?.querySelector('#mo-content');
+    },
+
+    go(tab) {
+      this.tab = tab;
+      const tabsEl = this._root?.querySelector('#mo-tabs');
+      tabsEl?.querySelectorAll('[data-tab]')?.forEach((b) => {
+        b.classList.toggle('active', b.dataset.tab === tab);
+      });
+      return this.showTab(tab);
+    },
+
+    async showTab(tab) {
+      const content = this.content();
+      if (!content) return;
+      content.innerHTML = `<p class="muted" style="padding:8px 0">Loading…</p>`;
+      const map = {
+        dashboard: () => this.renderDashboard(content),
+        assign: () => this.renderAssign(content),
+        tasks: () => this.renderTasks(content),
+        access: () => this.renderAccess(content),
+        templates: () => this.renderTemplates(content),
+        checklists: () => this.renderChecklists(content),
+        notifications: () => this.renderNotifications(content),
+        reports: () => this.renderReports(content),
+        incidents: () => this.renderIncidents(content),
+        sales: () => this.renderSales(content),
+        attendance: () => this.renderAttendance(content),
+        settings: () => this.renderSettings(content)
+      };
+      await (map[tab] || map.dashboard)();
+    },
 
     async render(el, admin) {
       this.admin = admin;
@@ -48,12 +100,19 @@
         ['attendance', 'Attendance'],
         ['settings', 'Settings']
       ];
+
+      // Fast path: shell already built — only swap tab content
+      if (el.querySelector('.mo-admin') && el.querySelector('#mo-content')) {
+        await this.go(this.tab);
+        return;
+      }
+
       el.innerHTML = `<div class="admin-section mo-admin">
         <div class="mo-admin-hero">
           <div>
             <div class="mo-admin-kicker">Restaurant operations</div>
             <h3 style="margin:4px 0 6px">Manager Operations &amp; Daily Tasks</h3>
-            <p class="muted" style="margin:0;max-width:56ch">Use <strong>Assign Staff</strong> to give each person their tasks. Edit your own items under <strong>Checklists</strong> and <strong>Task Templates</strong>. Connected to live POS sales, Sales Targets, Staff Portal, Staff HR attendance, Employee of the Month, and printable reports.</p>
+            <p class="muted" style="margin:0;max-width:56ch">Use <strong>Assign Staff</strong> for workers. Edit your own lists under <strong>Checklists</strong>. Connected to POS, Sales Targets, Staff Portal, HR attendance, and reports.</p>
           </div>
           <div class="mo-admin-actions">
             <button type="button" class="btn btn-primary" id="mo-goto-assign">Assign Staff</button>
@@ -62,15 +121,13 @@
             <button type="button" class="btn btn-ghost" id="mo-gen-tasks">Generate today&apos;s tasks</button>
           </div>
         </div>
-
         <div class="mo-admin-link-card">
           <div>
             <strong>Quick guide</strong>
             <ol class="muted" style="margin:8px 0 0;padding-left:18px;max-width:70ch">
-              <li><strong>Generate today&apos;s tasks</strong> (button above) — creates opening / sales / kitchen / etc. for today</li>
-              <li><strong>Assign Staff</strong> tab — click a worker, pick their tasks, Save &amp; notify (app + Staff Portal + WhatsApp)</li>
-              <li><strong>Checklists / Task Templates</strong> — add or edit your own items so they appear in the app</li>
-              <li><strong>Who Can Login</strong> — only controls who may open the Manager Ops app (not attendance)</li>
+              <li><strong>Generate today&apos;s tasks</strong> — creates today&apos;s duties</li>
+              <li><strong>Assign Staff</strong> — click a worker, tick tasks, Save &amp; notify</li>
+              <li><strong>Checklists</strong> — add your own name, category, and item lines</li>
             </ol>
           </div>
           <div class="mo-admin-link-row">
@@ -78,7 +135,6 @@
             <button type="button" class="btn btn-primary" id="mo-copy-link-2">Copy staff link</button>
           </div>
         </div>
-
         <div class="form-tabs mo-admin-tabs" id="mo-tabs">${tabs.map(([id, label]) =>
           `<button type="button" class="form-tab ${this.tab === id ? 'active' : ''}" data-tab="${id}">${label}</button>`
         ).join('')}</div>
@@ -97,7 +153,7 @@
         .mo-stat strong{font-size:1.25rem}
         .mo-assign-layout{display:grid;grid-template-columns:minmax(200px,280px) 1fr;gap:16px;align-items:start}
         @media(max-width:800px){.mo-assign-layout{grid-template-columns:1fr}}
-        .mo-staff-list{border:1px solid var(--border,#e2e8f0);border-radius:12px;overflow:hidden;background:var(--bg-card,var(--bg,#fff))}
+        .mo-staff-list{border:1px solid var(--border,#e2e8f0);border-radius:12px;overflow:hidden;background:var(--bg-card,var(--bg,#fff));max-height:70vh;overflow-y:auto}
         .mo-staff-list button{display:block;width:100%;text-align:left;padding:12px 14px;border:0;border-bottom:1px solid var(--border,#e2e8f0);background:transparent;cursor:pointer;font:inherit}
         .mo-staff-list button:last-child{border-bottom:0}
         .mo-staff-list button.active{background:rgba(37,99,235,.1);font-weight:700}
@@ -105,6 +161,8 @@
         .mo-assign-panel{border:1px solid var(--border,#e2e8f0);border-radius:12px;padding:16px;background:var(--bg-card,var(--bg,#fff))}
         .mo-task-pick{display:flex;gap:10px;align-items:flex-start;padding:10px 0;border-bottom:1px solid var(--border,#e2e8f0)}
         .mo-task-pick:last-child{border-bottom:0}
+        .mo-cl-editor{padding:14px;border:1px solid var(--border,#e2e8f0);border-radius:12px;margin:12px 0;background:rgba(16,185,129,.06)}
+        .mo-cl-card{border:1px solid var(--border,#e2e8f0);border-radius:10px;padding:12px;margin-bottom:10px}
       </style>`;
 
       const copyLink = async () => {
@@ -112,49 +170,35 @@
           await navigator.clipboard.writeText(staffLink);
           Utils.toast('Staff link copied', 'success');
         } catch (_) {
-          const inp = el.querySelector('#mo-staff-link');
-          inp?.select?.();
+          el.querySelector('#mo-staff-link')?.select?.();
           try { document.execCommand('copy'); Utils.toast('Staff link copied', 'success'); }
           catch (__) { Utils.toast(staffLink, 'info'); }
         }
       };
       el.querySelector('#mo-copy-link')?.addEventListener('click', copyLink);
       el.querySelector('#mo-copy-link-2')?.addEventListener('click', copyLink);
-      el.querySelector('#mo-goto-assign')?.addEventListener('click', () => {
-        this.tab = 'assign';
-        this.render(el, admin);
-      });
+      el.querySelector('#mo-goto-assign')?.addEventListener('click', () => this.go('assign'));
       el.querySelector('#mo-tabs')?.addEventListener('click', (e) => {
         const btn = e.target.closest('[data-tab]');
         if (!btn) return;
-        this.tab = btn.dataset.tab;
-        this.render(el, admin);
+        this.go(btn.dataset.tab);
       });
       el.querySelector('#mo-gen-tasks')?.addEventListener('click', async () => {
-        const r = await API.moGenerateTasks({}, this.app.user);
-        if (!r.success) return Utils.toast(r.error || 'Failed', 'error');
-        const d = r.data || {};
-        Utils.toast(d.message || `Created ${d.created || 0} tasks`, d.created ? 'success' : 'info');
-        this.tab = 'assign';
-        this.render(el, admin);
+        const btn = el.querySelector('#mo-gen-tasks');
+        if (btn) { btn.disabled = true; btn.textContent = 'Generating…'; }
+        try {
+          const r = await API.moGenerateTasks({}, this.app.user);
+          if (!r.success) return Utils.toast(r.error || 'Failed', 'error');
+          const d = r.data || {};
+          Utils.toast(d.message || `Created ${d.created || 0} tasks`, d.created ? 'success' : 'info');
+          this.bust('tasks');
+          await this.go('assign');
+        } finally {
+          if (btn) { btn.disabled = false; btn.textContent = "Generate today's tasks"; }
+        }
       });
 
-      const content = el.querySelector('#mo-content');
-      const map = {
-        dashboard: () => this.renderDashboard(content),
-        assign: () => this.renderAssign(content),
-        tasks: () => this.renderTasks(content),
-        access: () => this.renderAccess(content),
-        templates: () => this.renderTemplates(content),
-        checklists: () => this.renderChecklists(content),
-        notifications: () => this.renderNotifications(content),
-        reports: () => this.renderReports(content),
-        incidents: () => this.renderIncidents(content),
-        sales: () => this.renderSales(content),
-        attendance: () => this.renderAttendance(content),
-        settings: () => this.renderSettings(content)
-      };
-      await (map[this.tab] || map.dashboard)();
+      await this.showTab(this.tab);
     },
 
     pickPhoto() {
@@ -206,38 +250,23 @@
             · Report: <strong>${d.report ? 'Submitted' : 'Not yet submitted'}</strong>
             · Shop: <strong>${esc(d.shop_name || '—')}</strong></p>
         </div></div>`;
-      el.querySelector('#mo-dash-assign')?.addEventListener('click', () => {
-        this.tab = 'assign';
-        this.render(this._root, this.admin);
-      });
-      el.querySelector('#mo-dash-check')?.addEventListener('click', () => {
-        this.tab = 'checklists';
-        this.render(this._root, this.admin);
-      });
-      el.querySelector('#mo-dash-tpl')?.addEventListener('click', () => {
-        this.tab = 'templates';
-        this.render(this._root, this.admin);
-      });
-      el.querySelector('#mo-dash-login')?.addEventListener('click', () => {
-        this.tab = 'access';
-        this.render(this._root, this.admin);
-      });
+      el.querySelector('#mo-dash-assign')?.addEventListener('click', () => this.go('assign'));
+      el.querySelector('#mo-dash-check')?.addEventListener('click', () => this.go('checklists'));
+      el.querySelector('#mo-dash-tpl')?.addEventListener('click', () => this.go('templates'));
+      el.querySelector('#mo-dash-login')?.addEventListener('click', () => this.go('access'));
     },
 
     async renderAssign(el) {
       this._assignUserId = this._assignUserId || null;
       const [tasksRes, peopleRes] = await Promise.all([
-        API.moListTasks({ admin_view: true }, this.app.user),
-        API.moListPeople(this.app.user)
+        this.cached('tasks', () => API.moListTasks({ admin_view: true }, this.app.user), 20000),
+        this.cached('people', () => API.moListPeople(this.app.user), 60000)
       ]);
       if (!peopleRes.success) {
         el.innerHTML = `<p class="error-msg">${esc(peopleRes.error || 'Could not load staff')}</p>`;
         return;
       }
-      const people = (peopleRes.data || []).filter((p) => {
-        const r = String(p.role || '').toLowerCase();
-        return !['owner'].includes(r) || true; // show everyone including owners
-      });
+      const people = peopleRes.data || [];
       const tasks = tasksRes.success ? (tasksRes.data || []) : [];
       if (!this._assignUserId && people[0]) this._assignUserId = Number(people[0].id);
       const selected = people.find((p) => Number(p.id) === Number(this._assignUserId)) || people[0];
@@ -248,8 +277,7 @@
 
       el.innerHTML = `<div class="card"><div class="card-body">
         <h4 style="margin-top:0">Assign Staff</h4>
-        <p class="muted" style="margin-top:0">Click a person on the left → tick the tasks they must do → <strong>Save &amp; notify</strong>.
-          Those tasks appear in their Manager Ops app and Staff Portal (and WhatsApp if their phone is on the employee record).</p>
+        <p class="muted" style="margin-top:0">Click a person → tick tasks → <strong>Save &amp; notify</strong> (Manager Ops app + Staff Portal + WhatsApp).</p>
         ${!tasks.length ? `<p class="error-msg">No tasks for today yet. Click <strong>Generate today's tasks</strong> at the top first.</p>` : ''}
         <div class="mo-assign-layout" style="margin-top:14px">
           <div class="mo-staff-list" id="mo-staff-list">
@@ -262,7 +290,7 @@
               </button>`;
             }).join('') || '<p class="muted" style="padding:12px">No staff users found</p>'}
           </div>
-          <div class="mo-assign-panel" id="mo-assign-panel">
+          <div class="mo-assign-panel">
             ${selected ? `
               <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center">
                 <div>
@@ -271,16 +299,14 @@
                 </div>
                 <label style="display:flex;gap:6px;align-items:center;font-size:13px"><input type="checkbox" id="mo-asg-wa" checked> Notify WhatsApp + portal</label>
               </div>
-
-              <h5 style="margin:16px 0 6px">Already assigned to ${esc(selected.full_name || 'them')}</h5>
+              <h5 style="margin:16px 0 6px">Already assigned</h5>
               ${theirs.length ? theirs.map((t) => `
                 <div class="mo-task-pick">
                   <div style="flex:1"><strong>${esc(t.title)}</strong>
                     <div class="muted">${esc(t.category)} · <span class="tag ${statusClass(t.status)}">${statusLabel(t.status)}</span></div></div>
                   <button type="button" class="btn btn-ghost btn-sm mo-unassign" data-id="${t.id}">Remove</button>
                 </div>`).join('') : '<p class="muted">None yet — tick tasks below</p>'}
-
-              <h5 style="margin:18px 0 6px">Give them these tasks (tick → Save)</h5>
+              <h5 style="margin:18px 0 6px">Give them these tasks</h5>
               <div id="mo-pick-list">
                 ${[...unassigned, ...others].map((t) => `
                   <label class="mo-task-pick">
@@ -303,11 +329,13 @@
       });
       el.querySelectorAll('.mo-unassign').forEach((btn) => {
         btn.addEventListener('click', async () => {
+          btn.disabled = true;
           const out = await API.moAssignTask(Number(btn.dataset.id), {
             assigned_user_id: null,
             notify_whatsapp: false
           }, this.app.user);
-          if (!out.success) return Utils.toast(out.error || 'Failed', 'error');
+          if (!out.success) { btn.disabled = false; return Utils.toast(out.error || 'Failed', 'error'); }
+          this.bust('tasks');
           Utils.toast('Assignment removed', 'success');
           this.renderAssign(el);
         });
@@ -316,17 +344,19 @@
         const ids = [...el.querySelectorAll('.mo-pick-task:checked')].map((cb) => Number(cb.value));
         if (!ids.length) return Utils.toast('Tick at least one task to assign', 'error');
         if (!sid) return;
-        const wa = !!el.querySelector('#mo-asg-wa')?.checked;
-        let ok = 0;
-        for (const id of ids) {
-          const out = await API.moAssignTask(id, {
-            assigned_user_id: sid,
-            notify_whatsapp: wa
-          }, this.app.user);
-          if (out.success) ok += 1;
-          else Utils.toast(out.error || 'Assign failed', 'error');
+        const saveBtn = el.querySelector('#mo-assign-save');
+        if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = 'Saving…'; }
+        const out = await API.moAssignMany({
+          task_ids: ids,
+          assigned_user_id: sid,
+          notify_whatsapp: !!el.querySelector('#mo-asg-wa')?.checked
+        }, this.app.user);
+        if (!out.success) {
+          if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = `Save & notify ${selected.full_name || selected.username}`; }
+          return Utils.toast(out.error || 'Assign failed', 'error');
         }
-        if (ok) Utils.toast(`Assigned ${ok} task(s) to ${selected.full_name || selected.username}`, 'success');
+        this.bust('tasks');
+        Utils.toast(`Assigned ${out.data?.assigned || ids.length} task(s) — portal + WhatsApp notified`, 'success');
         this.renderAssign(el);
       });
     },
@@ -610,78 +640,102 @@
     },
 
     async renderChecklists(el) {
-      const r = await API.moChecklists();
+      const r = await this.cached('checklists', () => API.moChecklists(), 30000);
       const rows = r.success ? (r.data || []) : [];
+      const editingId = this._editChecklistId || null;
+      const editing = rows.find((c) => Number(c.id) === Number(editingId)) || null;
+
       el.innerHTML = `<div class="card"><div class="card-body">
         <h4 style="margin-top:0">Checklists</h4>
-        <p class="muted">Edit checklist items here — they appear on the Manager Ops app when linked to a daily task.</p>
+        <p class="muted">Write your own name, your own category, and your item lines. They appear in the Manager Ops app when linked to a task.</p>
 
-        <div style="padding:14px;border:1px solid var(--border,#e2e8f0);border-radius:12px;margin:14px 0;background:rgba(16,185,129,.05)">
-          <strong>Add checklist</strong>
+        <div class="mo-cl-editor" id="mo-cl-form">
+          <strong id="mo-cl-form-title">${editing ? 'Edit checklist' : 'Add checklist'}</strong>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px">
-            <input class="form-input" id="mo-cl-name" placeholder="Checklist name *">
-            <select class="form-input" id="mo-cl-cat">
-              <option value="opening">opening</option><option value="sales">sales</option>
-              <option value="marketing">marketing</option><option value="kitchen">kitchen</option>
-              <option value="customers">customers</option><option value="stock">stock</option>
-              <option value="closing">closing</option><option value="general">general</option>
-            </select>
+            <div>
+              <label class="muted">Checklist name *</label>
+              <input class="form-input" id="mo-cl-name" placeholder="e.g. My Morning Open" value="${esc(editing?.name || '')}">
+            </div>
+            <div>
+              <label class="muted">Category (type your own)</label>
+              <input class="form-input" id="mo-cl-cat" list="mo-cl-cat-list" placeholder="e.g. opening / sales / my-custom"
+                value="${esc(editing?.category || '')}">
+              <datalist id="mo-cl-cat-list">
+                <option value="opening"><option value="sales"><option value="marketing">
+                <option value="kitchen"><option value="customers"><option value="stock">
+                <option value="closing"><option value="attendance"><option value="general">
+              </datalist>
+            </div>
           </div>
-          <label class="muted" style="display:block;margin-top:8px">Items (one per line)</label>
-          <textarea class="form-input" id="mo-cl-items" rows="5" placeholder="Shop opened on time&#10;Kitchen ready&#10;POS working"></textarea>
-          <button type="button" class="btn btn-primary" id="mo-cl-save" style="margin-top:10px">Save checklist</button>
+          <label class="muted" style="display:block;margin-top:10px">Checklist items — one line each (headings / steps)</label>
+          <textarea class="form-input" id="mo-cl-items" rows="8" placeholder="Shop opened on time&#10;Kitchen ready&#10;POS working&#10;Write any item you want…">${esc(
+            editing ? (editing.items || []).map((it) => it.label || it).join('\n') : ''
+          )}</textarea>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+            <button type="button" class="btn btn-primary" id="mo-cl-save">${editing ? 'Save changes' : 'Add checklist'}</button>
+            ${editing ? '<button type="button" class="btn btn-ghost" id="mo-cl-cancel">Cancel edit</button>' : ''}
+          </div>
         </div>
 
-        ${rows.map((c) => `
-          <div class="mo-cl-card" data-id="${c.id}" style="border:1px solid var(--border,#e2e8f0);border-radius:10px;padding:12px;margin-bottom:10px">
-            <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap">
-              <div><strong>${esc(c.name)}</strong> <span class="muted">· ${esc(c.category)} · ${(c.items || []).length} items</span></div>
-              <button type="button" class="btn btn-ghost btn-sm mo-cl-edit" data-id="${c.id}">Edit items</button>
-            </div>
-            <ul style="margin:8px 0 0;padding-left:18px;color:var(--muted,#64748b);font-size:13px">
-              ${(c.items || []).slice(0, 8).map((it) => `<li>${esc(it.label || it)}</li>`).join('') || '<li>No items</li>'}
-              ${(c.items || []).length > 8 ? `<li>… +${(c.items || []).length - 8} more</li>` : ''}
-            </ul>
-          </div>`).join('') || '<p class="muted">No checklists yet</p>'}
+        <div id="mo-cl-list">
+          ${rows.map((c) => `
+            <div class="mo-cl-card" data-id="${c.id}">
+              <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center">
+                <div>
+                  <strong>${esc(c.name)}</strong>
+                  <span class="muted"> · ${esc(c.category || 'general')} · ${(c.items || []).length} items</span>
+                </div>
+                <button type="button" class="btn btn-primary btn-sm mo-cl-edit" data-id="${c.id}">Edit items</button>
+              </div>
+              <ul style="margin:8px 0 0;padding-left:18px;color:var(--muted,#64748b);font-size:13px">
+                ${(c.items || []).map((it) => `<li>${esc(it.label || it)}</li>`).join('') || '<li>No items</li>'}
+              </ul>
+            </div>`).join('') || '<p class="muted">No checklists yet — add one above</p>'}
+        </div>
       </div></div>`;
-      el.querySelector('#mo-cl-save')?.addEventListener('click', async () => {
+
+      const saveBtn = el.querySelector('#mo-cl-save');
+      saveBtn?.addEventListener('click', async () => {
         const name = el.querySelector('#mo-cl-name')?.value?.trim();
-        if (!name) return Utils.toast('Enter a checklist name', 'error');
+        const category = el.querySelector('#mo-cl-cat')?.value?.trim() || 'general';
         const items = String(el.querySelector('#mo-cl-items')?.value || '')
           .split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
-        if (!items.length) return Utils.toast('Add at least one checklist item', 'error');
-        const out = await API.moSaveChecklist({
+        if (!name) return Utils.toast('Enter a checklist name', 'error');
+        if (!items.length) return Utils.toast('Add at least one item line', 'error');
+        saveBtn.disabled = true;
+        saveBtn.textContent = 'Saving…';
+        const payload = {
+          id: editing ? editing.id : undefined,
           name,
-          category: el.querySelector('#mo-cl-cat')?.value,
-          assigned_role: 'assistant_manager',
+          category,
+          assigned_role: editing?.assigned_role || 'assistant_manager',
+          code: editing?.code || null,
           items,
-          is_active: true
-        }, this.app.user);
+          is_active: true,
+          sort_order: editing?.sort_order || 0
+        };
+        const out = await API.moSaveChecklist(payload, this.app.user);
+        saveBtn.disabled = false;
+        saveBtn.textContent = editing ? 'Save changes' : 'Add checklist';
         if (!out.success) return Utils.toast(out.error || 'Save failed', 'error');
-        Utils.toast('Checklist saved — use it when creating tasks', 'success');
+        this._editChecklistId = null;
+        this.bust('checklists');
+        Utils.toast(editing ? 'Checklist updated' : 'Checklist added', 'success');
         this.renderChecklists(el);
       });
+
+      el.querySelector('#mo-cl-cancel')?.addEventListener('click', () => {
+        this._editChecklistId = null;
+        this.renderChecklists(el);
+      });
+
       el.querySelectorAll('.mo-cl-edit').forEach((btn) => {
-        btn.addEventListener('click', async () => {
-          const c = rows.find((x) => Number(x.id) === Number(btn.dataset.id));
-          if (!c) return;
-          const current = (c.items || []).map((it) => it.label || it).join('\n');
-          const next = prompt('Edit checklist items (one per line):', current);
-          if (next == null) return;
-          const items = String(next).split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
-          const out = await API.moSaveChecklist({
-            id: c.id,
-            name: c.name,
-            category: c.category,
-            assigned_role: c.assigned_role,
-            code: c.code,
-            items,
-            is_active: c.is_active !== 0,
-            sort_order: c.sort_order
-          }, this.app.user);
-          if (!out.success) return Utils.toast(out.error || 'Update failed', 'error');
-          Utils.toast('Checklist updated', 'success');
+        btn.addEventListener('click', () => {
+          this._editChecklistId = Number(btn.dataset.id);
           this.renderChecklists(el);
+          // Jump to editor instantly
+          el.querySelector('#mo-cl-form')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          el.querySelector('#mo-cl-name')?.focus();
         });
       });
     },

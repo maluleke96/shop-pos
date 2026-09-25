@@ -3642,6 +3642,7 @@ add('web:adminAnalytics', wrapSync((filters, actor) => {
   add('mo:listPeople', wrapSync((a) => { moActor(a); return managerOps.listAssignablePeople(); }));
   add('mo:createTask', wrapSync((d, a) => managerOps.createDailyTask(d || {}, moActor(a))));
   add('mo:assignTask', wrapSync((id, d, a) => managerOps.assignDailyTask(id, d || {}, moActor(a))));
+  add('mo:assignMany', wrapSync((d, a) => managerOps.assignManyTasks(d || {}, moActor(a))));
   add('mo:adminComplete', wrapSync((id, d, a) => managerOps.adminCompleteTask(id, d || {}, moActor(a))));
   add('mo:listNotifications', wrapSync((f, a) => { moActor(a); return managerOps.listTaskNotifications(f || {}); }));
   add('mo:resolveIncident', wrapSync((id, d, a) => managerOps.resolveIncident(id, d || {}, moActor(a))));

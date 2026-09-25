@@ -1039,6 +1039,7 @@ const API = {
   moListPeople: (actor) => invoke('mo:listPeople', actor),
   moCreateTask: (data, actor) => invoke('mo:createTask', data || {}, actor),
   moAssignTask: (id, data, actor) => invoke('mo:assignTask', id, data || {}, actor),
+  moAssignMany: (data, actor) => invoke('mo:assignMany', data || {}, actor),
   moAdminComplete: (id, data, actor) => invoke('mo:adminComplete', id, data || {}, actor),
   moListNotifications: (f, actor) => invoke('mo:listNotifications', f || {}, actor),
   moResolveIncident: (id, data, actor) => invoke('mo:resolveIncident', id, data || {}, actor),
