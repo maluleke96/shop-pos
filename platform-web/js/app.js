@@ -758,7 +758,7 @@ const PlatformApp = {
     const packages = this.asArray(this.packages);
     const addons = this.asArray(this.addons);
     const pkgName = (id) => packages.find((p) => p.id === id)?.name || null;
-    const openShopUrl = this.control?.customer?.id === s?.id
+    const openShopUrl = (this.control && s && String(this.control.customer?.id || '') === String(s.id || ''))
       ? (this.control.open_customer_shop_url || null)
       : this.resolveSafeShopUrl(s?.shop_url);
     return `<div class="grid2">
@@ -1524,7 +1524,8 @@ const PlatformApp = {
       this.error = '';
       this.message = '';
       try {
-        this.render(); // instant tab chrome
+        // Paint chrome even if section body throws — then load data and re-render
+        try { this.render(); } catch (re) { this.error = re.message || String(re); }
         await this.ensureTabData(this.tab, { force: true });
         this.error = '';
         this.persistCache();

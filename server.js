@@ -625,6 +625,10 @@ function platformControlEnabled() {
 /** Phase 4: reject portal/API mounts when module entitlement is OFF (lab only). */
 function denyIfNotEntitled(res, urlPath) {
   try {
+    // Platform Control host must serve Manager Ops UI for demos / staff link tests
+    if (String(urlPath || '').startsWith('/manager-ops') && truthyEnv(process.env.PLATFORM_CONTROL_ENABLED)) {
+      return false;
+    }
     const entitlements = require('./electron/services/entitlements');
     const gate = entitlements.assertHttpMountAllowed(urlPath);
     if (gate && gate.allowed === false) {
