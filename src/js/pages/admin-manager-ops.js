@@ -29,21 +29,40 @@
     tab: 'dashboard',
     _cache: {},
     _cacheAt: {},
+    _inflight: {},
 
     async cached(key, loader, ttlMs = 45000) {
       const now = Date.now();
       if (this._cache[key] != null && (now - (this._cacheAt[key] || 0)) < ttlMs) return this._cache[key];
-      const val = await loader();
-      this._cache[key] = val;
-      this._cacheAt[key] = now;
-      return val;
+      if (this._inflight[key]) return this._inflight[key];
+      this._inflight[key] = Promise.resolve().then(loader).then((val) => {
+        this._cache[key] = val;
+        this._cacheAt[key] = Date.now();
+        delete this._inflight[key];
+        return val;
+      }).catch((err) => {
+        delete this._inflight[key];
+        throw err;
+      });
+      return this._inflight[key];
     },
 
     bust(...keys) {
       for (const k of keys) {
         delete this._cache[k];
         delete this._cacheAt[k];
+        delete this._inflight[k];
       }
+    },
+
+    prefetch() {
+      // Warm common tabs in background so clicks feel instant
+      const u = this.app?.user;
+      this.cached('people', () => API.moListPeople(u), 60000).catch(() => {});
+      this.cached('tasks', () => API.moListTasks({ admin_view: true }, u), 20000).catch(() => {});
+      this.cached('checklists', () => API.moChecklists(), 30000).catch(() => {});
+      this.cached('templates', () => API.moTemplates(), 30000).catch(() => {});
+      this.cached('dashboard', () => API.moDashboard({}), 20000).catch(() => {});
     },
 
     content() {
@@ -62,7 +81,19 @@
     async showTab(tab) {
       const content = this.content();
       if (!content) return;
-      content.innerHTML = `<p class="muted" style="padding:8px 0">Loading…</p>`;
+      // Only flash Loading when we have no warm cache for this tab
+      const warm = {
+        dashboard: 'dashboard',
+        assign: 'tasks',
+        tasks: 'tasks',
+        checklists: 'checklists',
+        templates: 'templates',
+        access: 'people'
+      };
+      const cacheKey = warm[tab];
+      if (!cacheKey || this._cache[cacheKey] == null) {
+        content.innerHTML = `<p class="muted" style="padding:8px 0">Loading…</p>`;
+      }
       const map = {
         dashboard: () => this.renderDashboard(content),
         assign: () => this.renderAssign(content),
@@ -198,6 +229,7 @@
         }
       });
 
+      this.prefetch();
       await this.showTab(this.tab);
     },
 
@@ -219,7 +251,7 @@
     },
 
     async renderDashboard(el) {
-      const r = await API.moDashboard({});
+      const r = await this.cached('dashboard', () => API.moDashboard({}), 20000);
       if (!r.success) {
         el.innerHTML = `<div class="card"><div class="card-body"><p class="error-msg">${esc(r.error || 'Unable to load dashboard')}</p>
           <p class="muted">If you see a SQL / syntax error, refresh after the latest deploy. Owners can still open the Manager App with their Admin password.</p></div></div>`;
@@ -363,9 +395,9 @@
 
     async renderTasks(el) {
       const [tasksRes, peopleRes, checkRes] = await Promise.all([
-        API.moListTasks({ admin_view: true }, this.app.user),
-        API.moListPeople(this.app.user),
-        API.moChecklists()
+        this.cached('tasks', () => API.moListTasks({ admin_view: true }, this.app.user), 20000),
+        this.cached('people', () => API.moListPeople(this.app.user), 60000),
+        this.cached('checklists', () => API.moChecklists(), 30000)
       ]);
       if (!tasksRes.success) {
         el.innerHTML = `<p class="error-msg">${esc(tasksRes.error || 'Could not load tasks')}</p>`;
@@ -377,6 +409,10 @@
       const peopleOpts = people.map((p) =>
         `<option value="${p.id}">${esc(p.full_name || p.username)} (${esc(p.role)})</option>`
       ).join('');
+      const catHints = [...new Set([
+        'opening', 'sales', 'marketing', 'kitchen', 'customers', 'stock', 'closing', 'attendance', 'general',
+        ...checklists.map((c) => c.category).filter(Boolean)
+      ])];
       el.innerHTML = `<div class="card"><div class="card-body">
         <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px">
           <div><h4 style="margin:0">Daily tasks</h4>
@@ -388,13 +424,8 @@
           <strong>Create &amp; assign a task</strong>
           <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px;margin-top:10px">
             <input class="form-input" id="mo-new-title" placeholder="Task name (e.g. Opening Checklist)">
-            <select class="form-input" id="mo-new-cat">
-              <option value="opening">Opening</option><option value="sales">Sales</option>
-              <option value="marketing">Marketing</option><option value="kitchen">Kitchen</option>
-              <option value="customers">Customers</option><option value="stock">Stock</option>
-              <option value="closing">Closing</option><option value="attendance">Attendance</option>
-              <option value="general">General</option>
-            </select>
+            <input class="form-input" id="mo-new-cat" list="mo-new-cat-list" placeholder="Category (type your own)" value="opening">
+            <datalist id="mo-new-cat-list">${catHints.map((c) => `<option value="${esc(c)}">`).join('')}</datalist>
             <select class="form-input" id="mo-new-assignee"><option value="">Assign to person…</option>${peopleOpts}</select>
             <select class="form-input" id="mo-new-manager"><option value="">Responsible manager…</option>${peopleOpts}</select>
             <select class="form-input" id="mo-new-check"><option value="">Checklist (optional)</option>
@@ -421,13 +452,18 @@
           </tr>`).join('') || '<tr><td colspan="7" class="muted">No tasks yet — create one above or Generate today\'s tasks</td></tr>'}
           </tbody></table></div>
       </div></div>`;
-      el.querySelector('#mo-refresh-tasks')?.addEventListener('click', () => this.renderTasks(el));
+      el.querySelector('#mo-refresh-tasks')?.addEventListener('click', () => {
+        this.bust('tasks');
+        this.renderTasks(el);
+      });
       el.querySelector('#mo-create-task')?.addEventListener('click', async () => {
         const title = el.querySelector('#mo-new-title')?.value?.trim();
         if (!title) return Utils.toast('Enter a task name', 'error');
+        const btn = el.querySelector('#mo-create-task');
+        if (btn) { btn.disabled = true; btn.textContent = 'Creating…'; }
         const payload = {
           title,
-          category: el.querySelector('#mo-new-cat')?.value,
+          category: (el.querySelector('#mo-new-cat')?.value || '').trim() || 'general',
           assigned_user_id: Number(el.querySelector('#mo-new-assignee')?.value) || null,
           manager_user_id: Number(el.querySelector('#mo-new-manager')?.value) || null,
           checklist_template_id: Number(el.querySelector('#mo-new-check')?.value) || null,
@@ -435,7 +471,9 @@
           notify_whatsapp: true
         };
         const out = await API.moCreateTask(payload, this.app.user);
+        if (btn) { btn.disabled = false; btn.textContent = 'Create task'; }
         if (!out.success) return Utils.toast(out.error || 'Create failed', 'error');
+        this.bust('tasks', 'dashboard');
         Utils.toast('Task created — staff notified (portal + WhatsApp if phone on file)', 'success');
         this.renderTasks(el);
       });
@@ -542,15 +580,16 @@
 
     async renderTemplates(el) {
       const [tplRes, peopleRes] = await Promise.all([
-        API.moTemplates(),
-        API.moListPeople(this.app.user)
+        this.cached('templates', () => API.moTemplates(), 30000),
+        this.cached('people', () => API.moListPeople(this.app.user), 60000)
       ]);
       const rows = tplRes.success ? (tplRes.data || []) : [];
       const people = peopleRes.success ? (peopleRes.data || []) : [];
       const peopleOpts = people.map((p) =>
         `<option value="${p.id}">${esc(p.full_name || p.username)}</option>`
       ).join('');
-      const cats = ['opening', 'sales', 'marketing', 'kitchen', 'customers', 'stock', 'closing', 'attendance', 'general'];
+      const cats = [...new Set(['opening', 'sales', 'marketing', 'kitchen', 'customers', 'stock', 'closing', 'attendance', 'general',
+        ...rows.map((t) => t.category).filter(Boolean)])];
       el.innerHTML = `<div class="card"><div class="card-body">
         <h4 style="margin-top:0">Task templates</h4>
         <p class="muted">These drive <strong>Generate today's tasks</strong>. Set a default staff person and responsible manager per template.</p>
@@ -559,7 +598,8 @@
           <strong>Add template</strong>
           <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-top:10px">
             <input class="form-input" id="mo-tpl-name" placeholder="Template name *">
-            <select class="form-input" id="mo-tpl-cat">${cats.map((c) => `<option value="${c}">${c}</option>`).join('')}</select>
+            <input class="form-input" id="mo-tpl-cat" list="mo-tpl-cat-list" placeholder="Category (type your own)" value="opening">
+            <datalist id="mo-tpl-cat-list">${cats.map((c) => `<option value="${esc(c)}">`).join('')}</datalist>
             <select class="form-input" id="mo-tpl-role">
               <option value="assistant_manager">Assistant manager</option>
               <option value="manager">Manager</option>
@@ -596,9 +636,11 @@
       el.querySelector('#mo-tpl-save')?.addEventListener('click', async () => {
         const name = el.querySelector('#mo-tpl-name')?.value?.trim();
         if (!name) return Utils.toast('Enter a template name', 'error');
+        const btn = el.querySelector('#mo-tpl-save');
+        if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
         const out = await API.moSaveTemplate({
           name,
-          category: el.querySelector('#mo-tpl-cat')?.value,
+          category: (el.querySelector('#mo-tpl-cat')?.value || '').trim() || 'general',
           assigned_role: el.querySelector('#mo-tpl-role')?.value,
           photo_mode: el.querySelector('#mo-tpl-photo')?.value,
           default_assigned_user_id: Number(el.querySelector('#mo-tpl-user')?.value) || null,
@@ -607,7 +649,9 @@
           is_required: true,
           is_active: true
         }, this.app.user);
+        if (btn) { btn.disabled = false; btn.textContent = 'Save template'; }
         if (!out.success) return Utils.toast(out.error || 'Save failed', 'error');
+        this.bust('templates');
         Utils.toast('Template saved', 'success');
         this.renderTemplates(el);
       });
@@ -617,10 +661,13 @@
           if (!t) return;
           const name = prompt('Template name', t.name);
           if (name == null || !String(name).trim()) return;
+          const category = prompt('Category (type your own)', t.category || 'general');
+          if (category == null) return;
+          btn.disabled = true;
           const out = await API.moSaveTemplate({
             id: t.id,
             name: String(name).trim(),
-            category: t.category,
+            category: String(category).trim() || 'general',
             assigned_role: t.assigned_role,
             photo_mode: t.photo_mode,
             default_assigned_user_id: t.default_assigned_user_id,
@@ -632,7 +679,9 @@
             schedule_offset_minutes: t.schedule_offset_minutes,
             schedule_anchor: t.schedule_anchor
           }, this.app.user);
+          btn.disabled = false;
           if (!out.success) return Utils.toast(out.error || 'Update failed', 'error');
+          this.bust('templates');
           Utils.toast('Template updated', 'success');
           this.renderTemplates(el);
         });
@@ -644,6 +693,10 @@
       const rows = r.success ? (r.data || []) : [];
       const editingId = this._editChecklistId || null;
       const editing = rows.find((c) => Number(c.id) === Number(editingId)) || null;
+      const catHints = [...new Set([
+        'opening', 'sales', 'marketing', 'kitchen', 'customers', 'stock', 'closing', 'attendance', 'general',
+        ...rows.map((c) => c.category).filter(Boolean)
+      ])];
 
       el.innerHTML = `<div class="card"><div class="card-body">
         <h4 style="margin-top:0">Checklists</h4>
@@ -657,13 +710,11 @@
               <input class="form-input" id="mo-cl-name" placeholder="e.g. My Morning Open" value="${esc(editing?.name || '')}">
             </div>
             <div>
-              <label class="muted">Category (type your own)</label>
-              <input class="form-input" id="mo-cl-cat" list="mo-cl-cat-list" placeholder="e.g. opening / sales / my-custom"
+              <label class="muted">Category (type your own — e.g. opening, sales)</label>
+              <input class="form-input" id="mo-cl-cat" list="mo-cl-cat-list" placeholder="Type any category you want"
                 value="${esc(editing?.category || '')}">
               <datalist id="mo-cl-cat-list">
-                <option value="opening"><option value="sales"><option value="marketing">
-                <option value="kitchen"><option value="customers"><option value="stock">
-                <option value="closing"><option value="attendance"><option value="general">
+                ${catHints.map((c) => `<option value="${esc(c)}">`).join('')}
               </datalist>
             </div>
           </div>
@@ -694,6 +745,41 @@
         </div>
       </div></div>`;
 
+      const fillEditor = (c) => {
+        const titleEl = el.querySelector('#mo-cl-form-title');
+        const nameEl = el.querySelector('#mo-cl-name');
+        const catEl = el.querySelector('#mo-cl-cat');
+        const itemsEl = el.querySelector('#mo-cl-items');
+        const saveBtn = el.querySelector('#mo-cl-save');
+        if (titleEl) titleEl.textContent = c ? 'Edit checklist' : 'Add checklist';
+        if (nameEl) nameEl.value = c?.name || '';
+        if (catEl) catEl.value = c?.category || '';
+        if (itemsEl) itemsEl.value = c ? (c.items || []).map((it) => it.label || it).join('\n') : '';
+        if (saveBtn) saveBtn.textContent = c ? 'Save changes' : 'Add checklist';
+        let cancel = el.querySelector('#mo-cl-cancel');
+        if (c && !cancel) {
+          cancel = document.createElement('button');
+          cancel.type = 'button';
+          cancel.className = 'btn btn-ghost';
+          cancel.id = 'mo-cl-cancel';
+          cancel.textContent = 'Cancel edit';
+          saveBtn?.parentElement?.appendChild(cancel);
+          cancel.addEventListener('click', () => {
+            this._editChecklistId = null;
+            fillEditor(null);
+          });
+        } else if (!c && cancel) {
+          cancel.remove();
+        } else if (cancel) {
+          cancel.onclick = () => {
+            this._editChecklistId = null;
+            fillEditor(null);
+          };
+        }
+        el.querySelector('#mo-cl-form')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        nameEl?.focus();
+      };
+
       const saveBtn = el.querySelector('#mo-cl-save');
       saveBtn?.addEventListener('click', async () => {
         const name = el.querySelector('#mo-cl-name')?.value?.trim();
@@ -702,40 +788,43 @@
           .split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
         if (!name) return Utils.toast('Enter a checklist name', 'error');
         if (!items.length) return Utils.toast('Add at least one item line', 'error');
+        const editId = this._editChecklistId;
+        const prev = editId ? rows.find((c) => Number(c.id) === Number(editId)) : null;
         saveBtn.disabled = true;
         saveBtn.textContent = 'Saving…';
         const payload = {
-          id: editing ? editing.id : undefined,
+          id: prev ? prev.id : undefined,
           name,
           category,
-          assigned_role: editing?.assigned_role || 'assistant_manager',
-          code: editing?.code || null,
+          assigned_role: prev?.assigned_role || 'assistant_manager',
+          code: prev?.code || null,
           items,
           is_active: true,
-          sort_order: editing?.sort_order || 0
+          sort_order: prev?.sort_order || 0
         };
         const out = await API.moSaveChecklist(payload, this.app.user);
         saveBtn.disabled = false;
-        saveBtn.textContent = editing ? 'Save changes' : 'Add checklist';
+        saveBtn.textContent = prev ? 'Save changes' : 'Add checklist';
         if (!out.success) return Utils.toast(out.error || 'Save failed', 'error');
         this._editChecklistId = null;
         this.bust('checklists');
-        Utils.toast(editing ? 'Checklist updated' : 'Checklist added', 'success');
+        Utils.toast(prev ? 'Checklist updated' : 'Checklist added', 'success');
         this.renderChecklists(el);
       });
 
       el.querySelector('#mo-cl-cancel')?.addEventListener('click', () => {
         this._editChecklistId = null;
-        this.renderChecklists(el);
+        fillEditor(null);
       });
 
       el.querySelectorAll('.mo-cl-edit').forEach((btn) => {
         btn.addEventListener('click', () => {
-          this._editChecklistId = Number(btn.dataset.id);
-          this.renderChecklists(el);
-          // Jump to editor instantly
-          el.querySelector('#mo-cl-form')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-          el.querySelector('#mo-cl-name')?.focus();
+          const id = Number(btn.dataset.id);
+          const c = rows.find((x) => Number(x.id) === id);
+          if (!c) return;
+          this._editChecklistId = id;
+          // Instant — no network round-trip, just fill the editor
+          fillEditor(c);
         });
       });
     },
