@@ -31,14 +31,16 @@
     async render(el, admin) {
       this.admin = admin;
       this.app = admin.app;
+      this._root = el;
       const origin = (typeof location !== 'undefined' && location.origin) ? location.origin : '';
       const staffLink = `${origin}/manager-ops/`;
       const tabs = [
         ['dashboard', 'Overview'],
+        ['assign', 'Assign Staff'],
         ['tasks', 'Daily Tasks'],
         ['templates', 'Task Templates'],
         ['checklists', 'Checklists'],
-        ['access', 'Staff Access'],
+        ['access', 'Who Can Login'],
         ['notifications', 'Notifications'],
         ['reports', 'Reports'],
         ['incidents', 'Incidents'],
@@ -51,10 +53,11 @@
           <div>
             <div class="mo-admin-kicker">Restaurant operations</div>
             <h3 style="margin:4px 0 6px">Manager Operations &amp; Daily Tasks</h3>
-            <p class="muted" style="margin:0;max-width:52ch">Daily duties, checklists, photo evidence, and owner reports — powered by live POS sales and Admin Sales Targets. Linked to Staff HR, Staff Portal, and Employee of the Month. Owners and managers sign in with the same Admin password.</p>
+            <p class="muted" style="margin:0;max-width:56ch">Use <strong>Assign Staff</strong> to give each person their tasks. Edit your own items under <strong>Checklists</strong> and <strong>Task Templates</strong>. Connected to live POS sales, Sales Targets, Staff Portal, Staff HR attendance, Employee of the Month, and printable reports.</p>
           </div>
           <div class="mo-admin-actions">
-            <a class="btn btn-primary" href="/manager-ops/" target="_blank" rel="noopener">Open Manager App</a>
+            <button type="button" class="btn btn-primary" id="mo-goto-assign">Assign Staff</button>
+            <a class="btn btn-ghost" href="/manager-ops/" target="_blank" rel="noopener">Open Manager App</a>
             <button type="button" class="btn btn-ghost" id="mo-copy-link">Copy staff link</button>
             <button type="button" class="btn btn-ghost" id="mo-gen-tasks">Generate today&apos;s tasks</button>
           </div>
@@ -62,12 +65,17 @@
 
         <div class="mo-admin-link-card">
           <div>
-            <strong>Staff link</strong>
-            <p class="muted" style="margin:4px 0 0">Share this URL with people you approve under <strong>Staff Access</strong>. They sign in with their existing username and password — no separate account.</p>
+            <strong>Quick guide</strong>
+            <ol class="muted" style="margin:8px 0 0;padding-left:18px;max-width:70ch">
+              <li><strong>Generate today&apos;s tasks</strong> (button above) — creates opening / sales / kitchen / etc. for today</li>
+              <li><strong>Assign Staff</strong> tab — click a worker, pick their tasks, Save &amp; notify (app + Staff Portal + WhatsApp)</li>
+              <li><strong>Checklists / Task Templates</strong> — add or edit your own items so they appear in the app</li>
+              <li><strong>Who Can Login</strong> — only controls who may open the Manager Ops app (not attendance)</li>
+            </ol>
           </div>
           <div class="mo-admin-link-row">
             <input class="form-input" id="mo-staff-link" readonly value="${esc(staffLink)}">
-            <button type="button" class="btn btn-primary" id="mo-copy-link-2">Copy</button>
+            <button type="button" class="btn btn-primary" id="mo-copy-link-2">Copy staff link</button>
           </div>
         </div>
 
@@ -87,6 +95,16 @@
         .mo-stat{padding:14px;border:1px solid var(--border,#e2e8f0);border-radius:12px;background:var(--bg-card,var(--bg,#fff))}
         .mo-stat .muted{font-size:12px;margin-bottom:4px}
         .mo-stat strong{font-size:1.25rem}
+        .mo-assign-layout{display:grid;grid-template-columns:minmax(200px,280px) 1fr;gap:16px;align-items:start}
+        @media(max-width:800px){.mo-assign-layout{grid-template-columns:1fr}}
+        .mo-staff-list{border:1px solid var(--border,#e2e8f0);border-radius:12px;overflow:hidden;background:var(--bg-card,var(--bg,#fff))}
+        .mo-staff-list button{display:block;width:100%;text-align:left;padding:12px 14px;border:0;border-bottom:1px solid var(--border,#e2e8f0);background:transparent;cursor:pointer;font:inherit}
+        .mo-staff-list button:last-child{border-bottom:0}
+        .mo-staff-list button.active{background:rgba(37,99,235,.1);font-weight:700}
+        .mo-staff-list .muted{font-size:12px}
+        .mo-assign-panel{border:1px solid var(--border,#e2e8f0);border-radius:12px;padding:16px;background:var(--bg-card,var(--bg,#fff))}
+        .mo-task-pick{display:flex;gap:10px;align-items:flex-start;padding:10px 0;border-bottom:1px solid var(--border,#e2e8f0)}
+        .mo-task-pick:last-child{border-bottom:0}
       </style>`;
 
       const copyLink = async () => {
@@ -102,6 +120,10 @@
       };
       el.querySelector('#mo-copy-link')?.addEventListener('click', copyLink);
       el.querySelector('#mo-copy-link-2')?.addEventListener('click', copyLink);
+      el.querySelector('#mo-goto-assign')?.addEventListener('click', () => {
+        this.tab = 'assign';
+        this.render(el, admin);
+      });
       el.querySelector('#mo-tabs')?.addEventListener('click', (e) => {
         const btn = e.target.closest('[data-tab]');
         if (!btn) return;
@@ -113,13 +135,14 @@
         if (!r.success) return Utils.toast(r.error || 'Failed', 'error');
         const d = r.data || {};
         Utils.toast(d.message || `Created ${d.created || 0} tasks`, d.created ? 'success' : 'info');
-        this.tab = 'tasks';
+        this.tab = 'assign';
         this.render(el, admin);
       });
 
       const content = el.querySelector('#mo-content');
       const map = {
         dashboard: () => this.renderDashboard(content),
+        assign: () => this.renderAssign(content),
         tasks: () => this.renderTasks(content),
         access: () => this.renderAccess(content),
         templates: () => this.renderTemplates(content),
@@ -162,19 +185,150 @@
       const s = d.sales || {};
       const t = d.tasks || {};
       el.innerHTML = `<div class="mo-stat-grid">
-          <div class="mo-stat"><div class="muted">Sales today</div><strong>${money(s.sales, s.currency)}</strong></div>
-          <div class="mo-stat"><div class="muted">Target</div><strong>${money(s.target, s.currency)}</strong></div>
+          <div class="mo-stat"><div class="muted">Sales today (POS)</div><strong>${money(s.sales, s.currency)}</strong></div>
+          <div class="mo-stat"><div class="muted">Target (Sales Targets)</div><strong>${money(s.target, s.currency)}</strong></div>
           <div class="mo-stat"><div class="muted">Progress</div><strong>${s.progress || 0}%</strong></div>
           <div class="mo-stat"><div class="muted">Tasks done</div><strong>${t.completed || 0}/${t.total || 0}</strong></div>
           <div class="mo-stat"><div class="muted">Outstanding</div><strong>${d.outstanding || 0}</strong></div>
           <div class="mo-stat"><div class="muted">Incidents</div><strong>${(d.incidents || []).length}</strong></div>
         </div>
         <div class="card" style="margin-top:16px"><div class="card-body">
-          <h4 style="margin-top:0">Today at a glance</h4>
-          <p class="muted" style="margin:0">Primary duties: <strong>${d.primary_done ? 'Complete' : 'In progress'}</strong>
+          <h4 style="margin-top:0">What do you want to do?</h4>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+            <button type="button" class="btn btn-primary" id="mo-dash-assign">1. Assign tasks to staff</button>
+            <button type="button" class="btn btn-ghost" id="mo-dash-check">2. Edit / add checklists</button>
+            <button type="button" class="btn btn-ghost" id="mo-dash-tpl">3. Edit task templates</button>
+            <button type="button" class="btn btn-ghost" id="mo-dash-login">4. Who can login to the app</button>
+          </div>
+          <p class="muted" style="margin:14px 0 0"><strong>Note:</strong> <em>Who Can Login</em> is only permission to open Manager Ops — it is not attendance.
+            Attendance is under the Attendance tab (from Staff HR / Staff Portal).</p>
+          <p class="muted" style="margin:8px 0 0">Primary duties: <strong>${d.primary_done ? 'Complete' : 'In progress'}</strong>
             · Report: <strong>${d.report ? 'Submitted' : 'Not yet submitted'}</strong>
             · Shop: <strong>${esc(d.shop_name || '—')}</strong></p>
         </div></div>`;
+      el.querySelector('#mo-dash-assign')?.addEventListener('click', () => {
+        this.tab = 'assign';
+        this.render(this._root, this.admin);
+      });
+      el.querySelector('#mo-dash-check')?.addEventListener('click', () => {
+        this.tab = 'checklists';
+        this.render(this._root, this.admin);
+      });
+      el.querySelector('#mo-dash-tpl')?.addEventListener('click', () => {
+        this.tab = 'templates';
+        this.render(this._root, this.admin);
+      });
+      el.querySelector('#mo-dash-login')?.addEventListener('click', () => {
+        this.tab = 'access';
+        this.render(this._root, this.admin);
+      });
+    },
+
+    async renderAssign(el) {
+      this._assignUserId = this._assignUserId || null;
+      const [tasksRes, peopleRes] = await Promise.all([
+        API.moListTasks({ admin_view: true }, this.app.user),
+        API.moListPeople(this.app.user)
+      ]);
+      if (!peopleRes.success) {
+        el.innerHTML = `<p class="error-msg">${esc(peopleRes.error || 'Could not load staff')}</p>`;
+        return;
+      }
+      const people = (peopleRes.data || []).filter((p) => {
+        const r = String(p.role || '').toLowerCase();
+        return !['owner'].includes(r) || true; // show everyone including owners
+      });
+      const tasks = tasksRes.success ? (tasksRes.data || []) : [];
+      if (!this._assignUserId && people[0]) this._assignUserId = Number(people[0].id);
+      const selected = people.find((p) => Number(p.id) === Number(this._assignUserId)) || people[0];
+      const sid = selected ? Number(selected.id) : null;
+      const theirs = tasks.filter((t) => Number(t.assigned_user_id) === sid);
+      const unassigned = tasks.filter((t) => !t.assigned_user_id);
+      const others = tasks.filter((t) => t.assigned_user_id && Number(t.assigned_user_id) !== sid);
+
+      el.innerHTML = `<div class="card"><div class="card-body">
+        <h4 style="margin-top:0">Assign Staff</h4>
+        <p class="muted" style="margin-top:0">Click a person on the left → tick the tasks they must do → <strong>Save &amp; notify</strong>.
+          Those tasks appear in their Manager Ops app and Staff Portal (and WhatsApp if their phone is on the employee record).</p>
+        ${!tasks.length ? `<p class="error-msg">No tasks for today yet. Click <strong>Generate today's tasks</strong> at the top first.</p>` : ''}
+        <div class="mo-assign-layout" style="margin-top:14px">
+          <div class="mo-staff-list" id="mo-staff-list">
+            ${people.map((p) => {
+              const n = tasks.filter((t) => Number(t.assigned_user_id) === Number(p.id)).length;
+              const done = tasks.filter((t) => Number(t.assigned_user_id) === Number(p.id) && ['completed', 'verified'].includes(t.status)).length;
+              return `<button type="button" class="${Number(p.id) === sid ? 'active' : ''}" data-uid="${p.id}">
+                <div>${esc(p.full_name || p.username)}</div>
+                <div class="muted">${esc(p.role)} · ${done}/${n} done</div>
+              </button>`;
+            }).join('') || '<p class="muted" style="padding:12px">No staff users found</p>'}
+          </div>
+          <div class="mo-assign-panel" id="mo-assign-panel">
+            ${selected ? `
+              <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center">
+                <div>
+                  <h4 style="margin:0">${esc(selected.full_name || selected.username)}</h4>
+                  <p class="muted" style="margin:4px 0 0">${esc(selected.role)}${selected.linked_to_hr ? ' · linked to Staff HR' : ''}</p>
+                </div>
+                <label style="display:flex;gap:6px;align-items:center;font-size:13px"><input type="checkbox" id="mo-asg-wa" checked> Notify WhatsApp + portal</label>
+              </div>
+
+              <h5 style="margin:16px 0 6px">Already assigned to ${esc(selected.full_name || 'them')}</h5>
+              ${theirs.length ? theirs.map((t) => `
+                <div class="mo-task-pick">
+                  <div style="flex:1"><strong>${esc(t.title)}</strong>
+                    <div class="muted">${esc(t.category)} · <span class="tag ${statusClass(t.status)}">${statusLabel(t.status)}</span></div></div>
+                  <button type="button" class="btn btn-ghost btn-sm mo-unassign" data-id="${t.id}">Remove</button>
+                </div>`).join('') : '<p class="muted">None yet — tick tasks below</p>'}
+
+              <h5 style="margin:18px 0 6px">Give them these tasks (tick → Save)</h5>
+              <div id="mo-pick-list">
+                ${[...unassigned, ...others].map((t) => `
+                  <label class="mo-task-pick">
+                    <input type="checkbox" class="mo-pick-task" value="${t.id}">
+                    <div style="flex:1"><strong>${esc(t.title)}</strong>
+                      <div class="muted">${esc(t.category)}${t.assigned_user_name ? ` · currently: ${esc(t.assigned_user_name)}` : ' · unassigned'}</div></div>
+                  </label>`).join('') || '<p class="muted">No other tasks available</p>'}
+              </div>
+              <button type="button" class="btn btn-primary" id="mo-assign-save" style="margin-top:14px">Save &amp; notify ${esc(selected.full_name || selected.username)}</button>
+            ` : '<p class="muted">Select a staff member</p>'}
+          </div>
+        </div>
+      </div></div>`;
+
+      el.querySelectorAll('#mo-staff-list button[data-uid]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          this._assignUserId = Number(btn.dataset.uid);
+          this.renderAssign(el);
+        });
+      });
+      el.querySelectorAll('.mo-unassign').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          const out = await API.moAssignTask(Number(btn.dataset.id), {
+            assigned_user_id: null,
+            notify_whatsapp: false
+          }, this.app.user);
+          if (!out.success) return Utils.toast(out.error || 'Failed', 'error');
+          Utils.toast('Assignment removed', 'success');
+          this.renderAssign(el);
+        });
+      });
+      el.querySelector('#mo-assign-save')?.addEventListener('click', async () => {
+        const ids = [...el.querySelectorAll('.mo-pick-task:checked')].map((cb) => Number(cb.value));
+        if (!ids.length) return Utils.toast('Tick at least one task to assign', 'error');
+        if (!sid) return;
+        const wa = !!el.querySelector('#mo-asg-wa')?.checked;
+        let ok = 0;
+        for (const id of ids) {
+          const out = await API.moAssignTask(id, {
+            assigned_user_id: sid,
+            notify_whatsapp: wa
+          }, this.app.user);
+          if (out.success) ok += 1;
+          else Utils.toast(out.error || 'Assign failed', 'error');
+        }
+        if (ok) Utils.toast(`Assigned ${ok} task(s) to ${selected.full_name || selected.username}`, 'success');
+        this.renderAssign(el);
+      });
     },
 
     async renderTasks(el) {
@@ -327,8 +481,9 @@
       const settings = setRes.success ? (setRes.data || {}) : {};
       const allowed = new Set((settings.allowed_user_ids || []).map(Number));
       el.innerHTML = `<div class="card"><div class="card-body">
-        <h4 style="margin-top:0">Who can open Manager Operations</h4>
-        <p class="muted">Owners and managers always have access with their <strong>same Admin / POS password</strong>. Tick other staff below to grant access, then save.</p>
+        <h4 style="margin-top:0">Who can open the Manager Ops app</h4>
+        <p class="muted">This is <strong>not attendance</strong> and not task assignment. Tick people who may sign into <code>/manager-ops/</code> with their Admin/POS password.
+          Owners and managers always have access. To <strong>give someone a task</strong>, use the <strong>Assign Staff</strong> tab instead.</p>
         <div class="table-wrap" style="margin-top:12px"><table class="data-table">
           <thead><tr><th></th><th>Name</th><th>Username</th><th>Role</th><th>Access</th></tr></thead>
           <tbody>${people.map((p) => {
