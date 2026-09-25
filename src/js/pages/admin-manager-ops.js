@@ -36,9 +36,10 @@
       const tabs = [
         ['dashboard', 'Overview'],
         ['tasks', 'Daily Tasks'],
-        ['access', 'Staff Access'],
         ['templates', 'Task Templates'],
         ['checklists', 'Checklists'],
+        ['access', 'Staff Access'],
+        ['notifications', 'Notifications'],
         ['reports', 'Reports'],
         ['incidents', 'Incidents'],
         ['sales', 'Sales'],
@@ -110,7 +111,9 @@
       el.querySelector('#mo-gen-tasks')?.addEventListener('click', async () => {
         const r = await API.moGenerateTasks({}, this.app.user);
         if (!r.success) return Utils.toast(r.error || 'Failed', 'error');
-        Utils.toast(`Created ${r.data?.created || 0} tasks`, 'success');
+        const d = r.data || {};
+        Utils.toast(d.message || `Created ${d.created || 0} tasks`, d.created ? 'success' : 'info');
+        this.tab = 'tasks';
         this.render(el, admin);
       });
 
@@ -121,6 +124,7 @@
         access: () => this.renderAccess(content),
         templates: () => this.renderTemplates(content),
         checklists: () => this.renderChecklists(content),
+        notifications: () => this.renderNotifications(content),
         reports: () => this.renderReports(content),
         incidents: () => this.renderIncidents(content),
         sales: () => this.renderSales(content),
@@ -128,6 +132,23 @@
         settings: () => this.renderSettings(content)
       };
       await (map[this.tab] || map.dashboard)();
+    },
+
+    pickPhoto() {
+      return new Promise((resolve) => {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = 'image/*';
+        input.capture = 'environment';
+        input.onchange = () => {
+          const file = input.files && input.files[0];
+          if (!file) return resolve(null);
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result);
+          reader.readAsDataURL(file);
+        };
+        input.click();
+      });
     },
 
     async renderDashboard(el) {
@@ -207,7 +228,12 @@
             <td>${esc(t.manager_user_name || '—')}</td>
             <td>${esc((t.due_at || '').slice(11, 16) || '—')}</td>
             <td><span class="tag ${statusClass(t.status)}">${statusLabel(t.status)}</span></td>
-            <td><button type="button" class="btn btn-ghost btn-sm mo-reassign" data-id="${t.id}">Assign</button></td>
+            <td style="white-space:nowrap">
+              <button type="button" class="btn btn-ghost btn-sm mo-reassign" data-id="${t.id}">Assign</button>
+              ${!['completed', 'verified'].includes(String(t.status || ''))
+                ? `<button type="button" class="btn btn-primary btn-sm mo-admin-done" data-id="${t.id}" data-photo="${esc(t.photo_mode || 'none')}">Complete</button>`
+                : ''}
+            </td>
           </tr>`).join('') || '<tr><td colspan="7" class="muted">No tasks yet — create one above or Generate today\'s tasks</td></tr>'}
           </tbody></table></div>
       </div></div>`;
@@ -221,15 +247,16 @@
           assigned_user_id: Number(el.querySelector('#mo-new-assignee')?.value) || null,
           manager_user_id: Number(el.querySelector('#mo-new-manager')?.value) || null,
           checklist_template_id: Number(el.querySelector('#mo-new-check')?.value) || null,
-          is_primary: true
+          is_primary: true,
+          notify_whatsapp: true
         };
         const out = await API.moCreateTask(payload, this.app.user);
         if (!out.success) return Utils.toast(out.error || 'Create failed', 'error');
-        Utils.toast('Task created & assigned', 'success');
+        Utils.toast('Task created — staff notified (portal + WhatsApp if phone on file)', 'success');
         this.renderTasks(el);
       });
       el.querySelectorAll('.mo-reassign').forEach((btn) => {
-        btn.addEventListener('click', async () => {
+        btn.addEventListener('click', () => {
           const id = Number(btn.dataset.id);
           const row = btn.closest('tr');
           if (!row || row.nextElementSibling?.classList?.contains('mo-assign-row')) return;
@@ -237,23 +264,48 @@
           tr.className = 'mo-assign-row';
           tr.innerHTML = `<td colspan="7">
             <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:8px 0">
-              <span class="muted">Assign #${id}:</span>
-              <select class="form-input mo-asg-u" style="min-width:160px"><option value="">Person…</option>${peopleOpts}</select>
-              <select class="form-input mo-asg-m" style="min-width:160px"><option value="">Manager…</option>${peopleOpts}</select>
-              <button type="button" class="btn btn-primary btn-sm mo-asg-save">Save</button>
+              <span class="muted">Assign to staff:</span>
+              <select class="form-input mo-asg-u" style="min-width:180px"><option value="">Select person…</option>${peopleOpts}</select>
+              <select class="form-input mo-asg-m" style="min-width:180px"><option value="">Responsible manager…</option>${peopleOpts}</select>
+              <label style="display:flex;gap:6px;align-items:center;font-size:13px"><input type="checkbox" class="mo-asg-wa" checked> WhatsApp + portal</label>
+              <button type="button" class="btn btn-primary btn-sm mo-asg-save">Save &amp; notify</button>
               <button type="button" class="btn btn-ghost btn-sm mo-asg-cancel">Cancel</button>
             </div></td>`;
           row.after(tr);
           tr.querySelector('.mo-asg-cancel').onclick = () => tr.remove();
           tr.querySelector('.mo-asg-save').onclick = async () => {
+            const uid = Number(tr.querySelector('.mo-asg-u').value) || null;
+            if (!uid) return Utils.toast('Select a person to assign', 'error');
             const out = await API.moAssignTask(id, {
-              assigned_user_id: Number(tr.querySelector('.mo-asg-u').value) || null,
-              manager_user_id: Number(tr.querySelector('.mo-asg-m').value) || null
+              assigned_user_id: uid,
+              manager_user_id: Number(tr.querySelector('.mo-asg-m').value) || null,
+              notify_whatsapp: !!tr.querySelector('.mo-asg-wa')?.checked
             }, this.app.user);
             if (!out.success) return Utils.toast(out.error || 'Assign failed', 'error');
-            Utils.toast('Assignment saved', 'success');
+            Utils.toast('Assigned — appears in Manager Ops app + Staff Portal', 'success');
             this.renderTasks(el);
           };
+        });
+      });
+      el.querySelectorAll('.mo-admin-done').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          const id = Number(btn.dataset.id);
+          const needPhoto = btn.dataset.photo === 'required';
+          let photo = null;
+          const ask = needPhoto || confirm('Take / attach a photo as evidence for this completion?');
+          if (ask) {
+            photo = await this.pickPhoto();
+            if (needPhoto && !photo) return Utils.toast('Photo is required for this task', 'error');
+          }
+          const notes = prompt('Optional note for this completion:') || '';
+          const out = await API.moAdminComplete(id, {
+            photo_data_url: photo,
+            notes,
+            require_photo: needPhoto
+          }, this.app.user);
+          if (!out.success) return Utils.toast(out.error || 'Complete failed', 'error');
+          Utils.toast('Marked complete', 'success');
+          this.renderTasks(el);
         });
       });
     },
@@ -304,19 +356,102 @@
     },
 
     async renderTemplates(el) {
-      const r = await API.moTemplates();
-      const rows = r.success ? (r.data || []) : [];
+      const [tplRes, peopleRes] = await Promise.all([
+        API.moTemplates(),
+        API.moListPeople(this.app.user)
+      ]);
+      const rows = tplRes.success ? (tplRes.data || []) : [];
+      const people = peopleRes.success ? (peopleRes.data || []) : [];
+      const peopleOpts = people.map((p) =>
+        `<option value="${p.id}">${esc(p.full_name || p.username)}</option>`
+      ).join('');
+      const cats = ['opening', 'sales', 'marketing', 'kitchen', 'customers', 'stock', 'closing', 'attendance', 'general'];
       el.innerHTML = `<div class="card"><div class="card-body">
         <h4 style="margin-top:0">Task templates</h4>
-        <p class="muted">Templates drive daily task generation from operating hours.</p>
+        <p class="muted">These drive <strong>Generate today's tasks</strong>. Set a default staff person and responsible manager per template.</p>
+
+        <div style="padding:14px;border:1px solid var(--border,#e2e8f0);border-radius:12px;margin:14px 0;background:linear-gradient(180deg,rgba(37,99,235,.05),transparent)">
+          <strong>Add template</strong>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-top:10px">
+            <input class="form-input" id="mo-tpl-name" placeholder="Template name *">
+            <select class="form-input" id="mo-tpl-cat">${cats.map((c) => `<option value="${c}">${c}</option>`).join('')}</select>
+            <select class="form-input" id="mo-tpl-role">
+              <option value="assistant_manager">Assistant manager</option>
+              <option value="manager">Manager</option>
+              <option value="supervisor">Supervisor</option>
+              <option value="kitchen">Kitchen</option>
+              <option value="cashier">Cashier</option>
+              <option value="staff">Staff</option>
+            </select>
+            <select class="form-input" id="mo-tpl-photo">
+              <option value="none">Photo: none</option>
+              <option value="optional">Photo: optional</option>
+              <option value="required">Photo: required</option>
+            </select>
+            <select class="form-input" id="mo-tpl-user"><option value="">Default assignee…</option>${peopleOpts}</select>
+            <select class="form-input" id="mo-tpl-mgr"><option value="">Default manager…</option>${peopleOpts}</select>
+          </div>
+          <button type="button" class="btn btn-primary" id="mo-tpl-save" style="margin-top:10px">Save template</button>
+        </div>
+
         <div class="table-wrap"><table class="data-table">
-          <thead><tr><th>Name</th><th>Category</th><th>Role</th><th>Photo</th><th>Active</th></tr></thead>
+          <thead><tr><th>Name</th><th>Category</th><th>Role</th><th>Assignee</th><th>Manager</th><th>Photo</th><th>Active</th><th></th></tr></thead>
           <tbody>${rows.map((t) => `<tr>
-            <td>${esc(t.name)}</td><td>${esc(t.category)}</td><td>${esc(t.assigned_role)}</td>
-            <td>${esc(t.photo_mode)}</td><td>${t.is_active ? 'Yes' : 'No'}</td>
-          </tr>`).join('') || '<tr><td colspan="5" class="muted">No templates — generate tasks once to seed defaults</td></tr>'}
+            <td><strong>${esc(t.name)}</strong></td>
+            <td>${esc(t.category)}</td>
+            <td>${esc(t.assigned_role)}</td>
+            <td>${esc(people.find((p) => Number(p.id) === Number(t.default_assigned_user_id))?.full_name || '—')}</td>
+            <td>${esc(people.find((p) => Number(p.id) === Number(t.manager_user_id))?.full_name || '—')}</td>
+            <td>${esc(t.photo_mode)}</td>
+            <td>${t.is_active ? 'Yes' : 'No'}</td>
+            <td><button type="button" class="btn btn-ghost btn-sm mo-tpl-edit" data-id="${t.id}">Edit</button></td>
+          </tr>`).join('') || '<tr><td colspan="8" class="muted">No templates yet</td></tr>'}
           </tbody></table></div>
       </div></div>`;
+      el.querySelector('#mo-tpl-save')?.addEventListener('click', async () => {
+        const name = el.querySelector('#mo-tpl-name')?.value?.trim();
+        if (!name) return Utils.toast('Enter a template name', 'error');
+        const out = await API.moSaveTemplate({
+          name,
+          category: el.querySelector('#mo-tpl-cat')?.value,
+          assigned_role: el.querySelector('#mo-tpl-role')?.value,
+          photo_mode: el.querySelector('#mo-tpl-photo')?.value,
+          default_assigned_user_id: Number(el.querySelector('#mo-tpl-user')?.value) || null,
+          manager_user_id: Number(el.querySelector('#mo-tpl-mgr')?.value) || null,
+          is_primary: true,
+          is_required: true,
+          is_active: true
+        }, this.app.user);
+        if (!out.success) return Utils.toast(out.error || 'Save failed', 'error');
+        Utils.toast('Template saved', 'success');
+        this.renderTemplates(el);
+      });
+      el.querySelectorAll('.mo-tpl-edit').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          const t = rows.find((x) => Number(x.id) === Number(btn.dataset.id));
+          if (!t) return;
+          const name = prompt('Template name', t.name);
+          if (name == null || !String(name).trim()) return;
+          const out = await API.moSaveTemplate({
+            id: t.id,
+            name: String(name).trim(),
+            category: t.category,
+            assigned_role: t.assigned_role,
+            photo_mode: t.photo_mode,
+            default_assigned_user_id: t.default_assigned_user_id,
+            manager_user_id: t.manager_user_id,
+            is_primary: !!t.is_primary,
+            is_required: t.is_required !== 0,
+            is_active: t.is_active !== 0,
+            sort_order: t.sort_order,
+            schedule_offset_minutes: t.schedule_offset_minutes,
+            schedule_anchor: t.schedule_anchor
+          }, this.app.user);
+          if (!out.success) return Utils.toast(out.error || 'Update failed', 'error');
+          Utils.toast('Template updated', 'success');
+          this.renderTemplates(el);
+        });
+      });
     },
 
     async renderChecklists(el) {
@@ -324,12 +459,94 @@
       const rows = r.success ? (r.data || []) : [];
       el.innerHTML = `<div class="card"><div class="card-body">
         <h4 style="margin-top:0">Checklists</h4>
+        <p class="muted">Edit checklist items here — they appear on the Manager Ops app when linked to a daily task.</p>
+
+        <div style="padding:14px;border:1px solid var(--border,#e2e8f0);border-radius:12px;margin:14px 0;background:rgba(16,185,129,.05)">
+          <strong>Add checklist</strong>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px">
+            <input class="form-input" id="mo-cl-name" placeholder="Checklist name *">
+            <select class="form-input" id="mo-cl-cat">
+              <option value="opening">opening</option><option value="sales">sales</option>
+              <option value="marketing">marketing</option><option value="kitchen">kitchen</option>
+              <option value="customers">customers</option><option value="stock">stock</option>
+              <option value="closing">closing</option><option value="general">general</option>
+            </select>
+          </div>
+          <label class="muted" style="display:block;margin-top:8px">Items (one per line)</label>
+          <textarea class="form-input" id="mo-cl-items" rows="5" placeholder="Shop opened on time&#10;Kitchen ready&#10;POS working"></textarea>
+          <button type="button" class="btn btn-primary" id="mo-cl-save" style="margin-top:10px">Save checklist</button>
+        </div>
+
+        ${rows.map((c) => `
+          <div class="mo-cl-card" data-id="${c.id}" style="border:1px solid var(--border,#e2e8f0);border-radius:10px;padding:12px;margin-bottom:10px">
+            <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap">
+              <div><strong>${esc(c.name)}</strong> <span class="muted">· ${esc(c.category)} · ${(c.items || []).length} items</span></div>
+              <button type="button" class="btn btn-ghost btn-sm mo-cl-edit" data-id="${c.id}">Edit items</button>
+            </div>
+            <ul style="margin:8px 0 0;padding-left:18px;color:var(--muted,#64748b);font-size:13px">
+              ${(c.items || []).slice(0, 8).map((it) => `<li>${esc(it.label || it)}</li>`).join('') || '<li>No items</li>'}
+              ${(c.items || []).length > 8 ? `<li>… +${(c.items || []).length - 8} more</li>` : ''}
+            </ul>
+          </div>`).join('') || '<p class="muted">No checklists yet</p>'}
+      </div></div>`;
+      el.querySelector('#mo-cl-save')?.addEventListener('click', async () => {
+        const name = el.querySelector('#mo-cl-name')?.value?.trim();
+        if (!name) return Utils.toast('Enter a checklist name', 'error');
+        const items = String(el.querySelector('#mo-cl-items')?.value || '')
+          .split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+        if (!items.length) return Utils.toast('Add at least one checklist item', 'error');
+        const out = await API.moSaveChecklist({
+          name,
+          category: el.querySelector('#mo-cl-cat')?.value,
+          assigned_role: 'assistant_manager',
+          items,
+          is_active: true
+        }, this.app.user);
+        if (!out.success) return Utils.toast(out.error || 'Save failed', 'error');
+        Utils.toast('Checklist saved — use it when creating tasks', 'success');
+        this.renderChecklists(el);
+      });
+      el.querySelectorAll('.mo-cl-edit').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          const c = rows.find((x) => Number(x.id) === Number(btn.dataset.id));
+          if (!c) return;
+          const current = (c.items || []).map((it) => it.label || it).join('\n');
+          const next = prompt('Edit checklist items (one per line):', current);
+          if (next == null) return;
+          const items = String(next).split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+          const out = await API.moSaveChecklist({
+            id: c.id,
+            name: c.name,
+            category: c.category,
+            assigned_role: c.assigned_role,
+            code: c.code,
+            items,
+            is_active: c.is_active !== 0,
+            sort_order: c.sort_order
+          }, this.app.user);
+          if (!out.success) return Utils.toast(out.error || 'Update failed', 'error');
+          Utils.toast('Checklist updated', 'success');
+          this.renderChecklists(el);
+        });
+      });
+    },
+
+    async renderNotifications(el) {
+      const r = await API.moListNotifications({}, this.app.user);
+      const rows = r.success ? (r.data || []) : [];
+      el.innerHTML = `<div class="card"><div class="card-body">
+        <h4 style="margin-top:0">Task notifications</h4>
+        <p class="muted">Log of portal, in-app, and WhatsApp notifications sent when tasks are assigned.</p>
         <div class="table-wrap"><table class="data-table">
-          <thead><tr><th>Name</th><th>Category</th><th>Role</th><th>Items</th></tr></thead>
-          <tbody>${rows.map((c) => `<tr>
-            <td>${esc(c.name)}</td><td>${esc(c.category)}</td><td>${esc(c.assigned_role)}</td>
-            <td>${(c.items || []).length}</td>
-          </tr>`).join('') || '<tr><td colspan="4" class="muted">No checklists yet</td></tr>'}
+          <thead><tr><th>When</th><th>Channel</th><th>Task</th><th>User</th><th>Status</th><th>Message</th></tr></thead>
+          <tbody>${rows.map((n) => `<tr>
+            <td>${esc((n.created_at || '').slice(0, 16))}</td>
+            <td><span class="tag">${esc(n.channel)}</span></td>
+            <td>#${n.task_id || '—'}</td>
+            <td>${n.user_id || '—'}</td>
+            <td>${esc(n.status)}</td>
+            <td style="max-width:280px">${esc(n.message || n.title || '')}</td>
+          </tr>`).join('') || '<tr><td colspan="6" class="muted">No notifications yet — assign a task to staff to see entries here</td></tr>'}
           </tbody></table></div>
       </div></div>`;
     },

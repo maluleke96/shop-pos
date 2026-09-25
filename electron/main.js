@@ -2588,6 +2588,8 @@ function registerIpc() {
   ipcMain.handle('mo:listPeople', wrapF((a) => { store.requireActor(a, ['owner', 'manager', 'assistant_manager', 'supervisor']); return store.listAssignablePeople(); }));
   ipcMain.handle('mo:createTask', wrapF((d, a) => store.createDailyTask(d || {}, a)));
   ipcMain.handle('mo:assignTask', wrapF((id, d, a) => store.assignDailyTask(id, d || {}, a)));
+  ipcMain.handle('mo:adminComplete', wrapF((id, d, a) => store.adminCompleteTask(id, d || {}, a)));
+  ipcMain.handle('mo:listNotifications', wrapF((f) => store.listTaskNotifications(f || {})));
   ipcMain.handle('mo:resolveIncident', wrapF((id, d, a) => store.resolveIncident(id, d || {}, a)));
   ipcMain.handle('mo:markIncidentSeen', wrapF((id, a) => store.markIncidentSeen(id, a)));
   ipcMain.handle('mo:reportPdf', wrapF((id, a) => store.buildDailyReportPdf(id, a)));

@@ -149,12 +149,141 @@ function ensureMoColumns() {
   for (const [table, col, typ] of cols) {
     try {
       getDb().exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${typ}`);
-    } catch (e) {
-      if (!/duplicate column|already exists/i.test(String(e.message || ''))) {
-        /* column may already exist */
+    } catch (_) { /* already exists */ }
+  }
+  try {
+    getDb().exec(`CREATE TABLE IF NOT EXISTS mo_task_notifications (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_id INTEGER,
+      user_id INTEGER,
+      channel TEXT NOT NULL DEFAULT 'in_app',
+      title TEXT,
+      message TEXT,
+      status TEXT NOT NULL DEFAULT 'sent',
+      detail_json TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    )`);
+  } catch (_) { /* */ }
+  try {
+    getDb().exec('CREATE INDEX IF NOT EXISTS idx_mo_task_notif_task ON mo_task_notifications(task_id)');
+  } catch (_) { /* */ }
+}
+
+/** Avoid Postgres "could not determine data type of parameter" from `? IS NULL`. */
+function countTasksForDay(day, branchId) {
+  if (branchId == null || branchId === '' || branchId === 'all') {
+    return Number(dbGet(
+      'SELECT COUNT(*) AS c FROM mo_daily_tasks WHERE work_date = ? AND branch_id IS NULL',
+      [day]
+    )?.c) || 0;
+  }
+  return Number(dbGet(
+    'SELECT COUNT(*) AS c FROM mo_daily_tasks WHERE work_date = ? AND branch_id = ?',
+    [day, Number(branchId)]
+  )?.c) || 0;
+}
+
+function findReportForDay(day, branchId) {
+  if (branchId == null || branchId === '' || branchId === 'all') {
+    return dbGet(
+      'SELECT id FROM mo_daily_reports WHERE work_date = ? AND branch_id IS NULL',
+      [day]
+    );
+  }
+  return dbGet(
+    'SELECT id FROM mo_daily_reports WHERE work_date = ? AND branch_id = ?',
+    [day, Number(branchId)]
+  );
+}
+
+function phoneForUser(userId) {
+  if (!userId) return null;
+  try {
+    const emp = dbGet('SELECT phone FROM employees WHERE user_id = ? LIMIT 1', [Number(userId)]);
+    if (emp?.phone) return emp.phone;
+  } catch (_) { /* */ }
+  try {
+    const u = dbGet('SELECT phone FROM users WHERE id = ?', [Number(userId)]);
+    if (u?.phone) return u.phone;
+  } catch (_) { /* */ }
+  return null;
+}
+
+function logTaskNotification(taskId, userId, channel, title, message, status, detail) {
+  ensureSchema();
+  try {
+    dbRun(
+      `INSERT INTO mo_task_notifications (task_id, user_id, channel, title, message, status, detail_json, created_at)
+       VALUES (?,?,?,?,?,?,?,?)`,
+      [taskId || null, userId || null, channel || 'in_app', title || null, message || null,
+        status || 'sent', JSON.stringify(detail || {}), nowIso()]
+    );
+  } catch (e) {
+    console.warn('[manager-ops] notification log:', e.message || e);
+  }
+}
+
+function listTaskNotifications(filters = {}) {
+  ensureSchema();
+  let sql = 'SELECT * FROM mo_task_notifications WHERE 1=1';
+  const params = [];
+  if (filters.task_id) { sql += ' AND task_id = ?'; params.push(Number(filters.task_id)); }
+  if (filters.user_id) { sql += ' AND user_id = ?'; params.push(Number(filters.user_id)); }
+  sql += ' ORDER BY id DESC LIMIT ?';
+  params.push(Math.min(Number(filters.limit) || 100, 500));
+  return dbAll(sql, params) || [];
+}
+
+function notifyAssignee(task, assignee, actor, opts = {}) {
+  if (!assignee?.id || !task) return { portal: false, in_app: false, whatsapp: false };
+  const title = opts.title || 'Manager Ops task assigned';
+  const message = opts.message || `${task.title} is assigned to you for ${task.work_date || todayLocal()}`;
+  const out = { portal: false, in_app: false, whatsapp: false };
+
+  try {
+    pushStaffPortalFeed(assignee.id, title, message, task.id);
+    out.portal = true;
+    logTaskNotification(task.id, assignee.id, 'staff_portal', title, message, 'sent', {});
+  } catch (_) { /* */ }
+
+  try {
+    notify('mo_task_assigned', title, message, {
+      entity_type: 'mo_daily_task',
+      entity_id: task.id,
+      action_page: 'manager-ops',
+      audience_user_ids: String(assignee.id)
+    });
+    out.in_app = true;
+    logTaskNotification(task.id, assignee.id, 'in_app', title, message, 'sent', {});
+  } catch (_) { /* */ }
+
+  if (opts.whatsapp !== false) {
+    const phone = phoneForUser(assignee.id);
+    if (phone) {
+      try {
+        const wa = require('./whatsapp');
+        const body = `Manager Operations\n\nHi ${assignee.full_name || assignee.username},\n\n${message}\n\nOpen Manager Ops or Staff Portal to complete it.`;
+        // fire-and-forget sync wrapper — sendMessage is async
+        Promise.resolve(wa.sendMessage({
+          phone,
+          body,
+          message_type: 'custom',
+          recipient_name: assignee.full_name || assignee.username,
+          recipient_type: 'staff'
+        }, actor || { role: 'system' })).then((r) => {
+          logTaskNotification(task.id, assignee.id, 'whatsapp', title, body, r?.status || 'sent', { phone });
+        }).catch((e) => {
+          logTaskNotification(task.id, assignee.id, 'whatsapp', title, body, 'failed', { phone, error: String(e.message || e) });
+        });
+        out.whatsapp = true;
+      } catch (e) {
+        logTaskNotification(task.id, assignee.id, 'whatsapp', title, message, 'failed', { error: String(e.message || e) });
       }
+    } else {
+      logTaskNotification(task.id, assignee.id, 'whatsapp', title, message, 'skipped', { reason: 'no_phone' });
     }
   }
+  return out;
 }
 
 function shopKey() {
@@ -405,16 +534,22 @@ function generateDailyTasks(workDate, actor, branchId = null) {
   const settings = getMoSettings();
   if (settings.auto_generate_tasks === 0 && !actor) return { created: 0, day };
 
-  const existing = dbGet(
-    `SELECT COUNT(*) AS c FROM mo_daily_tasks WHERE work_date = ?
-      AND ((branch_id IS NULL AND ? IS NULL) OR branch_id = ?)`,
-    [day, branchId == null ? null : branchId, branchId == null ? null : branchId]
-  )?.c || 0;
-  if (existing > 0) return { created: 0, day, existing };
+  const bid = branchId == null || branchId === '' || branchId === 'all' ? null : Number(branchId);
+  const existingCount = countTasksForDay(day, bid);
 
-  const templates = dbAll('SELECT * FROM mo_task_templates WHERE is_active = 1 ORDER BY sort_order, id');
+  // Only create templates that are not already present for this day (fill missing)
+  let existingTemplateIds = new Set();
+  try {
+    const rows = bid == null
+      ? dbAll('SELECT template_id FROM mo_daily_tasks WHERE work_date = ? AND branch_id IS NULL', [day])
+      : dbAll('SELECT template_id FROM mo_daily_tasks WHERE work_date = ? AND branch_id = ?', [day, bid]);
+    existingTemplateIds = new Set((rows || []).map((r) => Number(r.template_id)).filter(Boolean));
+  } catch (_) { existingTemplateIds = new Set(); }
+
+  const templates = dbAll('SELECT * FROM mo_task_templates WHERE is_active = 1 ORDER BY sort_order, id') || [];
   let created = 0;
   for (const tpl of templates) {
+    if (tpl.id && existingTemplateIds.has(Number(tpl.id))) continue;
     const checklist = tpl.code
       ? dbGet('SELECT id FROM mo_checklist_templates WHERE code = ? AND is_active = 1', [tpl.code])
         || dbGet('SELECT id FROM mo_checklist_templates WHERE category = ? AND is_active = 1', [tpl.category])
@@ -429,21 +564,22 @@ function generateDailyTasks(workDate, actor, branchId = null) {
         is_primary, is_required, photo_mode, verification_required, priority, status, due_at
       ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'not_started',?)`,
       [
-        shopKey(), branchId, day, tpl.id, checklist?.id || null, tpl.name, tpl.category,
-        tpl.assigned_role,
-        assignee?.id || tpl.default_assigned_user_id || null,
-        assignee?.full_name || assignee?.username || null,
-        manager?.id || tpl.manager_user_id || null,
-        manager?.full_name || manager?.username || null,
+        shopKey(), bid, day, tpl.id || null, checklist?.id || null, tpl.name, tpl.category || 'general',
+        tpl.assigned_role || 'assistant_manager',
+        assignee?.id || null,
+        assignee ? (assignee.full_name || assignee.username) : null,
+        manager?.id || null,
+        manager ? (manager.full_name || manager.username) : null,
         tpl.is_primary ? 1 : 0, tpl.is_required ? 1 : 0, tpl.photo_mode || 'none',
         tpl.verification_required ? 1 : 0, tpl.priority || 'medium', due
       ]
     );
+    if (!taskId) continue;
     if (checklist?.id) {
       const items = dbAll(
         'SELECT * FROM mo_checklist_items WHERE template_id = ? AND is_active = 1 ORDER BY sort_order, id',
         [checklist.id]
-      );
+      ) || [];
       for (const it of items) {
         dbRun(
           `INSERT INTO mo_checklist_progress (task_id, checklist_item_id, label, is_required, photo_mode, sort_order)
@@ -453,12 +589,20 @@ function generateDailyTasks(workDate, actor, branchId = null) {
       }
     }
     if (assignee?.id) {
-      pushStaffPortalFeed(assignee.id, 'Manager Ops task', `${tpl.name} is assigned to you for ${day}`, taskId);
+      const task = dbGet('SELECT * FROM mo_daily_tasks WHERE id = ?', [taskId]);
+      notifyAssignee(task, assignee, actor, { whatsapp: false });
     }
     created += 1;
   }
-  moAudit(actor || { username: 'system' }, 'tasks_generated', 'mo_daily_tasks', day, { created, branchId });
-  return { created, day };
+  moAudit(actor || { username: 'system' }, 'tasks_generated', 'mo_daily_tasks', day, { created, branchId: bid, existing: existingCount });
+  return {
+    created,
+    day,
+    existing: existingCount,
+    message: created
+      ? `Created ${created} task(s) for ${day}`
+      : (existingCount ? `Already have ${existingCount} task(s) for today` : 'No active templates to generate')
+  };
 }
 
 function ensureTodayTasks(actor, branchId) {
@@ -1002,10 +1146,11 @@ function createDailyTask(data, actor) {
     }
   }
   if (assignee?.id) {
-    pushStaffPortalFeed(assignee.id, 'New Manager Ops task', `${title} assigned for ${day}`, taskId);
-    notify('mo_task_assigned', 'Task assigned', `${title} was assigned to you`, {
-      entity_type: 'mo_daily_task', entity_id: taskId, action_page: 'manager-ops',
-      audience_user_ids: String(assignee.id)
+    const created = dbGet('SELECT * FROM mo_daily_tasks WHERE id = ?', [taskId]);
+    notifyAssignee(created, assignee, actor, {
+      whatsapp: data.notify_whatsapp !== false,
+      title: 'New Manager Ops task',
+      message: `${title} assigned for ${day}`
     });
   }
   moAudit(actor, 'task_created', 'mo_daily_task', taskId, data);
@@ -1018,27 +1163,84 @@ function assignDailyTask(taskId, data, actor) {
   ensureSchema();
   const task = dbGet('SELECT * FROM mo_daily_tasks WHERE id = ?', [taskId]);
   if (!task) throw new Error('Task not found');
-  const assignee = data.assigned_user_id != null ? lookupUser(data.assigned_user_id) : null;
-  const manager = data.manager_user_id != null ? lookupUser(data.manager_user_id) : null;
+  const assignee = data.assigned_user_id != null && data.assigned_user_id !== ''
+    ? lookupUser(data.assigned_user_id) : null;
+  const manager = data.manager_user_id != null && data.manager_user_id !== ''
+    ? lookupUser(data.manager_user_id) : null;
+  const clearAssignee = data.assigned_user_id === null || data.assigned_user_id === '';
+  const clearManager = data.manager_user_id === null || data.manager_user_id === '';
   dbRun(
     `UPDATE mo_daily_tasks SET
       assigned_user_id=?, assigned_user_name=?, manager_user_id=?, manager_user_name=?,
       assigned_role=COALESCE(?, assigned_role), updated_at=?
      WHERE id=?`,
     [
-      assignee ? assignee.id : (data.assigned_user_id === null ? null : task.assigned_user_id),
-      assignee ? (assignee.full_name || assignee.username) : (data.assigned_user_id === null ? null : task.assigned_user_name),
-      manager ? manager.id : (data.manager_user_id === null ? null : task.manager_user_id),
-      manager ? (manager.full_name || manager.username) : (data.manager_user_id === null ? null : task.manager_user_name),
+      assignee ? assignee.id : (clearAssignee ? null : task.assigned_user_id),
+      assignee ? (assignee.full_name || assignee.username) : (clearAssignee ? null : task.assigned_user_name),
+      manager ? manager.id : (clearManager ? null : task.manager_user_id),
+      manager ? (manager.full_name || manager.username) : (clearManager ? null : task.manager_user_name),
       data.assigned_role || (assignee?.role) || null,
       nowIso(),
       taskId
     ]
   );
+  const updated = getTask(taskId, actor);
   if (assignee?.id) {
-    pushStaffPortalFeed(assignee.id, 'Manager Ops assignment', `${task.title} is now yours`, taskId);
+    notifyAssignee(updated, assignee, actor, {
+      whatsapp: data.notify_whatsapp !== false,
+      title: 'New daily task assigned',
+      message: `${task.title} was assigned to you. Open Manager Operations or Staff Portal to complete it.`
+    });
   }
   moAudit(actor, 'task_assigned', 'mo_daily_task', taskId, data);
+  return updated;
+}
+
+/** Admin marks a staff task complete (optionally on their behalf) — photo required when task needs evidence. */
+function adminCompleteTask(taskId, data, actor) {
+  assertModuleEnabled();
+  requireAdmin(actor);
+  ensureSchema();
+  const task = getTask(taskId, actor);
+  if (!task) throw new Error('Task not found');
+  const needsPhoto = task.photo_mode === 'required' || data?.require_photo;
+  if (needsPhoto && !data?.photo_data_url) {
+    const err = new Error('Photo evidence is required to mark this task complete');
+    err.code = 'PHOTO_REQUIRED';
+    throw err;
+  }
+  if (data?.photo_data_url) {
+    saveEvidenceFile(data.photo_data_url, {
+      task_id: taskId,
+      user_id: actor.id,
+      caption: data.caption || `Completed by admin for ${task.assigned_user_name || 'staff'}`
+    });
+  }
+  const checklist = dbAll('SELECT * FROM mo_checklist_progress WHERE task_id = ?', [taskId]) || [];
+  for (const c of checklist) {
+    if (!c.completed) {
+      dbRun(
+        `UPDATE mo_checklist_progress SET completed=1, completed_at=?, completed_by=?, notes=? WHERE id=?`,
+        [nowIso(), actor.id, data?.notes || 'Completed by admin', c.id]
+      );
+    }
+  }
+  dbRun(
+    `UPDATE mo_daily_tasks SET status='completed', completed_at=?, completed_by=?, completed_by_name=?, notes=COALESCE(?, notes), updated_at=? WHERE id=?`,
+    [
+      nowIso(),
+      actor.id,
+      `${actor.full_name || actor.username} (admin)`,
+      data?.notes || null,
+      nowIso(),
+      taskId
+    ]
+  );
+  moAudit(actor, 'task_admin_completed', 'mo_daily_task', taskId, {
+    for_user: task.assigned_user_id,
+    photo: !!data?.photo_data_url
+  });
+  touchEmployeeOfMonth(task.assigned_user_id || actor.id);
   return getTask(taskId, actor);
 }
 
@@ -1171,11 +1373,7 @@ function submitDailyReport(data, actor) {
     manager_comments: data?.manager_comments || '',
     submitted_by: actor.full_name || actor.username
   };
-  const existing = dbGet(
-    `SELECT id FROM mo_daily_reports WHERE work_date = ?
-      AND ((branch_id IS NULL AND ? IS NULL) OR branch_id = ?)`,
-    [day, branchId == null ? null : branchId, branchId == null ? null : branchId]
-  );
+  const existing = findReportForDay(day, branchId);
   let id;
   const fields = [
     shopKey(), branchId, day, actor.id, actor.full_name || actor.username,
@@ -1659,7 +1857,9 @@ module.exports = {
   saveChecklistTemplate,
   createDailyTask,
   assignDailyTask,
+  adminCompleteTask,
   listAssignablePeople,
+  listTaskNotifications,
   getReportPrintPayload,
   buildDailyReportPdf,
   portalLogin,
