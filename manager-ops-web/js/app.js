@@ -69,6 +69,7 @@
     app.innerHTML = `<div class="login-wrap">
       <h1>Manager Operations</h1>
       <p class="muted">Daily duties · Tasks · Reports</p>
+      <p class="muted" style="font-size:13px">Use the same username and password you use for Admin / POS. Access is granted by the shop owner or manager.</p>
       ${err ? `<p style="color:#b91c1c">${err}</p>` : ''}
       <label>Username</label>
       <input class="form-input" id="mo-user" autocomplete="username">

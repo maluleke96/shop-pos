@@ -240,9 +240,13 @@ function seedDefaults(actor) {
 function getMoSettings() {
   ensureSchema();
   const row = dbGet('SELECT * FROM mo_settings WHERE id = 1') || {};
+  const settings = parseJson(row.settings_json, {});
   return {
     ...row,
-    settings: parseJson(row.settings_json, {})
+    settings,
+    allowed_user_ids: Array.isArray(settings.allowed_user_ids)
+      ? settings.allowed_user_ids.map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0)
+      : []
   };
 }
 
@@ -251,6 +255,17 @@ function saveMoSettings(data, actor) {
   ensureSchema();
   requireAdmin(actor);
   const cur = getMoSettings();
+  const nextSettings = { ...(cur.settings || {}) };
+  if (data.settings && typeof data.settings === 'object') Object.assign(nextSettings, data.settings);
+  if (Array.isArray(data.allowed_user_ids)) {
+    const r = String(actor?.role || '').toLowerCase();
+    if (!['owner', 'manager'].includes(r)) {
+      throw new Error('Only owners and managers can change staff access');
+    }
+    nextSettings.allowed_user_ids = data.allowed_user_ids
+      .map((id) => Number(id))
+      .filter((id) => Number.isFinite(id) && id > 0);
+  }
   const next = {
     daily_sales_target_override: data.daily_sales_target_override !== undefined
       ? data.daily_sales_target_override : cur.daily_sales_target_override,
@@ -259,7 +274,7 @@ function saveMoSettings(data, actor) {
     notify_manager_remaining: data.notify_manager_remaining !== undefined ? (data.notify_manager_remaining ? 1 : 0) : cur.notify_manager_remaining,
     auto_generate_tasks: data.auto_generate_tasks !== undefined ? (data.auto_generate_tasks ? 1 : 0) : cur.auto_generate_tasks,
     verification_role: data.verification_role != null ? data.verification_role : cur.verification_role,
-    settings_json: data.settings != null ? JSON.stringify(data.settings) : cur.settings_json
+    settings_json: JSON.stringify(nextSettings)
   };
   dbRun(
     `UPDATE mo_settings SET daily_sales_target_override=?, notify_owner_on_report=?, notify_owner_on_urgent=?,
@@ -269,6 +284,47 @@ function saveMoSettings(data, actor) {
   );
   moAudit(actor, 'settings_changed', 'mo_settings', 1, next);
   return getMoSettings();
+}
+
+/** Owners/managers always allowed (same Admin/POS password). Other staff only when granted. */
+function assertPortalAccess(user) {
+  if (!user?.id) throw new Error('Authentication required');
+  const role = String(user.role || '').toLowerCase();
+  if (role === 'owner' || role === 'manager') return true;
+  const allowed = getMoSettings().allowed_user_ids || [];
+  if (allowed.includes(Number(user.id))) return true;
+  const err = new Error('No Manager Operations access. Ask an owner or manager to grant you access in Admin → Manager Operations → Staff Access.');
+  err.code = 'MO_ACCESS_DENIED';
+  throw err;
+}
+
+function listAccessCandidates() {
+  ensureSchema();
+  const users = dbAll(`
+    SELECT id, username, full_name, role, is_active
+    FROM users
+    WHERE COALESCE(is_active, 1) = 1
+      AND lower(role) IN ('owner','manager','assistant_manager','supervisor','cashier','kitchen','staff','operations')
+    ORDER BY
+      CASE lower(role)
+        WHEN 'owner' THEN 0 WHEN 'manager' THEN 1 WHEN 'assistant_manager' THEN 2
+        WHEN 'supervisor' THEN 3 ELSE 4
+      END,
+      full_name COLLATE NOCASE, username COLLATE NOCASE
+  `) || [];
+  const allowed = new Set((getMoSettings().allowed_user_ids || []).map(Number));
+  return users.map((u) => {
+    const role = String(u.role || '').toLowerCase();
+    const always = role === 'owner' || role === 'manager';
+    return {
+      id: u.id,
+      username: u.username,
+      full_name: u.full_name,
+      role: u.role,
+      always_allowed: always,
+      allowed: always || allowed.has(Number(u.id))
+    };
+  });
 }
 
 function requireAdmin(actor) {
@@ -328,8 +384,9 @@ function generateDailyTasks(workDate, actor, branchId = null) {
   if (settings.auto_generate_tasks === 0 && !actor) return { created: 0, day };
 
   const existing = dbGet(
-    `SELECT COUNT(*) AS c FROM mo_daily_tasks WHERE work_date = ? AND (branch_id IS ? OR (? IS NULL AND branch_id IS NULL))`,
-    [day, branchId, branchId]
+    `SELECT COUNT(*) AS c FROM mo_daily_tasks WHERE work_date = ?
+      AND ((branch_id IS NULL AND ? IS NULL) OR branch_id = ?)`,
+    [day, branchId == null ? null : branchId, branchId == null ? null : branchId]
   )?.c || 0;
   if (existing > 0) return { created: 0, day, existing };
 
@@ -374,7 +431,12 @@ function generateDailyTasks(workDate, actor, branchId = null) {
 function ensureTodayTasks(actor, branchId) {
   ensureSchema();
   seedDefaults(actor);
-  return generateDailyTasks(todayLocal(), actor, branchId);
+  try {
+    return generateDailyTasks(todayLocal(), actor, branchId);
+  } catch (e) {
+    console.warn('[manager-ops] generateDailyTasks:', e.message || e);
+    return { created: 0, day: todayLocal(), error: String(e.message || e) };
+  }
 }
 
 function markOverdue() {
@@ -747,10 +809,19 @@ function getAttendanceSnapshot() {
 function ownerDashboard(workDate, branchId) {
   assertModuleEnabled();
   ensureSchema();
-  ensureTodayTasks({ role: 'owner', id: 0, username: 'system' }, branchId);
+  try {
+    ensureTodayTasks({ role: 'owner', id: 0, username: 'system' }, branchId);
+  } catch (e) {
+    console.warn('[manager-ops] ensureTodayTasks:', e.message || e);
+  }
   const day = workDate || todayLocal();
-  const sales = getSalesSummary(branchId);
-  const tasks = dbAll('SELECT * FROM mo_daily_tasks WHERE work_date = ?', [day]);
+  let sales = { target: 0, sales: 0, remaining: 0, progress: 0, order_count: 0, currency: 'R', read_only: true };
+  try {
+    sales = getSalesSummary(branchId);
+  } catch (e) {
+    console.warn('[manager-ops] getSalesSummary:', e.message || e);
+  }
+  const tasks = dbAll('SELECT * FROM mo_daily_tasks WHERE work_date = ?', [day]) || [];
   const byCat = {};
   for (const t of tasks) {
     const c = t.category || 'general';
@@ -758,15 +829,24 @@ function ownerDashboard(workDate, branchId) {
     byCat[c].total += 1;
     if (['completed', 'verified'].includes(t.status)) byCat[c].completed += 1;
   }
-  const incidents = dbAll('SELECT * FROM mo_incidents WHERE work_date = ?', [day]);
-  const photos = dbGet(
-    `SELECT COUNT(*) AS c FROM mo_evidence e
-     LEFT JOIN mo_daily_tasks t ON t.id = e.task_id
-     WHERE date(e.created_at) = date(?) OR t.work_date = ?`,
-    [day, day]
-  )?.c || 0;
+  let incidents = [];
+  try {
+    incidents = dbAll('SELECT * FROM mo_incidents WHERE work_date = ?', [day]) || [];
+  } catch (_) { incidents = []; }
+  let photos = 0;
+  try {
+    photos = dbGet(
+      `SELECT COUNT(*) AS c FROM mo_evidence e
+       LEFT JOIN mo_daily_tasks t ON t.id = e.task_id
+       WHERE date(e.created_at) = date(?) OR t.work_date = ?`,
+      [day, day]
+    )?.c || 0;
+  } catch (_) { photos = 0; }
   const outstanding = tasks.filter((t) => !['completed', 'verified'].includes(t.status)).length;
-  const report = dbGet('SELECT * FROM mo_daily_reports WHERE work_date = ? ORDER BY id DESC LIMIT 1', [day]);
+  let report = null;
+  try {
+    report = dbGet('SELECT * FROM mo_daily_reports WHERE work_date = ? ORDER BY id DESC LIMIT 1', [day]);
+  } catch (_) { report = null; }
   return {
     work_date: day,
     sales,
@@ -855,7 +935,11 @@ function submitDailyReport(data, actor) {
     manager_comments: data?.manager_comments || '',
     submitted_by: actor.full_name || actor.username
   };
-  const existing = dbGet('SELECT id FROM mo_daily_reports WHERE work_date = ? AND (branch_id IS ? OR (? IS NULL AND branch_id IS NULL))', [day, branchId, branchId]);
+  const existing = dbGet(
+    `SELECT id FROM mo_daily_reports WHERE work_date = ?
+      AND ((branch_id IS NULL AND ? IS NULL) OR branch_id = ?)`,
+    [day, branchId == null ? null : branchId, branchId == null ? null : branchId]
+  );
   let id;
   const fields = [
     shopKey(), branchId, day, actor.id, actor.full_name || actor.username,
@@ -1081,16 +1165,16 @@ function portalLogin(username, password, device = {}) {
   if (!bcrypt.compareSync(String(password || ''), user.password_hash || '')) {
     throw new Error('Invalid username or password');
   }
-  const role = String(user.role || '').toLowerCase();
-  if (!MANAGER_ROLES.has(role) && !WORKER_ROLES.has(mapUserRoleToMoRole(role)) && role !== 'cashier') {
-    // Allow any active staff with a known role to use role-based tasks
-  }
+  // Same password as Admin / POS — then check who the admin has granted
+  assertPortalAccess(user);
   const token = newToken();
   dbRun(
     `INSERT INTO mo_sessions (user_id, token_hash, device_label, expires_at) VALUES (?,?,?,?)`,
     [user.id, hashToken(token), device.label || device.userAgent || null, nowPlusDays(14)]
   );
-  ensureTodayTasks(user, null);
+  try { ensureTodayTasks(user, null); } catch (e) {
+    console.warn('[manager-ops] ensureTodayTasks:', e.message || e);
+  }
   return {
     token,
     user: { id: user.id, username: user.username, full_name: user.full_name, role: user.role }
@@ -1115,6 +1199,7 @@ function resolvePortalSession(token) {
   `, [hashToken(token), nowIso()]);
   if (!row) throw new Error('Session expired — please sign in again');
   assertModuleEnabled();
+  assertPortalAccess(row);
   return row;
 }
 
@@ -1171,5 +1256,7 @@ module.exports = {
   portalLogin,
   portalLogout,
   resolvePortalSession,
+  assertPortalAccess,
+  listAccessCandidates,
   listAudit
 };

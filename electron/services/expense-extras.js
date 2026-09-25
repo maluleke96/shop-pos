@@ -119,9 +119,12 @@ function saveBudget(data, actor) {
   if (!category) throw new Error('Category required');
   if (!(amount >= 0)) throw new Error('Budget amount invalid');
   const db = getDb();
+  const bid = data.branch_id == null || data.branch_id === '' ? null : data.branch_id;
   const existing = db.prepare(`
-    SELECT id FROM expense_budgets WHERE category = ? AND month_key = ? AND (branch_id IS ? OR (branch_id IS NULL AND ? IS NULL))
-  `).get(category, month_key, data.branch_id || null, data.branch_id || null);
+    SELECT id FROM expense_budgets
+    WHERE category = ? AND month_key = ?
+      AND ((branch_id IS NULL AND ? IS NULL) OR branch_id = ?)
+  `).get(category, month_key, bid, bid);
   if (existing) {
     db.prepare('UPDATE expense_budgets SET amount = ? WHERE id = ?').run(amount, existing.id);
     return db.prepare('SELECT * FROM expense_budgets WHERE id = ?').get(existing.id);

@@ -3633,6 +3633,12 @@ add('web:adminAnalytics', wrapSync((filters, actor) => {
   add('mo:saveChecklist', wrapSync((d, a) => managerOps.saveChecklistTemplate(d || {}, moActor(a))));
   add('mo:getSettings', wrapSync(() => { requireSession(); return managerOps.getMoSettings(); }));
   add('mo:saveSettings', wrapSync((d, a) => managerOps.saveMoSettings(d || {}, moActor(a))));
+  add('mo:listAccess', wrapSync((a) => {
+    const actor = moActor(a);
+    const r = String(actor.role || '').toLowerCase();
+    if (!['owner', 'manager'].includes(r)) throw new Error('Only owners and managers can manage staff access');
+    return managerOps.listAccessCandidates();
+  }));
   add('mo:generateTasks', wrapSync((d, a) => managerOps.generateDailyTasks(d?.work_date, moActor(a), d?.branch_id)));
   add('mo:audit', wrapSync((f) => { requireSession(); return managerOps.listAudit(f || {}); }));
   add('mo:categories', wrapSync(() => managerOps.INCIDENT_CATEGORIES));

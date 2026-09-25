@@ -1035,6 +1035,7 @@ const API = {
   moSaveChecklist: (data, actor) => invoke('mo:saveChecklist', data, actor),
   moGetSettings: () => invoke('mo:getSettings'),
   moSaveSettings: (data, actor) => invoke('mo:saveSettings', data, actor),
+  moListAccess: (actor) => invoke('mo:listAccess', actor),
   moGenerateTasks: (data, actor) => invoke('mo:generateTasks', data || {}, actor),
   moAudit: (f) => invoke('mo:audit', f || {}),
   moCategories: () => invoke('mo:categories'),

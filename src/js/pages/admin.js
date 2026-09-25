@@ -73,7 +73,7 @@ const AdminPage = {
     { id: 'device', label: '💻 Device Settings', icon: 'device' },
     { id: 'backup', label: '💾 Backup & Restore', icon: 'backup' },
     { id: 'opscompliance', label: '📋 Operations & Compliance', icon: 'opscompliance' },
-    { id: 'manager-ops', label: '📱 Manager Operations', icon: 'opscompliance' },
+    { id: 'manager-ops', label: 'Manager Operations', icon: 'opscompliance' },
     { id: 'combos', label: '🎁 Combos & Promos', icon: 'combos' },
     { id: 'menu-builder', label: '📋 Menu Builder', icon: 'menu' },
     { id: 'promo-video-builder', label: '🎬 Promo Video Builder', icon: 'signage' },

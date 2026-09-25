@@ -843,9 +843,17 @@ function startChecklistRun(data, actor) {
   // Prefer IS for NULL-safe match when branch/employee are unset.
   const existing = db.prepare(`
     SELECT id, status FROM daily_checklist_runs
-    WHERE run_type = ? AND run_date = ? AND branch_id IS ? AND employee_id IS ? AND status != ?
+    WHERE run_type = ? AND run_date = ?
+      AND ((branch_id IS NULL AND ? IS NULL) OR branch_id = ?)
+      AND ((employee_id IS NULL AND ? IS NULL) OR employee_id = ?)
+      AND status != ?
     ORDER BY id DESC LIMIT 1
-  `).get(runType, runDate, branchId, employeeId, 'cancelled');
+  `).get(
+    runType, runDate,
+    branchId == null ? null : branchId, branchId == null ? null : branchId,
+    employeeId == null ? null : employeeId, employeeId == null ? null : employeeId,
+    'cancelled'
+  );
   if (existing) {
     // Allow a fresh start if a prior failed shell had no tasks / deadline not yet past
     if (existing.status === 'failed' && !isPastChecklistDeadline(runType, runDate)) {

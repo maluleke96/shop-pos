@@ -207,6 +207,9 @@ function rewriteSqliteSql(sql) {
       // SQLite scalar MAX(a,b) → Postgres GREATEST (aggregate MAX unchanged)
       .replace(/\bMAX\s*\(\s*([^,)]+)\s*,\s*([^)]+?)\s*\)/gi, 'GREATEST($1, $2)')
       .replace(/\bGLOB\b/gi, 'LIKE')
+      // SQLite "col IS ?" (null-safe eq) is invalid in Postgres as "col IS $n"
+      .replace(/\b([a-zA-Z_][\w.]*)\s+IS\s+\?/gi, '($1 IS NOT DISTINCT FROM ?)')
+      .replace(/\b([a-zA-Z_][\w.]*)\s+IS\s+NOT\s+\?/gi, '($1 IS DISTINCT FROM ?)')
       // SQLite case-insensitive order — strip (Postgres has no COLLATE NOCASE)
       .replace(/\bCOLLATE\s+NOCASE\b/gi, '')
       // SQLite char(10) newline → Postgres chr(10)

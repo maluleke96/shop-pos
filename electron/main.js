@@ -2581,6 +2581,10 @@ function registerIpc() {
   ipcMain.handle('mo:saveChecklist', wrapF((d, a) => store.saveChecklistTemplate(d || {}, a)));
   ipcMain.handle('mo:getSettings', wrapF(() => store.getMoSettings()));
   ipcMain.handle('mo:saveSettings', wrapF((d, a) => store.saveMoSettings(d || {}, a)));
+  ipcMain.handle('mo:listAccess', wrapF((a) => {
+    const user = store.requireActor(a, ['owner', 'manager']);
+    return store.listAccessCandidates();
+  }));
   ipcMain.handle('mo:generateTasks', wrapF((d, a) => store.generateDailyTasks(d?.work_date, a, d?.branch_id)));
   ipcMain.handle('mo:audit', wrapF((f) => store.listAudit(f || {})));
   ipcMain.handle('mo:categories', wrapF(() => store.MO_INCIDENT_CATEGORIES || []));
