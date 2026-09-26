@@ -284,6 +284,7 @@ function linkExpense(data, actor) {
       }],
       notes: data.invoice_ref ? `Invoice/Ref: ${data.invoice_ref}` : (data.notes || null)
     }, actor?.id, actor?.full_name || actor?.username || 'system');
+    if (typeof exp === 'number') return exp;
     return exp?.id || exp?.lastInsertRowid || null;
   } catch (e) {
     console.warn('[stock-batch] link expense:', e.message || e);
