@@ -499,6 +499,47 @@ function registerIpc() {
     return store.recordOwnerFunding(data, user);
   }));
 
+  // Stock Batch & Yield (Expenses)
+  ipcMain.handle('stockBatch:dashboard', wrapF((f) => { requireSession(); return store.stockBatchDashboard(f || {}); }));
+  ipcMain.handle('stockBatch:list', wrapF((f) => { requireSession(); return store.listBatches(f || {}); }));
+  ipcMain.handle('stockBatch:get', wrapF((id) => { requireSession(); return store.getBatch(id); }));
+  ipcMain.handle('stockBatch:create', wrapSync((d, a) => {
+    const user = store.requireActor(a, ['owner', 'manager', 'assistant_manager', 'supervisor']);
+    return store.createBatch(d || {}, user);
+  }));
+  ipcMain.handle('stockBatch:update', wrapSync((id, d, a) => {
+    const user = store.requireActor(a, ['owner', 'manager', 'assistant_manager', 'supervisor']);
+    return store.updateBatch(id, d || {}, user);
+  }));
+  ipcMain.handle('stockBatch:waste', wrapSync((id, d, a) => {
+    const user = store.requireActor(a, ['owner', 'manager', 'assistant_manager', 'supervisor']);
+    return store.recordWaste(id, d || {}, user);
+  }));
+  ipcMain.handle('stockBatch:setActualYield', wrapSync((id, y, a) => {
+    const user = store.requireActor(a, ['owner', 'manager', 'assistant_manager', 'supervisor']);
+    return store.setActualYield(id, y, user);
+  }));
+  ipcMain.handle('stockBatch:close', wrapSync((id, reason, a) => {
+    const user = store.requireActor(a, ['owner', 'manager', 'assistant_manager', 'supervisor']);
+    return store.closeBatch(id, user, reason);
+  }));
+  ipcMain.handle('stockBatch:reopen', wrapSync((id, a) => {
+    const user = store.requireActor(a, ['owner', 'manager']);
+    return store.reopenBatch(id, user);
+  }));
+  ipcMain.handle('stockBatch:cancel', wrapSync((id, reason, a) => {
+    const user = store.requireActor(a, ['owner', 'manager']);
+    return store.cancelBatch(id, user, reason);
+  }));
+  ipcMain.handle('stockBatch:events', wrapF((id, limit) => { requireSession(); return store.listEvents(id, limit); }));
+  ipcMain.handle('stockBatch:settings', wrapF(() => { requireSession(); return store.getStockBatchSettings(); }));
+  ipcMain.handle('stockBatch:saveSettings', wrapSync((d, a) => {
+    const user = store.requireActor(a, ['owner', 'manager']);
+    return store.saveStockBatchSettings(d || {}, user);
+  }));
+  ipcMain.handle('stockBatch:productAnalysis', wrapF((f) => { requireSession(); return store.productYieldAnalysis(f || {}); }));
+  ipcMain.handle('stockBatch:profitability', wrapF((f) => { requireSession(); return store.profitabilityReport(f || {}); }));
+
   // Customers
   ipcMain.handle('customers:get', wrap((search) => store.getCustomers(search)));
   ipcMain.handle('customers:getOne', wrap((id) => store.getCustomer(id)));

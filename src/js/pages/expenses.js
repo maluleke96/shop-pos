@@ -74,10 +74,11 @@ const ExpensesPage = {
             <button type="button" class="admin-tab ${this.tab === 'dashboard' ? 'active' : ''}" data-exp-tab="dashboard">📊 Dashboard</button>
             <button type="button" class="admin-tab ${this.tab === 'tools' ? 'active' : ''}" data-exp-tab="tools">🎯 Budgets &amp; Recurring</button>
             <button type="button" class="admin-tab ${this.tab === 'funding' ? 'active' : ''}" data-exp-tab="funding">💼 Owner funding</button>
+            <button type="button" class="admin-tab ${this.tab === 'stock-batch' ? 'active' : ''}" data-exp-tab="stock-batch">Stock Batch &amp; Yield</button>
             <button type="button" class="admin-tab ${this.tab === 'waste' ? 'active' : ''}" data-exp-tab="waste">Waste / Damage</button>
           </div>
-          <button class="btn btn-ghost" id="exp-manage-cats" ${['waste', 'tools', 'funding'].includes(this.tab) ? 'style="display:none"' : ''}>Manage categories</button>
-          <button class="btn btn-primary" id="add-exp" ${['waste', 'tools', 'funding'].includes(this.tab) ? 'style="display:none"' : ''}>+ Add Expense</button>
+          <button class="btn btn-ghost" id="exp-manage-cats" ${['waste', 'tools', 'funding', 'stock-batch'].includes(this.tab) ? 'style="display:none"' : ''}>Manage categories</button>
+          <button class="btn btn-primary" id="add-exp" ${['waste', 'tools', 'funding', 'stock-batch'].includes(this.tab) ? 'style="display:none"' : ''}>+ Add Expense</button>
         </div>
       </div>
       <div id="exp-panel-list" class="${this.tab === 'list' ? '' : 'hidden'}">
@@ -87,6 +88,7 @@ const ExpensesPage = {
       <div id="exp-panel-dashboard" class="${this.tab === 'dashboard' ? '' : 'hidden'}"></div>
       <div id="exp-panel-tools" class="${this.tab === 'tools' ? '' : 'hidden'}"></div>
       <div id="exp-panel-funding" class="${this.tab === 'funding' ? '' : 'hidden'}"></div>
+      <div id="exp-panel-stock-batch" class="${this.tab === 'stock-batch' ? '' : 'hidden'}"></div>
       <div id="exp-panel-waste" class="${this.tab === 'waste' ? '' : 'hidden'}"></div>
       <style>
         .exp-dash-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin:16px 0}
@@ -113,14 +115,16 @@ const ExpensesPage = {
         document.getElementById('exp-panel-dashboard')?.classList.toggle('hidden', this.tab !== 'dashboard');
         document.getElementById('exp-panel-tools')?.classList.toggle('hidden', this.tab !== 'tools');
         document.getElementById('exp-panel-funding')?.classList.toggle('hidden', this.tab !== 'funding');
+        document.getElementById('exp-panel-stock-batch')?.classList.toggle('hidden', this.tab !== 'stock-batch');
         document.getElementById('exp-panel-waste')?.classList.toggle('hidden', this.tab !== 'waste');
-        const hidePrimary = ['waste', 'tools', 'funding'].includes(this.tab);
+        const hidePrimary = ['waste', 'tools', 'funding', 'stock-batch'].includes(this.tab);
         document.getElementById('add-exp')?.style.setProperty('display', hidePrimary ? 'none' : '');
         document.getElementById('exp-manage-cats')?.style.setProperty('display', hidePrimary ? 'none' : '');
         if (this.tab === 'dashboard') this.loadDashboard();
         else if (this.tab === 'waste') this.renderWastePanel();
         else if (this.tab === 'tools') this.renderToolsPanel();
         else if (this.tab === 'funding') this.renderFundingPanel();
+        else if (this.tab === 'stock-batch') this.renderStockBatchPanel();
         else this.load(this._from || Utils.monthStart(), this._to || Utils.today());
       });
     });
@@ -130,7 +134,24 @@ const ExpensesPage = {
     else if (this.tab === 'waste') this.renderWastePanel();
     else if (this.tab === 'tools') this.renderToolsPanel();
     else if (this.tab === 'funding') this.renderFundingPanel();
+    else if (this.tab === 'stock-batch') this.renderStockBatchPanel();
     else this.load(Utils.monthStart(), Utils.today());
+  },
+
+  async renderStockBatchPanel() {
+    const panel = document.getElementById('exp-panel-stock-batch') || this._host?.querySelector?.('#exp-panel-stock-batch');
+    if (!panel) return;
+    if (window.StockBatchYieldPage?.render) {
+      return window.StockBatchYieldPage.render(panel, this.app);
+    }
+    panel.innerHTML = '<p class="muted" style="padding:16px">Loading Stock Batch &amp; Yield…</p>';
+    try {
+      await this.app?.loadPageScripts?.('expenses');
+    } catch (_) { /* */ }
+    if (window.StockBatchYieldPage?.render) {
+      return window.StockBatchYieldPage.render(panel, this.app);
+    }
+    panel.innerHTML = '<p class="error-msg" style="padding:16px">Stock Batch &amp; Yield module failed to load. Refresh and try again.</p>';
   },
 
   async renderWastePanel() {

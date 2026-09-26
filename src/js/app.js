@@ -104,7 +104,7 @@ const App = {
     stock: ['js/pages/stock.js'],
     customers: ['js/pages/customers.js'],
     suppliers: ['js/pages/suppliers.js'],
-    expenses: ['js/pages/expenses.js'],
+    expenses: ['js/pages/expenses.js', 'js/pages/stock-batch-yield.js'],
     returns: ['js/pages/returns.js'],
     quotes: ['js/pages/quotes.js'],
     layby: ['js/pages/layby.js'],

@@ -2950,6 +2950,18 @@ function completeSale(saleData, actorId, actorName, actorRole) {
             adjustStockForBranch(item.product_id, item.quantity, 'sale', `Sale ${receiptNumber}`, actorId, 'sale', saleId);
           }
         }
+        // Stock Batch & Yield — auto-consume portions from linked batches (FIFO)
+        try {
+          require('./stock-batch-yield').consumeSalePortions(item.product_id, item.quantity, {
+            sale_id: saleId,
+            sale_item_id: saleItemId,
+            unit_price: item.unit_price,
+            user_id: actorId,
+            user_name: actorName
+          });
+        } catch (e) {
+          console.warn('[stock-batch] consume:', e.message || e);
+        }
         db.prepare('UPDATE products SET last_sale_date = date(\'now\') WHERE id = ?').run(item.product_id);
       }
     }
@@ -6583,6 +6595,16 @@ module.exports = {
       MO_MODULE_ID: MODULE_ID,
       MO_INCIDENT_CATEGORIES: INCIDENT_CATEGORIES
     };
+  })(),
+  ...(() => {
+    const sby = require('./stock-batch-yield');
+    const {
+      getSettings: getStockBatchSettings,
+      saveSettings: saveStockBatchSettings,
+      dashboard: stockBatchDashboard,
+      ...rest
+    } = sby;
+    return { ...rest, getStockBatchSettings, saveStockBatchSettings, stockBatchDashboard };
   })(),
   ...promoRequestsSvc,
   getNonSellingProducts: (filters) => promoRequestsSvc.enrichNonSellingProducts(opsComplianceSvc.getNonSellingProducts(filters)),

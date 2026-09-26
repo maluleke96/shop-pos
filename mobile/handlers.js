@@ -482,6 +482,46 @@ function buildHandlers(store) {
     return s.recordOwnerFunding(d, user);
   }));
 
+  add('stockBatch:dashboard', wrapSync((f) => { requireSession(); return s.stockBatchDashboard(f || {}); }));
+  add('stockBatch:list', wrapSync((f) => { requireSession(); return s.listBatches(f || {}); }));
+  add('stockBatch:get', wrapSync((id) => { requireSession(); return s.getBatch(id); }));
+  add('stockBatch:create', wrapSync((d, a) => {
+    const user = s.requireActor(a, ['owner', 'manager', 'assistant_manager', 'supervisor']);
+    return s.createBatch(d || {}, user);
+  }));
+  add('stockBatch:update', wrapSync((id, d, a) => {
+    const user = s.requireActor(a, ['owner', 'manager', 'assistant_manager', 'supervisor']);
+    return s.updateBatch(id, d || {}, user);
+  }));
+  add('stockBatch:waste', wrapSync((id, d, a) => {
+    const user = s.requireActor(a, ['owner', 'manager', 'assistant_manager', 'supervisor']);
+    return s.recordWaste(id, d || {}, user);
+  }));
+  add('stockBatch:setActualYield', wrapSync((id, y, a) => {
+    const user = s.requireActor(a, ['owner', 'manager', 'assistant_manager', 'supervisor']);
+    return s.setActualYield(id, y, user);
+  }));
+  add('stockBatch:close', wrapSync((id, reason, a) => {
+    const user = s.requireActor(a, ['owner', 'manager', 'assistant_manager', 'supervisor']);
+    return s.closeBatch(id, user, reason);
+  }));
+  add('stockBatch:reopen', wrapSync((id, a) => {
+    const user = s.requireActor(a, ['owner', 'manager']);
+    return s.reopenBatch(id, user);
+  }));
+  add('stockBatch:cancel', wrapSync((id, reason, a) => {
+    const user = s.requireActor(a, ['owner', 'manager']);
+    return s.cancelBatch(id, user, reason);
+  }));
+  add('stockBatch:events', wrapSync((id, limit) => { requireSession(); return s.listEvents(id, limit); }));
+  add('stockBatch:settings', wrapSync(() => { requireSession(); return s.getStockBatchSettings(); }));
+  add('stockBatch:saveSettings', wrapSync((d, a) => {
+    const user = s.requireActor(a, ['owner', 'manager']);
+    return s.saveStockBatchSettings(d || {}, user);
+  }));
+  add('stockBatch:productAnalysis', wrapSync((f) => { requireSession(); return s.productYieldAnalysis(f || {}); }));
+  add('stockBatch:profitability', wrapSync((f) => { requireSession(); return s.profitabilityReport(f || {}); }));
+
   add('customers:get', wrapSync(q => s.getCustomers(q)));
   add('customers:getOne', wrapSync(id => s.getCustomer(id)));
   add('customers:save', wrapSync((d, a) => {
