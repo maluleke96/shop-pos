@@ -69,12 +69,13 @@ const ExpensesPage = {
     el.innerHTML = `<div class="page-toolbar">
         <h3>Expenses</h3>
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-          <div class="admin-tabs" id="exp-tabs">
+          <button type="button" class="btn btn-primary" id="exp-goto-stock-batch" title="Stock Batch &amp; Yield">📦 Stock Batch &amp; Yield</button>
+          <div class="admin-tabs" id="exp-tabs" style="display:flex;flex-wrap:wrap;gap:4px;max-width:100%">
             <button type="button" class="admin-tab ${this.tab === 'list' ? 'active' : ''}" data-exp-tab="list">Expenses</button>
-            <button type="button" class="admin-tab ${this.tab === 'dashboard' ? 'active' : ''}" data-exp-tab="dashboard">📊 Dashboard</button>
-            <button type="button" class="admin-tab ${this.tab === 'tools' ? 'active' : ''}" data-exp-tab="tools">🎯 Budgets &amp; Recurring</button>
-            <button type="button" class="admin-tab ${this.tab === 'funding' ? 'active' : ''}" data-exp-tab="funding">💼 Owner funding</button>
+            <button type="button" class="admin-tab ${this.tab === 'dashboard' ? 'active' : ''}" data-exp-tab="dashboard">Dashboard</button>
             <button type="button" class="admin-tab ${this.tab === 'stock-batch' ? 'active' : ''}" data-exp-tab="stock-batch">Stock Batch &amp; Yield</button>
+            <button type="button" class="admin-tab ${this.tab === 'tools' ? 'active' : ''}" data-exp-tab="tools">Budgets</button>
+            <button type="button" class="admin-tab ${this.tab === 'funding' ? 'active' : ''}" data-exp-tab="funding">Owner funding</button>
             <button type="button" class="admin-tab ${this.tab === 'waste' ? 'active' : ''}" data-exp-tab="waste">Waste / Damage</button>
           </div>
           <button class="btn btn-ghost" id="exp-manage-cats" ${['waste', 'tools', 'funding', 'stock-batch'].includes(this.tab) ? 'style="display:none"' : ''}>Manage categories</button>
@@ -82,6 +83,15 @@ const ExpensesPage = {
         </div>
       </div>
       <div id="exp-panel-list" class="${this.tab === 'list' ? '' : 'hidden'}">
+        <div class="card" style="margin-bottom:12px;border:1px solid rgba(5,150,105,.35);background:linear-gradient(180deg,rgba(16,185,129,.08),transparent)">
+          <div class="card-body" style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:center">
+            <div>
+              <strong>Stock Batch &amp; Yield</strong>
+              <p class="muted" style="margin:4px 0 0">Track purchases → plates sold on POS → revenue, cost, profit, waste.</p>
+            </div>
+            <button type="button" class="btn btn-primary" id="exp-open-sby">Open Stock Batch &amp; Yield</button>
+          </div>
+        </div>
         ${Utils.dateFilterHTML('exp-filter')}
         <div id="exp-content"></div>
       </div>
@@ -107,6 +117,21 @@ const ExpensesPage = {
 
     document.getElementById('add-exp')?.addEventListener('click', () => this.showForm());
     document.getElementById('exp-manage-cats')?.addEventListener('click', () => this.showCategoryManager());
+    const goStockBatch = () => {
+      this.tab = 'stock-batch';
+      document.querySelectorAll('[data-exp-tab]').forEach((b) => b.classList.toggle('active', b.dataset.expTab === 'stock-batch'));
+      document.getElementById('exp-panel-list')?.classList.add('hidden');
+      document.getElementById('exp-panel-dashboard')?.classList.add('hidden');
+      document.getElementById('exp-panel-tools')?.classList.add('hidden');
+      document.getElementById('exp-panel-funding')?.classList.add('hidden');
+      document.getElementById('exp-panel-waste')?.classList.add('hidden');
+      document.getElementById('exp-panel-stock-batch')?.classList.remove('hidden');
+      document.getElementById('add-exp')?.style.setProperty('display', 'none');
+      document.getElementById('exp-manage-cats')?.style.setProperty('display', 'none');
+      this.renderStockBatchPanel();
+    };
+    document.getElementById('exp-goto-stock-batch')?.addEventListener('click', goStockBatch);
+    document.getElementById('exp-open-sby')?.addEventListener('click', goStockBatch);
     document.querySelectorAll('[data-exp-tab]').forEach((btn) => {
       btn.addEventListener('click', () => {
         this.tab = btn.dataset.expTab;
@@ -141,17 +166,25 @@ const ExpensesPage = {
   async renderStockBatchPanel() {
     const panel = document.getElementById('exp-panel-stock-batch') || this._host?.querySelector?.('#exp-panel-stock-batch');
     if (!panel) return;
-    if (window.StockBatchYieldPage?.render) {
-      return window.StockBatchYieldPage.render(panel, this.app);
-    }
     panel.innerHTML = '<p class="muted" style="padding:16px">Loading Stock Batch &amp; Yield…</p>';
     try {
-      await this.app?.loadPageScripts?.('expenses');
-    } catch (_) { /* */ }
+      if (typeof Utils.reloadScript === 'function') {
+        await Utils.reloadScript('js/pages/stock-batch-yield.js');
+      } else {
+        await Utils.loadScript('js/pages/stock-batch-yield.js');
+      }
+    } catch (err) {
+      console.warn('[expenses] stock-batch script', err);
+    }
     if (window.StockBatchYieldPage?.render) {
       return window.StockBatchYieldPage.render(panel, this.app);
     }
-    panel.innerHTML = '<p class="error-msg" style="padding:16px">Stock Batch &amp; Yield module failed to load. Refresh and try again.</p>';
+    panel.innerHTML = `<div class="card"><div class="card-body">
+      <p class="error-msg">Stock Batch &amp; Yield could not load.</p>
+      <p class="muted">Hard-refresh the page (Ctrl+F5), then open Expenses again.</p>
+      <button type="button" class="btn btn-primary" id="sby-retry-load">Retry</button>
+    </div></div>`;
+    panel.querySelector('#sby-retry-load')?.addEventListener('click', () => this.renderStockBatchPanel());
   },
 
   async renderWastePanel() {
