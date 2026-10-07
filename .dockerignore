@@ -8,8 +8,7 @@ dist
 coverage
 test-db-tmp
 cloud-data
-!cloud-data/android-downloads/
-!cloud-data/android-downloads/*.apk
+public/android-downloads
 data
 *.db
 *.db-wal

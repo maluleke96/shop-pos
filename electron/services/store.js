@@ -239,6 +239,12 @@ function getSaleRevenueStatusesSql(alias = 's') {
 function saleRevenueSql() {
   return getSaleRevenueStatusesSql('s');
 }
+
+/** Business sale timestamp — backdated orders use sale_datetime, otherwise created_at. */
+function saleBizDtSql(alias = 's') {
+  return `COALESCE(${alias}.sale_datetime, ${alias}.created_at)`;
+}
+
 /** @deprecated use saleRevenueSql() / getSaleRevenueStatusesSql('s') */
 let SALE_REVENUE_STATUSES_SQL = `s.status IN ('completed', 'partial_return')`;
 
@@ -2277,7 +2283,7 @@ function notifyCashUpSession(cashupId, shiftId, data, actorId) {
   const today = new Date().toLocaleDateString('en-CA');
   const todaySales = db.prepare(`
     SELECT COALESCE(SUM(total),0) as total FROM sales
-    WHERE date(created_at, 'localtime') = date(?) AND status = 'completed'
+    WHERE date(COALESCE(sale_datetime, created_at), 'localtime') = date(?) AND status = 'completed'
   `).get(today).total;
   const dailyTarget = getActiveDailyTargetAmount(getSalesTargets());
   const parts = [
@@ -2737,6 +2743,9 @@ function completeSale(saleData, actorId, actorName, actorRole) {
   const taxInclusive = settingsForTax.tax_inclusive;
   const preLoyaltyTotal = calcSaleTaxTotals(grossSubtotal, cartDiscount, taxRate, taxInclusive).total;
   const redeemRequested = Math.floor(Number(saleData.loyalty_redeem) || 0);
+  if (redeemRequested > 0 && String(saleData.referral_code || '').trim()) {
+    throw new Error('Loyalty points cannot be used together with a referral code — clear the referral code or remove the points.');
+  }
   const loyaltyRedemption = saleData.customer_id && redeemRequested > 0
     ? features.calcLoyaltyRedemption(saleData.customer_id, redeemRequested, preLoyaltyTotal)
     : { points: 0, discount: 0 };
@@ -2760,6 +2769,50 @@ function completeSale(saleData, actorId, actorName, actorRole) {
   if (!payments.length) {
     throw new Error('No payment recorded for this sale');
   }
+
+  // ── Backdated / offline sale datetime ─────────────────────────────────────
+  const backdatedSvc = require('./backdated-orders');
+  backdatedSvc.ensureBackdatedColumns();
+  const wantsBackdated = !!(saleData.backdated || saleData.is_backdated);
+  const offlineQueued = !!(saleData.offline_queued || saleData.offlineQueued);
+  let backdatedAuth = null;
+  let resolvedSaleDtSql = backdatedSvc.toSqlDatetime(new Date());
+  let isBackdatedSale = false;
+
+  if (wantsBackdated) {
+    const actorForPerm = { ...actorUser, role: dbRole, permissions: (() => {
+      try {
+        return getDb().prepare('SELECT permissions FROM users WHERE id = ?').get(actorId)?.permissions;
+      } catch (_) { return null; }
+    })() };
+    if (!backdatedSvc.canRequestBackdated(actorForPerm) && !backdatedSvc.canAuthorizeBackdated(actorForPerm)) {
+      throw new Error('You do not have permission to request a backdated order');
+    }
+    const reason = String(saleData.backdated_reason || saleData.reason || '').trim();
+    if (reason.length < 3) throw new Error('Reason for missed/backdated order is required');
+    const validated = backdatedSvc.validateSaleDatetime(saleData.sale_datetime || saleData.sale_date_time || saleData.original_sale_datetime);
+    resolvedSaleDtSql = validated.sql;
+    const pin = saleData.backdated_auth_pin || saleData.authorization_pin || saleData.manager_pin;
+    const selfCanAuth = backdatedSvc.canAuthorizeBackdated(actorForPerm);
+    if (selfCanAuth && !pin) {
+      backdatedAuth = { id: actorId, full_name: actorName, username: actorUser.full_name, role: dbRole, self: true };
+    } else {
+      backdatedAuth = backdatedSvc.verifyBackdatedAuthorizer(pin, actorId, { allowSelfAuth: false });
+    }
+    isBackdatedSale = true;
+    saleData.backdated_reason = reason;
+  } else if (saleData.sale_datetime || offlineQueued) {
+    try {
+      const validated = backdatedSvc.validateSaleDatetime(
+        saleData.sale_datetime || new Date().toISOString(),
+        { offlineQueued: true }
+      );
+      resolvedSaleDtSql = validated.sql;
+    } catch (_) {
+      resolvedSaleDtSql = backdatedSvc.toSqlDatetime(new Date());
+    }
+  }
+
   // Cap all tenders to amount still due so change is not booked as revenue
   let dueLeft = saleTotal;
   const cappedPayments = [];
@@ -2857,8 +2910,12 @@ function completeSale(saleData, actorId, actorName, actorRole) {
   try { db.exec('ALTER TABLE sales ADD COLUMN IF NOT EXISTS delivery_place TEXT'); } catch (_) {
     try { db.exec('ALTER TABLE sales ADD COLUMN delivery_place TEXT'); } catch (_) { /* exists */ }
   }
-  const adjustStockForBranch = (productId, quantity, type, notes, userId, refType, refId) =>
-    adjustStock(productId, quantity, type, notes, userId, refType, refId, branchId);
+  const adjustStockForBranch = (productId, quantity, type, notes, userId, refType, refId) => {
+    const tagged = isBackdatedSale
+      ? `BACKDATED ORDER STOCK MOVEMENT · ${notes || ''}`.trim()
+      : notes;
+    return adjustStock(productId, quantity, type, tagged, userId, refType, refId, branchId);
+  };
 
   const txn = db.transaction(() => {
     let saleResult;
@@ -2897,6 +2954,37 @@ function completeSale(saleData, actorId, actorName, actorRole) {
     }
 
     const saleId = saleResult.lastInsertRowid;
+
+    try {
+      const authAt = isBackdatedSale ? (backdatedSvc.nowIso()) : null;
+      db.prepare(`
+        UPDATE sales SET
+          sale_datetime = ?,
+          is_backdated = ?,
+          backdated_reason = ?,
+          entered_by_user_id = ?,
+          authorized_by_user_id = ?,
+          authorized_at = ?,
+          pos_terminal_id = ?,
+          backdated_correction_of = ?
+        WHERE id = ?
+      `).run(
+        resolvedSaleDtSql,
+        isBackdatedSale ? 1 : 0,
+        isBackdatedSale ? (saleData.backdated_reason || null) : null,
+        actorId,
+        isBackdatedSale ? (backdatedAuth?.id || null) : null,
+        authAt,
+        deviceId || saleData.pos_terminal_id || null,
+        saleData.backdated_correction_of || null,
+        saleId
+      );
+    } catch (e) {
+      console.warn('[backdated] metadata:', e.message || e);
+      try {
+        db.prepare('UPDATE sales SET sale_datetime = ? WHERE id = ?').run(resolvedSaleDtSql, saleId);
+      } catch (_) { /* */ }
+    }
 
     if (saleData.referral_code) {
       try {
@@ -3013,11 +3101,26 @@ function completeSale(saleData, actorId, actorName, actorRole) {
   let loyaltyBalanceAfter = null;
   let customerReward = null;
   if (saleData.customer_id) {
-    try { loyaltyPointsEarned = features.earnLoyaltyPoints(saleData.customer_id, saleTotal, result.saleId); } catch (_) {}
+    try {
+      loyaltyPointsEarned = features.earnLoyaltyPoints(
+        saleData.customer_id, features.loyaltyEarnBase(saleTotal, saleData.delivery_fee), result.saleId
+      );
+    } catch (_) {}
     try {
       const balRow = getDb().prepare('SELECT loyalty_points FROM customers WHERE id = ?').get(saleData.customer_id);
       loyaltyBalanceAfter = Math.max(0, Math.floor(Number(balRow?.loyalty_points) || 0));
     } catch (_) { /* optional */ }
+    if (loyaltyPointsEarned > 0 && !isBackdatedSale) {
+      const notice = {
+        customer_id: saleData.customer_id, sale_id: result.saleId, points: loyaltyPointsEarned,
+        balance: loyaltyBalanceAfter, order_number: result.orderNumber || result.receiptNumber,
+        order_total: saleTotal, branch_id: branchId,
+        product_name: (saleData.items || [])[0]?.product_name || ''
+      };
+      setImmediate(() => {
+        try { require('./cc-scheduler').notifyPointsEarned(notice); } catch (_) { /* never affects the sale */ }
+      });
+    }
     try {
       customerReward = customerRewardsSvc.processCustomerRewards(
         saleData.customer_id,
@@ -3031,6 +3134,36 @@ function completeSale(saleData, actorId, actorName, actorRole) {
   }
 
   audit(actorId, actorName, 'complete_sale', 'sale', result.saleId, { receipt_number: result.receiptNumber, order_number: result.orderNumber, total: saleTotal });
+  if (isBackdatedSale) {
+    try {
+      const itemsSnap = (saleData.items || []).map((i) => ({
+        product_id: i.product_id, combo_id: i.combo_id, name: i.product_name, quantity: i.quantity, total: i.total
+      }));
+      const paySnap = (payments || []).map((p) => ({ type: p.type || p.payment_type, amount: p.amount }));
+      audit(actorId, actorName, 'BACKDATED_ORDER_CREATED', 'sale', result.saleId, {
+        order_id: result.saleId,
+        receipt_number: result.receiptNumber,
+        order_number: result.orderNumber,
+        branch_id: branchId,
+        pos_terminal_id: deviceId || saleData.pos_terminal_id || null,
+        actual_sale_datetime: resolvedSaleDtSql,
+        entry_datetime: new Date().toISOString(),
+        employee_id: actorId,
+        employee_name: actorName,
+        employee_role: dbRole,
+        authorizer_id: backdatedAuth?.id,
+        authorizer_name: backdatedAuth?.full_name || backdatedAuth?.username,
+        reason: saleData.backdated_reason,
+        products: itemsSnap,
+        total_amount: saleTotal,
+        payment_method: paySnap,
+        device_info: saleData.device_info || null,
+        after_closing: !!saleData.after_closing
+      });
+    } catch (e) {
+      console.warn('[backdated] audit:', e.message || e);
+    }
+  }
   features.log('info', 'sale', `Sale ${result.receiptNumber} completed`, { total: saleTotal, actorId });
   try {
     if (payments.some((p) => (p.type || p.payment_type) === 'taken')) {
@@ -3062,6 +3195,18 @@ function completeSale(saleData, actorId, actorName, actorRole) {
     require('./referral-commission').processSale(result.saleId);
   } catch (err) {
     console.warn('[referral] processSale:', err.message);
+  }
+  if (saleData.discount_voucher_code) {
+    try {
+      require('./discount-vouchers').linkRedemptionToSale(saleData.discount_voucher_code, result.saleId);
+    } catch (err) {
+      console.warn('[vouchers] link sale:', err.message);
+    }
+  }
+  try {
+    require('./order-sla').onSaleCompleted(result.saleId, saleData, { id: actorId, name: actorName, role: dbRole });
+  } catch (err) {
+    console.warn('[sla] sale:', err.message);
   }
   const saleRow = getSale(result.saleId);
   return {
@@ -3102,6 +3247,7 @@ function getSale(id) {
   sale.gift_card_amount = sale.payments
     .filter(p => p.payment_type === 'giftcard')
     .reduce((s, p) => s + Number(p.amount), 0);
+  sale.edit_history = auditSvc.getSaleEditHistory(id);
   return sale;
 }
 
@@ -3358,7 +3504,11 @@ function processReturn(data, actorId, actorName) {
   const result = txn();
   const refundRatio = sale.total > 0 ? Math.min(1, totalRefund / Number(sale.total)) : 0;
   if (refundRatio > 0) {
-    try { features.reverseSaleBenefits(data.sale_id, actorId, refundRatio); } catch (_) { /* best effort */ }
+    const statusAfter = db.prepare('SELECT status FROM sales WHERE id = ?').get(data.sale_id)?.status;
+    const loyaltyBase = features.loyaltyEarnBase(sale.total, sale.delivery_fee);
+    const loyaltyRatio = statusAfter === 'returned' ? 1
+      : (loyaltyBase > 0 ? Math.min(1, (alreadyRefunded + totalRefund) / loyaltyBase) : refundRatio);
+    try { features.reverseSaleBenefits(data.sale_id, actorId, refundRatio, loyaltyRatio); } catch (_) { /* best effort */ }
     try { require('./referral-commission').reverseCommissionForSale(data.sale_id, refundRatio, 'return', { id: actorId, full_name: actorName }); } catch (_) { /* best effort */ }
   }
   audit(actorId, actorName, 'process_return', 'return', result.id, { ...data, total_refund: totalRefund, return_number: result.returnNumber });
@@ -3425,11 +3575,24 @@ function attachInvoiceFlags(row, invoiceIds) {
   const id = Number(row.id);
   const hasDb = invoiceIds?.has(id);
   const { invoice_data, ...rest } = row;
+  let line_items;
+  try {
+    const li = require('../../lib/expense-line-items');
+    line_items = li.parseLineItems(row.line_items_json).map((r, idx) => {
+      if (r.photo_path || r.photo_url) {
+        return { ...r, photo_url: r.photo_url || `/api/expense-line-photo/${id}/${idx}` };
+      }
+      return r;
+    });
+  } catch (_) {
+    line_items = undefined;
+  }
   return {
     ...rest,
     amount: Number(row.amount) || 0,
     has_invoice: !!(row.invoice_path || invoice_data || hasDb),
-    invoice_path: row.invoice_path || (hasDb ? `expense-docs/${id}/invoice.jpg` : row.invoice_path)
+    invoice_path: row.invoice_path || (hasDb ? `expense-docs/${id}/invoice.jpg` : row.invoice_path),
+    ...(line_items ? { line_items } : {})
   };
 }
 
@@ -3554,14 +3717,29 @@ function saveExpense(data, actorId, actorName) {
   const li = require('../../lib/expense-line-items');
   const extras = require('./expense-extras');
   extras.ensureExpenseExtrasSchema();
-  let lineItems = li.normalizeLineItems(data.line_items);
+  const rawLineItems = Array.isArray(data.line_items) ? data.line_items : [];
+  let lineItems = li.normalizeLineItems(rawLineItems).map((row, i) => {
+    const raw = rawLineItems[i] || {};
+    return {
+      ...row,
+      product_id: raw.product_id != null ? raw.product_id : row.product_id,
+      photo_data: raw.photo_data || raw.photo_image || raw.photoDataUrl || null,
+      photo_path: raw.photo_path || row.photo_path || null,
+      photo_url: raw.photo_url || row.photo_url || null
+    };
+  });
   let amount = lineItems.length ? li.lineItemsTotal(lineItems) : li.roundMoney(money(data.amount));
   if (!(amount > 0)) throw new Error('Expense amount must be greater than zero');
   if (!data.category || !String(data.category).trim()) throw new Error('Expense category is required');
   const expenseDate = data.expense_date || new Date().toLocaleDateString('en-CA');
   const description = String(data.description || data.notes || '').trim()
     || (lineItems.length ? li.lineItemsSummary(lineItems, 5) : '');
-  const lineItemsJson = lineItems.length ? JSON.stringify(lineItems) : null;
+  // Strip bulky base64 before first insert; photos persisted after we have expenseId
+  const lineItemsForInsert = lineItems.map((r) => {
+    const { photo_data, ...rest } = r;
+    return rest;
+  });
+  const lineItemsJson = lineItemsForInsert.length ? JSON.stringify(lineItemsForInsert) : null;
   const paymentMethod = String(data.payment_method || 'cash').trim() || 'cash';
   const vendorName = String(data.vendor_name || '').trim() || null;
   const fundingSource = String(data.funding_source || 'business').toLowerCase() === 'owner' ? 'owner' : 'business';
@@ -3633,6 +3811,15 @@ function saveExpense(data, actorId, actorName) {
     audit(actorId, actorName, 'create_expense', 'expense', expenseId, data);
     if (expenseId && approvalStatus === 'approved') accHook('postFromExpense', expenseId);
   }
+  if (expenseId && (data.cash_source || !data.id)) {
+    try {
+      extras.ensureExpenseExtrasSchema();
+      const cashSource = String(data.cash_source || 'today').toLowerCase() === 'previous' ? 'previous' : 'today';
+      getDb().prepare('UPDATE expenses SET cash_source = ? WHERE id = ?').run(cashSource, expenseId);
+    } catch (err) {
+      console.warn('[expenses] cash_source save failed', err.message || err);
+    }
+  }
   if (expenseId && data.invoice_image) {
     try {
       const ed = require('../../lib/expense-documents');
@@ -3643,6 +3830,21 @@ function saveExpense(data, actorId, actorName) {
       }
     } catch (err) {
       console.warn('[expenses] invoice save failed', err.message || err);
+    }
+  }
+  if (expenseId && lineItems.some((r) => r.photo_data || r.photo_path)) {
+    try {
+      const ed = require('../../lib/expense-documents');
+      const withPhotos = ed.persistLineItemPhotos(expenseId, lineItems);
+      const clean = withPhotos.map((r) => {
+        const { photo_data, ...rest } = r;
+        return rest;
+      });
+      getDb().prepare('UPDATE expenses SET line_items_json = ? WHERE id = ?')
+        .run(JSON.stringify(clean), expenseId);
+      lineItems = clean;
+    } catch (err) {
+      console.warn('[expenses] line photo save failed', err.message || err);
     }
   }
   // Owner pocket: record as owner-funded purchase (personal money → business benefit)
@@ -3663,10 +3865,31 @@ function saveExpense(data, actorId, actorName) {
       console.warn('[expenses] owner funding record failed', err.message || err);
     }
   }
+  if (expenseId && approvalStatus === 'approved' && data.apply_stock !== false) {
+    try {
+      const expStock = require('./expense-stock');
+      expStock.reconcileExpenseStock(
+        expenseId,
+        lineItems,
+        branchId,
+        adjustStock,
+        actorId,
+        { audit: true, username: actorName, reason: data.stock_edit_reason || null }
+      );
+    } catch (err) {
+      console.warn('[expenses] stock reconcile failed', err.message || err);
+      throw err;
+    }
+  }
   return expenseId;
 }
 
 function deleteExpense(id, actorId, actorName) {
+  try {
+    require('./expense-stock').reverseAllExpenseStock(id, adjustStock, actorId);
+  } catch (err) {
+    console.warn('[expenses] stock reverse on delete', err.message || err);
+  }
   accHook('postFromExpenseVoid', id);
   getDb().prepare('DELETE FROM expenses WHERE id = ?').run(id);
   audit(actorId, actorName, 'delete_expense', 'expense', id, null);
@@ -3700,7 +3923,10 @@ function getCustomers(search) {
   const qStr = String(q || '').trim();
   if (qStr) {
     const like = `%${qStr}%`;
-    const digits = qStr.replace(/\D/g, '');
+    let digits = qStr.replace(/\D/g, '');
+    // 082… and +2782… must find the same customer
+    if (digits.length >= 10 && digits.startsWith('27')) digits = digits.slice(2);
+    if (digits.length >= 9 && digits.startsWith('0')) digits = digits.slice(1);
     if (isPg) {
       sql += ` AND (name ILIKE ? OR phone ILIKE ? OR email ILIKE ?`;
       params.push(like, like, like);
@@ -3736,10 +3962,54 @@ function getCustomers(search) {
     fallback += ` ORDER BY name LIMIT ${limit}`;
     rows = getDb().prepare(fallback).all(...fp);
   }
+  const usedMap = {};
+  const ids = (rows || []).map((c) => Number(c.id)).filter(Boolean);
+  if (ids.length) {
+    try {
+      const usedRows = getDb().prepare(`SELECT customer_id, ${LOYALTY_POINTS_USED_SQL} AS used
+        FROM loyalty_transactions WHERE customer_id IN (${ids.map(() => '?').join(',')})
+        GROUP BY customer_id`).all(...ids);
+      for (const r of usedRows) usedMap[r.customer_id] = Math.max(0, Math.floor(Number(r.used) || 0));
+    } catch (_) { /* loyalty table missing on very old DBs */ }
+  }
   return (rows || []).map((c) => ({
     ...c,
-    loyalty_points: Math.max(0, Math.floor(Number(c.loyalty_points) || 0))
+    loyalty_points: Math.max(0, Math.floor(Number(c.loyalty_points) || 0)),
+    points_used: usedMap[c.id] || 0
   }));
+}
+
+/** Points actually spent: redemptions minus points given back when the sale/order was voided or cancelled. */
+const LOYALTY_POINTS_USED_SQL = `COALESCE(SUM(CASE
+    WHEN type = 'redeem' THEN ABS(points)
+    WHEN type = 'adjust' AND points > 0 AND (notes = 'void_reversal' OR notes LIKE '%points restored%') THEN -points
+    ELSE 0 END), 0)`;
+
+function getCustomersSummary() {
+  const row = getDb().prepare(`SELECT COUNT(*) AS customers,
+    COALESCE(SUM(CASE WHEN loyalty_points > 0 THEN loyalty_points ELSE 0 END), 0) AS points,
+    COALESCE(SUM(CASE WHEN loyalty_points > 0 THEN 1 ELSE 0 END), 0) AS with_points,
+    COALESCE(SUM(CASE WHEN balance > 0 THEN balance ELSE 0 END), 0) AS balance_owed
+    FROM customers`).get() || {};
+  let pointsUsed = 0;
+  try {
+    pointsUsed = Math.max(0, Math.floor(Number(getDb().prepare(
+      `SELECT ${LOYALTY_POINTS_USED_SQL} AS used FROM loyalty_transactions WHERE customer_id IS NOT NULL`
+    ).get()?.used) || 0));
+  } catch (_) { /* loyalty table missing on very old DBs */ }
+  let pointValue = 1;
+  try { pointValue = Number(require('./features').getLoyaltySettings().point_value) || 1; } catch (_) { /* default */ }
+  const points = Math.floor(Number(row.points) || 0);
+  return {
+    customers: Number(row.customers) || 0,
+    with_points: Number(row.with_points) || 0,
+    points,
+    point_value: pointValue,
+    points_value: money(points * pointValue),
+    points_used: pointsUsed,
+    points_used_value: money(pointsUsed * pointValue),
+    balance_owed: money(Number(row.balance_owed) || 0)
+  };
 }
 
 /** Points balance from loyalty ledger (matches Sales Management earned totals). */
@@ -3796,6 +4066,7 @@ function saveCustomer(data, actorId, actorName) {
       getDb().prepare(`UPDATE web_customers SET first_name=?, last_name=?, email=?, phone=?, updated_at=datetime('now')
         WHERE customer_id=? AND is_active=1`).run(first, last, data.email || null, data.phone || null, data.id);
     } catch (_) { /* optional */ }
+    saveCustomerAnniversary(data.id, data);
     audit(actorId, actorName, 'update_customer', 'customer', data.id, { name: data.name });
     return getDb().prepare('SELECT * FROM customers WHERE id = ?').get(data.id);
   }
@@ -3808,8 +4079,23 @@ function saveCustomer(data, actorId, actorName) {
       data.on_account_frozen ? 1 : 0, data.on_account_approved ? 1 : 0,
       data.on_account_period_days != null ? data.on_account_period_days : null,
       data.on_account_due_date || null);
+  saveCustomerAnniversary(r.lastInsertRowid, data);
   audit(actorId, actorName, 'create_customer', 'customer', r.lastInsertRowid, { name: data.name });
   return getDb().prepare('SELECT * FROM customers WHERE id = ?').get(r.lastInsertRowid);
+}
+
+/** Optional marketing dates; only written when the caller sends them. */
+function saveCustomerAnniversary(customerId, data) {
+  if (!customerId || !('anniversary_date' in data || 'anniversary_type' in data)) return;
+  for (const col of ['anniversary_date TEXT', 'anniversary_type TEXT']) {
+    try { getDb().exec(`ALTER TABLE customers ADD COLUMN ${col}`); } catch (_) { /* exists */ }
+  }
+  try {
+    getDb().prepare('UPDATE customers SET anniversary_date = ?, anniversary_type = ? WHERE id = ?')
+      .run(data.anniversary_date || null, String(data.anniversary_type || '').trim().slice(0, 80) || null, customerId);
+  } catch (err) {
+    console.warn('[customers] anniversary:', err.message);
+  }
 }
 
 function findDuplicateCustomer(data) {
@@ -4163,10 +4449,11 @@ function getDashboardStats(from, to, branchId) {
     }
   };
 
+  const bizDay = (alias) => `date(COALESCE(${alias ? `${alias}.` : ''}sale_datetime, ${alias ? `${alias}.` : ''}created_at), 'localtime')`;
   const salesInRange = soft(() => db.prepare(`
     SELECT COALESCE(SUM(total),0) as total, COUNT(*) as count FROM sales
-    WHERE created_at >= ? AND created_at < ? AND status IN ('completed','partial_return')${branchSql}
-  `).get(rangeStart, rangeEnd, ...branchParams), { total: 0, count: 0 });
+    WHERE ${bizDay('')} BETWEEN ? AND ? AND status IN ('completed','partial_return')${branchSql}
+  `).get(rangeFrom, rangeTo, ...branchParams), { total: 0, count: 0 });
 
   const refundsInRange = soft(() => db.prepare(`
     SELECT COALESCE(SUM(r.total_refund),0) as total FROM returns r
@@ -4187,15 +4474,15 @@ function getDashboardStats(from, to, branchId) {
         WHERE r.status IN ('completed','reopened')
           AND r.sale_id IN (
             SELECT s2.id FROM sales s2
-            WHERE s2.created_at >= ? AND s2.created_at < ?
+            WHERE ${bizDay('s2')} BETWEEN ? AND ?
               AND s2.status IN ('completed','partial_return')${branchSql.replace('branch_id', 's2.branch_id')}
           )
       ), 0) as profit
     FROM sale_items si
     JOIN sales s ON s.id = si.sale_id
-    WHERE s.created_at >= ? AND s.created_at < ?
+    WHERE ${bizDay('s')} BETWEEN ? AND ?
       AND s.status IN ('completed','partial_return')${branchSql.replace('branch_id', 's.branch_id')}
-  `).get(rangeStart, rangeEnd, ...branchParams, rangeStart, rangeEnd, ...branchParams), { profit: 0 });
+  `).get(rangeFrom, rangeTo, ...branchParams, rangeFrom, rangeTo, ...branchParams), { profit: 0 });
 
   const lowStock = soft(() => db.prepare('SELECT COUNT(*) as count FROM products WHERE is_active=1 AND stock_quantity <= min_stock').get(), { count: 0 });
   const salesBranchSql = canScopeSales ? ' AND s.branch_id = ?' : '';
@@ -4204,22 +4491,22 @@ function getDashboardStats(from, to, branchId) {
   const bestSeller = soft(() => db.prepare(`
     SELECT si.product_name, SUM(si.quantity) as qty FROM sale_items si
     JOIN sales s ON si.sale_id = s.id
-    WHERE s.created_at >= ? AND s.created_at < ? AND s.status IN ('completed','partial_return')${salesBranchSql}
+    WHERE ${bizDay('s')} BETWEEN ? AND ? AND s.status IN ('completed','partial_return')${salesBranchSql}
     GROUP BY si.product_name ORDER BY qty DESC LIMIT 1
-  `).get(rangeStart, rangeEnd, ...branchParams), null);
+  `).get(rangeFrom, rangeTo, ...branchParams), null);
 
   const salesGraph = soft(() => db.prepare(`
-    SELECT date(created_at, 'localtime') as day, SUM(total) as total FROM sales
-    WHERE created_at >= ? AND created_at < ? AND status IN ('completed','partial_return')${salesOnlyBranchSql}
-    GROUP BY date(created_at, 'localtime') ORDER BY day
-  `).all(rangeStart, rangeEnd, ...branchParams), []);
+    SELECT ${bizDay('')} as day, SUM(total) as total FROM sales
+    WHERE ${bizDay('')} BETWEEN ? AND ? AND status IN ('completed','partial_return')${salesOnlyBranchSql}
+    GROUP BY ${bizDay('')} ORDER BY day
+  `).all(rangeFrom, rangeTo, ...branchParams), []);
 
   const paymentBreakdown = soft(() => db.prepare(`
     SELECT sp.payment_type, SUM(sp.amount) as total FROM sale_payments sp
     JOIN sales s ON sp.sale_id = s.id
-    WHERE s.created_at >= ? AND s.created_at < ? AND s.status IN ('completed','partial_return')${salesBranchSql}
+    WHERE ${bizDay('s')} BETWEEN ? AND ? AND s.status IN ('completed','partial_return')${salesBranchSql}
     GROUP BY sp.payment_type
-  `).all(rangeStart, rangeEnd, ...branchParams), []);
+  `).all(rangeFrom, rangeTo, ...branchParams), []);
 
   const netSales = money((salesInRange.total || 0) - (refundsInRange.total || 0));
 
@@ -4298,14 +4585,14 @@ function getInventoryStats(branchId) {
 
   const fastMoving = db.prepare(`
     SELECT si.product_name, SUM(si.quantity) AS qty FROM sale_items si
-    JOIN sales s ON si.sale_id = s.id WHERE date(s.created_at) >= date('now', '-30 days') AND s.status = 'completed'
+    JOIN sales s ON si.sale_id = s.id WHERE date(COALESCE(s.sale_datetime, s.created_at)) >= date('now', '-30 days') AND s.status = 'completed'
     GROUP BY si.product_name ORDER BY qty DESC LIMIT 5
   `).all();
   const slowMoving = db.prepare(`
     SELECT p.name, p.stock_quantity FROM products p WHERE p.is_active = 1
     AND p.id NOT IN (
       SELECT DISTINCT si.product_id FROM sale_items si
-      JOIN sales s ON s.id = si.sale_id WHERE s.status = 'completed' AND date(s.created_at) >= date('now', '-30 days')
+      JOIN sales s ON s.id = si.sale_id WHERE s.status = 'completed' AND date(COALESCE(s.sale_datetime, s.created_at)) >= date('now', '-30 days')
     )
     ORDER BY p.stock_quantity DESC LIMIT 5
   `).all();
@@ -4335,7 +4622,7 @@ function getSalesAnalytics(from, to) {
       SELECT si.product_name, SUM(si.quantity) as qty, SUM(si.total) as revenue,
         SUM(si.total - si.buying_price * si.quantity) as profit
       FROM sale_items si JOIN sales s ON si.sale_id = s.id
-      WHERE date(s.created_at) BETWEEN ? AND ? AND s.status='completed'
+      WHERE date(COALESCE(s.sale_datetime, s.created_at)) BETWEEN ? AND ? AND s.status='completed'
       GROUP BY si.product_name ORDER BY revenue DESC LIMIT 20
     `).all(rangeFrom, rangeTo),
     byCategory: db.prepare(`
@@ -4343,7 +4630,7 @@ function getSalesAnalytics(from, to) {
       JOIN sales s ON si.sale_id = s.id
       LEFT JOIN products p ON si.product_id = p.id
       LEFT JOIN categories c ON p.category_id = c.id
-      WHERE date(s.created_at) BETWEEN ? AND ? AND s.status='completed'
+      WHERE date(COALESCE(s.sale_datetime, s.created_at)) BETWEEN ? AND ? AND s.status='completed'
       GROUP BY c.name ORDER BY revenue DESC
     `).all(rangeFrom, rangeTo)
   };
@@ -4598,7 +4885,7 @@ function getTodayTargetProgress(branchId) {
   let salesSql = `
     SELECT COALESCE(SUM(s.total), 0) AS total
     FROM sales s
-    WHERE date(s.created_at) = date(?)
+    WHERE date(${saleBizDtSql('s')}, 'localtime') = date(?)
       AND ${saleRevenueSql()}
   `;
   const salesParams = [today];
@@ -4617,7 +4904,7 @@ function getTodayTargetProgress(branchId) {
         COALESCE(SUM(si.quantity), 0) AS sold_qty
       FROM sale_items si
       JOIN sales s ON s.id = si.sale_id
-      WHERE date(s.created_at) = date(?)
+      WHERE date(${saleBizDtSql('s')}, 'localtime') = date(?)
         AND ${saleRevenueSql()}
         AND si.product_id IN (${placeholders})
     `;
@@ -4729,7 +5016,7 @@ function salesTotalForDay(day, branchId) {
   let sql = `
     SELECT COALESCE(SUM(s.total), 0) AS total
     FROM sales s
-    WHERE date(s.created_at) = date(?)
+    WHERE date(${saleBizDtSql('s')}, 'localtime') = date(?)
       AND ${saleRevenueSql()}
   `;
   const params = [day];
@@ -5072,11 +5359,11 @@ function getSalesTargetInsights(opts = {}) {
   let hourlyRows = [];
   try {
     hourlyRows = db.prepare(`
-      SELECT CAST(strftime('%H', s.created_at) AS INTEGER) AS hour,
+      SELECT CAST(strftime('%H', COALESCE(s.sale_datetime, s.created_at)) AS INTEGER) AS hour,
         COALESCE(SUM(s.total), 0) AS total,
         COUNT(s.id) AS sales_count
       FROM sales s
-      WHERE date(s.created_at) = date(?)
+      WHERE date(COALESCE(s.sale_datetime, s.created_at)) = date(?)
         AND ${saleRevenueSql()}${branchSql}
       GROUP BY hour
       ORDER BY hour
@@ -5084,11 +5371,11 @@ function getSalesTargetInsights(opts = {}) {
   } catch (_) {
     try {
       hourlyRows = db.prepare(`
-        SELECT EXTRACT(HOUR FROM s.created_at::timestamp)::int AS hour,
+        SELECT EXTRACT(HOUR FROM COALESCE(s.sale_datetime, s.created_at)::timestamp)::int AS hour,
           COALESCE(SUM(s.total), 0) AS total,
           COUNT(s.id) AS sales_count
         FROM sales s
-        WHERE date(s.created_at) = date(?)
+        WHERE date(COALESCE(s.sale_datetime, s.created_at)) = date(?)
           AND ${saleRevenueSql()}${branchSql}
         GROUP BY 1 ORDER BY 1
       `).all(...baseParams);
@@ -5139,7 +5426,7 @@ function getSalesTargetInsights(opts = {}) {
         COALESCE(SUM(s.total), 0) as total
       FROM sales s
       LEFT JOIN users u ON u.id = s.user_id
-      WHERE date(s.created_at) = date(?)
+      WHERE date(COALESCE(s.sale_datetime, s.created_at)) = date(?)
         AND ${saleRevenueSql()}${branchSql}
       GROUP BY s.user_id
       ORDER BY total DESC
@@ -5170,7 +5457,7 @@ function getSalesTargetInsights(opts = {}) {
       JOIN sales s ON s.id = si.sale_id
       LEFT JOIN products p ON p.id = si.product_id
       LEFT JOIN categories c ON c.id = p.category_id
-      WHERE date(s.created_at) = date(?)
+      WHERE date(COALESCE(s.sale_datetime, s.created_at)) = date(?)
         AND ${saleRevenueSql()}${branchSql}
       GROUP BY COALESCE(c.name, 'Uncategorised')
       ORDER BY revenue DESC
@@ -5190,7 +5477,7 @@ function getSalesTargetInsights(opts = {}) {
       FROM sale_items si
       JOIN sales s ON s.id = si.sale_id
       LEFT JOIN products p ON p.id = si.product_id
-      WHERE date(s.created_at) = date(?)
+      WHERE date(COALESCE(s.sale_datetime, s.created_at)) = date(?)
         AND ${saleRevenueSql()}${branchSql}
       GROUP BY COALESCE(si.product_name, p.name, 'Item')
       ORDER BY revenue DESC
@@ -5547,7 +5834,7 @@ function getShiftClosePreview(shiftId, userId) {
   const today = new Date().toLocaleDateString('en-CA');
   const todaySales = db.prepare(`
     SELECT COALESCE(SUM(total),0) as total FROM sales s
-    WHERE date(s.created_at, 'localtime') = date(?)
+    WHERE date(COALESCE(s.sale_datetime, s.created_at), 'localtime') = date(?)
       AND s.status IN ('completed', 'partial_return', 'returned')
       AND NOT EXISTS (
         SELECT 1 FROM taken_orders t
@@ -5918,8 +6205,8 @@ function getSalesReport(from, to) {
       COALESCE((SELECT SUM(r.total_refund) FROM returns r WHERE r.sale_id = s.id AND r.status IN ('completed','reopened')), 0) as refunded_total
     FROM sales s
     LEFT JOIN users u ON s.user_id = u.id
-    WHERE date(s.created_at, 'localtime') BETWEEN ? AND ? AND ${saleRevenueSql()}
-    ORDER BY s.created_at DESC
+    WHERE date(COALESCE(s.sale_datetime, s.created_at), 'localtime') BETWEEN ? AND ? AND ${saleRevenueSql()}
+    ORDER BY COALESCE(s.sale_datetime, s.created_at) DESC
   `).all(from, to);
 }
 
@@ -5930,14 +6217,14 @@ function getProfitReport(from, to) {
       SUM(cost) as cost,
       SUM(revenue) - SUM(cost) as profit
     FROM (
-      SELECT date(s.created_at, 'localtime') as day,
+      SELECT date(COALESCE(s.sale_datetime, s.created_at), 'localtime') as day,
         s.total - COALESCE((
           SELECT SUM(r.total_refund) FROM returns r
           WHERE r.sale_id = s.id AND r.status IN ('completed','reopened')
         ), 0) as revenue,
         (SELECT COALESCE(SUM(si.buying_price * si.quantity), 0) FROM sale_items si WHERE si.sale_id = s.id) as cost
       FROM sales s
-      WHERE date(s.created_at, 'localtime') BETWEEN ? AND ? AND ${saleRevenueSql()}
+      WHERE date(COALESCE(s.sale_datetime, s.created_at), 'localtime') BETWEEN ? AND ? AND ${saleRevenueSql()}
     )
     GROUP BY day ORDER BY day
   `).all(from, to);
@@ -6144,6 +6431,8 @@ function runStartupTasks() {
   try { features.expireLoyaltyPoints(); } catch (_) { /* ignore */ }
   try { features.syncMissingLoyaltyPoints({ limit: 2000 }); } catch (_) { /* ignore */ }
   try { features.ensureLoyaltyReminderNotifications?.(addNotification); } catch (_) { /* ignore */ }
+  try { require('./salary-claims').ensureSalaryClaimsSchema(); } catch (_) { /* ignore */ }
+  try { require('./signage-platform').ensureSignage(); } catch (_) { /* ignore */ }
   try {
     if (process.env.SHOP_POS_LOCAL_INSTALLER === '1') {
       const central = require('./accounting-central');
@@ -6396,7 +6685,8 @@ async function acceptOnlineOrderAsSale(localId, actor, opts = {}) {
     notes,
     discount_authorized: true,
     gift_card_code: giftCardCode,
-    gift_card_amount: giftCardAmt
+    gift_card_amount: giftCardAmt,
+    online_order_id: localId
   };
 
   const actorId = actor?.id;
@@ -6476,6 +6766,7 @@ async function acceptOnlineOrderAsSale(localId, actor, opts = {}) {
 module.exports = {
   ...features,
   ...auditSvc,
+  getSaleRevenueStatusesSql,
   audit, login, logout, createUser, updateUser, deleteUser, permanentlyDeleteUser, verifyUserSession, getUsers, requireActor,
   sanitizeSettingsResponse,
   getUserSession: session.getUserSession,
@@ -6493,6 +6784,9 @@ module.exports = {
   adjustStock, restoreProductStockAfterSale, getStockHistory, getAllStockHistory,
   recordStockAdjustment, listStockAdjustments, resolveProductRef, resolveModifierExtras,
   completeSale, getSale, getSaleByReceipt, holdOrder, getHeldOrders, deleteHeldOrder,
+  findSimilarSales: (f) => require('./backdated-orders').findSimilarSales(f || {}),
+  listBackdatedOrders: (f) => require('./backdated-orders').listBackdatedOrders(f || {}),
+  backdatedOrdersSummary: (f) => require('./backdated-orders').backdatedOrdersSummary(f || {}),
   processReturn, getReturns,
   getExpenses, getExpenseById, getExpenseCategories, getExpenseDashboardStats, saveExpenseCategories, saveExpense, deleteExpense,
   parseExpenseReceipt: (text) => require('./expense-extras').parseReceiptText(text),
@@ -6506,7 +6800,12 @@ module.exports = {
   postExpenseRecurringDue: (actor) => require('./expense-extras').postDueRecurring(actor, saveExpense),
   recordOwnerFunding: (data, actor) => require('./expense-extras').recordOwnerFunding(data, actor),
   listOwnerFundings: (f) => require('./expense-extras').listOwnerFundings(f || {}),
-  getCustomers, getCustomer, saveCustomer, deleteCustomer, getCustomerHistory,
+  expenseItemSummary: (f) => require('./expense-extras').expenseItemSummary(f || {}),
+  recordMoneyWithdrawal: (data, actor) => require('./expense-extras').recordWithdrawal(data, actor),
+  listMoneyWithdrawals: (f) => require('./expense-extras').listWithdrawals(f || {}),
+  dailyMoneyReport: (f) => require('./expense-extras').dailyMoneyReport(f || {}),
+  dailyMoneyPdf: (f, meta) => require('./expense-extras').dailyMoneyPdf(f || {}, meta || {}),
+  getCustomers, getCustomersSummary, getCustomer, saveCustomer, deleteCustomer, getCustomerHistory,
   getSuppliers, saveSupplier, deleteSupplier, recordSupplierPayment, getSupplierPayments,
   getPurchaseOrders, getPurchaseOrder, savePurchaseOrder, receivePurchaseOrder, updatePurchaseOrder, deletePurchaseOrder,
   getDashboardStats, getInventoryStats, getSalesAnalytics,
@@ -6527,7 +6826,12 @@ module.exports = {
     const isProperty = String(row.damage_kind || '') === 'property'
       || !!row.property_name;
     if (!isProperty && row.product_id) {
-      adjustStock(row.product_id, row.quantity, 'remove', `Waste approved: ${row.reason}`, actorId, 'waste', id);
+      try {
+        require('./expense-stock').applyApprovedWasteStock(row, adjustStock, actorId);
+      } catch (err) {
+        getDb().prepare(`UPDATE waste_records SET status='pending', approved_by=NULL, approved_at=NULL WHERE id=?`).run(id);
+        throw err;
+      }
     }
     return getDb().prepare(`
       SELECT w.*,
@@ -6538,10 +6842,19 @@ module.exports = {
       LEFT JOIN products p ON w.product_id = p.id WHERE w.id = ?`).get(id);
   },
   rejectWaste: (id, actorId, notes) => features.rejectWaste(id, actorId, notes),
+  updateWaste: (id, data, actorId, actorName) => {
+    const user = actorId ? getDb().prepare('SELECT role FROM users WHERE id = ?').get(actorId) : null;
+    if (!['owner', 'manager'].includes(user?.role)) throw new Error('Only owners and managers can edit wastage');
+    return require('./expense-stock').updateWasteRecord(id, data || {}, adjustStock, actorId, actorName);
+  },
+  searchRecipeIngredients: (q, limit) => require('./expense-stock').searchIngredients(q, limit),
+  listUnitsCatalog: () => require('../../lib/units-catalog').listUnits(true),
+  saveUnitCatalog: (data, actor) => require('../../lib/units-catalog').saveUnit(data, actor),
   returnWasteToStock: (id, actorId) => {
     const row = features.returnWasteToStock(id, actorId);
     if (row.product_id && String(row.damage_kind || '') !== 'property') {
-      adjustStock(row.product_id, row.quantity, 'add', `Waste returned to stock #${id}`, actorId, 'waste_return', id);
+      const qty = Number(row.qty_stock ?? row.quantity) || 0;
+      adjustStock(row.product_id, qty, 'add', `Waste returned to stock #${id}`, actorId, 'waste_return', id);
     }
     return getDb().prepare(`
       SELECT w.*,
@@ -6602,9 +6915,10 @@ module.exports = {
       getSettings: getStockBatchSettings,
       saveSettings: saveStockBatchSettings,
       dashboard: stockBatchDashboard,
+      recordWaste: recordBatchWaste,
       ...rest
     } = sby;
-    return { ...rest, getStockBatchSettings, saveStockBatchSettings, stockBatchDashboard };
+    return { ...rest, getStockBatchSettings, saveStockBatchSettings, stockBatchDashboard, recordBatchWaste };
   })(),
   ...promoRequestsSvc,
   getNonSellingProducts: (filters) => promoRequestsSvc.enrichNonSellingProducts(opsComplianceSvc.getNonSellingProducts(filters)),

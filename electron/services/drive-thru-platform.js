@@ -17,13 +17,17 @@ const ROLE_PERMS = {
 
 const ORDER_STATUSES = ['arrived', 'ordering', 'confirmed', 'paid', 'preparing', 'ready', 'collected', 'cancelled'];
 
+let _dtSchemaDb = null;
+
 function ensureDriveThru() {
-  try { dbGet('SELECT 1 FROM drive_thru_settings LIMIT 1'); } catch (_) { /* */ }
+  const dbMod = require('../database/db');
+  const handle = dbMod.getDb();
+  if (_dtSchemaDb === handle) return;
   try {
     const fs = require('fs');
     const path = require('path');
     const p = path.join(__dirname, '../database/migrations-v88.sql');
-    if (fs.existsSync(p)) {
+    if (!dbMod.isPgMode() && fs.existsSync(p)) {
       for (const stmt of fs.readFileSync(p, 'utf8').split(';').map((s) => s.trim()).filter(Boolean)) {
         try { require('../database/db').getDb().exec(stmt + ';'); } catch (e) {
           if (!/duplicate column|already exists/i.test(String(e.message))) { /* */ }
@@ -42,6 +46,7 @@ function ensureDriveThru() {
       console.log('[drive-thru] Default admin: drivethru / dt123456');
     }
   } catch (_) { /* */ }
+  _dtSchemaDb = handle;
 }
 
 function perms(role) { return ROLE_PERMS[role] || ROLE_PERMS.drive_thru_operator; }
@@ -156,18 +161,35 @@ function listStationsAdmin() {
   ensureDriveThru();
   detectStaleStations();
   return dbAll(`SELECT id, station_code, name, lane_label, status, is_active, staff_name, last_heartbeat, error_state, audio_status_json
-    FROM drive_thru_stations ORDER BY name`);
+    FROM drive_thru_stations WHERE is_active = 1 ORDER BY name`);
 }
 
 function saveStationAdmin(data) {
   ensureDriveThru();
   const name = String(data.name || '').trim();
   if (!name) throw new Error('Station name required');
+  if (data.id) {
+    const id = Number(data.id);
+    const existing = dbGet('SELECT id FROM drive_thru_stations WHERE id = ? AND is_active = 1', [id]);
+    if (!existing) throw new Error('Station not found');
+    dbRun(`UPDATE drive_thru_stations SET name=?, lane_label=?, branch_id=?, updated_at=? WHERE id=?`,
+      [name, data.lane_label || null, data.branch_id != null ? Number(data.branch_id) : null, nowIso(), id]);
+    return dbGet('SELECT id, station_code, name, lane_label, status, is_active, staff_name, last_heartbeat, error_state FROM drive_thru_stations WHERE id = ?', [id]);
+  }
   const stationToken = newToken();
   const code = uid('DT');
   const r = dbRun(`INSERT INTO drive_thru_stations (station_code, name, lane_label, branch_id, token_hash, status)
     VALUES (?,?,?,?,?,?)`, [code, name, data.lane_label || null, data.branch_id || null, hashToken(stationToken), 'offline']);
   return { ...dbGet('SELECT id, station_code, name, lane_label, status, is_active, staff_name, last_heartbeat, error_state FROM drive_thru_stations WHERE id = ?', [r.lastInsertRowid]), station_token: stationToken };
+}
+
+function deleteStationAdmin(stationId) {
+  ensureDriveThru();
+  const id = Number(stationId);
+  if (!id) throw new Error('Station id required');
+  dbRun(`UPDATE drive_thru_stations SET is_active = 0, status = 'offline', token_hash = NULL, updated_at = ? WHERE id = ?`, [nowIso(), id]);
+  audit({ station_id: id, action: 'station_removed_admin', entity_id: id });
+  return { success: true };
 }
 
 function regenerateStationTokenAdmin(stationId) {
@@ -257,15 +279,28 @@ function pollAudioSignals(stationToken, sinceId = 0) {
 function getDriveThruCatalog(stationToken) {
   const st = resolveStation(stationToken);
   const store = require('./store');
+  const kiosk = require('./kiosk-platform');
   const categories = store.getCategories({ for_pos: true, active_only: true }) || [];
   const products = (store.getProducts({ for_pos: true, active_only: true, branch_id: st.branch_id }) || [])
-    .map((p) => ({
-      id: p.id, name: p.name, selling_price: p.selling_price, category_id: p.category_id,
-      item_type: p.item_type, modifiers: p.modifiers || [], options: p.options || [],
-      extras: p.extras || [], removals: p.removals || [],
-      available: productAvailable(p, st.branch_id)
-    }));
-  return { station: { id: st.id, name: st.name, lane_label: st.lane_label }, categories, products };
+    .map((p) => {
+      const hasImage = kiosk.productHasImage(p);
+      return {
+        id: p.id, name: p.name, selling_price: p.selling_price, category_id: p.category_id,
+        item_type: p.item_type, modifiers: p.modifiers || [], options: p.options || [],
+        extras: p.extras || [], removals: p.removals || [],
+        available: productAvailable(p, st.branch_id),
+        has_image: hasImage,
+        image_url: hasImage ? `/api/product-image/${p.id}` : null
+      };
+    });
+  const pay = kiosk.kioskPaymentMethodsFromSettings();
+  return {
+    station: { id: st.id, name: st.name, lane_label: st.lane_label },
+    categories, products,
+    payment_methods: pay.ids,
+    payment_method_labels: pay.labels,
+    payment_method_options: pay.options
+  };
 }
 
 function buildCartLines(items) {
@@ -333,6 +368,7 @@ function takePayment(orderId, paymentData, portalToken) {
   const order = dbGet('SELECT * FROM drive_thru_orders WHERE id = ?', [orderId]);
   if (!order) throw new Error('Order not found');
   if (order.status === 'cancelled') throw new Error('Order cancelled');
+  if (order.sale_id) return { ...getOrder(orderId), sale_id: order.sale_id, replayed: true };
   const st = dbGet('SELECT * FROM drive_thru_stations WHERE id = ?', [order.station_id]);
   const portalUser = dbGet('SELECT * FROM drive_thru_centre_users WHERE id = ?', [user.portal_user_id || user.id]);
   const actor = resolvePosActor(portalUser);
@@ -341,25 +377,49 @@ function takePayment(orderId, paymentData, portalToken) {
   const items = parseJson(order.items_json, []);
   const cart = { saleItems: items, subtotal: order.subtotal, total: order.total };
   const paymentMethod = String(paymentData.payment_method || 'cash').toLowerCase();
-  const clientRequestId = paymentData.client_request_id || `dt-${orderId}-${Date.now()}`;
+  const kiosk = require('./kiosk-platform');
+  const allowed = kiosk.kioskPaymentMethodIdsFromSettings();
+  if (!allowed.map((p) => String(p).toLowerCase()).includes(paymentMethod)) {
+    throw new Error(`Payment method "${paymentMethod}" is not enabled in Admin → Payment Methods`);
+  }
+  let discount = 0;
+  let voucherCode = null;
+  if (paymentData.voucher_code) {
+    const v = require('./discount-vouchers').validateVoucher(paymentData.voucher_code, { subtotal: cart.subtotal, items: cart.saleItems });
+    if (!v.ok) throw new Error(v.error || 'Invalid voucher');
+    discount = Number(v.discount) || 0;
+    voucherCode = v.code;
+  }
+  const payable = Math.max(0, Math.round((cart.total - discount) * 100) / 100);
+  // One drive-thru order can only ever become one sale, so the key is the order itself.
+  const clientRequestId = `dt-${orderId}`;
 
   const store = require('./store');
   const saleData = {
-    items: cart.saleItems, subtotal: cart.subtotal, tax_amount: 0, total: cart.total,
-    amount_paid: cart.total, change_amount: Number(paymentData.change_amount) || 0,
-    payments: [{ type: paymentMethod, amount: cart.total }],
+    items: cart.saleItems, subtotal: cart.subtotal, discount, tax_amount: 0, total: payable,
+    amount_paid: payable, change_amount: Number(paymentData.change_amount) || 0,
+    payments: [{ type: paymentMethod, amount: payable }],
     order_type: 'takeaway', order_source: 'DRIVE_THRU',
     notes: `Drive-Thru ${st?.name || ''} — ${order.notes || ''}`.trim(),
-    client_request_id: clientRequestId
+    client_request_id: clientRequestId,
+    sla_started_at: order.arrived_at || order.created_at || null,
+    drive_thru_order_id: orderId
   };
 
   const sale = store.completeSale(saleData, actor.id, actor.full_name || actor.username, actor.role);
   const saleId = sale.saleId || sale.sale?.id;
   const orderNumber = sale.orderNumber || sale.sale?.order_number;
+  if (voucherCode && !sale.replayed) {
+    try {
+      require('./discount-vouchers').redeemVoucher(voucherCode, {
+        subtotal: cart.subtotal, items: cart.saleItems, channel: 'drive_thru', actorId: actor.id, actorName: actor.full_name || actor.username
+      });
+    } catch (_) { /* */ }
+  }
 
   const features = require('./features');
   const kitchenItems = cart.saleItems.filter((it) => ['food', 'drink', 'combo', 'side'].includes(String(it.item_type || '').toLowerCase()));
-  if (kitchenItems.length) {
+  if (kitchenItems.length && !sale.replayed) {
     features.createKitchenOrder({
       sale_id: saleId, order_number: orderNumber, station: 'drive_thru',
       items: kitchenItems.map((it) => ({ product_name: it.product_name, quantity: it.quantity, modifiers: it.modifiers_text, notes: order.notes }))
@@ -379,17 +439,29 @@ function sendToKitchen(orderId, portalToken) {
   return getOrder(orderId);
 }
 
+function slaDriveThruEvent(orderId, status, user) {
+  try {
+    const row = dbGet('SELECT sale_id FROM drive_thru_orders WHERE id = ?', [orderId]);
+    if (row?.sale_id) {
+      require('./order-sla').recordSaleStage(row.sale_id, status, {
+        id: user?.pos_user_id || user?.id || null, name: user?.full_name || user?.username || null, role: 'drive_thru'
+      }, 'drive-thru');
+    }
+  } catch (err) { console.warn('[sla] drive-thru:', err.message); }
+}
+
 function markReady(orderId, portalToken) {
-  resolvePortal(portalToken);
+  const user = resolvePortal(portalToken);
   dbRun(`UPDATE drive_thru_orders SET status='ready', ready_at=?, updated_at=? WHERE id=?`, [nowIso(), nowIso(), orderId]);
+  slaDriveThruEvent(orderId, 'ready', user);
   return getOrder(orderId);
 }
 
 function markCollected(orderId, portalToken) {
-  resolvePortal(portalToken);
-  const order = getOrder(orderId);
+  const user = resolvePortal(portalToken);
   dbRun(`UPDATE drive_thru_orders SET status='collected', collected_at=?, updated_at=? WHERE id=?`, [nowIso(), nowIso(), orderId]);
   dbRun('UPDATE drive_thru_stations SET active_order_id=NULL WHERE active_order_id=?', [orderId]);
+  slaDriveThruEvent(orderId, 'completed', user);
   return getOrder(orderId);
 }
 
@@ -546,7 +618,7 @@ async function runDriveThruTests() {
 
 module.exports = {
   ensureDriveThru, driveThruLogin, driveThruLogout, driveThruDashboard, driveThruSummary,
-  listStations, listStationsAdmin, saveStation, saveStationAdmin, regenerateStationTokenAdmin, stationHeartbeat, stationLogin,
+  listStations, listStationsAdmin, saveStation, saveStationAdmin, deleteStationAdmin, regenerateStationTokenAdmin, stationHeartbeat, stationLogin,
   saveAudioConfig, getAudioConfig, postAudioSignal, pollAudioSignals,
   getDriveThruCatalog, startOrder, updateOrder, confirmOrder, takePayment,
   sendToKitchen, markReady, markCollected, cancelOrder, getOrder, listOrders,

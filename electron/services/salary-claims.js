@@ -4,6 +4,86 @@ require('jspdf-autotable');
 const fs = require('fs');
 const path = require('path');
 
+let _salaryClaimsSchemaReady = false;
+
+function ensureSalaryClaimsSchema() {
+  if (_salaryClaimsSchemaReady) return;
+  const db = getDb();
+  let pg = false;
+  try { pg = require('../database/db').isPgMode?.() || require('../database/pg-db').isPgMode(); } catch (_) { /* */ }
+  const stmts = pg
+    ? [
+      `CREATE TABLE IF NOT EXISTS salary_claims (
+        id SERIAL PRIMARY KEY,
+        employee_id INTEGER NOT NULL REFERENCES employees(id),
+        payroll_id INTEGER,
+        period_start TEXT NOT NULL,
+        period_end TEXT NOT NULL,
+        payment_date TEXT,
+        claim_deadline TEXT NOT NULL,
+        claim_opens_at TEXT,
+        gross_amount DOUBLE PRECISION DEFAULT 0,
+        net_amount DOUBLE PRECISION DEFAULT 0,
+        amount DOUBLE PRECISION DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'open',
+        employee_notes TEXT,
+        admin_notes TEXT,
+        claimed_at TIMESTAMPTZ,
+        approved_at TIMESTAMPTZ,
+        approved_by INTEGER,
+        rejected_at TIMESTAMPTZ,
+        rejected_by INTEGER,
+        paid_at TIMESTAMPTZ,
+        signature_snapshot TEXT,
+        claim_data_json TEXT,
+        created_by INTEGER,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )`,
+      'CREATE INDEX IF NOT EXISTS idx_salary_claims_emp ON salary_claims(employee_id, status)',
+      'CREATE INDEX IF NOT EXISTS idx_salary_claims_deadline ON salary_claims(claim_deadline)'
+    ]
+    : [
+      `CREATE TABLE IF NOT EXISTS salary_claims (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        employee_id INTEGER NOT NULL,
+        payroll_id INTEGER,
+        period_start TEXT NOT NULL,
+        period_end TEXT NOT NULL,
+        payment_date TEXT,
+        claim_deadline TEXT NOT NULL,
+        claim_opens_at TEXT,
+        gross_amount REAL DEFAULT 0,
+        net_amount REAL DEFAULT 0,
+        amount REAL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'open',
+        employee_notes TEXT,
+        admin_notes TEXT,
+        claimed_at TEXT,
+        approved_at TEXT,
+        approved_by INTEGER,
+        rejected_at TEXT,
+        rejected_by INTEGER,
+        paid_at TEXT,
+        signature_snapshot TEXT,
+        claim_data_json TEXT,
+        created_by INTEGER,
+        created_at TEXT DEFAULT (datetime('now')),
+        updated_at TEXT DEFAULT (datetime('now')),
+        FOREIGN KEY (employee_id) REFERENCES employees(id)
+      )`,
+      'CREATE INDEX IF NOT EXISTS idx_salary_claims_emp ON salary_claims(employee_id, status)',
+      'CREATE INDEX IF NOT EXISTS idx_salary_claims_deadline ON salary_claims(claim_deadline)'
+    ];
+  for (const sql of stmts) {
+    try { db.exec(sql); } catch (err) {
+      const msg = String(err.message || err);
+      if (!/already exists|duplicate/i.test(msg)) console.warn('[salary-claims] schema:', msg.slice(0, 160));
+    }
+  }
+  _salaryClaimsSchemaReady = true;
+}
+
 function parseJson(val, fallback) {
   if (!val) return fallback;
   if (typeof val === 'object') return val;
@@ -43,6 +123,7 @@ function getAdminSignatureDataUrl() {
 }
 
 function rowClaim(id) {
+  ensureSalaryClaimsSchema();
   const c = getDb().prepare(`
     SELECT sc.*, e.full_name as employee_name, e.employee_code, e.phone, e.email,
       u.full_name as approved_by_name
@@ -57,6 +138,7 @@ function rowClaim(id) {
 }
 
 function listSalaryClaims(filters = {}) {
+  ensureSalaryClaimsSchema();
   let sql = `
     SELECT sc.*, e.full_name as employee_name, e.employee_code, e.phone,
       u.full_name as approved_by_name
@@ -78,6 +160,7 @@ function listSalaryClaims(filters = {}) {
 }
 
 function saveSalaryClaim(data, actorId, actorName) {
+  ensureSalaryClaimsSchema();
   const db = getDb();
   if (!data.employee_id) throw new Error('Employee is required');
   if (!data.period_start || !data.period_end) throw new Error('Period start and end are required');
@@ -285,6 +368,7 @@ function buildSalaryClaimPdf(claimId, shopSettings) {
 }
 
 function createClaimsFromPayroll(periodStart, periodEnd, claimDeadline, paymentDate, claimOpensAt, actorId, actorName) {
+  ensureSalaryClaimsSchema();
   if (!claimDeadline) throw new Error('Claim deadline is required');
   const db = getDb();
   const payrollRows = db.prepare(`
@@ -321,6 +405,7 @@ function createClaimsFromPayroll(periodStart, periodEnd, claimDeadline, paymentD
 }
 
 module.exports = {
+  ensureSalaryClaimsSchema,
   listSalaryClaims,
   getSalaryClaim: rowClaim,
   saveSalaryClaim,

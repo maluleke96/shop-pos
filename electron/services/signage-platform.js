@@ -1057,6 +1057,37 @@ function saveSignageSettings(data, token) {
   return getSignageSettings(token);
 }
 
+/** POS Admin: upload slides + publish playlist to all TV screens (Menu Builder / Promo Video). */
+function adminPublishSlideshow(actor, data = {}) {
+  const login = signageLoginAsAdmin(actor);
+  const token = login.token;
+  const slides = Array.isArray(data.slides) ? data.slides : [];
+  if (!slides.length) throw new Error('No slides to publish');
+  const title = String(data.name || data.title || 'Shop promo').trim();
+  const mediaIds = [];
+  slides.forEach((slide, idx) => {
+    const m = uploadMedia({
+      title: slide.title || `${title} ${idx + 1}`,
+      filename: slide.filename || `slide-${idx + 1}.png`,
+      file_data: slide.file_data,
+      mime_type: slide.mime_type || slide.mime || 'image/png',
+      media_type: slide.media_type,
+      category: data.category || 'promo'
+    }, token);
+    mediaIds.push(m.id);
+  });
+  const playlist = savePlaylist({
+    name: title,
+    loop_enabled: data.loop !== false,
+    items: mediaIds.map((id) => ({
+      item_type: 'media',
+      media_id: id,
+      duration_seconds: Number(data.slide_duration) || (data.media_type === 'video' ? 0 : 12)
+    }))
+  }, token);
+  return publishToScreens({ name: title, playlist_id: playlist.id, target_type: 'all' }, token);
+}
+
 function signageSummary() {
   ensureSignage();
   detectStaleDevices();
@@ -1067,7 +1098,7 @@ function signageSummary() {
 }
 
 module.exports = {
-  ensureSignage, signageLogin, signageLoginAsAdmin, signageLogout, signageDashboard, signageSummary,
+  ensureSignage, signageLogin, signageLoginAsAdmin, signageLogout, signageDashboard, signageSummary, adminPublishSlideshow,
   requestPairing, pairingStatus, listPendingPairings, listPendingPairingsAdmin,
   approvePairing, approvePairingAdmin, approvePairingCore, rejectPairing, revokeDevice,
   listDevices, saveDevice, listMedia, uploadMedia, deleteMedia, getMediaFile,

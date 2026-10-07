@@ -26,7 +26,7 @@ window.AdminBusinessModulesPage = {
       <p class="muted" style="max-width:720px;line-height:1.5">Central control for Investor Management, App Release Centre, AI Meeting Centre, Kiosk and Drive-Thru.
         <strong>Portals accept your Admin username and password</strong> (owner/manager). Default portal accounts also work if you prefer.</p>
       <div class="admin-tabs" id="bm-tabs">
-        ${['overview', 'investors', 'release-users', 'meeting-users', 'kiosk', 'drive-thru'].map((t) =>
+        ${['overview', 'investors', 'release-users', 'meeting-users', 'ops-devices', 'kiosk', 'drive-thru'].map((t) =>
           `<button class="admin-tab ${this.tab === t ? 'active' : ''}" data-tab="${t}">${this.tabLabel(t)}</button>`).join('')}
       </div>
       <div id="bm-body"><p class="muted">Loading…</p></div>
@@ -43,13 +43,28 @@ window.AdminBusinessModulesPage = {
   },
 
   tabLabel(t) {
-    return { overview: 'Overview', investors: 'Investors', 'release-users': 'Release Users', 'meeting-users': 'Meeting Users', kiosk: 'Kiosk', 'drive-thru': 'Drive-Thru' }[t] || t;
+    return { overview: 'Overview', investors: 'Investors', 'release-users': 'Release Users', 'meeting-users': 'Meeting Users', 'ops-devices': 'Ops Devices', kiosk: 'Kiosk', 'drive-thru': 'Drive-Thru' }[t] || t;
   },
 
   esc(s) {
     const d = document.createElement('div');
     d.textContent = s == null ? '' : String(s);
     return d.innerHTML;
+  },
+
+  /** Normalize cloud/Electron RPC responses to a plain array. */
+  rpcList(res) {
+    if (res == null) return [];
+    if (res.success === false) return [];
+    const d = res.data != null ? res.data : res;
+    if (Array.isArray(d)) return d;
+    if (d && Array.isArray(d.list)) return d.list;
+    return [];
+  },
+
+  rpcErr(res) {
+    if (res && res.success === false) return res.error || 'Request failed';
+    return '';
   },
 
   money(n) { return Utils.formatMoney(n); },
@@ -79,6 +94,7 @@ window.AdminBusinessModulesPage = {
     if (this.tab === 'investors') return this.renderInvestors(body);
     if (this.tab === 'release-users') return this.renderReleaseUsers(body);
     if (this.tab === 'meeting-users') return this.renderMeetingUsers(body);
+    if (this.tab === 'ops-devices') return this.renderOpsDevices(body);
     if (this.tab === 'kiosk') return this.renderKiosk(body);
     if (this.tab === 'drive-thru') return this.renderDriveThru(body);
   },
@@ -453,14 +469,111 @@ window.AdminBusinessModulesPage = {
     });
   },
 
+  async renderOpsDevices(body) {
+    body.innerHTML = '<p class="muted">Loading ops devices…</p>';
+    let rows = [];
+    let pair = [];
+    let cds = {};
+    let auditRows = [];
+    let loadErr = '';
+    try {
+      const timeout = (p, ms) => Promise.race([
+        Promise.resolve(p),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('Request timed out')), ms))
+      ]);
+      const [unified, pending, cdsSettings, kdsAudit] = await Promise.all([
+        timeout(API.opsDisplayAdminUnified(this.actor), 20000).catch((e) => ({ success: false, error: e.message || 'Timed out' })),
+        timeout(API.opsDisplayAdminPending(this.actor), 20000).catch(() => ({ success: false })),
+        timeout(API.opsDisplayAdminGetCdsSettings(this.actor), 20000).catch(() => ({})),
+        timeout(API.getAuditLog({ action: 'kds_clear', limit: 25 }), 20000).catch(() => [])
+      ]);
+      loadErr = this.rpcErr(unified) || this.rpcErr(pending) || '';
+      rows = this.rpcList(unified);
+      pair = this.rpcList(pending);
+      const cdsRaw = cdsSettings?.data != null ? cdsSettings.data : cdsSettings;
+      cds = cdsRaw && typeof cdsRaw === 'object' && !Array.isArray(cdsRaw) ? cdsRaw : {};
+      auditRows = this.rpcList(kdsAudit);
+    } catch (e) {
+      loadErr = e.message || 'Could not load ops devices';
+    }
+    body.innerHTML = `${loadErr ? `<p class="muted" style="color:var(--danger,#dc2626)">${this.esc(loadErr)} — try refresh. Owners/managers always have access; others need <strong>Ops Devices</strong> permission under Users.</p>` : ''}
+      <h3>Ops device registry</h3>
+      <p class="muted">Kiosk, Drive-Thru, Kitchen Display, and Customer Order Display — one view. Pair KDS/CDS via 6-digit code on the display device.</p>
+      <div class="card card-body" style="margin:12px 0">
+        <h4 style="margin:0 0 8px">Customer display branding</h4>
+        <div class="field"><label>Promo message (optional)</label><input id="ops-cds-promo" value="${this.esc(cds.promo_message || '')}"></div>
+        <label><input type="checkbox" id="ops-cds-announce" ${cds.announce_ready !== false ? 'checked' : ''}> Ready announcement (sound + voice)</label>
+        <div class="field"><label>KDS overdue alert repeat (seconds)</label><input type="number" id="ops-kds-repeat" min="15" value="${Number(cds.kds_alert?.repeat_sec) || 60}"></div>
+        <button class="btn btn-primary btn-sm" id="ops-save-cds" style="margin-top:10px">Save display settings</button>
+      </div>
+      <h4>Pending KDS / CDS pairing</h4>
+      ${pair.map((p) => `<div class="card card-body" style="margin:8px 0;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+        <span>${this.esc(p.device_type).toUpperCase()} · Code <strong style="letter-spacing:2px">${this.esc(p.pairing_code)}</strong></span>
+        <button class="btn btn-primary btn-sm" data-approve-ops="${this.esc(p.pairing_code)}" data-ops-type="${this.esc(p.device_type)}">Approve</button>
+      </div>`).join('') || '<p class="muted">No pending display codes</p>'}
+      <h4 style="margin-top:16px">All devices</h4>
+      <table><thead><tr><th>Type</th><th>Name</th><th>Branch</th><th>Status</th><th>Last active</th><th></th></tr></thead>
+      <tbody>${rows.map((d) => `<tr>
+        <td>${this.esc(d.kind)}</td><td>${this.esc(d.name)}</td><td>${d.branch_id || '—'}</td>
+        <td>${this.esc(d.status || '—')}</td><td>${this.esc(d.last_active || '—')}</td>
+        <td>${d.kind === 'kitchen_display' || d.kind === 'customer_display' ? `<button class="btn btn-ghost btn-sm" data-revoke-ops="${d.id}">Revoke</button>` : '—'}</td>
+      </tr>`).join('') || '<tr><td colspan="6" class="muted">No devices yet</td></tr>'}</tbody></table>
+      <h4 style="margin-top:20px">Kitchen clear / bulk reasons (audit)</h4>
+      <table><thead><tr><th>When</th><th>User</th><th>Order</th><th>Reason</th><th>Note</th></tr></thead>
+      <tbody>${(Array.isArray(auditRows) ? auditRows : []).map((a) => {
+        let det = {};
+        try { det = typeof a.details === 'string' ? JSON.parse(a.details) : (a.details || {}); } catch (_) { /* */ }
+        return `<tr><td>${this.esc(a.created_at || '—')}</td><td>${this.esc(a.username || '—')}</td>
+          <td>${this.esc(det.order_number || a.entity_id || '—')}</td><td>${this.esc(det.reason || (det.skipped ? 'skipped' : '—'))}</td>
+          <td>${this.esc(det.note || '—')}</td></tr>`;
+      }).join('') || '<tr><td colspan="5" class="muted">No kitchen clear reasons logged yet</td></tr>'}</tbody></table>
+      <p style="margin-top:12px"><a href="/customer-display.html" target="_blank" class="btn btn-ghost">Open Customer Display</a>
+      <a href="/kitchen-display.html" target="_blank" class="btn btn-ghost">Open Kitchen Display</a></p>`;
+    body.querySelector('#ops-save-cds')?.addEventListener('click', async () => {
+      await API.opsDisplayAdminSaveCdsSettings({
+        promo_message: document.getElementById('ops-cds-promo')?.value || '',
+        announce_ready: !!document.getElementById('ops-cds-announce')?.checked,
+        kds_alert: { repeat_sec: Number(document.getElementById('ops-kds-repeat')?.value) || 60, enabled: true }
+      }, this.actor);
+      Utils.toast('Display settings saved', 'success');
+    });
+    body.querySelectorAll('[data-approve-ops]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const code = btn.dataset.approveOps;
+        const type = btn.dataset.opsType;
+        this.openForm(`Approve ${type} display`, `
+          <div class="field"><label>Device name *</label><input id="ops-dev-name" value="${type === 'cds' ? 'Customer Display 1' : 'Kitchen Display 1'}"></div>
+          <div class="field"><label>Branch ID (optional)</label><input id="ops-dev-branch" placeholder="e.g. 1"></div>`, {
+          submitLabel: 'Approve',
+          onSubmit: async () => {
+            const name = document.getElementById('ops-dev-name')?.value?.trim();
+            const branchRaw = document.getElementById('ops-dev-branch')?.value?.trim();
+            const branch_id = branchRaw ? Number(branchRaw) : null;
+            await API.opsDisplayAdminApprove(code, { name, branch_id }, this.actor);
+            Utils.hideModal();
+            Utils.toast('Display approved', 'success');
+            this.renderOpsDevices(body);
+          }
+        });
+      });
+    });
+    body.querySelectorAll('[data-revoke-ops]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        if (!confirm('Revoke this display device?')) return;
+        await API.opsDisplayAdminRevoke(Number(btn.dataset.revokeOps), this.actor);
+        this.renderOpsDevices(body);
+      });
+    });
+  },
+
   async renderKiosk(body) {
     body.innerHTML = '<p class="muted">Loading kiosks…</p>';
     const [devices, pending] = await Promise.all([
       API.kioskAdminListDevices(this.actor).catch(() => []),
       API.kioskAdminPendingPairings(this.actor).catch(() => [])
     ]);
-    const devs = devices?.data || devices || [];
-    const pair = pending?.data || pending || [];
+    const devs = this.rpcList(devices);
+    const pair = this.rpcList(pending);
     body.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center;margin:12px 0">
       <h3>Kiosk devices</h3><a href="/kiosk/" target="_blank" class="btn btn-ghost">Open Kiosk UI</a></div>
       <div class="card card-body" style="margin-bottom:16px">
@@ -478,8 +591,13 @@ window.AdminBusinessModulesPage = {
         <button class="btn btn-primary btn-sm" data-approve-kiosk="${this.esc(p.pairing_code)}">Approve</button>
       </div>`).join('') || '<p class="muted">No pending codes — open /kiosk/ on the device first</p>'}
       <h4 style="margin-top:16px">Registered kiosks</h4>
-      <table><thead><tr><th>Name</th><th>Status</th><th>Last order</th></tr></thead>
-      <tbody>${devs.map((d) => `<tr><td>${this.esc(d.name)}</td><td>${this.esc(d.status)}</td><td>${this.esc(d.last_order_at || '—')}</td></tr>`).join('') || '<tr><td colspan="3" class="muted">None</td></tr>'}</tbody></table>
+      <table><thead><tr><th>Name</th><th>Location</th><th>Status</th><th>Last order</th><th></th></tr></thead>
+      <tbody>${devs.map((d) => `<tr>
+        <td>${this.esc(d.name)}</td><td>${this.esc(d.location || '—')}</td><td>${this.esc(d.status)}</td><td>${this.esc(d.last_order_at || '—')}</td>
+        <td style="white-space:nowrap">
+          <button type="button" class="btn btn-ghost btn-sm" data-edit-kiosk="${d.id}">Edit</button>
+          <button type="button" class="btn btn-danger btn-sm" data-del-kiosk="${d.id}">Remove</button>
+        </td></tr>`).join('') || '<tr><td colspan="5" class="muted">None</td></tr>'}</tbody></table>
       <button class="btn btn-ghost" id="kiosk-run-tests" style="margin-top:12px">Run kiosk tests</button>
       <pre id="kiosk-test-out" class="muted" style="margin-top:8px"></pre>`;
     body.querySelectorAll('[data-approve-kiosk]').forEach((btn) => {
@@ -507,6 +625,42 @@ window.AdminBusinessModulesPage = {
       const d = r?.data || r;
       document.getElementById('kiosk-test-out').textContent = JSON.stringify(d?.results || d, null, 2);
     });
+    body.querySelectorAll('[data-edit-kiosk]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const id = Number(btn.dataset.editKiosk);
+        const dev = devs.find((x) => Number(x.id) === id);
+        if (!dev) return;
+        this.openForm('Edit kiosk', `
+          <div class="field"><label>Name *</label><input id="bm-kiosk-edit-name" value="${this.esc(dev.name || '')}"></div>
+          <div class="field"><label>Location</label><input id="bm-kiosk-edit-loc" value="${this.esc(dev.location || '')}"></div>
+          <div class="field"><label>Branch ID</label><input id="bm-kiosk-edit-branch" value="${dev.branch_id != null ? this.esc(String(dev.branch_id)) : ''}"></div>`, {
+          submitLabel: 'Save',
+          onSubmit: async () => {
+            const name = document.getElementById('bm-kiosk-edit-name')?.value?.trim();
+            if (!name) throw new Error('Name is required');
+            const branchRaw = document.getElementById('bm-kiosk-edit-branch')?.value?.trim();
+            const r = await API.kioskAdminSaveDevice({
+              id, name,
+              location: document.getElementById('bm-kiosk-edit-loc')?.value || '',
+              branch_id: branchRaw ? Number(branchRaw) : null
+            }, this.actor);
+            if (r?.success === false) throw new Error(r.error || 'Save failed');
+            Utils.hideModal();
+            Utils.toast('Kiosk updated', 'success');
+            this.renderKiosk(body);
+          }
+        });
+      });
+    });
+    body.querySelectorAll('[data-del-kiosk]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        if (!confirm('Remove this kiosk? It will need to pair again.')) return;
+        const r = await API.kioskAdminRevokeDevice(Number(btn.dataset.delKiosk), this.actor);
+        if (r?.success === false) return Utils.toast(r.error || 'Remove failed', 'error');
+        Utils.toast('Kiosk removed', 'success');
+        this.renderKiosk(body);
+      });
+    });
   },
 
   async renderDriveThru(body) {
@@ -532,7 +686,11 @@ window.AdminBusinessModulesPage = {
         return `<tr>
           <td>${this.esc(s.name)}</td><td>${this.esc(s.lane_label || '—')}</td><td>${this.esc(s.status)}</td>
           <td>${this.esc(s.staff_name || '—')}</td><td>${this.esc(audio.mic || '—')}</td>
-          <td><button type="button" class="btn btn-ghost btn-sm" data-regen-token="${s.id}">New token</button></td>
+          <td style="white-space:nowrap">
+            <button type="button" class="btn btn-ghost btn-sm" data-regen-token="${s.id}">New token</button>
+            <button type="button" class="btn btn-ghost btn-sm" data-edit-dt="${s.id}">Edit</button>
+            <button type="button" class="btn btn-danger btn-sm" data-del-dt="${s.id}">Remove</button>
+          </td>
         </tr>`;
       }).join('') || '<tr><td colspan="6" class="muted">No stations — add one to create a station token</td></tr>'}</tbody></table>
       <button class="btn btn-ghost" id="dt-run-tests" style="margin-top:12px">Run drive-thru tests</button>
@@ -584,6 +742,39 @@ window.AdminBusinessModulesPage = {
     body.querySelector('#dt-run-tests')?.addEventListener('click', async () => {
       const r = await API.driveThruRunTests();
       document.getElementById('dt-test-out').textContent = JSON.stringify((r?.data || r)?.results || r, null, 2);
+    });
+    body.querySelectorAll('[data-edit-dt]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const id = Number(btn.dataset.editDt);
+        const st = list.find((x) => Number(x.id) === id);
+        if (!st) return;
+        this.openForm('Edit Drive-Thru station', `
+          <div class="field"><label>Station name *</label><input id="bm-dt-edit-name" value="${this.esc(st.name || '')}"></div>
+          <div class="field"><label>Lane</label><input id="bm-dt-edit-lane" value="${this.esc(st.lane_label || '')}"></div>`, {
+          submitLabel: 'Save',
+          onSubmit: async () => {
+            const name = document.getElementById('bm-dt-edit-name')?.value?.trim();
+            if (!name) throw new Error('Name is required');
+            const r = await API.driveThruAdminSaveStation({
+              id, name,
+              lane_label: document.getElementById('bm-dt-edit-lane')?.value?.trim() || null
+            }, this.actor);
+            if (r?.success === false) throw new Error(r.error || 'Save failed');
+            Utils.hideModal();
+            Utils.toast('Station updated', 'success');
+            this.renderDriveThru(body);
+          }
+        });
+      });
+    });
+    body.querySelectorAll('[data-del-dt]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        if (!confirm('Remove this Drive-Thru station? Its token will stop working.')) return;
+        const r = await API.driveThruAdminDeleteStation(Number(btn.dataset.delDt), this.actor);
+        if (r?.success === false) return Utils.toast(r.error || 'Remove failed', 'error');
+        Utils.toast('Station removed', 'success');
+        this.renderDriveThru(body);
+      });
     });
   }
 };

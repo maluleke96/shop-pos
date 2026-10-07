@@ -411,6 +411,24 @@ function buildHandlers(store) {
     persistCritical();
     return result;
   }));
+  add('sales:findSimilar', wrapSync((f, a) => {
+    s.requireActor(a, ['owner', 'manager', 'cashier', 'supervisor', 'assistant_manager']);
+    return s.findSimilarSales(f || {});
+  }));
+  add('sales:listBackdated', wrapSync((f, a) => {
+    const user = s.requireActor(a, ['owner', 'manager', 'supervisor', 'assistant_manager']);
+    if (!require('../electron/services/authz').hasUserPermission(user, 'view_backdated_orders') && user.role !== 'owner') {
+      throw new Error('You do not have permission to view backdated orders');
+    }
+    return s.listBackdatedOrders(f || {});
+  }));
+  add('sales:backdatedSummary', wrapSync((f, a) => {
+    const user = s.requireActor(a, ['owner', 'manager', 'supervisor', 'assistant_manager']);
+    if (!require('../electron/services/authz').hasUserPermission(user, 'view_backdated_orders') && user.role !== 'owner') {
+      throw new Error('You do not have permission to view backdated orders');
+    }
+    return s.backdatedOrdersSummary(f || {});
+  }));
   add('sales:get', wrapSync(id => { requireSession(); return s.getSale(id); }));
   add('sales:getByReceipt', wrapSync(n => { requireSession(); return s.getSaleByReceipt(n); }));
   add('sales:hold', wrapSync((name, cart, a) => {
@@ -445,6 +463,10 @@ function buildHandlers(store) {
   }));
   add('expenses:save', wrapSync((d, a) => {
     const user = s.requireActor(a, ['owner', 'manager', 'supervisor', 'assistant_manager']);
+    const authz = require('../electron/services/authz');
+    if (user.role !== 'owner' && !authz.hasUserPermission(user, 'expense_capture')) {
+      throw new Error('You do not have permission to capture expenses');
+    }
     return s.saveExpense(d, user.id, user.username);
   }));
   add('expenses:delete', wrapSync((id, a) => {
@@ -477,9 +499,29 @@ function buildHandlers(store) {
     return s.postExpenseRecurringDue(user);
   }));
   add('expenses:ownerFundings', wrapSync((f) => { requireSession(); return s.listOwnerFundings(f || {}); }));
+  add('expenses:itemSummary', wrapSync((f) => {
+    requireUserSession(['owner', 'manager', 'supervisor', 'assistant_manager', 'accountant', 'bookkeeper']);
+    return s.expenseItemSummary(f || {});
+  }));
   add('expenses:recordOwnerFunding', wrapSync((d, a) => {
     const user = s.requireActor(a, ['owner', 'manager']);
     return s.recordOwnerFunding(d, user);
+  }));
+  add('expenses:recordWithdrawal', wrapSync((d, a) => {
+    const user = s.requireActor(a, ['owner', 'manager']);
+    return s.recordMoneyWithdrawal(d || {}, user);
+  }));
+  add('expenses:withdrawals', wrapSync((f) => {
+    requireUserSession(['owner', 'manager', 'supervisor', 'assistant_manager', 'accountant', 'bookkeeper']);
+    return s.listMoneyWithdrawals(f || {});
+  }));
+  add('expenses:dailyMoney', wrapSync((f) => {
+    requireUserSession(['owner', 'manager', 'supervisor', 'assistant_manager', 'accountant', 'bookkeeper']);
+    return { ...s.dailyMoneyReport(f || {}), owner_whatsapp: require('../electron/services/expense-app-platform').ownerWhatsAppNumber() };
+  }));
+  add('expenses:dailyMoneyPdf', wrapSync((f) => {
+    const u = requireUserSession(['owner', 'manager', 'supervisor', 'assistant_manager', 'accountant', 'bookkeeper']);
+    return s.dailyMoneyPdf(f || {}, { by: u?.full_name || u?.username });
   }));
 
   add('stockBatch:dashboard', wrapSync((f) => { requireSession(); return s.stockBatchDashboard(f || {}); }));
@@ -495,7 +537,7 @@ function buildHandlers(store) {
   }));
   add('stockBatch:waste', wrapSync((id, d, a) => {
     const user = s.requireActor(a, ['owner', 'manager', 'assistant_manager', 'supervisor']);
-    return s.recordWaste(id, d || {}, user);
+    return s.recordBatchWaste(id, d || {}, user);
   }));
   add('stockBatch:setActualYield', wrapSync((id, y, a) => {
     const user = s.requireActor(a, ['owner', 'manager', 'assistant_manager', 'supervisor']);
@@ -520,10 +562,28 @@ function buildHandlers(store) {
     return s.saveStockBatchSettings(d || {}, user);
   }));
   add('stockBatch:productAnalysis', wrapSync((f) => { requireSession(); return s.productYieldAnalysis(f || {}); }));
+  add('stockBatch:mealsUsing', wrapSync((id) => { requireSession(); return require('../electron/services/stock-batch-yield').listMealsUsingIngredient(id); }));
   add('stockBatch:profitability', wrapSync((f) => { requireSession(); return s.profitabilityReport(f || {}); }));
 
   add('customers:get', wrapSync(q => s.getCustomers(q)));
+  add('customers:summary', wrapSync(() => s.getCustomersSummary()));
   add('customers:getOne', wrapSync(id => s.getCustomer(id)));
+  add('customers:phoneLookup', wrapSync((phone) => {
+    requireSession();
+    return require('../electron/services/customer-access').posLookup(phone);
+  }));
+  add('customers:identitySearch', wrapSync((q) => {
+    requireUserSession(['owner', 'manager', 'supervisor', 'assistant_manager']);
+    return require('../electron/services/customer-access').adminSearch(q);
+  }));
+  add('customers:getAccessSettings', wrapSync(() => {
+    requireSession();
+    return require('../electron/services/customer-access').getAccessSettings();
+  }));
+  add('customers:saveAccessSettings', wrapSync((data) => {
+    requireUserSession(['owner', 'manager']);
+    return require('../electron/services/customer-access').saveAccessSettings(data || {});
+  }));
   add('customers:save', wrapSync((d, a) => {
     const user = s.requireActor(a, ['owner', 'manager', 'cashier', 'supervisor', 'assistant_manager']);
     return s.saveCustomer(d, user.id, user.username);
@@ -1143,6 +1203,23 @@ function buildHandlers(store) {
     const user = s.requireActor(a, ['owner', 'manager', 'assistant_manager', 'supervisor']);
     return s.rejectWaste(id, user.id, notes);
   }));
+  add('waste:update', wrapSync((id, data, a) => {
+    const user = s.requireActor(a, ['owner', 'manager']);
+    return s.updateWaste(id, data || {}, user.id, user.username);
+  }));
+  add('inventory:unitsList', wrapSync(() => { requireSession(); return s.listUnitsCatalog(); }));
+  add('inventory:searchIngredients', wrapSync((q, limit) => {
+    requireSession();
+    return s.searchRecipeIngredients(q, limit);
+  }));
+  add('inventory:saveUnit', wrapSync((data, a) => {
+    const user = s.requireActor(a, ['owner', 'manager']);
+    return s.saveUnitCatalog(data || {}, user);
+  }));
+  add('expenses:stockEffects', wrapSync((expenseId) => {
+    requireSession();
+    return require('../electron/services/expense-stock').getEffects(Number(expenseId));
+  }));
   add('waste:returnStock', wrapSync((id, a) => {
     const user = s.requireActor(a, ['owner', 'manager', 'assistant_manager', 'supervisor']);
     return s.returnWasteToStock(id, user.id);
@@ -1233,10 +1310,29 @@ function buildHandlers(store) {
     const user = s.requireActor(a, ['owner', 'manager']);
     return s.saveKdsNotificationSound(p, user.id, user.username);
   }));
-  add('kitchen:get', wrapSync(st => s.getKitchenOrders(st)));
-  add('kitchen:status', wrapSync((id, st, a) => {
-    s.requireActor(a || s.getUserSession?.(), ['owner', 'manager', 'cashier', 'supervisor', 'assistant_manager']);
-    return s.updateKitchenOrderStatus(id, st);
+  add('kitchen:get', wrapSync((st, displayToken) => {
+    const tok = displayToken || null;
+    if (tok) {
+      const ops = require('../electron/services/ops-display-platform');
+      return ops.getKitchenOrdersForDevice(tok, st);
+    }
+    requireUserSession(['owner', 'manager', 'cashier', 'supervisor', 'assistant_manager']);
+    return s.getKitchenOrders(st);
+  }));
+  add('kitchen:status', wrapSync((id, st, a, meta) => {
+    const user = s.requireActor(a || s.getUserSession?.(), ['owner', 'manager', 'cashier', 'supervisor', 'assistant_manager']);
+    return s.updateKitchenOrderStatus(id, st, user, meta || null);
+  }));
+  add('kitchen:bulkStatus', wrapSync((ids, st, meta, a) => {
+    const user = s.requireActor(a || s.getUserSession?.(), ['owner', 'manager', 'cashier', 'supervisor', 'assistant_manager']);
+    return s.bulkUpdateKitchenOrderStatus(ids, st, user, meta || null);
+  }));
+  add('kitchen:adminClearAllActive', wrapSync((meta, a) => {
+    const user = s.requireActor(a || s.getUserSession?.(), ['owner', 'manager', 'supervisor', 'assistant_manager']);
+    return s.clearAllActiveKitchenOrders(user, meta || null);
+  }));
+  add('opsDisplay:bulkKitchenStatus', wrapSync((deviceTok, ids, st, meta) => {
+    return opsDisplay.bulkKitchenStatusForDevice(deviceTok, ids, st, meta || {});
   }));
   add('kitchen:create', wrapSync((d, a) => {
     const user = s.requireActor(a, ['owner', 'manager', 'cashier', 'supervisor', 'assistant_manager']);
@@ -1388,6 +1484,7 @@ function buildHandlers(store) {
     return true;
   }));
   add('salaryClaims:list', wrapSync((f, a) => {
+    try { require('../electron/services/salary-claims').ensureSalaryClaimsSchema(); } catch (_) { /* */ }
     try {
       const empId = (f && f.employee_id) || a?.employee_id;
       if (s.getEmployeeSession?.()?.employee_id != null || a?.employee_id != null) {
@@ -1409,7 +1506,11 @@ function buildHandlers(store) {
     if (emp?.employee_id == null) s.requireActor(a, ['owner', 'manager']);
     return c;
   }));
-  add('salaryClaims:save', wrapSync((d, a) => { s.requireActor(a, ['owner', 'manager']); return s.saveSalaryClaim(d, a.id, a.username || a.full_name); }));
+  add('salaryClaims:save', wrapSync((d, a) => {
+    try { require('../electron/services/salary-claims').ensureSalaryClaimsSchema(); } catch (_) { /* */ }
+    s.requireActor(a, ['owner', 'manager']);
+    return s.saveSalaryClaim(d, a.id, a.username || a.full_name);
+  }));
   add('salaryClaims:delete', wrapSync((id, a) => { s.requireActor(a, ['owner', 'manager']); return s.deleteSalaryClaim(id, a.id, a.username || a.full_name); }));
   add('salaryClaims:claim', wrapSync((id, notes, a) => {
     const emp = s.getEmployeeSession?.();
@@ -1429,6 +1530,7 @@ function buildHandlers(store) {
     return s.buildSalaryClaimPdf(id, s.getSettingsParsed());
   }));
   add('salaryClaims:fromPayroll', wrapSync((start, end, deadline, payDate, opensAt, a) => {
+    try { require('../electron/services/salary-claims').ensureSalaryClaimsSchema(); } catch (_) { /* */ }
     s.requireActor(a, ['owner', 'manager']);
     return s.createClaimsFromPayroll(start, end, deadline, payDate, opensAt, a.id, a.username || a.full_name);
   }));
@@ -2559,6 +2661,10 @@ function buildHandlers(store) {
     requireUserSession(['owner', 'manager', 'supervisor', 'delivery_manager']);
     return dp.getBranchSettings(branchId);
   }));
+  add('delivery:posPlaces', wrapSync((branchId) => {
+    requireSession();
+    return dp.getPosDeliveryPlaces(branchId);
+  }));
   add('delivery:saveBranchSettings', wrapSync((branchId, d, a) => {
     const user = requireUserSession(['owner', 'manager', 'supervisor']);
     return dp.saveBranchSettings(branchId, d || {}, user);
@@ -2849,7 +2955,16 @@ function buildHandlers(store) {
     return s.acceptOnlineOrderAsSale(id, user, opts || {});
   }));
 
-  add('audit:salesList', wrapSync(f => { requireSession(); return s.getUnifiedSalesList(f); }));
+  add('audit:salesList', wrapSync(f => {
+    const u = requireSession();
+    const filters = { ...(f || {}) };
+    if (String(u?.role || '').toLowerCase() === 'cashier' && u.id) filters.cashier_id = u.id;
+    return s.getUnifiedSalesList(filters);
+  }));
+  add('audit:salesByCashier', wrapSync(f => {
+    requireUserSession(['owner', 'manager', 'supervisor', 'assistant_manager', 'accountant']);
+    return s.getSalesByCashier(f || {});
+  }));
   add('audit:searchSales', wrapSync(f => s.searchSalesExplorer(f)));
   add('audit:voidSale', wrapSync((id, r, a, code) => {
     const user = s.requireActor(a, ['owner', 'manager', 'cashier', 'supervisor', 'assistant_manager']);
@@ -2939,8 +3054,26 @@ function buildHandlers(store) {
   }));
 
   const web = require('../electron/services/online-ordering');
-  add('web:getSettings', wrapSync(() => web.getGlobalSettings()));
-  add('web:getHoursStatus', wrapSync(() => web.getHoursStatus()));
+  // Public storefront reads are polled by every open customer tab; the Postgres layer is synchronous,
+  // so uncached reads (getMenu ≈ 180 queries) stall every other RPC on the server.
+  const publicCache = new Map();
+  const cachedPublic = (name, ttlMs, fn) => (...args) => {
+    const key = `${name}:${JSON.stringify(args)}`;
+    const hit = publicCache.get(key);
+    const now = Date.now();
+    if (hit && hit.exp > now) return hit.value;
+    const value = fn(...args);
+    if (publicCache.size > 500) publicCache.clear();
+    publicCache.set(key, { value, exp: now + ttlMs });
+    return value;
+  };
+  add('web:getSettings', wrapSync(cachedPublic('settings', 5000, () => {
+    const g = web.getGlobalSettings();
+    let access = null;
+    try { access = require('../electron/services/customer-access').getAccessSettings(); } catch (_) { /* */ }
+    return access ? { ...g, online: { ...(g.online || {}), customer_access: access } } : g;
+  })));
+  add('web:getHoursStatus', wrapSync(cachedPublic('hours', 5000, () => web.getHoursStatus())));
   add('web:trackEvents', wrapSync((payload) => {
     const analytics = require('../electron/services/web-analytics');
     return analytics.trackEvents(payload || {});
@@ -2953,8 +3086,8 @@ function buildHandlers(store) {
     const user = requireUserSession(['owner', 'manager', 'supervisor']);
     return require('../electron/services/web-analytics').listOnlineCustomers(filters || {}, actor || user);
   }));
-  add('web:getBranches', wrapSync(() => web.getPublicBranches()));
-  add('web:getMenu', wrapSync((branchId, filters) => web.getBranchMenu(branchId, filters || {})));
+  add('web:getBranches', wrapSync(cachedPublic('branches', 10000, () => web.getPublicBranches())));
+  add('web:getMenu', wrapSync(cachedPublic('menu', 15000, (branchId, filters) => web.getBranchMenu(branchId, filters || {}))));
   add('web:getProduct', wrapSync((branchId, productId) => web.getProductDetail(branchId, productId)));
   add('web:checkRegistration', wrapSync((data) => web.checkWebRegistration(data || {})));
   add('web:sendRegistrationCode', wrapAsync((data) => web.sendWebRegistrationCode(data || {})));
@@ -2963,6 +3096,11 @@ function buildHandlers(store) {
   add('web:sendPasswordReset', wrapAsync((data) => web.sendWebPasswordReset(data || {})));
   add('web:resetPassword', wrapSync((data) => web.resetWebPassword(data || {})));
   add('web:account', wrapSync((token) => web.getCustomerAccount(token)));
+  const custAccess = () => require('../electron/services/customer-access');
+  add('web:phoneAccessStart', wrapAsync((data) => custAccess().start(data || {})));
+  add('web:phoneAccessVerify', wrapSync((data) => custAccess().verify(data || {})));
+  add('web:phoneAccessCreateProfile', wrapSync((data) => custAccess().createProfile(data || {})));
+  add('web:logout', wrapSync((token) => custAccess().logout(token)));
   add('web:validateCart', wrapSync((branchId, cart) => web.validateCart(branchId, cart || {})));
   add('web:validateCoupon', wrapSync((code, branchId, cart, customerId) => web.validateCoupon(code, branchId, cart || {}, customerId)));
   add('web:initiateCardPayment', wrapSync((branchId, amount, token, method) => {
@@ -2998,7 +3136,7 @@ add('web:adminAnalytics', wrapSync((filters, actor) => {
     const recovery = require('../electron/services/panel-password-recovery');
     return recovery.recoverDriverPassword(identifier);
   }));
-  add('auth:recoverReferralAgentPassword', wrapSync((identifier) => {
+  add('auth:recoverReferralAgentPassword', wrapAsync((identifier) => {
     const recovery = require('../electron/services/panel-password-recovery');
     return recovery.sendReferralAgentResetCode(identifier);
   }));
@@ -3045,6 +3183,7 @@ add('web:adminAnalytics', wrapSync((filters, actor) => {
   add('mobile:logout', wrapSync((token) => mm.logout(token)));
   add('mobile:profile', wrapSync((token) => mm.getProfile(token)));
   add('mobile:dashboard', wrapSync((token, filters) => mm.getDashboard(token, filters || {})));
+  add('mobile:slaLive', wrapSync((token, filters) => mm.getSlaLive(token, filters || {})));
   add('mobile:orders', wrapSync((token, filters) => mm.listOrders(token, filters || {})));
   add('mobile:onlineOrders', wrapSync((token, filters) => mm.listOnlineOrders(token, filters || {})));
   add('mobile:order', wrapSync((token, orderId) => mm.getOrder(token, orderId)));
@@ -3506,6 +3645,11 @@ add('web:adminAnalytics', wrapSync((filters, actor) => {
   }));
   add('signage:logout', wrapSync((tok) => s.signageLogout(tok)));
   add('signage:dashboard', wrapSync((tok) => s.signageDashboard(tok)));
+  add('signage:adminPublishSlideshow', wrapSync((data, a) => {
+    const authz = require('../electron/services/authz');
+    authz.assertUserActor(bizActor(a), ['owner', 'manager', 'supervisor', 'assistant_manager']);
+    return s.adminPublishSlideshow(bizActor(a), data || {});
+  }));
   add('signage:summary', wrapSync((a) => {
     requireUserSession(['owner', 'manager']);
     return s.signageSummary?.();
@@ -3592,6 +3736,78 @@ add('web:adminAnalytics', wrapSync((filters, actor) => {
     const u = requireUserSession(['owner', 'manager']);
     return kioskSvc.approvePairingAdmin(code, data || {}, u.full_name || u.username);
   }));
+  add('kiosk:adminRevokeDevice', wrapSync((id, a) => {
+    const u = requireUserSession(['owner', 'manager']);
+    return kioskSvc.revokeDeviceAdmin(id, u.full_name || u.username);
+  }));
+  add('kiosk:adminSaveDevice', wrapSync((data, a) => {
+    const u = requireUserSession(['owner', 'manager']);
+    return kioskSvc.saveDeviceAdmin(data || {}, u.full_name || u.username);
+  }));
+  add('kiosk:reportErrors', wrapSync((deviceTok, errors) => kioskSvc.reportKioskErrors(deviceTok, errors || [])));
+  add('kiosk:customerLogin', wrapSync((deviceTok, login, password) => kioskSvc.kioskCustomerLogin(deviceTok, login, password)));
+  add('kiosk:customerBenefits', wrapSync((deviceTok, webToken) => kioskSvc.kioskCustomerBenefits(deviceTok, webToken)));
+  add('kiosk:validateCoupon', wrapSync((deviceTok, code, opts, webToken) => kioskSvc.kioskValidateCoupon(deviceTok, code, opts, webToken)));
+  add('kiosk:checkGiftCard', wrapSync((deviceTok, code) => kioskSvc.kioskCheckGiftCard(deviceTok, code)));
+
+  const opsDisplay = require('../electron/services/ops-display-platform');
+  add('opsDisplay:requestPairing', wrapSync((deviceType, meta) => opsDisplay.requestPairing(deviceType, meta || {})));
+  add('opsDisplay:pairingStatus', wrapSync((code) => opsDisplay.pairingStatus(code)));
+  add('opsDisplay:heartbeat', wrapSync((deviceTok, payload) => opsDisplay.deviceHeartbeat(deviceTok, payload || {})));
+  add('opsDisplay:config', wrapSync((deviceTok) => opsDisplay.getDeviceConfig(deviceTok)));
+  add('opsDisplay:orders', wrapSync((deviceTok, status) => opsDisplay.getKitchenOrdersForDevice(deviceTok, status)));
+  add('opsDisplay:adminListDevices', wrapSync((a) => { requireUserSession(['owner', 'manager']); return opsDisplay.listDevicesAdmin(); }));
+  add('opsDisplay:adminPendingPairings', wrapSync((a) => { requireUserSession(['owner', 'manager']); return opsDisplay.listPendingPairingsAdmin(); }));
+  add('opsDisplay:adminApprovePairing', wrapSync((code, data, a) => {
+    const u = requireUserSession(['owner', 'manager']);
+    return opsDisplay.approvePairingAdmin(code, data || {}, u);
+  }));
+  add('opsDisplay:adminRevoke', wrapSync((id, a) => { requireUserSession(['owner', 'manager']); return opsDisplay.revokeDeviceAdmin(id, requireUserSession(['owner', 'manager'])); }));
+  add('opsDisplay:adminSaveDevice', wrapSync((id, data, a) => { requireUserSession(['owner', 'manager']); return opsDisplay.saveDeviceAdmin(id, data || {}); }));
+  add('opsDisplay:adminUnified', wrapSync((a) => {
+    const authz = require('../electron/services/authz');
+    const user = authz.assertUserActor(a || s.getUserSession?.(), ['owner', 'manager', 'supervisor', 'assistant_manager']);
+    if (user.role !== 'owner' && !authz.hasUserPermission(user, 'ops_devices')) {
+      throw new Error('You do not have permission to manage ops devices');
+    }
+    return opsDisplay.listUnifiedOpsDevices();
+  }));
+  add('opsDisplay:adminGetCdsSettings', wrapSync((a) => { requireUserSession(['owner', 'manager']); return opsDisplay.getCdsSettingsFromStore(); }));
+  add('opsDisplay:adminSaveCdsSettings', wrapSync((data, a) => opsDisplay.saveCdsDisplaySettings(data || {}, requireUserSession(['owner', 'manager']))));
+
+  // ─── Order SLA & live control ───────────────────────────────────────────────
+  const sla = require('../electron/services/order-sla');
+  const SLA_VIEW = ['owner', 'manager', 'assistant_manager', 'supervisor'];
+  const SLA_OPS = ['owner', 'manager', 'assistant_manager', 'supervisor', 'cashier'];
+  add('sla:meta', wrapSync(() => {
+    requireUserSession(SLA_OPS);
+    return { stages: sla.STAGES, order_types: sla.ORDER_TYPES, kitchen_reasons: sla.KITCHEN_REASONS, delivery_reasons: sla.DELIVERY_REASONS,
+      exception_types: sla.EXCEPTION_TYPES, incident_levels: sla.INCIDENT_LEVELS };
+  }));
+  add('sla:settings', wrapSync(() => { requireUserSession(SLA_VIEW); return sla.getSettings(); }));
+  add('sla:saveSettings', wrapSync((data) => sla.saveSettings(data || {}, requireUserSession(['owner', 'manager']))));
+  add('sla:live', wrapSync((f) => { requireUserSession(SLA_OPS); return sla.liveBoard(f || {}); }));
+  add('sla:timeline', wrapSync((ref) => {
+    const u = requireUserSession(SLA_OPS);
+    return sla.timeline(ref, { includeIncidents: SLA_VIEW.includes(u.role) });
+  }));
+  add('sla:delayReason', wrapSync((id, data) => sla.setDelayReason(id, data || {}, requireUserSession(SLA_OPS))));
+  add('sla:exception', wrapSync((id, data) => sla.setException(id, data || {}, requireUserSession(SLA_VIEW))));
+  add('sla:pause', wrapSync((id, reason) => sla.pauseTimer(id, reason, requireUserSession(SLA_VIEW))));
+  add('sla:resume', wrapSync((id) => sla.resumeTimer(id, requireUserSession(SLA_VIEW))));
+  add('sla:report', wrapSync((f) => { requireUserSession(SLA_VIEW); return sla.slaReport(f || {}); }));
+  add('sla:dailyReport', wrapSync((f) => { requireUserSession(SLA_VIEW); return sla.dailyOrderReport(f || {}); }));
+  add('sla:kioskReport', wrapSync((f) => { requireUserSession(SLA_VIEW); return sla.kioskReport(f || {}); }));
+  add('sla:incidents', wrapSync((f) => { requireUserSession(SLA_VIEW); return sla.listIncidents(f || {}); }));
+  add('sla:updateIncident', wrapSync((id, data) => sla.updateIncident(id, data || {}, requireUserSession(SLA_VIEW))));
+  add('sla:adjustment', wrapSync((id, action, data) => sla.adjustmentAction(id, action, data || {}, requireUserSession(SLA_VIEW))));
+  add('sla:kioskOrders', wrapSync((f) => { requireUserSession(SLA_OPS); return sla.kioskOrdersForPos(f || {}); }));
+  add('sla:kioskHealth', wrapSync((f) => { requireUserSession(SLA_VIEW); return kioskSvc.kioskHealth(f || {}); }));
+  add('sla:kioskErrors', wrapSync((f) => { requireUserSession(SLA_VIEW); return kioskSvc.listKioskErrors(f || {}); }));
+  add('driver:delayReason', wrapSync((token, deliveryId, data) => {
+    const driver = require('../electron/services/delivery-platform').driverFromToken(token);
+    return sla.driverDelayReason(deliveryId, data || {}, driver);
+  }));
 
   // ─── Drive-Thru ─────────────────────────────────────────────────────────────
   const driveThruSvc = require('../electron/services/drive-thru-platform');
@@ -3613,6 +3829,10 @@ add('web:adminAnalytics', wrapSync((filters, actor) => {
   add('driveThru:updateOrder', wrapSync((tok, id, data) => driveThruSvc.updateOrder(id, data || {}, tok)));
   add('driveThru:confirmOrder', wrapSync((tok, id) => driveThruSvc.confirmOrder(id, tok)));
   add('driveThru:takePayment', wrapSync((tok, id, data) => driveThruSvc.takePayment(id, data || {}, tok)));
+  add('driveThru:validateVoucher', wrapSync((tok, code, opts) => {
+    driveThruSvc.driveThruDashboard(tok);
+    return require('../electron/services/discount-vouchers').validateVoucher(code, opts || {});
+  }));
   add('driveThru:sendToKitchen', wrapSync((tok, id) => driveThruSvc.sendToKitchen(id, tok)));
   add('driveThru:markReady', wrapSync((tok, id) => driveThruSvc.markReady(id, tok)));
   add('driveThru:markCollected', wrapSync((tok, id) => driveThruSvc.markCollected(id, tok)));
@@ -3625,6 +3845,7 @@ add('web:adminAnalytics', wrapSync((filters, actor) => {
   add('driveThru:adminListStations', wrapSync((a) => { requireUserSession(['owner', 'manager']); return driveThruSvc.listStationsAdmin(); }));
   add('driveThru:adminSaveStation', wrapSync((data, a) => { requireUserSession(['owner', 'manager']); return driveThruSvc.saveStationAdmin(data || {}); }));
   add('driveThru:adminRegenerateStationToken', wrapSync((stationId, a) => { requireUserSession(['owner', 'manager']); return driveThruSvc.regenerateStationTokenAdmin(stationId); }));
+  add('driveThru:adminDeleteStation', wrapSync((stationId, a) => { requireUserSession(['owner', 'manager']); return driveThruSvc.deleteStationAdmin(stationId); }));
 
   // ─── Expenses mobile app ────────────────────────────────────────────────────
   add('expenseApp:login', wrapSync((u, p, d) => expenseApp.expenseLogin(u, p, d || {})));
@@ -3636,11 +3857,31 @@ add('web:adminAnalytics', wrapSync((filters, actor) => {
   add('expenseApp:categories', wrapSync(() => expenseApp.expenseCategories()));
   add('expenseApp:settings', wrapSync(() => expenseApp.expenseShopSettings()));
   add('expenseApp:grantAccess', wrapSync((d) => expenseApp.expenseGrantAccess(d || {})));
+  add('expenseApp:unitsList', wrapSync((tok) => expenseApp.expenseUnitsList(tok)));
+  add('expenseApp:searchIngredients', wrapSync((tok, q, limit) => expenseApp.expenseSearchIngredients(tok, q, limit)));
   add('expenseApp:wasteProducts', wrapSync((tok) => expenseApp.expenseWasteProducts(tok)));
   add('expenseApp:wasteList', wrapSync((tok, f) => expenseApp.expenseWasteList(tok, f || {})));
   add('expenseApp:wasteRecord', wrapSync((tok, d) => expenseApp.expenseWasteRecord(tok, d || {})));
   add('expenseApp:ownerFundings', wrapSync((tok, f) => expenseApp.expenseOwnerFundings(tok, f || {})));
   add('expenseApp:recordOwnerFunding', wrapSync((tok, d) => expenseApp.expenseRecordOwnerFunding(tok, d || {})));
+  add('expenseApp:recordWithdrawal', wrapSync((tok, d) => expenseApp.expenseRecordWithdrawal(tok, d || {})));
+  add('expenseApp:withdrawals', wrapSync((tok, f) => expenseApp.expenseWithdrawals(tok, f || {})));
+  add('expenseApp:dailyMoney', wrapSync((tok, f) => expenseApp.expenseDailyMoney(tok, f || {})));
+  add('expenseApp:dailyMoneyPdf', wrapSync((tok, f) => expenseApp.expenseDailyMoneyPdf(tok, f || {})));
+  add('expenseApp:branches', wrapSync((tok) => expenseApp.expenseBranches(tok)));
+  add('expenseApp:stockBatchProducts', wrapSync((tok) => expenseApp.expenseStockBatchProducts(tok)));
+  add('expenseApp:stockBatchDashboard', wrapSync((tok, f) => expenseApp.expenseStockBatchDashboard(tok, f || {})));
+  add('expenseApp:stockBatchList', wrapSync((tok, f) => expenseApp.expenseStockBatchList(tok, f || {})));
+  add('expenseApp:stockBatchGet', wrapSync((tok, id) => expenseApp.expenseStockBatchGet(tok, id)));
+  add('expenseApp:stockBatchCreate', wrapSync((tok, d) => expenseApp.expenseStockBatchCreate(tok, d || {})));
+  add('expenseApp:stockBatchUpdate', wrapSync((tok, id, d) => expenseApp.expenseStockBatchUpdate(tok, id, d || {})));
+  add('expenseApp:stockBatchWaste', wrapSync((tok, id, d) => expenseApp.expenseStockBatchWaste(tok, id, d || {})));
+  add('expenseApp:stockBatchSetActualYield', wrapSync((tok, id, y) => expenseApp.expenseStockBatchSetActualYield(tok, id, y)));
+  add('expenseApp:stockBatchClose', wrapSync((tok, id, reason) => expenseApp.expenseStockBatchClose(tok, id, reason)));
+  add('expenseApp:stockBatchReopen', wrapSync((tok, id) => expenseApp.expenseStockBatchReopen(tok, id)));
+  add('expenseApp:stockBatchCancel', wrapSync((tok, id, reason) => expenseApp.expenseStockBatchCancel(tok, id, reason)));
+  add('expenseApp:stockBatchEvents', wrapSync((tok, id, limit) => expenseApp.expenseStockBatchEvents(tok, id, limit)));
+  add('expenseApp:stockBatchMealsUsing', wrapSync((tok, id) => expenseApp.expenseStockBatchMealsUsing(tok, id)));
 
   // ─── Manager Operations & Daily Tasks ───────────────────────────────────────
   const managerOps = require('../electron/services/manager-operations');
@@ -3818,8 +4059,186 @@ add('web:adminAnalytics', wrapSync((filters, actor) => {
   add('cc:saveBranch', wrapSync((d, a) => { requireUserSession(['owner', 'manager']); return cc().saveBranchDestination(d || {}, a); }));
   add('cc:processQueue', wrapAsync(async (a) => { requireUserSession(['owner', 'manager']); return cc().processQueue(30); }));
   add('cc:emit', wrapSync((key, payload, opts, a) => { requireUserSession(['owner', 'manager']); return cc().emit(key, payload || {}, { ...(opts || {}), actor: a }); }));
-  add('cc:createVerification', wrapSync((d, a) => { requireUserSession(['owner', 'manager', 'system']); return cc().createVerificationCode(d || {}, a); }));
+  add('cc:createVerification', wrapAsync((d, a) => { const u = requireUserSession(['owner', 'manager']); return cc().createVerificationCode(d || {}, u); }));
   add('cc:verifyCode', wrapSync((d) => cc().verifyCode(d || {})));
+  const ccCtl = () => require('../electron/services/cc-control');
+  const ccSch = () => require('../electron/services/cc-scheduler');
+  add('cc:controlDashboard', wrapSync(() => { requireUserSession(['owner', 'manager']); return cc().controlDashboard(); }));
+  add('cc:saveControl', wrapSync((d) => { const u = requireUserSession(['owner']); return ccCtl().saveControl(d || {}, u); }));
+  add('cc:setEmergency', wrapSync((on) => { const u = requireUserSession(['owner', 'manager']); return ccCtl().setEmergency(!!on, u); }));
+  add('cc:releaseHeld', wrapSync((d) => { const u = requireUserSession(['owner']); return ccCtl().releaseHeld(u, d || {}); }));
+  add('cc:resumeChannel', wrapSync((ch) => { const u = requireUserSession(['owner', 'manager']); return ccCtl().resumeChannel(ch, u); }));
+  add('cc:testSend', wrapAsync((d) => { const u = requireUserSession(['owner', 'manager']); return cc().testSend(d || {}, u); }));
+  add('cc:attempts', wrapSync((limit) => { requireUserSession(['owner', 'manager']); return cc().listDeliveryAttempts(limit); }));
+  add('cc:auditLog', wrapSync((limit) => { requireUserSession(['owner']); return cc().listAudit(limit); }));
+add('cc:webhooks', wrapSync(() => { requireUserSession(['owner', 'manager']); return cc().webhookStatus(); }));
+add('cc:permissions', wrapSync(() => { requireUserSession(['owner', 'manager']); return cc().permissionsMatrix(); }));
+  add('cc:otpEvents', wrapSync((f) => { requireUserSession(['owner', 'manager']); return require('../electron/services/cc-otp').listEvents(f || {}); }));
+  add('cc:channelTemplates', wrapSync(() => { requireUserSession(['owner', 'manager']); return ccSch().listChannelTemplates(); }));
+  add('cc:saveChannelTemplate', wrapSync((d) => { const u = requireUserSession(['owner', 'manager']); return ccSch().saveChannelTemplate(d || {}, u); }));
+  add('cc:previewTemplate', wrapSync((d) => { requireUserSession(['owner', 'manager']); return ccSch().previewTemplate(d || {}); }));
+  add('cc:schedules', wrapSync(() => { requireUserSession(['owner', 'manager']); return ccSch().listSchedules(); }));
+  add('cc:saveSchedule', wrapSync((d) => { const u = requireUserSession(['owner', 'manager']); return ccSch().saveSchedule(d || {}, u); }));
+  add('cc:scheduleConfirmation', wrapSync((id) => { requireUserSession(['owner', 'manager']); return ccSch().scheduleConfirmation(Number(id)); }));
+  add('cc:confirmSchedule', wrapSync((id) => { const u = requireUserSession(['owner', 'manager']); return ccSch().confirmSchedule(Number(id), u); }));
+  add('cc:cancelSchedule', wrapSync((id) => { const u = requireUserSession(['owner', 'manager']); return ccSch().cancelSchedule(Number(id), u); }));
+  add('cc:reminders', wrapSync(() => { requireUserSession(['owner', 'manager']); return ccSch().listReminders(); }));
+  add('cc:saveReminder', wrapSync((d) => { const u = requireUserSession(['owner', 'manager']); return ccSch().saveReminder(d || {}, u); }));
+  add('cc:setReminderEnabled', wrapSync((id, en) => { const u = requireUserSession(['owner', 'manager']); return ccSch().setReminderEnabled(Number(id), !!en, u); }));
+  add('cc:customerPrefs', wrapSync((d) => { requireUserSession(['owner', 'manager', 'supervisor', 'cashier']); return ccSch().getPrefs(d || {}); }));
+  add('cc:saveCustomerPrefs', wrapSync((d) => { const u = requireUserSession(['owner', 'manager', 'supervisor', 'cashier']); return ccSch().savePrefs(d || {}, u); }));
+
+  // ─── Recipe food cost & profitability ────────────────────────────────────
+  const rfc = () => require('../electron/services/recipe-food-cost');
+  const rfcUser = () => requireUserSession();
+  add('rfc:meta', wrapSync(() => rfc().meta(rfcUser())));
+  add('rfc:overview', wrapSync((f) => rfc().overview(f || {}, rfcUser())));
+  add('rfc:costCard', wrapSync((productId, f) => rfc().costCard(productId, f || {}, rfcUser())));
+  add('rfc:sales', wrapSync((f) => rfc().salesPerformance(f || {}, rfcUser())));
+  add('rfc:production', wrapSync((productId, qty, f) => rfc().productionCalculator(productId, qty, f || {}, rfcUser())));
+  add('rfc:whatIf', wrapSync((d) => rfc().whatIf(d || {}, rfcUser())));
+  add('rfc:priceChanges', wrapSync((f) => rfc().priceChanges(f || {}, rfcUser())));
+  add('rfc:history', wrapSync((productId) => rfc().costHistory(productId, rfcUser())));
+  add('rfc:variance', wrapSync((f) => rfc().variance(f || {}, rfcUser())));
+  add('rfc:waste', wrapSync((f) => rfc().waste(f || {}, rfcUser())));
+  add('rfc:alerts', wrapSync((f) => rfc().alerts(f || {}, rfcUser())));
+  add('rfc:targets', wrapSync(() => rfc().getTargets(rfcUser())));
+  add('rfc:saveTargets', wrapSync((d) => rfc().saveTargets(d || {}, rfcUser())));
+  add('rfc:report', wrapSync((type, f) => rfc().report(type, f || {}, rfcUser())));
+  add('rfc:aiAsk', wrapAsync((q, f) => rfc().aiAsk(q, f || {}, rfcUser())));
+  add('rfc:aiHistory', wrapSync((limit) => rfc().aiHistory(limit, rfcUser())));
+
+  // ─── Financial Intelligence Center ───────────────────────────────────────
+  const fin = () => require('../electron/services/financial-intelligence');
+  const finUser = () => requireUserSession(['owner', 'manager', 'assistant_manager', 'supervisor']);
+  add('fin:meta', wrapSync(() => fin().meta(finUser())));
+  add('fin:dashboard', wrapSync((f) => fin().dashboard(f || {}, finUser())));
+  add('fin:daily', wrapSync((f) => fin().daily(f || {}, finUser())));
+  add('fin:monthly', wrapSync((f) => fin().monthly(f || {}, finUser())));
+  add('fin:annual', wrapSync((f) => fin().annual(f || {}, finUser())));
+  add('fin:history', wrapSync((f) => fin().history(f || {}, finUser())));
+  add('fin:branches', wrapSync((f) => fin().branchPerformance(f || {}, finUser())));
+  add('fin:products', wrapSync((f) => fin().products(f || {}, finUser())));
+  add('fin:sales', wrapSync((f) => fin().salesList(f || {}, finUser())));
+  add('fin:saleDetail', wrapSync((id) => fin().saleDetail(Number(id), finUser())));
+  add('fin:allocation', wrapSync((f) => fin().allocationOverview(f || {}, finUser())));
+  add('fin:saveCategory', wrapSync((d) => fin().saveCategory(d || {}, finUser())));
+  add('fin:setRate', wrapSync((id, d) => fin().setRate(Number(id), d || {}, finUser())));
+  add('fin:setCategoryActive', wrapSync((id, active, eff) => fin().setCategoryActive(Number(id), !!active, eff, finUser())));
+  add('fin:deleteRate', wrapSync((id) => fin().deleteRate(Number(id), finUser())));
+  add('fin:employees', wrapSync((f) => fin().employees(f || {}, finUser())));
+  add('fin:affordability', wrapSync((f) => fin().affordability(f || {}, finUser())));
+  add('fin:savePlannedWorker', wrapSync((d) => fin().savePlannedWorker(d || {}, finUser())));
+  add('fin:deletePlannedWorker', wrapSync((id) => fin().deletePlannedWorker(Number(id), finUser())));
+  add('fin:setEmployeeIncluded', wrapSync((id, inc) => fin().setEmployeeIncluded(Number(id), !!inc, finUser())));
+  add('fin:breakEven', wrapSync((f) => fin().breakEven(f || {}, finUser())));
+  add('fin:saveSettings', wrapSync((d) => fin().saveSettings(d || {}, finUser())));
+  add('fin:aiAsk', wrapAsync((q, f) => fin().aiAsk(q, f || {}, finUser())));
+  add('fin:aiApprove', wrapSync((logId, idx) => fin().aiApprove(Number(logId), Number(idx), finUser())));
+  add('fin:aiHistory', wrapSync((limit) => fin().aiHistory(limit, finUser())));
+  add('fin:generateReport', wrapAsync((type, f) => fin().generateReport(String(type || ''), f || {}, finUser())));
+  add('fin:reports', wrapSync((limit) => fin().listReports(limit, finUser())));
+  add('fin:report', wrapSync((id) => fin().getReport(Number(id), finUser())));
+  add('fin:exportReport', wrapSync((id, format) => fin().exportReport(Number(id), format, finUser())));
+  add('fin:reportSummary', wrapSync((id) => fin().reportSummaryText(Number(id), finUser())));
+  add('fin:audit', wrapSync((limit) => fin().listAudit(limit, finUser())));
+
+  // ─── Marketing Center ────────────────────────────────────────────────────
+  const mkt = () => require('../electron/services/marketing-center');
+  const mktUser = (perm) => mkt().requirePerm(requireUserSession(['owner', 'manager', 'assistant_manager', 'supervisor']), perm);
+  add('mkt:meta', wrapSync(() => { mktUser('mkt_view'); const m = mkt(); return { statuses: m.CAMPAIGN_STATUSES, objectives: m.OBJECTIVES, promotion_kinds: m.PROMOTION_KINDS, channels: m.channelStatus(), settings: m.getSettings() }; }));
+  add('mkt:channelStatus', wrapSync(() => { mktUser('mkt_view'); return mkt().channelStatus(); }));
+  add('mkt:dashboard', wrapSync((f) => { const u = mktUser('mkt_view'); return mkt().dashboard(f || {}, u); }));
+  add('mkt:decisionCenter', wrapSync((f) => { const u = mktUser('mkt_view'); return mkt().decisionCenter(f || {}, u); }));
+  add('mkt:customers', wrapSync((f) => { const u = mktUser('mkt_view'); return mkt().customersView(f || {}, u); }));
+  add('mkt:customerDetail', wrapSync((id, f) => { mktUser('mkt_view'); return mkt().customerDetail(Number(id), f || {}); }));
+  add('mkt:segments', wrapSync((f) => { const u = mktUser('mkt_view'); return mkt().segmentsView(f || {}, u); }));
+  add('mkt:products', wrapSync((f) => { const u = mktUser('mkt_view'); return mkt().productsView(f || {}, u); }));
+  add('mkt:patterns', wrapSync((f) => { const u = mktUser('mkt_view'); return mkt().patternsView(f || {}, u); }));
+  add('mkt:quiet', wrapSync((f) => { const u = mktUser('mkt_view'); return mkt().quietView(f || {}, u); }));
+  add('mkt:branches', wrapSync((f) => { const u = mktUser('mkt_analytics'); return mkt().branchesView(f || {}, u); }));
+  add('mkt:loyalty', wrapSync((f) => { const u = mktUser('mkt_view'); return mkt().loyaltyView(f || {}, u); }));
+  add('mkt:referrals', wrapSync((f) => { const u = mktUser('mkt_view'); return mkt().referralsView(f || {}, u); }));
+  add('mkt:dates', wrapSync((f) => { const u = mktUser('mkt_view'); return mkt().datesView(f || {}, u); }));
+  add('mkt:createDateOffers', wrapSync((d) => { const u = mktUser('mkt_promotions'); return mkt().createDateOffers(d || {}, u); }));
+  add('mkt:previewAudience', wrapSync((aud, branchId, channels) => { mktUser('mkt_view'); return mkt().previewAudience(aud || {}, branchId, channels || []); }));
+  add('mkt:previewPromotion', wrapSync((spec) => { mktUser('mkt_view'); return mkt().previewPromotion(spec || {}); }));
+  add('mkt:createPromotion', wrapSync((spec) => { const u = mktUser('mkt_promotions'); return mkt().createPromotion(spec || {}, u); }));
+  add('mkt:campaigns', wrapSync((f) => { const u = mktUser('mkt_view'); return mkt().listCampaigns(f || {}, u); }));
+  add('mkt:campaign', wrapSync((id) => { mktUser('mkt_view'); return mkt().getCampaign(Number(id)); }));
+  add('mkt:saveCampaign', wrapSync((d) => { const u = requireUserSession(['owner', 'manager', 'assistant_manager', 'supervisor']); return mkt().saveCampaign(d || {}, u); }));
+  add('mkt:submitCampaign', wrapSync((id) => { const u = mktUser('mkt_campaign_create'); return mkt().submitCampaign(Number(id), u); }));
+  add('mkt:approveCampaign', wrapSync((id) => { const u = mktUser('mkt_campaign_approve'); return mkt().approveCampaign(Number(id), u); }));
+  add('mkt:rejectCampaign', wrapSync((id, note) => { const u = mktUser('mkt_campaign_approve'); return mkt().rejectCampaign(Number(id), note, u); }));
+  add('mkt:launchCampaign', wrapSync((id) => { const u = mktUser('mkt_campaign_send'); return mkt().launchCampaign(Number(id), u); }));
+  add('mkt:pauseCampaign', wrapSync((id) => { const u = mktUser('mkt_view'); return mkt().pauseCampaign(Number(id), u); }));
+  add('mkt:resumeCampaign', wrapSync((id) => { const u = mktUser('mkt_campaign_send'); return mkt().resumeCampaign(Number(id), u); }));
+  add('mkt:cancelCampaign', wrapSync((id) => { const u = mktUser('mkt_view'); return mkt().cancelCampaign(Number(id), u); }));
+  add('mkt:duplicateCampaign', wrapSync((id) => { const u = mktUser('mkt_campaign_create'); return mkt().duplicateCampaign(Number(id), u); }));
+  add('mkt:financialPreview', wrapSync((id) => { mktUser('mkt_view'); return mkt().financialPreview(Number(id)); }));
+  add('mkt:campaignResults', wrapSync((id) => { mktUser('mkt_analytics'); return mkt().campaignResults(Number(id)); }));
+  add('mkt:campaignReport', wrapSync((id) => { mktUser('mkt_analytics'); return mkt().campaignReport(Number(id)); }));
+  add('mkt:abReport', wrapSync((group) => { mktUser('mkt_analytics'); return mkt().abReport(group); }));
+  add('mkt:addCampaignCost', wrapSync((id, d) => { const u = mktUser('mkt_budget'); return mkt().addCampaignCost(Number(id), d || {}, u); }));
+  add('mkt:budgetStatus', wrapSync((period) => { mktUser('mkt_budget'); return mkt().budgetStatus(period); }));
+  add('mkt:saveBudget', wrapSync((d) => { const u = mktUser('mkt_budget'); return mkt().saveBudget(d || {}, u); }));
+  add('mkt:deleteBudget', wrapSync((id) => { const u = mktUser('mkt_budget'); return mkt().deleteBudget(Number(id), u); }));
+  add('mkt:calendar', wrapSync((f) => { mktUser('mkt_view'); return mkt().calendar(f || {}); }));
+  add('mkt:saveEvent', wrapSync((d) => { const u = mktUser('mkt_campaign_edit'); return mkt().saveEvent(d || {}, u); }));
+  add('mkt:deleteEvent', wrapSync((id) => { const u = mktUser('mkt_campaign_edit'); return mkt().deleteEvent(Number(id), u); }));
+  add('mkt:suppressions', wrapSync(() => { mktUser('mkt_view'); return mkt().listSuppressions(); }));
+  add('mkt:addSuppression', wrapSync((d) => { const u = mktUser('mkt_campaign_edit'); return mkt().addSuppression(d || {}, u); }));
+  add('mkt:removeSuppression', wrapSync((id) => { const u = mktUser('mkt_settings'); return mkt().removeSuppression(Number(id), u); }));
+  add('mkt:aiAsk', wrapAsync((q, f) => { const u = mktUser('mkt_ai'); return mkt().aiAsk(q, f || {}, u); }));
+  add('mkt:recommendations', wrapSync((limit) => { mktUser('mkt_ai'); return mkt().listRecommendations(limit); }));
+  add('mkt:decideRecommendation', wrapSync((id, decision, note) => { const u = mktUser('mkt_ai'); return mkt().decideRecommendation(Number(id), decision, note, u); }));
+  add('mkt:generateContent', wrapAsync((spec) => { const u = mktUser('mkt_campaign_create'); return mkt().generateContent(spec || {}, u); }));
+  add('mkt:settings', wrapSync(() => { mktUser('mkt_view'); return mkt().getSettings(); }));
+  add('mkt:saveSettings', wrapSync((d) => { const u = mktUser('mkt_settings'); return mkt().saveSettings(d || {}, u); }));
+  add('mkt:audit', wrapSync((limit) => { mktUser('mkt_settings'); return mkt().listAudit(limit); }));
+  add('mkt:archiveCampaign', wrapSync((id) => { const u = mktUser('mkt_campaign_edit'); return mkt().archiveCampaign(Number(id), u); }));
+  add('mkt:unarchiveCampaign', wrapSync((id) => { const u = mktUser('mkt_campaign_edit'); return mkt().unarchiveCampaign(Number(id), u); }));
+  add('mkt:campaignHistory', wrapSync((id) => { mktUser('mkt_view'); return mkt().campaignHistory(Number(id)); }));
+  add('mkt:content', wrapSync((f) => { mktUser('mkt_view'); return mkt().listContent(f || {}); }));
+  add('mkt:saveContent', wrapSync((d) => { const u = mktUser('mkt_view'); return mkt().saveContent(d || {}, u); }));
+  add('mkt:deleteContent', wrapSync((id) => { const u = mktUser('mkt_campaign_edit'); return mkt().deleteContent(Number(id), u); }));
+  add('mkt:useContent', wrapSync((contentId, campaignId) => { const u = mktUser('mkt_campaign_edit'); return mkt().useContentInCampaign(Number(contentId), Number(campaignId), u); }));
+  add('mkt:contentToCommunication', wrapSync((id, d) => { const u = mktUser('mkt_campaign_create'); return mkt().sendContentToCommunication(Number(id), d || {}, u); }));
+
+  // ─── App Notifications / Promotions / Ratings ─────────────────────────────
+  const appN = () => require('../electron/services/app-notifications');
+  add('appNotify:dashboard', wrapSync((a) => { requireUserSession(['owner', 'manager', 'supervisor', 'marketing']); return appN().getChannelDashboard(); }));
+  add('appNotify:previewAudience', wrapSync((d, a) => { requireUserSession(['owner', 'manager', 'marketing']); return appN().previewCampaignAudience(d || {}); }));
+  add('appNotify:saveCampaign', wrapSync((d, a) => { requireUserSession(['owner', 'manager', 'marketing']); return appN().saveCampaign(d || {}, a); }));
+  add('appNotify:sendCampaign', wrapSync((id, a) => { requireUserSession(['owner', 'manager']); return appN().sendCampaign(id, a); }));
+  add('appNotify:scheduleCampaign', wrapSync((id, at, a) => { requireUserSession(['owner', 'manager']); return appN().scheduleCampaign(id, at, a); }));
+  add('appNotify:cancelCampaign', wrapSync((id, a) => { requireUserSession(['owner', 'manager']); return appN().cancelCampaign(id, a); }));
+  add('appNotify:listCampaigns', wrapSync((f, a) => { requireUserSession(['owner', 'manager', 'supervisor', 'marketing']); return appN().listCampaigns(f || {}); }));
+  add('appNotify:campaignAnalytics', wrapSync((id, a) => { requireUserSession(['owner', 'manager', 'supervisor', 'marketing']); return appN().getCampaignAnalytics(id); }));
+  add('appNotify:savePromotion', wrapSync((d, a) => { requireUserSession(['owner', 'manager', 'marketing']); return appN().savePromotion(d || {}, a); }));
+  add('appNotify:publishPromotion', wrapSync((id, opts, a) => { requireUserSession(['owner', 'manager']); return appN().publishPromotion(id, opts || {}, a); }));
+  add('appNotify:listPromotions', wrapSync((f, a) => { requireUserSession(['owner', 'manager', 'supervisor', 'marketing']); return appN().listPromotions(f || {}); }));
+  add('appNotify:listReviews', wrapSync((f, a) => { requireUserSession(['owner', 'manager', 'supervisor']); return appN().listReviews(f || {}); }));
+  add('appNotify:moderateReview', wrapSync((id, action, reason, a) => { requireUserSession(['owner', 'manager']); return appN().moderateReview(id, action, a, reason); }));
+  add('appNotify:replyReview', wrapSync((id, reply, a) => { requireUserSession(['owner', 'manager']); return appN().replyToReview(id, reply, a); }));
+  add('appNotify:resolveReport', wrapSync((id, res, a) => { requireUserSession(['owner', 'manager']); return appN().resolveReviewReport(id, res, a); }));
+  add('appNotify:overallRating', wrapSync((a) => { requireUserSession(['owner', 'manager', 'supervisor', 'cashier']); return appN().getOverallRating(); }));
+  add('appNotify:audit', wrapSync((limit, a) => { requireUserSession(['owner', 'manager']); return appN().listAudit(limit); }));
+
+  add('web:registerAppDevice', wrapSync((token, d) => appN().registerDevice({ token, ...(d || {}) })));
+  add('web:unregisterAppDevice', wrapSync((token, d) => appN().unregisterDevice({ token, ...(d || {}) })));
+  add('web:getAppNotifyPrefs', wrapSync((token) => appN().getNotificationPrefs(token)));
+  add('web:saveAppNotifyPrefs', wrapSync((token, prefs) => appN().saveNotificationPrefs(token, prefs || {})));
+  add('web:getAppInbox', wrapSync((token, lim) => appN().getInbox(token, { limit: lim })));
+  add('web:getAppUnreadCount', wrapSync((token) => appN().getUnreadCount(token)));
+  add('web:markAppInboxRead', wrapSync((token, id) => appN().markInboxRead(token, id)));
+  add('web:markAppInboxClicked', wrapSync((token, id) => appN().markInboxClicked(token, id)));
+  add('web:listAppPromotions', wrapSync((branchId, placement) => appN().listActivePromotions({ branch_id: branchId, placement })));
+  add('web:listPublicAppReviews', wrapSync((limit) => appN().listPublicReviews(limit)));
+  add('web:submitAppReview', wrapSync((token, d) => appN().submitReview(token, d || {})));
+  add('web:listMyAppReviews', wrapSync((token) => appN().listMyReviews(token)));
+  add('web:reportAppReview', wrapSync((token, id, reason) => appN().reportReview(token, id, reason)));
+  add('web:getAppOverallRating', wrapSync(() => appN().getOverallRating()));
 
   // ─── Legacy RPC aliases (audit scripts & older clients) ───────────────────
   add('delivery:listOrders', H.delivery_list);

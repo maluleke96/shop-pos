@@ -1,1 +1,1 @@
-deploy-20260925-pc-customers-crashfix-v2
+deploy-20261007-ops-kiosk-signage-salary-v2

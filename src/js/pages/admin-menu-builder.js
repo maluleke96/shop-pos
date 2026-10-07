@@ -343,7 +343,9 @@ window.AdminMenuBuilderPage = {
   async render(el, adminPage) {
     this.el = el;
     this.app = adminPage?.app || adminPage || (typeof App !== 'undefined' ? App : null);
+    this.adminPage = adminPage && typeof adminPage.renderSection === 'function' ? adminPage : null;
     this.ensureCss();
+    this.consumeMarketingHandoff();
     // Open straight into the builder (matches mockup) — never block on network
     this.mode = 'builder';
     this.productsLoading = !!this.productsLoading;
@@ -592,6 +594,7 @@ window.AdminMenuBuilderPage = {
           <span class="mb-branch-label">${this.esc(userName)}</span>
         </div>
       </div>
+      ${this.marketingBannerHtml()}
       ${this.stepsHtml()}
       <div class="mb-workspace">
         <section class="mb-col mb-col-products">
@@ -643,6 +646,53 @@ window.AdminMenuBuilderPage = {
       ${this.actionBarHtml()}
     </div>`;
     this.bindBuilder();
+    this.bindMarketingBanner();
+  },
+
+  MKT_HANDOFF_KEY: 'shoppos_marketing_handoff',
+
+  consumeMarketingHandoff() {
+    this.marketingHandoff = null;
+    try {
+      const raw = sessionStorage.getItem(this.MKT_HANDOFF_KEY);
+      if (!raw) return;
+      const d = JSON.parse(raw);
+      if (!d || d.from !== 'marketing-center' || (d.section && d.section !== 'menu-builder')) return;
+      sessionStorage.removeItem(this.MKT_HANDOFF_KEY);
+      if (Date.now() - Number(d.at || 0) > 15 * 60 * 1000) return;
+      this.marketingHandoff = d;
+      const ids = (d.products || []).map(Number).filter(Boolean);
+      if (ids.length) this.selectedIds = new Set(ids);
+    } catch (_) { /* */ }
+  },
+
+  marketingBannerHtml() {
+    const d = this.marketingHandoff;
+    if (!d) return '';
+    const names = Array.isArray(d.names) ? d.names : [];
+    return `<div class="mb-mkt-banner" style="margin:6px 0 10px;padding:8px 12px;border-radius:8px;background:#fff1f2;border:1px solid #fecdd3;color:#9f1239;font-size:.85rem;display:flex;justify-content:space-between;align-items:center;gap:8px">
+      <span>📈 Opened from Marketing Center${d.title ? `: ${this.esc(d.title)}` : ''}${names.length ? ` — pre-selected ${this.esc(names.join(', '))}` : ''}. Prices come from your product list.</span>
+      <span style="white-space:nowrap"><a href="#" data-mkt-back style="color:inherit;font-weight:600">← Back to Marketing</a> · <a href="#" data-mkt-dismiss style="color:inherit">Dismiss</a></span>
+    </div>`;
+  },
+
+  bindMarketingBanner() {
+    const root = this.el;
+    if (!root || !this.marketingHandoff) return;
+    const back = root.querySelector('[data-mkt-back]');
+    const dismiss = root.querySelector('[data-mkt-dismiss]');
+    if (back) {
+      back.onclick = (e) => {
+        e.preventDefault();
+        this.marketingHandoff = null;
+        const a = this.adminPage;
+        if (!a || typeof a.renderSection !== 'function') return;
+        a.section = 'marketing-center';
+        document.querySelectorAll('.admin-nav-btn').forEach((b) => b.classList.toggle('active', b.dataset.section === 'marketing-center'));
+        a.renderSection(document.getElementById('admin-content'));
+      };
+    }
+    if (dismiss) dismiss.onclick = (e) => { e.preventDefault(); this.marketingHandoff = null; root.querySelector('.mb-mkt-banner')?.remove(); };
   },
 
   updateBranchSelect() {
@@ -728,6 +778,7 @@ window.AdminMenuBuilderPage = {
       <button type="button" class="btn btn-primary" id="mb-create-video" ${hasSel ? '' : 'disabled'} title="Open Promo Video Builder with this menu">🎬 Create Video From Menu</button>
       <button type="button" class="btn mb-btn-wa" id="mb-wa" ${ready ? '' : 'disabled'}>Share to WhatsApp</button>
       <button type="button" class="btn mb-btn-group" id="mb-wa-group" ${ready ? '' : 'disabled'}>Share to Group</button>
+      <button type="button" class="btn btn-primary" id="mb-signage-tv" ${ready ? '' : 'disabled'}>📺 Send to TV (Signage)</button>
       <button type="button" class="btn btn-primary" id="mb-cc-share" ${ready ? '' : 'disabled'}>📤 Share / Publish</button>
       <span class="mb-action-hint">High-resolution exports for print, WhatsApp and social media.</span>
     </div>`;
@@ -1402,7 +1453,7 @@ window.AdminMenuBuilderPage = {
         if (val) val.textContent = `${el.value}%`;
       };
       el.addEventListener('input', sync);
-      el.addEventListener('change', sync);
+      el.addEventListener('change', () => { sync(); this.scheduleRegenerate(); });
     };
     syncBgPct('mb-bg-w', 'mb-bg-w-val', 'customWidthPct');
     syncBgPct('mb-bg-h', 'mb-bg-h-val', 'customHeightPct');
@@ -1418,7 +1469,7 @@ window.AdminMenuBuilderPage = {
         this.draft.buyGetBlock[key] = pct / 100;
       };
       el.addEventListener('input', sync);
-      el.addEventListener('change', sync);
+      el.addEventListener('change', () => { sync(); this.scheduleRegenerate(); });
     });
     this.el?.querySelectorAll('[data-chip-remove]').forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -1559,7 +1610,7 @@ window.AdminMenuBuilderPage = {
         this.draft[key] = pct / 100;
       };
       el.addEventListener('input', sync);
-      el.addEventListener('change', sync);
+      el.addEventListener('change', () => { sync(); this.scheduleRegenerate(); });
     };
     bindSlider('mb-info-font', 'mb-info-font-val', 'infoFontScale');
     bindSlider('mb-img-scale', 'mb-img-scale-val', 'imageScale');
@@ -1586,6 +1637,7 @@ window.AdminMenuBuilderPage = {
     document.getElementById('mb-print')?.addEventListener('click', () => this.printMenu());
     document.getElementById('mb-wa')?.addEventListener('click', () => this.shareWhatsApp(false));
     document.getElementById('mb-wa-group')?.addEventListener('click', () => this.shareWhatsApp(true));
+    document.getElementById('mb-signage-tv')?.addEventListener('click', () => this.publishToSignageTv());
     document.getElementById('mb-cc-share')?.addEventListener('click', () => this.sharePublishCC());
     document.getElementById('mb-create-video')?.addEventListener('click', () => this.createVideoFromMenu());
   },
@@ -1872,7 +1924,15 @@ window.AdminMenuBuilderPage = {
     return t;
   },
 
-  async generate() {
+  /** Re-render an already generated menu after a size slider is released. */
+  scheduleRegenerate() {
+    if (!this.generatedPages?.length) return;
+    clearTimeout(this._regenTimer);
+    this._regenTimer = setTimeout(() => this.generate({ quiet: true }), 200);
+  },
+
+  async generate(opts = {}) {
+    const quiet = !!opts?.quiet;
     this.readDraftFromDom();
     if (!this.products.length) {
       await this.loadProducts();
@@ -1965,8 +2025,10 @@ window.AdminMenuBuilderPage = {
         }
       }
       this.generatedPages = pages;
-      this.toast(`Menu ready — ${pages.length} page${pages.length > 1 ? 's' : ''}`, 'success');
+      if (!quiet) this.toast(`Menu ready — ${pages.length} page${pages.length > 1 ? 's' : ''}`, 'success');
+      const scrollY = window.scrollY;
       this.paintBuilder();
+      if (quiet) window.scrollTo(0, scrollY);
     } catch (err) {
       this.toast(err?.message || 'Could not generate menu', 'error');
       if (btn) { btn.disabled = false; btn.textContent = 'Generate Menu'; }
@@ -3354,9 +3416,9 @@ window.AdminMenuBuilderPage = {
           octx.fillStyle = '#0f172a';
           octx.fillRect(0, 0, out.width, out.height);
           octx.drawImage(canvas, 0, 0);
-          img = out.toDataURL('image/jpeg', 0.95);
+          img = out.toDataURL('image/jpeg', 0.98);
         }
-        doc.addImage(img, 'JPEG', 0, 0, wMm, hMm, undefined, 'FAST');
+        doc.addImage(img, 'JPEG', 0, 0, wMm, hMm, undefined, 'SLOW');
       });
       const name = `menu-${String(shop.shopName).replace(/\W+/g, '-').toLowerCase()}-print.pdf`;
       doc.save(name);
@@ -3374,6 +3436,30 @@ window.AdminMenuBuilderPage = {
     const arr = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
     return new Blob([arr], { type: mime });
+  },
+
+  async publishToSignageTv() {
+    if (!this.generatedPages?.length) return this.toast('Generate a menu first', 'error');
+    const shop = this.shopBlock?.() || {};
+    const title = this.draft?.customTitle || `${shop.shopName || 'Shop'} menu`;
+    const actor = this.app?.user || window.App?.user;
+    if (!actor?.id) return this.toast('Admin login required', 'error');
+    this.toast('Uploading to Signage Centre…', 'info');
+    const slides = this.generatedPages.map((pg, i) => {
+      const dataUrl = pg.dataUrl || (pg.canvas ? pg.canvas.toDataURL('image/png') : null);
+      if (!dataUrl) return null;
+      return {
+        title: `${title} — page ${i + 1}`,
+        filename: `menu-page-${i + 1}.png`,
+        file_data: dataUrl,
+        mime_type: 'image/png'
+      };
+    }).filter(Boolean);
+    if (!slides.length) return this.toast('No menu images to publish', 'error');
+    const r = await API.signageAdminPublishSlideshow({ name: title, slides, slide_duration: 15 }, actor);
+    if (r?.success === false) return this.toast(r.error || 'TV publish failed', 'error');
+    const pub = r?.data || r;
+    this.toast(`Sent to TV screens (${pub?.status || 'publishing'})`, 'success');
   },
 
   async sharePublishCC() {

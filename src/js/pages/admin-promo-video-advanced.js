@@ -28,11 +28,11 @@
       } else if (q === 'hd') {
         videoBitsPerSecond = 8_000_000;
       } else if (q === 'fullhd') {
-        videoBitsPerSecond = 10_000_000;
-      } else if (q === 'hq') {
-        videoBitsPerSecond = 14_000_000;
-      } else if (q === 'tv' || this.draft.outputTv) {
         videoBitsPerSecond = 12_000_000;
+      } else if (q === 'hq') {
+        videoBitsPerSecond = 18_000_000;
+      } else if (q === 'tv' || this.draft.outputTv) {
+        videoBitsPerSecond = 16_000_000;
       }
       if (w % 2) w += 1;
       if (h % 2) h += 1;
