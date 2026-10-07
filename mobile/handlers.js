@@ -698,6 +698,7 @@ function buildHandlers(store) {
   add('reports:cashierDetail', wrapSync((f, t, userId) => { requireSession(); return s.getCashierSalesDetail(f, t, userId); }));
   add('reports:product', wrapSync((f, t) => { requireSession(); return s.getProductReport(f, t); }));
   add('reports:stock', wrapSync(() => { requireSession(); return s.getStockReport(); }));
+  add('expenses:productCatalog', wrapSync(() => { requireSession(); return s.getExpenseProductCatalog(); }));
   add('reports:expenses', wrapSync((f, t) => { requireSession(); return s.getExpenses({ from: f, to: t }); }));
   add('reports:hourly', wrapSync((f, t) => { requireSession(); return s.getHourlySalesReport(f, t); }));
   add('reports:category', wrapSync((f, t) => { requireSession(); return s.getCategorySalesReport(f, t); }));

@@ -3,19 +3,35 @@ const ExpensesPage = {
   dashboard: null,
 
   parseLineItems(e) {
+    if (Array.isArray(e?.line_items) && e.line_items.length) {
+      return e.line_items.map((r, idx) => ({
+        name: r.name || r.description || 'Item',
+        quantity: Number(r.quantity != null ? r.quantity : r.qty) || 1,
+        unit: r.unit || null,
+        unit_price: Number(r.unit_price != null ? r.unit_price : r.price) || 0,
+        amount: Number(r.amount) || Number(r.unit_price != null ? r.unit_price : r.price) || 0,
+        product_id: r.product_id,
+        photo_path: r.photo_path,
+        photo_url: r.photo_url || (r.photo_path && e.id ? `/api/expense-line-photo/${e.id}/${idx}` : null)
+      })).filter((r) => r.name && r.amount > 0);
+    }
     try {
       const raw = e.line_items_json;
       const j = typeof raw === 'string' ? JSON.parse(raw) : raw;
       if (!Array.isArray(j)) return [];
-      return j.map((r) => {
+      return j.map((r, idx) => {
         const qty = Number(r.quantity != null ? r.quantity : r.qty) || 1;
         const unit = Number(r.unit_price != null ? r.unit_price : r.price) || 0;
-        const amount = Number(r.amount) || (qty * unit);
+        // Price paid for the line — do not auto-multiply qty × unit
+        const amount = Number(r.amount) > 0 ? Number(r.amount) : unit;
         return {
           name: r.name || r.description || 'Item',
           quantity: qty,
           unit_price: unit,
-          amount: Math.round(amount * 100) / 100
+          amount: Math.round(amount * 100) / 100,
+          product_id: r.product_id,
+          photo_path: r.photo_path,
+          photo_url: r.photo_url || (r.photo_path && e.id ? `/api/expense-line-photo/${e.id}/${idx}` : null)
         };
       }).filter((r) => r.name && r.amount > 0);
     } catch (_) {
@@ -31,6 +47,29 @@ const ExpensesPage = {
     const res = await API.getExpenseCategories();
     this.categories = res.success ? (res.data || []) : (this.app.settings?.expense_categories || Utils.expenseCategories);
     return this.categories;
+  },
+
+  /** Products + ingredients for expense/waste search (slim server catalog, no image blobs). */
+  async ensureExpenseCatalog() {
+    if (this._expCatalog?.length) return this._expCatalog;
+    if (this._expCatalogLoad) return this._expCatalogLoad;
+    this._expCatalogLoad = (async () => {
+      try {
+        const res = await API.getExpenseProductCatalog();
+        const list = res?.success !== false ? (res?.data ?? res) : [];
+        this._expCatalog = Array.isArray(list) ? list : [];
+      } catch (_) {
+        try {
+          const fallback = await API.getProducts({ include_ingredients: true, omit_images: true });
+          this._expCatalog = (fallback?.data || []).filter((p) => p?.name !== '__Property Damage__');
+        } catch (__) {
+          this._expCatalog = [];
+        }
+      }
+      this._expCatalogLoad = null;
+      return this._expCatalog;
+    })();
+    return this._expCatalogLoad;
   },
 
   formatLineItemsBrief(e, currency) {
@@ -51,6 +90,7 @@ const ExpensesPage = {
     this._host = el;
     if (el?.querySelector?.('#exp-content')) {
       if (this.tab === 'dashboard') this.loadDashboard();
+      else if (this.tab === 'money') this.renderMoneyPanel();
       else if (this.tab === 'waste') this.renderWastePanel();
       else if (this.tab === 'tools') this.renderToolsPanel();
       else if (this.tab === 'funding') this.renderFundingPanel();
@@ -58,6 +98,64 @@ const ExpensesPage = {
       return;
     }
     return this.render(el, app);
+  },
+
+  async renderItemsReport(from, to) {
+    const host = document.getElementById('exp-panel-items');
+    if (!host) return;
+    const currency = this.app?.settings?.currency || 'R';
+    const today = Utils.today();
+    const lastMonth = new Date(today + 'T12:00:00');
+    lastMonth.setDate(1);
+    lastMonth.setMonth(lastMonth.getMonth() - 1);
+    const lmFrom = lastMonth.toLocaleDateString('en-CA');
+    const lmEnd = new Date(lastMonth);
+    lmEnd.setMonth(lmEnd.getMonth() + 1);
+    lmEnd.setDate(0);
+    const lmTo = lmEnd.toLocaleDateString('en-CA');
+    const f = from || this._itemsFrom || Utils.monthStart();
+    const t = to || this._itemsTo || today;
+    this._itemsFrom = f;
+    this._itemsTo = t;
+    host.innerHTML = `<div class="card"><div class="card-body">
+      <h4 style="margin:0 0 6px">Expenses by item</h4>
+      <p class="muted" style="margin:0 0 10px">Every item you bought, grouped by name: how many purchases, total quantity and total cost. Use last month to plan the next stock buy.</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px">
+        <div class="field" style="margin:0"><label>From</label><input type="date" id="exp-items-from" value="${f}"></div>
+        <div class="field" style="margin:0"><label>To</label><input type="date" id="exp-items-to" value="${t}"></div>
+        <button type="button" class="btn btn-primary btn-sm" id="exp-items-show">Show</button>
+        <button type="button" class="btn btn-ghost btn-sm" id="exp-items-this">This month</button>
+        <button type="button" class="btn btn-ghost btn-sm" id="exp-items-last">Last month</button>
+        <input type="search" id="exp-items-q" placeholder="Filter item (e.g. fish)" style="min-width:180px">
+      </div>
+      <div id="exp-items-body"><p class="muted">Loading…</p></div>
+    </div></div>`;
+    document.getElementById('exp-items-show')?.addEventListener('click', () => this.renderItemsReport(
+      document.getElementById('exp-items-from')?.value || f, document.getElementById('exp-items-to')?.value || t));
+    document.getElementById('exp-items-this')?.addEventListener('click', () => this.renderItemsReport(Utils.monthStart(), today));
+    document.getElementById('exp-items-last')?.addEventListener('click', () => this.renderItemsReport(lmFrom, lmTo));
+    const res = await API.getExpenseItemSummary({ from: f, to: t });
+    const body = document.getElementById('exp-items-body');
+    if (!body) return;
+    if (res?.success === false) {
+      body.innerHTML = `<p class="error-msg">${Utils.escHtml(res.error || 'Could not load report')}</p>`;
+      return;
+    }
+    const data = res?.data || res || {};
+    const items = data.items || [];
+    const paint = (q) => {
+      const needle = String(q || '').trim().toLowerCase();
+      const rows = needle ? items.filter((r) => r.item.toLowerCase().includes(needle) || String(r.category || '').toLowerCase().includes(needle)) : items;
+      const sum = rows.reduce((a, r) => ({ purchases: a.purchases + r.purchases, total: a.total + r.total }), { purchases: 0, total: 0 });
+      body.innerHTML = rows.length ? `<div class="table-wrap"><table>
+        <thead><tr><th>Item</th><th>Category</th><th>Purchases</th><th>Quantity</th><th>Total</th><th>Last bought</th></tr></thead>
+        <tbody>${rows.map((r) => `<tr><td><strong>${Utils.escHtml(r.item)}</strong></td><td>${Utils.escHtml(this.catLabel(r.category))}</td>
+          <td>${r.purchases}</td><td>${r.quantity}</td><td>${Utils.formatMoney(r.total, currency)}</td><td>${Utils.escHtml(r.last_date || '—')}</td></tr>`).join('')}</tbody>
+        <tfoot><tr><th colspan="2">Overall total${needle ? ' (filtered)' : ''}</th><th>${sum.purchases}</th><th></th><th>${Utils.formatMoney(sum.total, currency)}</th><th></th></tr></tfoot>
+      </table></div>` : '<p class="muted">No expenses in this period.</p>';
+    };
+    paint('');
+    document.getElementById('exp-items-q')?.addEventListener('input', (e) => paint(e.target.value));
   },
 
   async render(el, app) {
@@ -69,17 +167,20 @@ const ExpensesPage = {
     el.innerHTML = `<div class="page-toolbar">
         <h3>Expenses</h3>
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          ${['owner', 'manager'].includes(app.user?.role) ? '<button type="button" class="btn exp-withdraw-btn" id="exp-withdraw-btn" title="Record an owner / manager money withdrawal">💸 Money withdrawal</button>' : ''}
           <button type="button" class="btn btn-primary" id="exp-goto-stock-batch" title="Stock Batch &amp; Yield">📦 Stock Batch &amp; Yield</button>
           <div class="admin-tabs" id="exp-tabs" style="display:flex;flex-wrap:wrap;gap:4px;max-width:100%">
             <button type="button" class="admin-tab ${this.tab === 'list' ? 'active' : ''}" data-exp-tab="list">Expenses</button>
+            <button type="button" class="admin-tab ${this.tab === 'money' ? 'active' : ''}" data-exp-tab="money">Daily money</button>
             <button type="button" class="admin-tab ${this.tab === 'dashboard' ? 'active' : ''}" data-exp-tab="dashboard">Dashboard</button>
+            <button type="button" class="admin-tab ${this.tab === 'items' ? 'active' : ''}" data-exp-tab="items">Items report</button>
             <button type="button" class="admin-tab ${this.tab === 'stock-batch' ? 'active' : ''}" data-exp-tab="stock-batch">Stock Batch &amp; Yield</button>
             <button type="button" class="admin-tab ${this.tab === 'tools' ? 'active' : ''}" data-exp-tab="tools">Budgets</button>
             <button type="button" class="admin-tab ${this.tab === 'funding' ? 'active' : ''}" data-exp-tab="funding">Owner funding</button>
             <button type="button" class="admin-tab ${this.tab === 'waste' ? 'active' : ''}" data-exp-tab="waste">Waste / Damage</button>
           </div>
-          <button class="btn btn-ghost" id="exp-manage-cats" ${['waste', 'tools', 'funding', 'stock-batch'].includes(this.tab) ? 'style="display:none"' : ''}>Manage categories</button>
-          <button class="btn btn-primary" id="add-exp" ${['waste', 'tools', 'funding', 'stock-batch'].includes(this.tab) ? 'style="display:none"' : ''}>+ Add Expense</button>
+          <button class="btn btn-ghost" id="exp-manage-cats" ${['waste', 'tools', 'funding', 'stock-batch', 'money'].includes(this.tab) ? 'style="display:none"' : ''}>Manage categories</button>
+          <button class="btn btn-primary" id="add-exp" ${['waste', 'tools', 'funding', 'stock-batch', 'money'].includes(this.tab) ? 'style="display:none"' : ''}>+ Add Expense</button>
         </div>
       </div>
       <div id="exp-panel-list" class="${this.tab === 'list' ? '' : 'hidden'}">
@@ -96,6 +197,8 @@ const ExpensesPage = {
         <div id="exp-content"></div>
       </div>
       <div id="exp-panel-dashboard" class="${this.tab === 'dashboard' ? '' : 'hidden'}"></div>
+      <div id="exp-panel-money" class="${this.tab === 'money' ? '' : 'hidden'}"></div>
+      <div id="exp-panel-items" class="${this.tab === 'items' ? '' : 'hidden'}"></div>
       <div id="exp-panel-tools" class="${this.tab === 'tools' ? '' : 'hidden'}"></div>
       <div id="exp-panel-funding" class="${this.tab === 'funding' ? '' : 'hidden'}"></div>
       <div id="exp-panel-stock-batch" class="${this.tab === 'stock-batch' ? '' : 'hidden'}"></div>
@@ -113,6 +216,15 @@ const ExpensesPage = {
         .exp-budget-ok{color:#15803d}.exp-budget-warn{color:#b45309}.exp-budget-over{color:#b91c1c}
         .exp-fund-owner{background:#fef3c7;color:#92400e;font-size:11px;padding:2px 6px;border-radius:4px}
         .exp-fund-biz{background:#e0e7ff;color:#3730a3;font-size:11px;padding:2px 6px;border-radius:4px}
+        .exp-withdraw-btn{background:linear-gradient(135deg,#dc2626,#f59e0b);color:#fff;border:none;font-weight:700}
+        .dm-hero{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin:12px 0}
+        .dm-card{border-radius:12px;padding:14px 16px;border:1px solid var(--border);background:var(--card,#fff)}
+        .dm-card span{display:block;font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--text-muted,#64748b)}
+        .dm-card strong{display:block;font-size:1.45rem;margin-top:4px}
+        .dm-in strong{color:#059669}.dm-out strong{color:#d97706}
+        .dm-net{background:linear-gradient(135deg,#312e81,#4f46e5);color:#fff;border:none}
+        .dm-net span{color:#c7d2fe}
+        .dm-actions{display:flex;gap:8px;flex-wrap:wrap}
       </style>`;
 
     document.getElementById('add-exp')?.addEventListener('click', () => this.showForm());
@@ -122,6 +234,8 @@ const ExpensesPage = {
       document.querySelectorAll('[data-exp-tab]').forEach((b) => b.classList.toggle('active', b.dataset.expTab === 'stock-batch'));
       document.getElementById('exp-panel-list')?.classList.add('hidden');
       document.getElementById('exp-panel-dashboard')?.classList.add('hidden');
+      document.getElementById('exp-panel-money')?.classList.add('hidden');
+      document.getElementById('exp-panel-items')?.classList.add('hidden');
       document.getElementById('exp-panel-tools')?.classList.add('hidden');
       document.getElementById('exp-panel-funding')?.classList.add('hidden');
       document.getElementById('exp-panel-waste')?.classList.add('hidden');
@@ -138,14 +252,18 @@ const ExpensesPage = {
         document.querySelectorAll('[data-exp-tab]').forEach((b) => b.classList.toggle('active', b.dataset.expTab === this.tab));
         document.getElementById('exp-panel-list')?.classList.toggle('hidden', this.tab !== 'list');
         document.getElementById('exp-panel-dashboard')?.classList.toggle('hidden', this.tab !== 'dashboard');
+        document.getElementById('exp-panel-money')?.classList.toggle('hidden', this.tab !== 'money');
+        document.getElementById('exp-panel-items')?.classList.toggle('hidden', this.tab !== 'items');
         document.getElementById('exp-panel-tools')?.classList.toggle('hidden', this.tab !== 'tools');
         document.getElementById('exp-panel-funding')?.classList.toggle('hidden', this.tab !== 'funding');
         document.getElementById('exp-panel-stock-batch')?.classList.toggle('hidden', this.tab !== 'stock-batch');
         document.getElementById('exp-panel-waste')?.classList.toggle('hidden', this.tab !== 'waste');
-        const hidePrimary = ['waste', 'tools', 'funding', 'stock-batch'].includes(this.tab);
+        const hidePrimary = ['waste', 'tools', 'funding', 'stock-batch', 'money'].includes(this.tab);
         document.getElementById('add-exp')?.style.setProperty('display', hidePrimary ? 'none' : '');
         document.getElementById('exp-manage-cats')?.style.setProperty('display', hidePrimary ? 'none' : '');
         if (this.tab === 'dashboard') this.loadDashboard();
+        else if (this.tab === 'money') this.renderMoneyPanel();
+        else if (this.tab === 'items') this.renderItemsReport();
         else if (this.tab === 'waste') this.renderWastePanel();
         else if (this.tab === 'tools') this.renderToolsPanel();
         else if (this.tab === 'funding') this.renderFundingPanel();
@@ -154,8 +272,11 @@ const ExpensesPage = {
       });
     });
 
+    document.getElementById('exp-withdraw-btn')?.addEventListener('click', () => this.showWithdrawalForm());
     Utils.bindDateFilter('exp-filter', (from, to) => this.load(from, to));
     if (this.tab === 'dashboard') this.loadDashboard();
+    else if (this.tab === 'money') this.renderMoneyPanel();
+    else if (this.tab === 'items') this.renderItemsReport();
     else if (this.tab === 'waste') this.renderWastePanel();
     else if (this.tab === 'tools') this.renderToolsPanel();
     else if (this.tab === 'funding') this.renderFundingPanel();
@@ -192,11 +313,11 @@ const ExpensesPage = {
     if (!panel) return;
     panel.innerHTML = '<p class="muted" style="padding:16px">Loading…</p>';
     this._expWastePhotos = this._expWastePhotos || [];
-    const [prodRes, pendingRes] = await Promise.all([
-      API.getStockReport().catch(() => API.getProducts({ include_ingredients: true }).catch(() => ({ data: [] }))),
+    const [catalog, pendingRes] = await Promise.all([
+      this.ensureExpenseCatalog().catch(() => []),
       API.getWasteRecords(Utils.monthStart(), Utils.today(), { status: 'pending' }).catch(() => ({ data: [] }))
     ]);
-    const products = (prodRes.data || []).filter(p => p.name !== '__Property Damage__');
+    const products = (catalog || []).filter((p) => p.name !== '__Property Damage__');
     this._expWasteProducts = products;
     this._expWasteSelected = this._expWasteSelected || null;
     const pending = pendingRes.data || [];
@@ -617,7 +738,7 @@ const ExpensesPage = {
             : '<span class="muted">—</span>';
           const fund = String(e.funding_source || 'business').toLowerCase() === 'owner'
             ? '<span class="exp-fund-owner">Owner pocket</span>'
-            : '<span class="exp-fund-biz">Business</span>';
+            : `<span class="exp-fund-biz">Business</span>${e.cash_source ? `<div class="muted" style="font-size:11px;margin-top:2px">${e.cash_source === 'previous' ? "Previous days' money" : "Today's money"}</div>` : ''}`;
           const pay = Utils.paymentLabels?.[e.payment_method] || e.payment_method || '—';
           return `<tr>
           <td>${Utils.formatDate(e.expense_date)}</td>
@@ -631,6 +752,7 @@ const ExpensesPage = {
           <td>${inv}</td>
           <td class="actions" style="white-space:nowrap">
             <button class="btn btn-sm btn-ghost view-exp" data-id="${e.id}">View</button>
+            ${['owner', 'manager'].includes(this.app.user?.role) ? `<button class="btn btn-sm btn-primary edit-exp" data-id="${e.id}">Edit</button>` : ''}
             <button class="btn btn-sm btn-danger del-exp" data-id="${e.id}">Delete</button>
           </td></tr>`;
         }).join('') || '<tr><td colspan="10" class="muted">No expenses in this period</td></tr>'}
@@ -638,6 +760,8 @@ const ExpensesPage = {
 
     document.querySelectorAll('.view-exp').forEach(b => b.addEventListener('click', () =>
       this.showDetail(this.expenses.find(x => x.id == b.dataset.id))));
+    document.querySelectorAll('.edit-exp').forEach(b => b.addEventListener('click', () =>
+      this.showForm(this.expenses.find(x => x.id == b.dataset.id))));
     document.querySelectorAll('.del-exp').forEach(b => b.addEventListener('click', async () => {
       if (confirm('Delete expense?')) {
         await API.deleteExpense(parseInt(b.dataset.id, 10), this.app.user);
@@ -654,16 +778,24 @@ const ExpensesPage = {
     const linesHtml = items.length
       ? `<table style="width:100%;border-collapse:collapse;margin:12px 0">
           <thead><tr style="text-align:left;font-size:12px;color:var(--muted)">
-            <th style="padding:6px 4px">Item</th><th style="padding:6px 4px">Qty</th><th style="padding:6px 4px">Price</th><th style="padding:6px 4px;text-align:right">Line total</th>
+            <th style="padding:6px 4px">Photo</th><th style="padding:6px 4px">Item</th><th style="padding:6px 4px">Qty</th><th style="padding:6px 4px">Unit</th><th style="padding:6px 4px">≈ each</th><th style="padding:6px 4px;text-align:right">Line total</th>
           </tr></thead>
-          <tbody>${items.map(r => `<tr style="border-top:1px solid var(--border)">
+          <tbody>${items.map((r, idx) => {
+            const photoUrl = r.photo_url || (r.photo_path ? `/api/expense-line-photo/${exp.id}/${idx}` : null);
+            const thumb = photoUrl
+              ? `<a href="${Utils.escHtml(photoUrl)}" target="_blank" rel="noopener"><img src="${Utils.escHtml(photoUrl)}" alt="" style="width:48px;height:48px;object-fit:cover;border-radius:6px;border:1px solid var(--border)"></a>`
+              : '<span class="muted">—</span>';
+            return `<tr style="border-top:1px solid var(--border)">
+            <td style="padding:8px 4px">${thumb}</td>
             <td style="padding:8px 4px">${Utils.escHtml(r.name)}</td>
             <td style="padding:8px 4px">${r.quantity}</td>
+            <td style="padding:8px 4px">${Utils.escHtml(r.unit || '—')}</td>
             <td style="padding:8px 4px">${Utils.formatMoney(r.unit_price, currency)}</td>
             <td style="padding:8px 4px;text-align:right;font-weight:600">${Utils.formatMoney(r.amount, currency)}</td>
-          </tr>`).join('')}
+          </tr>`;
+          }).join('')}
           <tr style="border-top:2px solid var(--border);font-weight:700">
-            <td colspan="3" style="padding:10px 4px;text-align:right">Total</td>
+            <td colspan="5" style="padding:10px 4px;text-align:right">Total</td>
             <td style="padding:10px 4px;text-align:right">${Utils.formatMoney(Number(exp.amount) || this.sumAmount(items), currency)}</td>
           </tr></tbody></table>`
       : `<p class="muted">${Utils.escHtml(exp.description || 'No line items')}</p>`;
@@ -750,49 +882,65 @@ const ExpensesPage = {
     return Number.isFinite(n) ? n : 0;
   },
 
-  showForm() {
+  showForm(editExpense = null) {
+    const u = this.app?.user;
+    if (u && u.role !== 'owner') {
+      let perms = u.permissions;
+      if (typeof perms === 'string') { try { perms = JSON.parse(perms); } catch (_) { perms = {}; } }
+      if (!perms?.expense_capture && u.role !== 'manager') {
+        return Utils.toast('You do not have permission to capture expenses', 'error');
+      }
+    }
     const currency = this.app.settings?.currency || 'R';
     const cats = this.categories || Utils.expenseCategories;
     const pm = this.app.settings?.payment_settings || {};
     const enabled = (pm.enabled_methods || Utils.paymentTypes || ['cash', 'card', 'eft']).filter(Boolean);
     const payOptions = enabled.length ? enabled : ['cash', 'card', 'eft'];
+    const editItems = editExpense ? this.parseLineItems(editExpense) : [];
     const state = {
-      lineSeq: 2,
-      lineItems: [{ _id: 1, name: '', qty: '1', price: '' }],
-      category: cats[0] || 'other',
+      editId: editExpense?.id || null,
+      lineSeq: Math.max(2, (editItems.length || 0) + 1),
+      lineItems: editItems.length
+        ? editItems.map((r, i) => ({
+          _id: i + 1, name: r.name, qty: String(r.quantity), unit: r.unit || 'kg',
+          price: String(r.amount != null && r.amount > 0 ? r.amount : r.unit_price),
+          product_id: r.product_id || null
+        }))
+        : [{ _id: 1, name: '', qty: '1', unit: 'kg', price: '' }],
+      category: editExpense?.category || cats[0] || 'other',
+      units: this._unitsCatalog || [],
       invoicePreview: '',
       invoiceDataUrl: '',
       funding_source: 'business',
+      cash_source: 'today',
       payment_method: payOptions.includes('cash') ? 'cash' : payOptions[0],
       purchaseOrders: [],
       catalog: this._expCatalog || []
     };
 
-    // Load products + ingredients for search picker (non-blocking)
+    if (!state.units.length) {
+      API.getUnitsCatalog().then((res) => {
+        state.units = res?.data || res || [];
+        this._unitsCatalog = state.units;
+        refreshForm();
+      }).catch(() => {});
+    }
     if (!state.catalog.length) {
-      Promise.all([
-        API.getStockReport?.().catch(() => ({ data: [] })),
-        API.getProducts({ include_ingredients: true }).catch(() => ({ data: [] }))
-      ]).then(([stockRes, prodRes]) => {
-        const fromStock = stockRes?.success !== false ? (stockRes?.data || []) : [];
-        const fromProd = prodRes?.success !== false ? (prodRes?.data || []) : [];
-        const map = new Map();
-        for (const p of [...fromStock, ...fromProd]) {
-          if (!p?.id || p.name === '__Property Damage__') continue;
-          map.set(String(p.id), p);
-        }
-        state.catalog = [...map.values()];
+      this.ensureExpenseCatalog().then((list) => {
+        state.catalog = list || [];
         this._expCatalog = state.catalog;
+        refreshForm();
       }).catch(() => {});
     }
 
     const validLineItems = () => state.lineItems.map((row) => {
       const name = String(row.name || '').trim();
-      const quantity = Math.max(this._parseExpensePrice(row.qty) || 1, 0.001);
-      const unit_price = this._parseExpensePrice(row.price);
-      const amount = Math.round(quantity * unit_price * 100) / 100;
-      return { name, quantity, unit_price, amount, product_id: row.product_id || null };
-    }).filter((row) => row.name && row.unit_price > 0 && row.amount > 0);
+      const quantity = Math.max(this._parseExpensePrice(row.qty) || 0, 0.0001);
+      const unit = String(row.unit || '').trim() || null;
+      const amount = Math.round(this._parseExpensePrice(row.price) * 100) / 100;
+      const unit_price = quantity > 0 ? Math.round((amount / quantity) * 100) / 100 : 0;
+      return { name, quantity, unit, unit_price, amount, line_total_mode: 'line', product_id: row.product_id || null };
+    }).filter((row) => row.name && row.amount > 0);
 
     const calcTotal = () => Math.round(validLineItems().reduce((s, row) => s + row.amount, 0) * 100) / 100;
 
@@ -803,19 +951,28 @@ const ExpensesPage = {
         if (!item) return;
         item.name = row.querySelector('.line-item-name')?.value || '';
         item.qty = row.querySelector('.line-item-qty')?.value || '1';
+        item.unit = row.querySelector('.line-item-unit')?.value || item.unit || 'kg';
         item.price = row.querySelector('.line-item-price')?.value || '';
       });
     };
 
-    const openLineProductPicker = (lineId) => {
-      const catalog = state.catalog?.length ? state.catalog : (this._expCatalog || []);
+    const unitOptions = (selected) => {
+      const codes = (state.units || []).map((u) => u.code);
+      const base = codes.length ? codes : ['kg', 'g', 'L', 'mL', 'each', 'piece', 'pack', 'box'];
+      const sel = selected || 'kg';
+      if (sel && !base.includes(sel)) base.unshift(sel);
+      return base.map((c) => `<option value="${Utils.escHtml(c)}" ${c === sel ? 'selected' : ''}>${Utils.escHtml(c)}</option>`).join('');
+    };
+
+    const openLineProductPicker = async (lineId) => {
+      let catalog = state.catalog?.length ? state.catalog : (this._expCatalog || []);
       if (!catalog.length) {
-        Utils.toast('Loading products… try again in a moment', 'error');
-        API.getProducts({ include_ingredients: true }).then((res) => {
-          state.catalog = (res.data || []).filter((p) => p.name !== '__Property Damage__');
-          this._expCatalog = state.catalog;
-          if (state.catalog.length) openLineProductPicker(lineId);
-        }).catch(() => {});
+        Utils.toast('Loading products & ingredients…', 'info');
+        catalog = await this.ensureExpenseCatalog().catch(() => []);
+        state.catalog = catalog;
+      }
+      if (!catalog.length) {
+        Utils.toast('Could not load products — check connection and retry', 'error');
         return;
       }
       Utils.openProductSearchPicker({
@@ -828,26 +985,34 @@ const ExpensesPage = {
           if (!item) return;
           item.name = row.name || '';
           item.product_id = row.id;
-          const cost = Number(row.buying_price ?? row.cost_price ?? row.unit_cost ?? row.price);
-          if (Number.isFinite(cost) && cost > 0 && !this._parseExpensePrice(item.price)) {
-            item.price = String(cost);
-          }
+          if (!this._parseExpensePrice(item.price)) item.price = '';
           if (!item.qty) item.qty = '1';
+          item.unit = row.stock_unit || row.unit || item.unit || 'kg';
           refreshForm();
         }
       });
     };
 
+    const lineHint = (row) => {
+      const q = Math.max(this._parseExpensePrice(row.qty) || 0, 0.0001);
+      const amt = this._parseExpensePrice(row.price);
+      if (!(amt > 0)) return 'Enter line total — qty does not change it';
+      const each = Math.round((amt / q) * 100) / 100;
+      return `${q} × ≈ ${Utils.formatMoney(each, currency)} each`;
+    };
+
     const renderLines = () => state.lineItems.map((row, idx) => `
-      <div class="line-item-row" data-id="${row._id}" style="display:grid;grid-template-columns:24px 1fr 36px;gap:8px;align-items:center;margin-bottom:8px">
-        <span class="muted" style="font-size:12px">${idx + 1}</span>
-        <div style="display:grid;grid-template-columns:1fr auto 56px 80px;gap:8px;align-items:center">
+      <div class="line-item-row" data-id="${row._id}" style="display:grid;grid-template-columns:24px 1fr 36px;gap:8px;align-items:start;margin-bottom:10px">
+        <span class="muted" style="font-size:12px;padding-top:10px">${idx + 1}</span>
+        <div style="display:grid;grid-template-columns:1fr auto 72px 80px 110px;gap:8px;align-items:center">
           <input type="text" class="line-item-name" placeholder="Item or ingredient name" value="${Utils.escHtml(row.name)}">
           <button type="button" class="btn btn-ghost btn-sm line-item-search" data-search-id="${row._id}" title="Search product / ingredient" style="white-space:nowrap">🔍</button>
-          <input type="number" class="line-item-qty" placeholder="Qty" step="any" min="0.001" value="${Utils.escHtml(row.qty != null ? row.qty : '1')}">
-          <input type="number" class="line-item-price" placeholder="Price" step="0.01" min="0" value="${Utils.escHtml(row.price)}">
+          <input type="number" class="line-item-qty" placeholder="Qty" step="any" min="0.0001" value="${Utils.escHtml(row.qty != null ? row.qty : '1')}" title="Quantity purchased">
+          <select class="line-item-unit">${unitOptions(row.unit || 'kg')}</select>
+          <input type="number" class="line-item-price" placeholder="Line total" step="0.01" min="0" value="${Utils.escHtml(row.price)}" title="Total amount you paid for this line (not per unit)">
         </div>
         <button type="button" class="btn btn-ghost btn-sm line-item-remove" data-remove-id="${row._id}" aria-label="Remove line">×</button>
+        <div class="muted line-item-hint" data-hint-id="${row._id}" style="grid-column:2;font-size:12px;margin-top:-4px">${lineHint(row)}</div>
       </div>`).join('');
 
     const renderCatChips = () => cats.map((c) => `
@@ -856,6 +1021,10 @@ const ExpensesPage = {
 
     const refreshTotals = () => {
       syncLinesFromDom();
+      state.lineItems.forEach((row) => {
+        const el = document.querySelector(`.line-item-hint[data-hint-id="${row._id}"]`);
+        if (el) el.textContent = lineHint(row);
+      });
       const totalEl = document.getElementById('admin-ex-total');
       if (totalEl) totalEl.textContent = Utils.formatMoney(calcTotal(), currency);
       const countEl = document.getElementById('admin-ex-line-count');
@@ -889,6 +1058,11 @@ const ExpensesPage = {
         btn.classList.toggle('btn-primary', btn.dataset.exFund === state.funding_source);
         btn.classList.toggle('btn-ghost', btn.dataset.exFund !== state.funding_source);
       });
+      document.querySelectorAll('[data-ex-cash]').forEach((btn) => {
+        btn.classList.toggle('btn-primary', btn.dataset.exCash === state.cash_source);
+        btn.classList.toggle('btn-ghost', btn.dataset.exCash !== state.cash_source);
+      });
+      document.getElementById('admin-ex-cash-wrap')?.classList.toggle('hidden', state.funding_source === 'owner');
     };
 
     const onInvoicePick = async (e) => {
@@ -959,13 +1133,22 @@ const ExpensesPage = {
           </div>
           <p class="muted" style="font-size:12px;margin:6px 0 0">Choose <strong>My pocket</strong> when you buy stock/ingredients/renovations with your personal money so Admin records it as owner funding.</p>
         </div>
-        <div class="field"><label>Date</label><input type="date" id="ex-date" value="${Utils.today()}"></div>
+        <div class="field full" id="admin-ex-cash-wrap">
+          <label>Which money was used?</label>
+          <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:6px">
+            <button type="button" class="btn btn-sm btn-primary" data-ex-cash="today">💵 Today's money</button>
+            <button type="button" class="btn btn-sm btn-ghost" data-ex-cash="previous">🗄 Previous days' money</button>
+          </div>
+          <p class="muted" style="font-size:12px;margin:6px 0 0"><strong>Today's money</strong> is deducted from today's takings in the Daily money report.</p>
+        </div>
+        <div class="field"><label>Date</label><input type="date" id="ex-date" value="${editExpense?.expense_date || Utils.today()}"></div>
         <div class="field"><label>Payment method</label>
           <select id="ex-pay">${payOptions.map((t) =>
             `<option value="${Utils.escHtml(t)}" ${t === state.payment_method ? 'selected' : ''}>${Utils.escHtml(Utils.paymentLabels?.[t] || t)}</option>`
           ).join('')}</select>
         </div>
-        <div class="field"><label>Vendor / supplier</label><input id="ex-vendor" placeholder="e.g. Makro, Builders…"></div>
+        <div class="field"><label>Vendor / supplier</label><input id="ex-vendor" placeholder="e.g. Makro, Builders…" value="${Utils.escHtml(editExpense?.vendor_name || '')}"></div>
+        ${state.editId ? `<div class="field full"><label>Reason for stock/accounting correction</label><input id="ex-edit-reason" placeholder="Required when editing a purchase that affected stock"></div>` : ''}
         <div class="field"><label>Note</label><input id="ex-desc" placeholder="Optional note"></div>
         <div class="field full"><label>Link to Purchase Order (optional)</label>
           <select id="ex-po"><option value="">— None —</option></select>
@@ -975,7 +1158,7 @@ const ExpensesPage = {
           <label class="btn btn-ghost btn-sm" style="margin-top:8px;cursor:pointer">Upload photo<input type="file" id="admin-ex-invoice-file" accept="image/*" capture="environment" hidden></label>
         </div>
       </div>`,
-      '<button type="button" class="btn btn-primary" id="save-exp">Save Expense</button>');
+      `<button type="button" class="btn btn-primary" id="save-exp">${state.editId ? 'Save changes' : 'Save Expense'}</button>`);
 
     API.getPurchaseOrders().then((res) => {
       const list = res.success ? (res.data || []) : [];
@@ -1026,6 +1209,12 @@ const ExpensesPage = {
         refreshForm();
       });
     });
+    document.querySelectorAll('[data-ex-cash]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        state.cash_source = btn.dataset.exCash === 'previous' ? 'previous' : 'today';
+        refreshForm();
+      });
+    });
     document.getElementById('ex-ocr-parse')?.addEventListener('click', () => applyOcrParse());
     document.getElementById('admin-ex-invoice-file')?.addEventListener('change', onInvoicePick);
 
@@ -1036,14 +1225,17 @@ const ExpensesPage = {
       const amount = calcTotal();
       const poVal = document.getElementById('ex-po')?.value;
       const r = await API.saveExpense({
+        id: state.editId || undefined,
         category: state.category,
         amount,
         expense_date: document.getElementById('ex-date').value,
+        stock_edit_reason: state.editId ? (document.getElementById('ex-edit-reason')?.value || 'Admin correction') : undefined,
         description: document.getElementById('ex-desc').value.trim() || document.getElementById('ex-vendor')?.value.trim(),
         notes: document.getElementById('ex-desc').value.trim(),
         vendor_name: document.getElementById('ex-vendor')?.value.trim() || null,
         payment_method: document.getElementById('ex-pay')?.value || state.payment_method,
         funding_source: state.funding_source,
+        cash_source: state.cash_source,
         purchase_order_id: poVal ? Number(poVal) : null,
         receipt_ocr_text: document.getElementById('ex-ocr-text')?.value || null,
         line_items,
@@ -1055,6 +1247,270 @@ const ExpensesPage = {
       else if (this.tab === 'funding') this.renderFundingPanel();
       else this.load(this._from || Utils.monthStart(), this._to || Utils.today());
       Utils.toast(state.funding_source === 'owner' ? 'Expense saved — recorded as owner-funded' : 'Expense saved', 'success');
+    });
+  },
+
+  cashSourceLabel(src) {
+    return String(src || 'today') === 'previous' ? "Previous days' money" : "Today's money";
+  },
+
+  async renderMoneyPanel() {
+    const panel = document.getElementById('exp-panel-money') || this._host?.querySelector?.('#exp-panel-money');
+    if (!panel) return;
+    const today = Utils.today();
+    const m = this._money || (this._money = { from: today, to: today, branch_id: 'all' });
+    if (!this._branches) {
+      const br = await API.getBranches().catch(() => null);
+      this._branches = (br?.data || br || []).filter?.((b) => b && b.id != null) || [];
+    }
+    const isOwner = ['owner', 'manager'].includes(this.app.user?.role);
+    panel.innerHTML = `<div class="card"><div class="card-body">
+      <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:flex-start">
+        <div>
+          <h4 style="margin:0 0 4px">Daily money</h4>
+          <p class="muted" style="margin:0">Money taken in, what was paid out of today's money (expenses + withdrawals) and the net — per branch / POS or all stores.</p>
+        </div>
+        ${isOwner ? '<button type="button" class="btn exp-withdraw-btn" id="dm-withdraw">💸 Money withdrawal</button>' : ''}
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin:14px 0 4px">
+        <div class="field" style="margin:0"><label>From</label><input type="date" id="dm-from" value="${m.from}"></div>
+        <div class="field" style="margin:0"><label>To</label><input type="date" id="dm-to" value="${m.to}"></div>
+        ${this._branches.length > 1 ? `<div class="field" style="margin:0"><label>Branch / POS</label><select id="dm-branch">
+          <option value="all">All stores</option>
+          ${this._branches.map((b) => `<option value="${b.id}" ${String(m.branch_id) === String(b.id) ? 'selected' : ''}>${Utils.escHtml(b.name || `Branch ${b.id}`)}</option>`).join('')}
+        </select></div>` : ''}
+        <button type="button" class="btn btn-primary btn-sm" id="dm-show">Show</button>
+        <button type="button" class="btn btn-ghost btn-sm" id="dm-today">Today</button>
+        <button type="button" class="btn btn-ghost btn-sm" id="dm-yesterday">Yesterday</button>
+        <button type="button" class="btn btn-ghost btn-sm" id="dm-week">Last 7 days</button>
+      </div>
+      <div id="dm-body"><p class="muted">Loading…</p></div>
+    </div></div>`;
+    const setRange = (from, to) => { m.from = from; m.to = to; this.renderMoneyPanel(); };
+    document.getElementById('dm-show')?.addEventListener('click', () => {
+      const f = document.getElementById('dm-from')?.value || today;
+      const t = document.getElementById('dm-to')?.value || f;
+      m.branch_id = document.getElementById('dm-branch')?.value || 'all';
+      setRange(f <= t ? f : t, f <= t ? t : f);
+    });
+    document.getElementById('dm-branch')?.addEventListener('change', (e) => { m.branch_id = e.target.value; this.renderMoneyPanel(); });
+    document.getElementById('dm-today')?.addEventListener('click', () => setRange(today, today));
+    document.getElementById('dm-yesterday')?.addEventListener('click', () => {
+      const d = new Date(`${today}T12:00:00`); d.setDate(d.getDate() - 1);
+      const y = d.toLocaleDateString('en-CA');
+      setRange(y, y);
+    });
+    document.getElementById('dm-week')?.addEventListener('click', () => {
+      const d = new Date(`${today}T12:00:00`); d.setDate(d.getDate() - 6);
+      setRange(d.toLocaleDateString('en-CA'), today);
+    });
+    document.getElementById('dm-withdraw')?.addEventListener('click', () => this.showWithdrawalForm());
+
+    const res = await API.getDailyMoneyReport({ from: m.from, to: m.to, branch_id: m.branch_id });
+    const body = document.getElementById('dm-body');
+    if (!body) return;
+    if (res?.success === false) {
+      body.innerHTML = `<p class="error-msg">${Utils.escHtml(res.error || 'Could not load daily money')}</p>`;
+      return;
+    }
+    const r = res?.data || res || {};
+    this._moneyReport = r;
+    const cur = this.app.settings?.currency || 'R';
+    const fm = (n) => Utils.formatMoney(Number(n) || 0, cur);
+    const t = r.totals || {};
+    const wds = r.withdrawals || [];
+    body.innerHTML = `
+      <div class="dm-hero">
+        <div class="dm-card dm-in"><span>Money in</span><strong>${fm(t.money_in)}</strong><small class="muted">Cash ${fm(t.cash_in)} · Card ${fm(t.card_in)} · EFT ${fm(t.eft_in)}</small></div>
+        <div class="dm-card dm-out"><span>Out of today's money</span><strong>${fm(t.out_today)}</strong><small class="muted">Expenses ${fm(t.expenses_today)} · Withdrawals ${fm(t.withdrawals_today)}</small></div>
+        <div class="dm-card dm-net"><span>Net today's money</span><strong>${fm(t.net_today)}</strong><small>${t.sale_count || 0} sales</small></div>
+        <div class="dm-card"><span>From previous money</span><strong>${fm((t.expenses_previous || 0) + (t.withdrawals_previous || 0))}</strong><small class="muted">Owner pocket ${fm(t.expenses_owner)} · Owner cash in ${fm(t.owner_cash_in)}</small></div>
+      </div>
+      <div class="dm-actions" style="margin-bottom:14px">
+        <button type="button" class="btn btn-ghost btn-sm" id="dm-pdf">📄 PDF</button>
+        <button type="button" class="btn btn-ghost btn-sm" id="dm-wa">🟢 Send to owner's WhatsApp</button>
+        <button type="button" class="btn btn-ghost btn-sm" id="dm-print">🖨 Print</button>
+      </div>
+      ${(r.days || []).length > 1 ? `<div class="table-wrap"><table>
+        <thead><tr><th>Date</th><th>Sales</th><th>Money in</th><th>Expenses (today)</th><th>Withdrawals (today)</th><th>Net today</th><th>From previous</th></tr></thead>
+        <tbody>${r.days.map((d) => `<tr><td>${Utils.escHtml(d.date)}</td><td>${d.sale_count}</td><td>${fm(d.money_in)}</td><td>${fm(d.expenses_today)}</td><td>${fm(d.withdrawals_today)}</td><td><strong>${fm(d.net_today)}</strong></td><td>${fm(d.expenses_previous + d.withdrawals_previous)}</td></tr>`).join('')}</tbody>
+      </table></div>` : ''}
+      ${(r.by_branch || []).length ? `<h4 style="margin:16px 0 6px">By branch / POS</h4><div class="table-wrap"><table>
+        <thead><tr><th>Branch</th><th>Money in</th><th>Out (today)</th><th>Net today</th><th>From previous</th></tr></thead>
+        <tbody>${r.by_branch.map((b) => `<tr><td>${Utils.escHtml(b.branch_name)}</td><td>${fm(b.totals.money_in)}</td><td>${fm(b.totals.out_today)}</td><td><strong>${fm(b.totals.net_today)}</strong></td><td>${fm(b.totals.expenses_previous + b.totals.withdrawals_previous)}</td></tr>`).join('')}</tbody>
+      </table></div>` : ''}
+      <h4 style="margin:16px 0 6px">Money withdrawals</h4>
+      ${wds.length ? `<div class="table-wrap"><table>
+        <thead><tr><th>Date</th><th>Amount</th><th>Purpose</th><th>Taken by</th><th>Given by</th><th>Authorised by</th><th>Money</th><th>Recorded by</th></tr></thead>
+        <tbody>${wds.map((w) => `<tr><td>${Utils.escHtml(w.withdrawal_date)}</td><td><strong>${fm(w.amount)}</strong></td><td>${Utils.escHtml(w.purpose || '')}</td><td>${Utils.escHtml(w.taken_by || '')}</td><td>${Utils.escHtml(w.given_by || '')}</td><td>${Utils.escHtml(w.authorised_by || '')}</td><td>${this.cashSourceLabel(w.cash_source)}</td><td>${Utils.escHtml(w.created_by_name || '')}</td></tr>`).join('')}</tbody>
+      </table></div>` : '<p class="muted">No withdrawals in this period.</p>'}`;
+    document.getElementById('dm-pdf')?.addEventListener('click', () => this.moneyPdf());
+    document.getElementById('dm-wa')?.addEventListener('click', () => this.moneyWhatsApp());
+    document.getElementById('dm-print')?.addEventListener('click', () => this.moneyPrint());
+  },
+
+  async moneyPdf() {
+    const m = this._money || {};
+    const res = await API.getDailyMoneyPdf({ from: m.from, to: m.to, branch_id: m.branch_id });
+    if (res?.success === false) return Utils.toast(res.error || 'Could not build PDF', 'error');
+    const out = res?.data || res || {};
+    if (!out.base64) return Utils.toast('Could not build PDF', 'error');
+    const bin = atob(out.base64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const blob = new Blob([bytes], { type: 'application/pdf' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = out.filename || 'daily-money.pdf';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    Utils.toast('PDF downloaded', 'success');
+  },
+
+  moneyText() {
+    const r = this._moneyReport;
+    if (!r) return '';
+    const cur = this.app.settings?.currency || 'R';
+    const fm = (n) => Utils.formatMoney(Number(n) || 0, cur);
+    const t = r.totals || {};
+    const shop = this.app.settings?.shop_name || 'Shop';
+    const lines = [
+      `*${shop} — Daily money*`,
+      `${r.branch ? `Branch: ${r.branch.name}` : 'All stores'} · ${r.from === r.to ? r.from : `${r.from} to ${r.to}`}`,
+      '',
+      `Money in: ${fm(t.money_in)} (cash ${fm(t.cash_in)}, card ${fm(t.card_in)}, EFT ${fm(t.eft_in)})`,
+      `Expenses from today's money: ${fm(t.expenses_today)}`,
+      `Withdrawals from today's money: ${fm(t.withdrawals_today)}`,
+      `*Net today's money: ${fm(t.net_today)}*`,
+      `Paid from previous money: ${fm((t.expenses_previous || 0) + (t.withdrawals_previous || 0))}`,
+      `Owner pocket expenses: ${fm(t.expenses_owner)}`
+    ];
+    (r.by_branch || []).forEach((b) => lines.push(`• ${b.branch_name}: in ${fm(b.totals.money_in)}, out ${fm(b.totals.out_today)}, net ${fm(b.totals.net_today)}`));
+    if ((r.withdrawals || []).length) {
+      lines.push('', '*Withdrawals*');
+      r.withdrawals.slice(0, 15).forEach((w) => lines.push(`• ${w.withdrawal_date} ${fm(w.amount)} — ${w.purpose} (taken: ${w.taken_by}, given: ${w.given_by}, authorised: ${w.authorised_by}; ${this.cashSourceLabel(w.cash_source)})`));
+    }
+    lines.push('', `Sent by ${this.app.user?.full_name || this.app.user?.username || ''}`);
+    return lines.join('\n');
+  },
+
+  moneyWhatsApp() {
+    if (!this._moneyReport) return Utils.toast('Load the report first', 'error');
+    const saved = localStorage.getItem('exp_owner_wa') || this._moneyReport.owner_whatsapp || Utils.getCashoutWhatsAppPhone?.(this.app.settings) || '';
+    const phone = window.prompt("Owner's WhatsApp number", saved);
+    if (phone == null) return;
+    if (String(phone).replace(/\D/g, '').length < 9) return Utils.toast('Enter a valid WhatsApp number', 'error');
+    localStorage.setItem('exp_owner_wa', phone);
+    Utils.openWhatsAppUrl(Utils.whatsappUrl(phone, this.moneyText()));
+  },
+
+  moneyPrint() {
+    const r = this._moneyReport;
+    if (!r) return Utils.toast('Load the report first', 'error');
+    const s = this.app.settings || {};
+    const cur = s.currency || 'R';
+    const fm = (n) => Utils.formatMoney(Number(n) || 0, cur);
+    const e = (v) => Utils.escHtml(v == null ? '' : String(v));
+    const t = r.totals || {};
+    const period = r.from === r.to ? r.from : `${r.from} to ${r.to}`;
+    const logoSrc = !s.logo_path ? ''
+      : /^(https?:|data:image\/|\/)/i.test(s.logo_path) ? s.logo_path
+        : (Utils.fileUrl ? Utils.fileUrl(s.logo_path) : `file://${s.logo_path}`);
+    const logo = logoSrc ? `<img src="${e(logoSrc)}" style="height:60px;width:auto;border-radius:8px" onerror="this.remove()">` : '';
+    const row = (k, v, strong) => `<tr${strong ? ' class="s"' : ''}><td>${k}</td><td class="r">${fm(v)}</td></tr>`;
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>Daily money ${e(period)}</title>
+      <style>body{font-family:Segoe UI,Arial,sans-serif;color:#111;margin:24px}h1{margin:0;font-size:22px}
+      .hd{display:flex;gap:14px;align-items:center;border-bottom:2px solid #312e81;padding-bottom:10px;margin-bottom:12px}
+      table{width:100%;border-collapse:collapse;margin:10px 0;font-size:12px}th{background:#312e81;color:#fff;text-align:left;padding:6px}
+      td{padding:5px 6px;border-bottom:1px solid #e5e7eb}.r{text-align:right}.s td{font-weight:700;background:#e0e7ff}.m{color:#555;font-size:12px}</style></head>
+      <body><div class="hd">${logo}<div><h1>${e(s.shop_name || 'Shop')}</h1>
+      <div class="m">${r.branch ? `Branch: ${e(r.branch.name)}${r.branch.address ? ` · ${e(r.branch.address)}` : ''}${r.branch.phone ? ` · Tel ${e(r.branch.phone)}` : ''}` : 'All stores'}</div>
+      <div class="m">${e(s.address || '')}${s.phone ? ` · Tel ${e(s.phone)}` : ''}${s.vat_number ? ` · VAT ${e(s.vat_number)}` : ''}</div></div></div>
+      <h2 style="font-size:16px;margin:0">Daily Money Report — ${e(period)}</h2>
+      <div class="m">Printed ${e(new Date().toLocaleString())} by ${e(this.app.user?.full_name || this.app.user?.username || '')}</div>
+      <table><tr><th>Summary</th><th class="r">Amount</th></tr>
+      ${row('Money in (sales takings)', t.money_in)}${row('&nbsp;&nbsp;Cash', t.cash_in)}${row('&nbsp;&nbsp;Card', t.card_in)}${row('&nbsp;&nbsp;EFT', t.eft_in)}
+      ${row("Expenses from today's money", t.expenses_today)}${row("Withdrawals from today's money", t.withdrawals_today)}
+      ${row("NET today's money", t.net_today, true)}${row('Expenses from previous money', t.expenses_previous)}${row('Withdrawals from previous money', t.withdrawals_previous)}
+      ${row('Owner pocket expenses', t.expenses_owner)}${row('Owner cash put in', t.owner_cash_in)}</table>
+      ${(r.days || []).length > 1 ? `<table><tr><th>Date</th><th class="r">Money in</th><th class="r">Out (today)</th><th class="r">Net</th></tr>
+        ${r.days.map((d) => `<tr><td>${e(d.date)}</td><td class="r">${fm(d.money_in)}</td><td class="r">${fm(d.out_today)}</td><td class="r">${fm(d.net_today)}</td></tr>`).join('')}</table>` : ''}
+      ${(r.by_branch || []).length ? `<table><tr><th>Branch</th><th class="r">Money in</th><th class="r">Out (today)</th><th class="r">Net</th></tr>
+        ${r.by_branch.map((b) => `<tr><td>${e(b.branch_name)}</td><td class="r">${fm(b.totals.money_in)}</td><td class="r">${fm(b.totals.out_today)}</td><td class="r">${fm(b.totals.net_today)}</td></tr>`).join('')}</table>` : ''}
+      ${(r.withdrawals || []).length ? `<table><tr><th>Date</th><th class="r">Amount</th><th>Purpose</th><th>Taken by</th><th>Given by</th><th>Authorised</th><th>Money</th></tr>
+        ${r.withdrawals.map((w) => `<tr><td>${e(w.withdrawal_date)}</td><td class="r">${fm(w.amount)}</td><td>${e(w.purpose)}</td><td>${e(w.taken_by)}</td><td>${e(w.given_by)}</td><td>${e(w.authorised_by)}</td><td>${e(this.cashSourceLabel(w.cash_source))}</td></tr>`).join('')}</table>` : ''}
+      </body></html>`;
+    const frame = document.createElement('iframe');
+    frame.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0';
+    document.body.appendChild(frame);
+    const doc = frame.contentWindow.document;
+    doc.open();
+    doc.write(html);
+    doc.close();
+    setTimeout(() => {
+      try { frame.contentWindow.focus(); frame.contentWindow.print(); } catch (_) { this.moneyPdf(); }
+      setTimeout(() => frame.remove(), 60000);
+    }, 700);
+  },
+
+  showWithdrawalForm() {
+    if (!['owner', 'manager'].includes(this.app.user?.role)) return Utils.toast('Only owners and managers can record withdrawals', 'error');
+    const me = this.app.user?.full_name || this.app.user?.username || '';
+    const branches = this._branches || [];
+    let cashSource = 'today';
+    Utils.showModal('💸 Money withdrawal', `
+      <p class="muted" style="margin:0 0 12px">Owner / manager drawing. Posted to accounting as <strong>Owner Drawings</strong>, to bookkeeping, and deducted in the Daily money report.</p>
+      <div class="form-grid" style="gap:12px">
+        <div class="field"><label>Amount</label><input type="number" id="wd-amt" min="0" step="0.01" placeholder="0.00"></div>
+        <div class="field"><label>Date</label><input type="date" id="wd-date" value="${Utils.today()}"></div>
+        <div class="field full"><label>Purpose</label><input id="wd-purpose" placeholder="e.g. Owner personal use"></div>
+        <div class="field"><label>Who took the money</label><input id="wd-taken" placeholder="Name"></div>
+        <div class="field"><label>Who gave the money</label><input id="wd-given" value="${Utils.escHtml(me)}"></div>
+        <div class="field"><label>Who authorised it</label><input id="wd-auth" placeholder="Name"></div>
+        <div class="field"><label>Paid as</label><select id="wd-method"><option value="cash">Cash from till</option><option value="eft">EFT / bank</option></select></div>
+        ${branches.length > 1 ? `<div class="field"><label>Branch / POS</label><select id="wd-branch">${branches.map((b) => `<option value="${b.id}" ${String(this.app.user?.branch_id || '') === String(b.id) ? 'selected' : ''}>${Utils.escHtml(b.name || `Branch ${b.id}`)}</option>`).join('')}</select></div>` : ''}
+        <div class="field full"><label>From which money?</label>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">
+            <button type="button" class="btn btn-sm btn-primary" data-wd-cash="today">💵 Today's money</button>
+            <button type="button" class="btn btn-sm btn-ghost" data-wd-cash="previous">🗄 Previous days' money</button>
+          </div>
+        </div>
+      </div>`,
+    '<button type="button" class="btn btn-primary" id="wd-save">Record withdrawal</button>');
+    document.querySelectorAll('[data-wd-cash]').forEach((b) => b.addEventListener('click', () => {
+      cashSource = b.dataset.wdCash === 'previous' ? 'previous' : 'today';
+      document.querySelectorAll('[data-wd-cash]').forEach((x) => {
+        x.classList.toggle('btn-primary', x.dataset.wdCash === cashSource);
+        x.classList.toggle('btn-ghost', x.dataset.wdCash !== cashSource);
+      });
+    }));
+    document.getElementById('wd-save')?.addEventListener('click', async () => {
+      const v = (id) => (document.getElementById(id)?.value || '').trim();
+      const amount = parseFloat(v('wd-amt'));
+      if (!(amount > 0)) return Utils.toast('Enter the amount', 'error');
+      if (!v('wd-purpose')) return Utils.toast('Enter the purpose', 'error');
+      if (!v('wd-taken') || !v('wd-given') || !v('wd-auth')) return Utils.toast('Fill in who took, who gave and who authorised', 'error');
+      const btn = document.getElementById('wd-save');
+      if (btn) btn.disabled = true;
+      const r = await API.recordMoneyWithdrawal({
+        amount,
+        withdrawal_date: v('wd-date') || Utils.today(),
+        purpose: v('wd-purpose'),
+        taken_by: v('wd-taken'),
+        given_by: v('wd-given'),
+        authorised_by: v('wd-auth'),
+        payment_method: v('wd-method') || 'cash',
+        branch_id: v('wd-branch') || this.app.user?.branch_id || null,
+        cash_source: cashSource
+      }, this.app.user);
+      if (btn) btn.disabled = false;
+      if (r?.success === false) return Utils.toast(r.error || 'Could not record withdrawal', 'error');
+      Utils.hideModal();
+      Utils.toast(`Withdrawal of ${Utils.formatMoney(amount, this.app.settings?.currency || 'R')} recorded`, 'success');
+      if (this.tab === 'money') this.renderMoneyPanel();
     });
   },
 
@@ -1242,19 +1698,7 @@ const ExpensesPage = {
         description: document.getElementById('exp-of-desc')?.value.trim() || 'Owner cash into business'
       }, this.app.user);
       if (!r.success) return Utils.toast(r.error || 'Save failed', 'error');
-      // Also mirror cash injection into accounting when available
-      try {
-        if (typeof API.accSaveOwnerTxn === 'function') {
-          await API.accSaveOwnerTxn({
-            txn_date: document.getElementById('exp-of-date')?.value,
-            txn_type: 'capital',
-            amount,
-            description: document.getElementById('exp-of-desc')?.value.trim() || 'Owner cash into business',
-            payment_method: 'cash'
-          }, this.app.user).catch(() => {});
-        }
-      } catch (_) { /* optional */ }
-      Utils.toast('Owner cash injection recorded', 'success');
+      Utils.toast('Owner cash injection recorded (bookkeeping & accounting updated)', 'success');
       this.renderFundingPanel();
     });
     document.getElementById('exp-of-add-exp')?.addEventListener('click', () => this.showForm());

@@ -373,6 +373,7 @@ const API = {
   getCashierSalesDetail: (from, to, userId) => invoke('reports:cashierDetail', from, to, userId),
   getProductReport: (from, to) => invoke('reports:product', from, to),
   getStockReport: () => invoke('reports:stock'),
+  getExpenseProductCatalog: () => invoke('expenses:productCatalog'),
   getExpenseReport: (from, to) => invoke('reports:expenses', from, to),
   getHourlyReport: (from, to) => invoke('reports:hourly', from, to),
   getCategoryReport: (from, to) => invoke('reports:category', from, to),

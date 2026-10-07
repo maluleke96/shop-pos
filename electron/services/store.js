@@ -6274,14 +6274,37 @@ function getProductReport(from, to) {
 function getStockReport() {
   const bid = resolveTillBranchId();
   let products = getDb().prepare(`
-    SELECT p.*, c.name as category_name
+    SELECT p.id, p.name, p.sku, p.barcode, p.category_id, p.selling_price, p.buying_price,
+      p.stock_quantity, p.min_stock, p.stock_unit, p.item_type, p.is_active,
+      c.name AS category_name
     FROM products p LEFT JOIN categories c ON p.category_id = c.id
-    WHERE p.is_active = 1 ORDER BY p.name
+    WHERE p.is_active = 1 AND (p.is_archived = 0 OR p.is_archived IS NULL)
+    ORDER BY p.name
   `).all();
   products = overlayBranchStockOnProducts(products, bid);
   return products.map((p) => ({
     ...p,
+    unit: p.stock_unit || p.unit || 'each',
     status: p.stock_quantity <= 0 ? 'out' : (p.stock_quantity <= p.min_stock ? 'low' : 'ok')
+  }));
+}
+
+/** Slim catalog for expense / waste pickers — products + recipe ingredients, no image blobs. */
+function getExpenseProductCatalog() {
+  const bid = resolveTillBranchId();
+  let products = getDb().prepare(`
+    SELECT p.id, p.name, p.sku, p.barcode, p.category_id, p.stock_quantity, p.min_stock,
+      p.stock_unit, p.item_type, p.selling_price, p.buying_price,
+      c.name AS category_name
+    FROM products p LEFT JOIN categories c ON p.category_id = c.id
+    WHERE p.is_active = 1 AND (p.is_archived = 0 OR p.is_archived IS NULL)
+      AND p.name != '__Property Damage__'
+    ORDER BY p.name
+  `).all();
+  products = overlayBranchStockOnProducts(products, bid);
+  return products.map((p) => ({
+    ...p,
+    unit: p.stock_unit || 'each'
   }));
 }
 
@@ -6809,7 +6832,7 @@ module.exports = {
   getSuppliers, saveSupplier, deleteSupplier, recordSupplierPayment, getSupplierPayments,
   getPurchaseOrders, getPurchaseOrder, savePurchaseOrder, receivePurchaseOrder, updatePurchaseOrder, deletePurchaseOrder,
   getDashboardStats, getInventoryStats, getSalesAnalytics,
-  getSalesReport, getProfitReport, getCashierReport, getCashierSalesDetail, getProductReport, getStockReport,
+  getSalesReport, getProfitReport, getCashierReport, getCashierSalesDetail, getProductReport, getStockReport, getExpenseProductCatalog,
   openShift, closeShift, getShiftClosePreview, getShifts, getOpenShift, getAnyOpenShifts, adminForceCloseShift, updateShiftRecord, deleteShiftRecord, getSalesTargets, saveSalesTargets, getTodayTargetProgress, getSalesTargetHistory, upsertSalesTargetHistoryDay, getSalesTargetInsights, getSalesTargetAlertSettings, saveSalesTargetAlertSettings, getSalesTargetDayNote, saveSalesTargetDayNote,
   recordCashDrop, getCashDrops, confirmCashDrop,
   getShiftSettings, saveShiftSettings, roleRequiresShift, enforceShiftCashoutDeadlines, createCashUp,

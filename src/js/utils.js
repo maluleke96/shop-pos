@@ -64,6 +64,12 @@ const Utils = {
     return `${Utils.formatDate(d)} ${dt.toLocaleTimeString(hour12 ? 'en-US' : 'en-GB', { hour: '2-digit', minute: '2-digit', hour12 })}`;
   },
 
+  /** Prefer backdated sale_datetime; fall back to created_at / entered time. */
+  saleBusinessAt(sale) {
+    if (!sale) return null;
+    return sale.sale_datetime || sale.created_at || null;
+  },
+
   today() {
     return new Date().toLocaleDateString('en-CA');
   },
@@ -243,7 +249,9 @@ const Utils = {
     document.getElementById('modal-body').innerHTML = bodyHtml;
     document.getElementById('modal-footer').innerHTML = footerHtml;
     overlay.classList.remove('hidden');
-    document.getElementById('modal')?.classList.toggle('modal-wide', !!options.wide);
+    const modal = document.getElementById('modal');
+    modal?.classList.toggle('modal-wide', !!options.wide);
+    modal?.classList.toggle('modal-compact', !!options.compact);
     overlay.dataset.noDismiss = options.noDismiss ? '1' : '0';
     const closeBtn = document.getElementById('modal-close');
     if (closeBtn) closeBtn.style.display = options.noDismiss ? 'none' : '';
@@ -255,7 +263,9 @@ const Utils = {
     if (overlay?.dataset.noDismiss === '1') return;
     overlay.classList.add('hidden');
     overlay.dataset.noDismiss = '0';
-    document.getElementById('modal')?.classList.remove('modal-wide');
+    const modal = document.getElementById('modal');
+    modal?.classList.remove('modal-wide');
+    modal?.classList.remove('modal-compact');
     const closeBtn = document.getElementById('modal-close');
     if (closeBtn) closeBtn.style.display = '';
   },
@@ -316,8 +326,11 @@ const Utils = {
         if (!needle) return true;
         const name = String(p.name || '').toLowerCase();
         const sku = String(p.sku || p.barcode || '').toLowerCase();
-        return name.includes(needle) || sku.includes(needle);
-      }).slice(0, 80);
+        const cat = String(p.category_name || '').toLowerCase();
+        const type = String(p.item_type || '').toLowerCase();
+        return name.includes(needle) || sku.includes(needle) || cat.includes(needle)
+          || (needle.length >= 3 && type.includes(needle));
+      }).slice(0, 120);
       if (countEl) countEl.textContent = `${rows.length} shown`;
       list.innerHTML = rows.length
         ? rows.map((p) => {
@@ -551,7 +564,7 @@ const Utils = {
   /** Sections managers/supervisors should always see when they have admin access */
   adminManagerSections: new Set([
     'overview', 'staffhr', 'staffportal', 'hrcontracts', 'recruitment', 'employee-of-month', 'opscompliance', 'manager-ops', 'combos',
-    'menu-builder', 'promo-video-builder', 'radio', 'communication-center',
+    'menu-builder', 'promo-video-builder', 'radio', 'communication-center', 'marketing-center', 'financial-intelligence', 'order-sla',
     'quotes', 'approvals', 'recipe', 'tax', 'tax-hub', 'cashiers', 'branches',
     'mobile-app', 'business-manager', 'business-modules', 'digital-signage', 'online-orders', 'hr-workspace', 'hr-approvals', 'accounting-workspace',
     'delivery-dept', 'referral-dept', 'loyalty', 'discounts', 'payments', 'inventory', 'shifts', 'operating', 'cashdrawer', 'customize', 'onaccount', 'taken-orders',
@@ -606,17 +619,17 @@ const Utils = {
   },
 
   roleDefaults: {
-    owner: { sell: true, void_sales: true, refunds: true, discounts: true, change_prices: true, view_reports: true, manage_stock: true, system_settings: true, customers: true, suppliers: true, gift_cards: true, cash_up: true, products: true, reports: true, operations: true, kitchen: true, quotes: true, layby: true, delete_sales: true, bookkeeping: true, staff_portal: true },
-    manager: { sell: true, void_sales: true, refunds: true, discounts: true, change_prices: true, view_reports: true, manage_stock: true, customers: true, suppliers: true, gift_cards: true, cash_up: true, products: true, reports: true, operations: true, kitchen: true, quotes: true, layby: true, owner_salary: true, owner_salary_only: false, bookkeeping: true, staff_portal: false, delivery: true, expense_capture: true },
-    supervisor: { sell: true, void_sales: true, refunds: true, discounts: true, cash_up: true, operations: true, kitchen: true, gift_cards: true, layby: true, quotes: true, staff_portal: false, delivery: true },
+    owner: { sell: true, void_sales: true, refunds: true, discounts: true, change_prices: true, view_reports: true, manage_stock: true, system_settings: true, customers: true, suppliers: true, gift_cards: true, cash_up: true, products: true, reports: true, operations: true, kitchen: true, quotes: true, layby: true, delete_sales: true, bookkeeping: true, staff_portal: true, request_backdated_order: true, authorize_backdated_order: true, view_backdated_orders: true, correct_backdated_order: true, void_backdated_order: true },
+    manager: { sell: true, void_sales: true, refunds: true, discounts: true, change_prices: true, view_reports: true, manage_stock: true, customers: true, suppliers: true, gift_cards: true, cash_up: true, products: true, reports: true, operations: true, kitchen: true, quotes: true, layby: true, owner_salary: true, owner_salary_only: false, bookkeeping: true, staff_portal: false, delivery: true, expense_capture: true, request_backdated_order: true, authorize_backdated_order: true, view_backdated_orders: true, correct_backdated_order: true, void_backdated_order: true },
+    supervisor: { sell: true, void_sales: true, refunds: true, discounts: true, cash_up: true, operations: true, kitchen: true, gift_cards: true, layby: true, quotes: true, staff_portal: false, delivery: true, request_backdated_order: true },
     assistant_manager: {
       sell: true, void_sales: true, refunds: true, discounts: true, cash_up: true, operations: true,
       kitchen: true, gift_cards: true, layby: true, quotes: true, view_reports: true, customers: true, products: true,
-      staff_portal: false, delivery: true, whatsapp: true
+      staff_portal: false, delivery: true, whatsapp: true, request_backdated_order: true, authorize_backdated_order: true, view_backdated_orders: true
     },
     delivery_manager: { delivery: true, view_reports: true, manage_stock: false, sell: false },
     referral_agent: { sell: false, view_reports: false, manage_stock: false },
-    cashier: { sell: true, refunds: false, owner_salary: false, owner_salary_only: false, staff_portal: false, delivery: true }
+    cashier: { sell: true, refunds: false, owner_salary: false, owner_salary_only: false, staff_portal: false, delivery: true, request_backdated_order: true }
   },
 
   normalizePhone(phone) {
