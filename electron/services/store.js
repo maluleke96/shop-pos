@@ -1786,11 +1786,11 @@ function overlayBranchStockOnProducts(products, branchId) {
   if (!Array.isArray(products) || !products.length || !branchId) return products;
   try {
     getDb().prepare('SELECT 1 FROM branch_stock LIMIT 1').get();
-    const placeholders = products.map(() => '?').join(',');
+    // Load all branch_stock for this branch — avoids giant IN (...) on large catalogs (Railway timeouts).
     const rows = getDb().prepare(`
-      SELECT product_id, quantity, min_stock FROM branch_stock
-      WHERE branch_id = ? AND product_id IN (${placeholders})
-    `).all(branchId, ...products.map((p) => p.id));
+      SELECT product_id, quantity, min_stock FROM branch_stock WHERE branch_id = ?
+    `).all(branchId);
+    if (!rows.length) return products;
     const stockMap = Object.fromEntries(rows.map((r) => [r.product_id, r]));
     return products.map((p) => {
       const bs = stockMap[p.id];

@@ -50,20 +50,29 @@ const ExpensesPage = {
   },
 
   /** Products + ingredients for expense/waste search (slim server catalog, no image blobs). */
-  async ensureExpenseCatalog() {
-    if (this._expCatalog?.length) return this._expCatalog;
-    if (this._expCatalogLoad) return this._expCatalogLoad;
+  async ensureExpenseCatalog(force = false) {
+    if (!force && this._expCatalog?.length) return this._expCatalog;
+    if (!force && this._expCatalogLoad) return this._expCatalogLoad;
     this._expCatalogLoad = (async () => {
+      const withTimeout = (p, ms) => Promise.race([
+        p,
+        new Promise((_, rej) => setTimeout(() => rej(new Error('Product catalog timed out')), ms))
+      ]);
       try {
-        const res = await API.getExpenseProductCatalog();
-        const list = res?.success !== false ? (res?.data ?? res) : [];
+        const res = await withTimeout(API.getExpenseProductCatalog(), 22000);
+        if (res?.success === false) throw new Error(res.error || 'Catalog unavailable');
+        const list = res?.data ?? (Array.isArray(res) ? res : []);
         this._expCatalog = Array.isArray(list) ? list : [];
       } catch (_) {
         try {
-          const fallback = await API.getProducts({ include_ingredients: true, omit_images: true });
-          this._expCatalog = (fallback?.data || []).filter((p) => p?.name !== '__Property Damage__');
+          const fallback = await withTimeout(
+            API.getProducts({ include_ingredients: true, omit_images: true, sync_highlights: false }),
+            22000
+          );
+          const raw = fallback?.success === false ? [] : (fallback?.data ?? fallback ?? []);
+          this._expCatalog = (Array.isArray(raw) ? raw : []).filter((p) => p?.name !== '__Property Damage__');
         } catch (__) {
-          this._expCatalog = [];
+          this._expCatalog = this._expCatalog || [];
         }
       }
       this._expCatalogLoad = null;
@@ -164,6 +173,7 @@ const ExpensesPage = {
     this.tab = this.tab || 'list';
     this.categories = this.categories || app.settings?.expense_categories || Utils.expenseCategories;
     this.loadCategories().catch(() => {});
+    this.ensureExpenseCatalog().catch(() => []);
     el.innerHTML = `<div class="page-toolbar">
         <h3>Expenses</h3>
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
@@ -374,9 +384,19 @@ const ExpensesPage = {
     };
     document.getElementById('exp-w-kind')?.addEventListener('change', sync);
     sync();
-    document.getElementById('exp-w-pick')?.addEventListener('click', () => {
+    document.getElementById('exp-w-pick')?.addEventListener('click', async () => {
+      let items = this._expWasteProducts || [];
+      if (!items.length) {
+        Utils.toast('Loading products & ingredients…', 'info');
+        items = await this.ensureExpenseCatalog(true).catch(() => []);
+        this._expWasteProducts = items;
+      }
+      if (!items.length) {
+        Utils.toast('Could not load products — refresh and try again', 'error');
+        return;
+      }
       Utils.openProductSearchPicker({
-        items: this._expWasteProducts || [],
+        items,
         title: 'Select product / ingredient',
         hint: 'Search by name — then tap to select. Stock deducts after admin approval.',
         onPick: (row) => {
@@ -968,11 +988,12 @@ const ExpensesPage = {
       let catalog = state.catalog?.length ? state.catalog : (this._expCatalog || []);
       if (!catalog.length) {
         Utils.toast('Loading products & ingredients…', 'info');
-        catalog = await this.ensureExpenseCatalog().catch(() => []);
+        catalog = await this.ensureExpenseCatalog(true).catch(() => []);
         state.catalog = catalog;
+        this._expCatalog = catalog;
       }
       if (!catalog.length) {
-        Utils.toast('Could not load products — check connection and retry', 'error');
+        Utils.toast('Could not load products — check connection, refresh, and try again', 'error');
         return;
       }
       Utils.openProductSearchPicker({

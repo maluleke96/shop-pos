@@ -14,6 +14,7 @@
     'categories_get',
     'products_get',
     'products_getOne',
+    'expenses_productCatalog',
     'combos_getActive',
     'shifts_current',
     'branches_get'

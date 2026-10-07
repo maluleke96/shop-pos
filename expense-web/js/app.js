@@ -16,8 +16,11 @@ const ExpenseApp = {
     invoicePreview: '',
     invoiceDataUrl: '',
     payment_method: 'cash',
-    funding_source: 'business'
+    funding_source: 'business',
+    cash_source: 'today'
   },
+  money: { from: '', to: '', branch_id: '', report: null, loading: false, error: '' },
+  branches: [],
   ownerFundings: [],
   _loadingFunding: false,
   _fundingError: '',
@@ -26,20 +29,72 @@ const ExpenseApp = {
   _historyError: '',
   historyDetail: null,
   _pendingKey: 'expense_pending_local',
+  sbyView: 'list',
+  sbyDetailId: null,
+  sbyDash: null,
+  sbyRows: [],
+  sbyProducts: [],
+  sbyDetail: null,
+  sbyEvents: [],
+  sbyForm: null,
+  sbyWasteForm: null,
+  _loadingBatches: false,
+  _savingBatch: false,
+
+  _hiddenAt: 0,
+  _idleLockMs: 2 * 60 * 1000,
 
   init() {
-    try {
-      this.user = JSON.parse(localStorage.getItem('expense_user') || 'null');
-    } catch (_) { this.user = null; }
+    localStorage.removeItem('expense_token');
+    localStorage.removeItem('expense_user');
+    this.user = ExpenseAPI.sessionUser();
+    this.token = ExpenseAPI.token();
     this.form.expense_date = this.today();
     this.bindNav();
     this.bindLineItemActions();
+    this.bindIdleLock();
     if (this.token && this.user) {
       this.view = 'main';
       this.bootstrap();
     } else {
       this.render();
     }
+  },
+
+  /** Leaving the app for a while returns to login; queued offline work stays and syncs under its user. */
+  bindIdleLock() {
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') {
+        this._hiddenAt = Date.now();
+        return;
+      }
+      if (this.view === 'main' && this._hiddenAt && Date.now() - this._hiddenAt > this._idleLockMs) {
+        this.lockToLogin('Signed out for safety — please sign in again.');
+      }
+      this._hiddenAt = 0;
+    });
+    window.addEventListener('pagehide', () => {
+      if (this.view === 'main') this._hiddenAt = this._hiddenAt || Date.now();
+    });
+  },
+
+  lockToLogin(message) {
+    ExpenseAPI.clearSession();
+    this.token = '';
+    this.user = null;
+    this.view = 'login';
+    this.tab = 'new';
+    this.historyDetail = null;
+    this.resetForm();
+    document.getElementById('exp-nav')?.classList.add('hidden');
+    this.render();
+    if (message) this.toast(message);
+  },
+
+  startSession(res) {
+    ExpenseAPI.setSession(res.token, res.user);
+    this.token = res.token;
+    this.user = res.user;
   },
 
   today() {
@@ -153,16 +208,22 @@ const ExpenseApp = {
     overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
   },
 
-  async ensureCatalog() {
-    if (this.catalog?.length) return this.catalog;
-    try {
-      const products = await ExpenseAPI.wasteProducts().catch(() => []);
-      this.catalog = Array.isArray(products) ? products.filter((p) => p.name !== '__Property Damage__') : [];
-      this.wasteProducts = this.catalog;
-    } catch (_) {
-      this.catalog = this.catalog || [];
-    }
-    return this.catalog;
+  async ensureCatalog(force = false) {
+    if (!force && this.catalog?.length) return this.catalog;
+    if (!force && this._catalogLoad) return this._catalogLoad;
+    this._catalogLoad = (async () => {
+      try {
+        const res = await ExpenseAPI.wasteProducts();
+        const list = res?.success === false ? [] : (res?.data ?? res ?? []);
+        this.catalog = Array.isArray(list) ? list.filter((p) => p.name !== '__Property Damage__') : [];
+        this.wasteProducts = this.catalog;
+      } catch (_) {
+        this.catalog = this.catalog || [];
+      }
+      this._catalogLoad = null;
+      return this.catalog;
+    })();
+    return this._catalogLoad;
   },
 
   parsePrice(v) {
@@ -174,12 +235,25 @@ const ExpenseApp = {
     return (this.form.lineItems || [])
       .map((row) => {
         const name = String(row.name || '').trim();
-        const quantity = Math.max(this.parsePrice(row.qty) || 1, 0.001);
-        const unit_price = this.parsePrice(row.price);
-        const amount = Math.round(quantity * unit_price * 100) / 100;
-        return { name, quantity, unit_price, amount };
+        const quantity = Math.max(this.parsePrice(row.qty) || 0, 0.0001);
+        const unit = String(row.unit || '').trim() || null;
+        const amount = Math.round(this.parsePrice(row.price) * 100) / 100;
+        const unit_price = quantity > 0 ? Math.round((amount / quantity) * 100) / 100 : 0;
+        const out = {
+          name,
+          quantity,
+          unit,
+          unit_price,
+          amount,
+          line_total_mode: 'line',
+          product_id: row.product_id || null
+        };
+        if (row.photo_data) out.photo_data = row.photo_data;
+        if (row.photo_path) out.photo_path = row.photo_path;
+        if (row.photo_url) out.photo_url = row.photo_url;
+        return out;
       })
-      .filter((row) => row.name && row.unit_price > 0 && row.amount > 0);
+      .filter((row) => row.name && row.amount > 0);
   },
 
   calcTotal() {
@@ -187,7 +261,7 @@ const ExpenseApp = {
   },
 
   addLineItem() {
-    this.form.lineItems.push({ _id: this._lineSeq++, name: '', qty: '1', price: '' });
+    this.form.lineItems.push({ _id: this._lineSeq++, name: '', qty: '1', unit: 'kg', price: '' });
     this.paintBody();
     setTimeout(() => {
       const rows = document.querySelectorAll('.line-item-name');
@@ -215,7 +289,18 @@ const ExpenseApp = {
         e.stopPropagation();
         this.syncLineItemsFromDom();
         const lineId = searchBtn.dataset.searchId;
-        this.ensureCatalog().then((catalog) => {
+        const openPick = async () => {
+          let catalog = await this.ensureCatalog().catch(() => []);
+          if (!catalog.length) {
+            if (typeof ExpenseApp !== 'undefined' && ExpenseApp.toast) ExpenseApp.toast('Loading products…', 'info');
+            catalog = await this.ensureCatalog(true).catch(() => []);
+          }
+          if (!catalog.length) {
+            if (typeof ExpenseApp !== 'undefined' && ExpenseApp.toast) {
+              ExpenseApp.toast('Could not load products — refresh and try again', 'error');
+            }
+            return;
+          }
           this.openProductPicker({
             items: catalog,
             title: 'Search product / ingredient',
@@ -232,7 +317,21 @@ const ExpenseApp = {
               this.paintBody();
             }
           });
-        });
+        };
+        openPick();
+        return;
+      }
+      const clearPhoto = e.target.closest('.line-item-photo-clear');
+      if (clearPhoto?.dataset.photoClearId != null) {
+        e.preventDefault();
+        this.syncLineItemsFromDom();
+        const item = (this.form.lineItems || []).find((r) => String(r._id) === String(clearPhoto.dataset.photoClearId));
+        if (item) {
+          item.photo_data = '';
+          item.photo_url = '';
+          item.photo_path = '';
+          this.paintBody();
+        }
         return;
       }
       const btn = e.target.closest('.line-item-remove');
@@ -241,6 +340,24 @@ const ExpenseApp = {
       e.stopPropagation();
       this.syncLineItemsFromDom();
       this.removeLineItem(btn.dataset.removeId);
+    });
+    document.getElementById('app')?.addEventListener('change', async (e) => {
+      const input = e.target.closest?.('.line-item-photo-input');
+      if (!input || input.dataset.photoId == null) return;
+      const file = input.files?.[0];
+      input.value = '';
+      if (!file) return;
+      try {
+        this.syncLineItemsFromDom();
+        const dataUrl = await this.fileToDataUrl(file);
+        const item = (this.form.lineItems || []).find((r) => String(r._id) === String(input.dataset.photoId));
+        if (!item) return;
+        item.photo_data = dataUrl;
+        this.paintBody();
+        this.toast('Item photo attached');
+      } catch (err) {
+        this.toast(err.message || 'Could not attach photo', 'error');
+      }
     });
   },
 
@@ -271,6 +388,7 @@ const ExpenseApp = {
       if (!item) return;
       item.name = row.querySelector('.line-item-name')?.value || '';
       item.qty = row.querySelector('.line-item-qty')?.value || '1';
+      item.unit = row.querySelector('.line-item-unit')?.value || item.unit || 'kg';
       item.price = row.querySelector('.line-item-price')?.value || '';
     });
   },
@@ -296,7 +414,8 @@ const ExpenseApp = {
       invoicePreview: '',
       invoiceDataUrl: '',
       payment_method: 'cash',
-      funding_source: 'business'
+      funding_source: 'business',
+      cash_source: 'today'
     };
   },
 
@@ -323,27 +442,62 @@ const ExpenseApp = {
       : 'Business';
   },
 
+  cashSourceLabel(src) {
+    return String(src || 'today').toLowerCase() === 'previous' ? "Previous days' money" : "Today's money";
+  },
+
+  cashSourceChips(id, value) {
+    const prev = String(value || 'today') === 'previous';
+    return `
+      <div class="fund-chip-row cash-chip-row" id="${id}">
+        <button type="button" class="fund-chip${!prev ? ' active' : ''}" data-cash="today">💵 Today's money</button>
+        <button type="button" class="fund-chip${prev ? ' active' : ''}" data-cash="previous">🗄 Previous days' money</button>
+      </div>
+      <p class="muted" style="font-size:0.8rem;margin:6px 0 0;line-height:1.4"><strong>Today's money</strong> is deducted from today's takings in the daily money report. <strong>Previous</strong> = money kept from earlier days.</p>`;
+  },
+
   async fileToDataUrl(file, maxW = 1400, quality = 0.82) {
     if (!file) return null;
-    if (!/^image\//.test(file.type || '')) throw new Error('Please choose a photo (JPEG or PNG).');
-    if (file.size > 12 * 1024 * 1024) throw new Error('Photo is too large. Use a photo under 12 MB.');
+    const looksImage = /^image\//.test(file.type || '') || (!file.type && /\.(jpe?g|png|webp|heic|heif)$/i.test(file.name || ''));
+    if (!looksImage) throw new Error('Please choose a photo (JPEG or PNG).');
+    if (file.size > 40 * 1024 * 1024) throw new Error('Photo is too large. Use a photo under 40 MB.');
+    const loadImg = (src) => new Promise((resolve, reject) => {
+      const el = new Image();
+      el.onload = () => resolve(el);
+      el.onerror = () => reject(new Error('Could not read this photo. Try taking it again or choose a JPEG.'));
+      el.src = src;
+    });
     const blobUrl = URL.createObjectURL(file);
     try {
-      const img = await new Promise((resolve, reject) => {
-        const el = new Image();
-        el.onload = () => resolve(el);
-        el.onerror = () => reject(new Error('Could not read photo'));
-        el.src = blobUrl;
-      });
-      const scale = img.width > maxW ? maxW / img.width : 1;
-      const w = Math.round(img.width * scale);
-      const h = Math.round(img.height * scale);
-      const canvas = document.createElement('canvas');
-      canvas.width = w;
-      canvas.height = h;
-      const ctx = canvas.getContext('2d');
-      ctx.drawImage(img, 0, 0, w, h);
-      return canvas.toDataURL('image/jpeg', quality);
+      let img;
+      try {
+        img = await loadImg(blobUrl);
+      } catch (_) {
+        const raw = await new Promise((resolve, reject) => {
+          const fr = new FileReader();
+          fr.onload = () => resolve(fr.result);
+          fr.onerror = () => reject(new Error('Could not read this photo.'));
+          fr.readAsDataURL(file);
+        });
+        img = await loadImg(raw);
+      }
+      // Fit the longest side so tall portrait shots stay small enough to upload on slow networks.
+      const encode = (maxSide, q) => {
+        const longest = Math.max(img.width, img.height) || 1;
+        const scale = longest > maxSide ? maxSide / longest : 1;
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(img.width * scale));
+        canvas.height = Math.max(1, Math.round(img.height * scale));
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        return canvas.toDataURL('image/jpeg', q);
+      };
+      let out = encode(maxW, quality);
+      if (out.length > 900 * 1024) out = encode(Math.min(maxW, 1100), 0.7);
+      if (out.length > 900 * 1024) out = encode(900, 0.6);
+      return out;
     } finally {
       URL.revokeObjectURL(blobUrl);
     }
@@ -355,54 +509,80 @@ const ExpenseApp = {
     this.paintBody();
   },
 
+  switchTab(tab) {
+    const btn = document.querySelector(`#exp-nav [data-tab="${tab}"]`);
+    if (btn) btn.click();
+  },
+
   bindNav() {
     if (this._navBound) return;
     this._navBound = true;
+    window.addEventListener('expense-sync-failed', (e) => {
+      this.toast(`An offline item could not be saved: ${e.detail?.error || 'rejected'}. See Profile → Sync.`, 'error');
+    });
+    window.addEventListener('online', () => this.updateSyncBadge());
+    window.addEventListener('offline', () => this.updateSyncBadge());
     document.getElementById('exp-nav')?.addEventListener('click', async (e) => {
       const btn = e.target.closest('[data-tab]');
       if (!btn) return;
       this.tab = btn.dataset.tab;
       this.historyDetail = null;
+      if (this.tab !== 'batches') {
+        this.sbyView = 'list';
+        this.sbyDetailId = null;
+        this.sbyDetail = null;
+      }
       document.querySelectorAll('#exp-nav [data-tab]').forEach((b) => {
         b.classList.toggle('active', b.dataset.tab === this.tab);
       });
       if (this.tab === 'history') await this.loadHistory(true);
       if (this.tab === 'waste') await this.loadWaste(true);
+      if (this.tab === 'batches') await this.loadBatches(true);
       if (this.tab === 'funding') await this.loadFunding(true);
       if (this.tab === 'new') this.ensureCatalog().catch(() => {});
       this.paintBody();
     });
-    window.addEventListener('portal-offline-flushed', () => {
+    window.addEventListener('portal-offline-flushed', (e) => {
+      this.updateSyncBadge();
+      if (this.view === 'main' && e.detail?.count) this.toast(`${e.detail.count} offline item(s) synced`);
       if (this.tab === 'history' && this.view === 'main') {
         this.loadHistory(true).then(() => this.paintBody()).catch(() => {});
       }
       if (this.tab === 'funding' && this.view === 'main') {
         this.loadFunding(true).then(() => this.paintBody()).catch(() => {});
       }
+      if (this.tab === 'batches' && this.view === 'main') {
+        this.loadBatches(true).then(() => this.paintBody()).catch(() => {});
+      }
     });
   },
 
   getPendingExpenses() {
     try {
-      return JSON.parse(localStorage.getItem(this._pendingKey) || '[]');
+      const uid = this.user?.id;
+      return JSON.parse(localStorage.getItem(this._pendingKey) || '[]')
+        .filter((p) => !p.user_id || !uid || Number(p.user_id) === Number(uid));
     } catch (_) {
       return [];
     }
   },
 
   addPendingExpense(record) {
-    const list = this.getPendingExpenses();
+    let list = [];
+    try { list = JSON.parse(localStorage.getItem(this._pendingKey) || '[]'); } catch (_) { list = []; }
     list.unshift({
       ...record,
       id: `local-${Date.now()}`,
       pending: true,
+      user_id: this.user?.id || null,
       user_name: this.user?.full_name || this.user?.username || 'You'
     });
     localStorage.setItem(this._pendingKey, JSON.stringify(list.slice(0, 40)));
   },
 
   prunePendingExpenses(serverRows) {
-    const pending = this.getPendingExpenses();
+    let pending = [];
+    try { pending = JSON.parse(localStorage.getItem(this._pendingKey) || '[]'); } catch (_) { pending = []; }
     if (!pending.length || !serverRows?.length) return;
     const serverSigs = new Set(serverRows.map((e) =>
       `${e.expense_date}|${Number(e.amount).toFixed(2)}|${String(e.description || '').slice(0, 40)}`
@@ -420,9 +600,15 @@ const ExpenseApp = {
     if (hdr) {
       if (this.historyDetail) hdr.textContent = 'Expense details';
       else if (this.tab === 'new') hdr.textContent = 'New expense';
+      else if (this.tab === 'batches') {
+        if (this.sbyView === 'create') hdr.textContent = 'New stock batch';
+        else if (this.sbyView === 'waste') hdr.textContent = 'Batch waste';
+        else if (this.sbyView === 'detail') hdr.textContent = 'Batch detail';
+        else hdr.textContent = 'Stock batches';
+      }
       else if (this.tab === 'waste') hdr.textContent = 'Waste / Damage';
       else if (this.tab === 'history') hdr.textContent = 'Recent expenses';
-      else if (this.tab === 'funding') hdr.textContent = 'Owner funding';
+      else if (this.tab === 'funding') hdr.textContent = 'Daily money';
       else hdr.textContent = 'Your profile';
     }
     if (body) {
@@ -437,25 +623,27 @@ const ExpenseApp = {
     // Paint shell immediately — settings load in background
     this.render();
     try {
-      const [settings, categories, profile] = await Promise.all([
+      const [settings, categories, profile, units] = await Promise.all([
         ExpenseAPI.settings().catch(() => this.settings),
         ExpenseAPI.categories().catch(() => ['other']),
-        ExpenseAPI.profile().catch(() => this.user)
+        ExpenseAPI.profile().catch(() => this.user),
+        ExpenseAPI.unitsList().catch(() => [])
       ]);
+      this.units = (units || []).map((u) => u.code || u).filter(Boolean);
       this.settings = settings || this.settings;
       this.categories = categories?.length ? categories : ['other'];
       this.user = profile || this.user;
       this.applyBranding();
       this.syncOwnerNav();
-      localStorage.setItem('expense_user', JSON.stringify(this.user));
+      ExpenseAPI.setSession(this.token, this.user);
+      this.updateSyncBadge();
       if (this.tab === 'history') await this.loadHistory();
       if (this.tab === 'funding') await this.loadFunding();
       this.paintBody();
     } catch (err) {
       this.token = '';
       this.user = null;
-      localStorage.removeItem('expense_token');
-      localStorage.removeItem('expense_user');
+      ExpenseAPI.clearSession();
       this.view = 'login';
       document.getElementById('exp-nav')?.classList.add('hidden');
       this.toast(err.message || 'Session expired', 'error');
@@ -511,10 +699,7 @@ const ExpenseApp = {
     card.innerHTML = ExpensePermissionGrant.render(username);
     ExpensePermissionGrant.bind(card, username, password, async (res) => {
       this._grantFlow = null;
-      this.token = res.token;
-      this.user = res.user;
-      localStorage.setItem('expense_token', res.token);
-      localStorage.setItem('expense_user', JSON.stringify(res.user));
+      this.startSession(res);
       this.view = 'main';
       this.tab = 'new';
       await this.bootstrap();
@@ -553,9 +738,10 @@ const ExpenseApp = {
   renderShell() {
     const titles = {
       new: 'New expense',
+      batches: 'Stock batches',
       waste: 'Waste / Damage',
       history: 'Recent expenses',
-      funding: 'Owner funding',
+      funding: 'Daily money',
       profile: 'Your profile'
     };
     return `
@@ -573,9 +759,292 @@ const ExpenseApp = {
     if (this.tab === 'history' && this.historyDetail) return this.renderDetail(this.historyDetail);
     if (this.tab === 'history') return this.renderHistory();
     if (this.tab === 'profile') return this.renderProfile();
+    if (this.tab === 'batches') return this.renderBatches();
     if (this.tab === 'waste') return this.renderWaste();
     if (this.tab === 'funding') return this.renderFunding();
     return this.renderForm();
+  },
+
+  async loadBatches(force = false) {
+    if (this._loadingBatches && !force) return;
+    this._loadingBatches = true;
+    try {
+      const [dash, rows, products] = await Promise.all([
+        ExpenseAPI.stockBatchDashboard({ status: 'open' }).catch(() => null),
+        ExpenseAPI.stockBatchList({ status: 'open', limit: 80 }).catch(() => []),
+        ExpenseAPI.stockBatchProducts().catch(() => [])
+      ]);
+      this.sbyDash = dash || {};
+      this.sbyRows = Array.isArray(rows) ? rows : [];
+      this.sbyProducts = Array.isArray(products) ? products : [];
+      if (this.sbyView === 'detail' && this.sbyDetailId) {
+        try {
+          this.sbyDetail = await ExpenseAPI.stockBatchGet(this.sbyDetailId);
+          this.sbyEvents = await ExpenseAPI.stockBatchEvents(this.sbyDetailId, 30).catch(() => []);
+        } catch (_) { /* keep cached */ }
+      }
+    } catch (err) {
+      this.toast(err.message || 'Could not load batches', 'error');
+      this.sbyRows = this.sbyRows || [];
+      this.sbyProducts = this.sbyProducts || [];
+    } finally {
+      this._loadingBatches = false;
+    }
+  },
+
+  defaultSbyForm() {
+    return {
+      stock_product_id: '',
+      stock_product_name: '',
+      selling_product_id: '',
+      selling_product_name: '',
+      selling_price: '',
+      purchase_cost: '',
+      expected_yield: '',
+      quantity_purchased: '',
+      unit: 'kg',
+      purchase_date: this.today(),
+      supplier_name: '',
+      invoice_ref: '',
+      storage_location: '',
+      notes: '',
+      allocations: [],
+      mealsUsing: []
+    };
+  },
+
+  updateSbyPreview() {
+    const cost = Number(document.getElementById('sby-cost')?.value) || 0;
+    const el = document.getElementById('sby-preview');
+    if (!el) return;
+    const allocs = (this.sbyForm?.allocations || []).filter((a) => a.enabled !== false && a.selling_product_id);
+    const plates = allocs.reduce((s, a) => s + (Number(a.expected_portions) || 0), 0)
+      || Number(document.getElementById('sby-yield')?.value) || 0;
+    el.textContent = `Purchase ${this.fmt(cost)}${plates ? ` · ~${plates} plates across meals` : ''}`;
+  },
+
+  syncSbyAllocFromDom() {
+    this.sbyForm = this.sbyForm || this.defaultSbyForm();
+    const meals = this.sbyForm.mealsUsing || [];
+    this.sbyForm.allocations = meals.map((m) => {
+      const on = document.querySelector(`.sby-alloc-on[data-meal-id="${m.id}"]`)?.checked;
+      const kg = document.querySelector(`.sby-alloc-kg[data-meal-id="${m.id}"]`)?.value;
+      const plates = document.querySelector(`.sby-alloc-plates[data-meal-id="${m.id}"]`)?.value;
+      return {
+        selling_product_id: m.id,
+        selling_product_name: m.name,
+        selling_price: m.selling_price,
+        qty_kg: kg || '',
+        expected_portions: plates || '',
+        enabled: !!on
+      };
+    });
+    const nameEl = document.getElementById('sby-stock-name');
+    const costEl = document.getElementById('sby-cost');
+    const qtyEl = document.getElementById('sby-qty');
+    const unitEl = document.getElementById('sby-unit');
+    const yieldEl = document.getElementById('sby-yield');
+    if (nameEl) this.sbyForm.stock_product_name = nameEl.value;
+    if (costEl) this.sbyForm.purchase_cost = costEl.value;
+    if (qtyEl) this.sbyForm.quantity_purchased = qtyEl.value;
+    if (unitEl) this.sbyForm.unit = unitEl.value;
+    if (yieldEl) this.sbyForm.expected_yield = yieldEl.value;
+  },
+
+  renderBatches() {
+    if (this.sbyView === 'create') return this.renderBatchCreate();
+    if (this.sbyView === 'waste') return this.renderBatchWaste();
+    if (this.sbyView === 'detail') return this.renderBatchDetail();
+    if (this._loadingBatches && !this.sbyRows?.length && !this.sbyDash) {
+      return `<div class="empty"><div class="ico">⏳</div><p>Loading batches…</p></div>`;
+    }
+    const d = this.sbyDash || {};
+    const rows = this.sbyRows || [];
+    const list = rows.length
+      ? rows.map((b) => {
+        const over = (Number(b.portions_sold) || 0) > (Number(b.expected_yield) || 0);
+        const pct = Math.min(100, Number(b.progress_pct) || 0);
+        return `
+          <button type="button" class="form-card sby-row-btn" data-sby-id="${b.id}" style="width:100%;text-align:left;padding:12px;margin-bottom:8px;cursor:pointer;border:1px solid var(--border);background:var(--card)">
+            <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start">
+              <div>
+                <strong>${this.esc(b.batch_number || `#${b.id}`)}</strong>
+                <div style="font-size:0.9rem;margin-top:2px">${this.esc(b.stock_product_name || 'Stock')}</div>
+                <div class="muted" style="font-size:0.8rem">→ ${this.esc(b.selling_product_name || '—')}</div>
+              </div>
+              <span class="tag" style="background:#1e1b4b;color:#c7d2fe;font-size:0.72rem">${this.esc(b.status_label || b.status || '')}</span>
+            </div>
+            <div class="muted" style="font-size:0.8rem;margin-top:8px">
+              ${this.fmt(b.purchase_cost)} · sold ${b.portions_sold || 0}/${b.expected_yield || 0}
+              · rem ${b.remaining ?? '—'} · profit ${this.fmt(b.gross_profit)}
+            </div>
+            <div style="height:6px;background:rgba(255,255,255,0.08);border-radius:999px;margin-top:8px;overflow:hidden">
+              <i style="display:block;height:100%;width:${pct}%;background:${over ? '#f59e0b' : '#10b981'};border-radius:999px"></i>
+            </div>
+          </button>`;
+      }).join('')
+      : `<div class="empty" style="padding:20px"><p class="muted">No open stock batches yet</p></div>`;
+
+    return `
+      <div class="form-card" style="margin-bottom:12px">
+        <p class="muted" style="margin:0 0 12px;font-size:0.85rem">Report a purchase as a stock batch from your phone. Sales on POS update yield automatically — desktop sees the same batches.</p>
+        <button type="button" class="btn btn-primary" id="sby-new" style="width:100%">+ Create stock batch</button>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">
+        <div class="form-card" style="padding:10px"><div class="muted" style="font-size:0.72rem">Active</div><strong>${d.active_batches || 0}</strong></div>
+        <div class="form-card" style="padding:10px"><div class="muted" style="font-size:0.72rem">Purchase cost</div><strong>${this.fmt(d.total_purchase_cost)}</strong></div>
+        <div class="form-card" style="padding:10px"><div class="muted" style="font-size:0.72rem">Revenue</div><strong>${this.fmt(d.revenue_generated)}</strong></div>
+        <div class="form-card" style="padding:10px"><div class="muted" style="font-size:0.72rem">Gross profit</div><strong>${this.fmt(d.estimated_gross_profit)}</strong></div>
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <strong style="font-size:0.9rem">Open batches</strong>
+        <button type="button" class="btn btn-ghost" id="sby-refresh" style="padding:6px 10px;font-size:0.8rem">Refresh</button>
+      </div>
+      ${list}`;
+  },
+
+  renderBatchCreate() {
+    const f = this.sbyForm || this.defaultSbyForm();
+    const cost = Number(f.purchase_cost) || 0;
+    const allocs = Array.isArray(f.allocations) ? f.allocations : [];
+    const meals = Array.isArray(f.mealsUsing) ? f.mealsUsing : [];
+    const expectedSum = allocs.reduce((s, a) => s + (Number(a.expected_portions) || 0), 0)
+      || Number(f.expected_yield) || 0;
+    const allocHtml = meals.length
+      ? meals.map((m) => {
+        const a = allocs.find((x) => String(x.selling_product_id) === String(m.id)) || {};
+        const on = a.selling_product_id != null || a.enabled;
+        return `
+          <div class="form-card" style="padding:10px;margin-bottom:8px;border:1px solid var(--border)">
+            <label style="display:flex;gap:8px;align-items:flex-start;margin:0">
+              <input type="checkbox" class="sby-alloc-on" data-meal-id="${m.id}" ${on ? 'checked' : ''} style="margin-top:4px">
+              <span>
+                <strong>${this.esc(m.name)}</strong>
+                <div class="muted" style="font-size:0.75rem">Recipe uses ${m.recipe_qty || '?'} ${this.esc(m.recipe_unit || '')} · sell ${this.fmt(m.selling_price)}</div>
+              </span>
+            </label>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px;${on ? '' : 'opacity:0.45;pointer-events:none'}">
+              <div class="field" style="margin:0"><label style="font-size:0.72rem">kg / qty from this purchase</label>
+                <input type="number" class="sby-alloc-kg" data-meal-id="${m.id}" step="0.001" min="0" value="${this.esc(a.qty_kg || '')}" placeholder="e.g. 3"></div>
+              <div class="field" style="margin:0"><label style="font-size:0.72rem">Expected plates</label>
+                <input type="number" class="sby-alloc-plates" data-meal-id="${m.id}" step="0.01" min="0" value="${this.esc(a.expected_portions || '')}" placeholder="plates"></div>
+            </div>
+          </div>`;
+      }).join('')
+      : `<p class="muted" style="font-size:0.85rem">Pick a stock item from the catalog to see meals that use it in Recipe &amp; Production. You can still save with expected yield only.</p>`;
+
+    return `
+      <div class="form-card">
+        <button type="button" class="btn btn-ghost" id="sby-back" style="margin-bottom:12px">← Back to list</button>
+        <div class="field">
+          <label>Stock / ingredient purchased</label>
+          <input type="hidden" id="sby-stock-id" value="${this.esc(f.stock_product_id || '')}">
+          <button type="button" class="btn btn-ghost" id="sby-stock-pick" style="width:100%;justify-content:space-between;text-align:left;margin-bottom:8px">
+            <span>${f.stock_product_name ? this.esc(f.stock_product_name) : 'Pick from catalog (recommended)'}</span>
+            <span>▾</span>
+          </button>
+          <input id="sby-stock-name" placeholder="e.g. Potatoes 10kg" value="${this.esc(f.stock_product_name || '')}">
+        </div>
+        <div class="field"><label>Purchase cost (total paid)</label>
+          <input id="sby-cost" type="number" step="0.01" min="0" inputmode="decimal" value="${this.esc(f.purchase_cost || '')}"></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+          <div class="field"><label>Qty purchased</label>
+            <input id="sby-qty" type="number" step="0.001" min="0" value="${this.esc(f.quantity_purchased || '')}"></div>
+          <div class="field"><label>Unit</label>
+            <input id="sby-unit" value="${this.esc(f.unit || 'kg')}"></div>
+        </div>
+        <div class="field"><label>Expected yield (total plates) <span class="muted">optional if set per meal below</span></label>
+          <input id="sby-yield" type="number" step="0.01" min="0" inputmode="decimal" value="${this.esc(f.expected_yield || expectedSum || '')}"></div>
+        <div class="field"><label>Purchase date</label>
+          <input id="sby-date" type="date" value="${this.esc(f.purchase_date || this.today())}"></div>
+        <p class="section-label" style="margin-top:16px">Meals that use this stock</p>
+        <p class="muted" style="font-size:0.8rem;margin:0 0 10px">Tick each meal (chips, quarter, etc.) and enter how many kg from this purchase go to that meal. POS sales deduct via Recipe &amp; Production.</p>
+        <div id="sby-alloc-list">${allocHtml}</div>
+        <div class="field"><label>Supplier</label>
+          <input id="sby-supplier" value="${this.esc(f.supplier_name || '')}" placeholder="Optional"></div>
+        <div class="field"><label>Notes</label>
+          <input id="sby-notes" value="${this.esc(f.notes || '')}" placeholder="Optional"></div>
+        <p class="muted" id="sby-preview" style="font-size:0.8rem;margin:0 0 12px">Purchase ${this.fmt(cost)}${expectedSum ? ` · ~${expectedSum} plates across meals` : ''}</p>
+        <button type="button" class="btn btn-primary" id="sby-save" style="width:100%;margin-top:8px" ${this._savingBatch ? 'disabled' : ''}>
+          ${this._savingBatch ? 'Saving…' : 'Save stock batch'}
+        </button>
+      </div>`;
+  },
+
+  renderBatchDetail() {
+    const b = this.sbyDetail;
+    if (!b) {
+      return `<div class="empty"><p class="muted">Batch not found</p>
+        <button type="button" class="btn btn-ghost" id="sby-back">← Back</button></div>`;
+    }
+    const closed = b.status === 'finished' || b.status === 'cancelled';
+    const events = Array.isArray(this.sbyEvents) ? this.sbyEvents : [];
+    const evHtml = events.length
+      ? events.slice(0, 20).map((e) => `
+          <div style="padding:8px 0;border-bottom:1px solid var(--border);font-size:0.82rem">
+            <strong>${this.esc(e.action || e.event_type || e.type || '')}</strong>
+            <div class="muted">${this.esc(e.user_name || '')} · ${this.esc(String(e.created_at || '').slice(0, 16))}</div>
+            ${e.reason || e.notes ? `<div class="muted">${this.esc(e.reason || e.notes || '')}</div>` : ''}
+          </div>`).join('')
+      : `<p class="muted" style="font-size:0.85rem">No events yet</p>`;
+    return `
+      <div class="form-card">
+        <button type="button" class="btn btn-ghost" id="sby-back" style="margin-bottom:10px">← Back to list</button>
+        <h3 style="margin:0 0 4px;font-size:1.05rem">${this.esc(b.batch_number || '')}</h3>
+        <p class="muted" style="margin:0 0 12px;font-size:0.85rem">${this.esc(b.stock_product_name)} → ${this.esc(b.selling_product_name || '—')}</p>
+        <span class="tag" style="background:#1e1b4b;color:#c7d2fe">${this.esc(b.status_label || b.status)}</span>
+        ${(Array.isArray(b.allocations) && b.allocations.length) ? `
+          <div style="margin:12px 0;padding:10px;border:1px solid var(--border);border-radius:10px">
+            <strong style="font-size:0.85rem">Meal allocations</strong>
+            ${b.allocations.map((a) => `
+              <div class="muted" style="font-size:0.8rem;margin-top:6px">
+                ${this.esc(a.selling_product_name || '#' + a.selling_product_id)}
+                · ${a.qty_kg || 0} kg/qty · ${a.expected_portions || 0} plates
+              </div>`).join('')}
+          </div>` : ''}
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:14px 0">
+          <div><div class="muted" style="font-size:0.72rem">Purchase</div><strong>${this.fmt(b.purchase_cost)}</strong></div>
+          <div><div class="muted" style="font-size:0.72rem">Cost / portion</div><strong>${this.fmt(b.cost_per_portion)}</strong></div>
+          <div><div class="muted" style="font-size:0.72rem">Sold / expected</div><strong>${b.portions_sold || 0} / ${b.expected_yield || 0}</strong></div>
+          <div><div class="muted" style="font-size:0.72rem">Remaining</div><strong>${b.remaining ?? '—'}</strong></div>
+          <div><div class="muted" style="font-size:0.72rem">Revenue</div><strong>${this.fmt(b.revenue)}</strong></div>
+          <div><div class="muted" style="font-size:0.72rem">Gross profit</div><strong>${this.fmt(b.gross_profit)}</strong></div>
+          <div><div class="muted" style="font-size:0.72rem">Waste</div><strong>${b.portions_wasted || 0}</strong></div>
+          <div><div class="muted" style="font-size:0.72rem">Sell price</div><strong>${this.fmt(b.selling_price)}</strong></div>
+        </div>
+        ${!closed ? `
+          <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:14px">
+            <button type="button" class="btn btn-primary" id="sby-d-waste">Record waste</button>
+            <button type="button" class="btn btn-ghost" id="sby-d-actual">Set actual yield</button>
+            <button type="button" class="btn btn-ghost" id="sby-d-close">Close / finish batch</button>
+          </div>` : ''}
+        <strong style="font-size:0.9rem">Activity</strong>
+        <div style="margin-top:8px">${evHtml}</div>
+      </div>`;
+  },
+
+  renderBatchWaste() {
+    const b = this.sbyDetail;
+    const f = this.sbyWasteForm || { quantity: '1', reason: 'Damaged', notes: '' };
+    return `
+      <div class="form-card">
+        <button type="button" class="btn btn-ghost" id="sby-back-detail" style="margin-bottom:12px">← Back to batch</button>
+        <p class="muted" style="margin:0 0 12px;font-size:0.85rem">
+          Waste against <strong>${this.esc(b?.batch_number || '')}</strong> — ${this.esc(b?.stock_product_name || '')}.
+          Remaining: <strong>${b?.remaining ?? '—'}</strong>
+        </p>
+        <div class="field"><label>Portions wasted</label>
+          <input id="sby-w-qty" type="number" step="0.01" min="0" value="${this.esc(f.quantity || '1')}"></div>
+        <div class="field"><label>Reason</label>
+          <select id="sby-w-reason">
+            ${['Damaged', 'Spoiled', 'Overcooked', 'Dropped', 'Other'].map((r) =>
+              `<option ${f.reason === r ? 'selected' : ''}>${r}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field"><label>Notes</label>
+          <input id="sby-w-notes" value="${this.esc(f.notes || '')}" placeholder="Optional"></div>
+        <button type="button" class="btn btn-primary" id="sby-w-save" style="width:100%">Submit waste</button>
+      </div>`;
   },
 
   async loadWaste(force = false) {
@@ -639,6 +1108,8 @@ const ExpenseApp = {
         </div>
         <div class="field"><label>Quantity</label>
           <input id="w-qty" type="number" step="0.001" min="0" value="${this.esc(this.wasteForm?.quantity || '1')}"></div>
+        <div class="field"><label>Unit</label>
+          <select id="w-unit">${(this.units || ['kg', 'g', 'L', 'mL', 'each']).map((u) => `<option ${(this.wasteForm?.unit || 'kg') === u ? 'selected' : ''}>${this.esc(u)}</option>`).join('')}</select></div>
         <div class="field"><label>Reason</label>
           <select id="w-reason">
             ${['Damaged', 'Spoiled', 'Expired', 'Broken', 'Lost', 'Other'].map((r) =>
@@ -678,8 +1149,18 @@ const ExpenseApp = {
             <input type="text" class="line-item-name" placeholder="Item / ingredient" value="${this.esc(row.name)}" autocomplete="off">
             <button type="button" class="line-item-search" data-search-id="${row._id}" aria-label="Search product">🔍</button>
           </div>
-          <input type="number" class="line-item-qty" placeholder="Qty" inputmode="decimal" step="any" min="0.001" value="${this.esc(row.qty != null ? row.qty : '1')}">
-          <input type="number" class="line-item-price" placeholder="Price" inputmode="decimal" step="0.01" min="0" value="${this.esc(row.price)}">
+          <input type="number" class="line-item-qty" placeholder="Qty" inputmode="decimal" step="any" min="0" value="${this.esc(row.qty != null ? row.qty : '1')}">
+          <select class="line-item-unit">${(this.units || ['kg', 'g', 'L', 'mL', 'each']).map((u) => `<option ${(row.unit || 'kg') === u ? 'selected' : ''}>${this.esc(u)}</option>`).join('')}</select>
+          <input type="number" class="line-item-price" placeholder="Unit cost" inputmode="decimal" step="0.01" min="0" value="${this.esc(row.price)}">
+          <div class="line-item-photo-wrap">
+            ${row.photo_data || row.photo_url
+              ? `<img class="line-item-thumb" src="${this.esc(row.photo_data || row.photo_url)}" alt="">
+                 <button type="button" class="line-item-photo-clear" data-photo-clear-id="${row._id}">Remove photo</button>`
+              : `<label class="line-item-cam" title="Take photo of this item">
+                   <span>📷</span>
+                   <input type="file" class="line-item-photo-input" data-photo-id="${row._id}" accept="image/*" capture="environment" hidden>
+                 </label>`}
+          </div>
         </div>
         <button type="button" class="line-item-remove" data-remove-id="${row._id}" aria-label="Remove line">×</button>
       </div>`).join('');
@@ -693,13 +1174,18 @@ const ExpenseApp = {
     const validCount = this.validLineItems().length;
 
     return `
+      ${this.isOwnerOrManager() ? `
+      <div class="quick-actions">
+        <button type="button" class="qa-btn qa-withdraw" data-open-withdrawal>💸<span>Money withdrawal</span></button>
+        <button type="button" class="qa-btn" data-goto-money>📊<span>Today's money</span></button>
+      </div>` : ''}
       <div class="form-card line-items-card">
         <div class="line-items-head">
           <p class="section-label" style="margin:0">Invoice line items</p>
           <span class="muted" id="exp-line-count">${validCount ? `${validCount} item${validCount === 1 ? '' : 's'}` : 'Add items below'}</span>
         </div>
-        <p class="muted line-items-hint">Type a name or tap 🔍 to search products / ingredients, then set qty and price.</p>
-        <div class="line-items-columns"><span>Item</span><span>Qty</span><span>Price</span></div>
+        <p class="muted line-items-hint">Search or type the item, enter <strong>qty</strong> and <strong>price paid</strong> yourself (no auto-multiply). Tap 📷 on each line to photo that ingredient.</p>
+        <div class="line-items-columns"><span>Item</span><span>Qty</span><span>Price</span><span>Photo</span></div>
         <div id="exp-line-list">${this.renderLineItems()}</div>
         <button type="button" class="btn btn-add-line" id="exp-add-line">+ Add another item</button>
       </div>
@@ -707,7 +1193,7 @@ const ExpenseApp = {
       <div class="amount-hero amount-hero-total">
         <label>Invoice total</label>
         <div class="amount-total-display" id="exp-total-display">${this.fmt(total)}</div>
-        <p class="muted amount-total-note">Calculated from your line items</p>
+        <p class="muted amount-total-note">Sum of prices you entered (qty is not multiplied)</p>
       </div>
 
       <p class="section-label">Category</p>
@@ -734,6 +1220,10 @@ const ExpenseApp = {
             <button type="button" class="fund-chip${this.form.funding_source === 'owner' ? ' active' : ''}" data-fund="owner">My pocket (owner)</button>
           </div>
           <p class="muted" style="font-size:0.8rem;margin:6px 0 0;line-height:1.4">Choose <strong>My pocket</strong> when you paid with personal money so Admin records it as owner funding.</p>
+          <div id="exp-cash-source-wrap" class="${this.form.funding_source === 'owner' ? 'hidden' : ''}">
+            <label style="margin-top:12px">Which money was used?</label>
+            ${this.cashSourceChips('exp-cash-chips', this.form.cash_source)}
+          </div>
         </div>
       </div>
 
@@ -766,8 +1256,10 @@ const ExpenseApp = {
   renderLineItemsSummary(items) {
     if (!items?.length) return '';
     return `<ul class="line-items-summary">${items.map((r) => {
-      const qty = Number(r.quantity) > 1 ? `${r.quantity}× ` : '';
-      return `<li><span>${this.esc(r.name)} <small>${qty}${this.fmt(r.unit_price || r.amount)}</small></span><strong>${this.fmt(r.amount)}</strong></li>`;
+      const photo = (r.photo_url || r.photo_data)
+        ? `<img src="${this.esc(r.photo_url || r.photo_data)}" alt="" style="width:32px;height:32px;object-fit:cover;border-radius:6px;margin-right:6px;vertical-align:middle">`
+        : '';
+      return `<li><span>${photo}${this.esc(r.name)} <small>qty ${Number(r.quantity) || 1} · paid ${this.fmt(r.unit_price || r.amount)}</small></span><strong>${this.fmt(r.amount)}</strong></li>`;
     }).join('')}</ul>`;
   },
 
@@ -775,7 +1267,10 @@ const ExpenseApp = {
     const items = e.line_items || [];
     const lines = items.length ? items.map((r) => `
       <div class="detail-line">
-        <div><strong>${this.esc(r.name)}</strong><br><span class="muted">${Number(r.quantity) || 1} × ${this.fmt(r.unit_price)}</span></div>
+        <div style="display:flex;gap:8px;align-items:center">
+          ${(r.photo_url || r.photo_path) ? `<img src="${this.esc(r.photo_url || r.photo_path)}" alt="" style="width:48px;height:48px;object-fit:cover;border-radius:8px">` : ''}
+          <div><strong>${this.esc(r.name)}</strong><br><span class="muted">qty ${Number(r.quantity) || 1} · paid ${this.fmt(r.unit_price)}</span></div>
+        </div>
         <strong>${this.fmt(r.amount)}</strong>
       </div>`).join('') : `<p class="muted">${this.esc(e.description || 'No line items')}</p>`;
 
@@ -860,6 +1355,7 @@ const ExpenseApp = {
           <span class="exp-meta">${this.esc(e.expense_date || '')}${e.user_name ? ` · ${this.esc(e.user_name)}` : ''}${e.branch_name ? ` · ${this.esc(e.branch_name)}` : ''}</span>
           <span class="tag">${this.catLabel(e.category)}</span>${pending}
           <span class="${String(e.funding_source || '').toLowerCase() === 'owner' ? 'exp-fund-owner' : 'exp-fund-biz'}" style="margin-left:6px">${this.fundLabel(e.funding_source)}</span>
+          ${String(e.funding_source || '').toLowerCase() !== 'owner' && e.cash_source ? `<span class="exp-fund-biz" style="margin-left:6px">${this.cashSourceLabel(e.cash_source)}</span>` : ''}
           <span class="invoice-link">Tap to view full details →</span>
         </span>
       </button>`;
@@ -889,7 +1385,56 @@ const ExpenseApp = {
         <div class="info-row"><span>Permission</span><span>Expense capture</span></div>
         <div class="info-row"><span>Recorded as</span><span>${this.esc(this.user?.full_name || this.user?.username)}</span></div>
       </div>
-      <button type="button" class="btn btn-danger" id="exp-logout-btn">Sign out</button>`;
+      <div class="form-card" id="exp-sync-card">${this.renderSyncCard()}</div>
+      <button type="button" class="btn btn-danger" id="exp-logout-btn">Sign out</button>
+      <p class="muted" style="text-align:center;margin-top:10px;font-size:0.8rem">For safety the app signs out when closed or left for 2 minutes. Offline work is kept and syncs under your name.</p>`;
+  },
+
+  renderSyncCard() {
+    const pending = this._pendingCount || 0;
+    const failed = ExpenseAPI.syncFailures();
+    const online = navigator.onLine;
+    return `
+      <p class="section-label" style="margin-top:0">Sync</p>
+      <div class="info-row"><span>Connection</span><span class="${online ? 'ok-text' : 'warn-text'}">${online ? 'Online' : 'Offline'}</span></div>
+      <div class="info-row"><span>Waiting to sync</span><span>${pending}</span></div>
+      ${pending && online ? '<button type="button" class="btn btn-ghost" id="exp-sync-now" style="width:100%;margin-top:8px">↻ Sync now</button>' : ''}
+      ${failed.length ? `
+        <p class="section-label" style="margin-top:14px">Could not be saved (${failed.length})</p>
+        ${failed.slice(0, 8).map((f) => `
+          <div class="sync-fail">
+            <strong>${this.esc(f.summary || f.method.replace('expenseApp:', ''))}${f.amount ? ` · ${this.fmt(f.amount)}` : ''}</strong>
+            <span>${this.esc(f.error)}</span>
+          </div>`).join('')}
+        <button type="button" class="btn btn-ghost" id="exp-sync-clear" style="width:100%">Clear list (re-enter these items)</button>` : ''}`;
+  },
+
+  async updateSyncBadge() {
+    this._pendingCount = await ExpenseAPI.pendingCount();
+    const card = document.getElementById('exp-sync-card');
+    if (card) {
+      card.innerHTML = this.renderSyncCard();
+      this.bindSyncCard();
+    }
+    const btn = document.querySelector('#exp-nav [data-tab="profile"]');
+    if (btn) {
+      let dot = btn.querySelector('.sync-dot');
+      if (this._pendingCount > 0) {
+        if (!dot) { dot = document.createElement('span'); dot.className = 'sync-dot'; btn.appendChild(dot); }
+        dot.textContent = String(this._pendingCount);
+      } else if (dot) dot.remove();
+    }
+  },
+
+  bindSyncCard() {
+    document.getElementById('exp-sync-now')?.addEventListener('click', async () => {
+      await ExpenseAPI.flushQueue().catch(() => {});
+      this.updateSyncBadge();
+    });
+    document.getElementById('exp-sync-clear')?.addEventListener('click', () => {
+      ExpenseAPI.clearSyncFailures();
+      this.updateSyncBadge();
+    });
   },
 
   async loadFunding(force = false) {
@@ -909,7 +1454,8 @@ const ExpenseApp = {
           to: this.today(),
           limit: 100
         }),
-        this.loadHistory(force).catch(() => {})
+        this.loadHistory(force).catch(() => {}),
+        this.loadMoney().catch(() => {})
       ]);
       this.ownerFundings = Array.isArray(data) ? data : (data?.rows || []);
     } catch (err) {
@@ -923,8 +1469,317 @@ const ExpenseApp = {
 
   renderFunding() {
     if (!this.isOwnerOrManager()) {
-      return `<div class="empty"><div class="ico">🔒</div><p>Owner funding is only available to owners and managers.</p></div>`;
+      return `<div class="empty"><div class="ico">🔒</div><p>Daily money is only available to owners and managers.</p></div>`;
     }
+    return `${this.renderMoney()}<p class="section-label" style="margin-top:22px">Owner funding</p>${this.renderOwnerFunding()}`;
+  },
+
+  moneyRange() {
+    const m = this.money;
+    if (!m.from) m.from = this.today();
+    if (!m.to) m.to = m.from;
+    return { from: m.from, to: m.to, branch_id: m.branch_id || 'all' };
+  },
+
+  async loadMoney() {
+    if (!this.isOwnerOrManager()) return;
+    const m = this.money;
+    m.loading = true;
+    m.error = '';
+    try {
+      if (!this.branches.length && this.user?.role === 'owner') {
+        this.branches = await ExpenseAPI.branches().catch(() => []);
+      }
+      m.report = await ExpenseAPI.dailyMoney(this.moneyRange());
+    } catch (err) {
+      m.error = err.message || 'Could not load daily money';
+    } finally {
+      m.loading = false;
+    }
+  },
+
+  renderMoney() {
+    const m = this.money;
+    const r = m.report;
+    const t = r?.totals || {};
+    const range = this.moneyRange();
+    const single = range.from === range.to;
+    const branchOpts = this.user?.role === 'owner' && this.branches.length > 1
+      ? `<div class="field"><label for="exp-m-branch">Branch / POS</label>
+          <select id="exp-m-branch">
+            <option value="all"${range.branch_id === 'all' ? ' selected' : ''}>All stores</option>
+            ${this.branches.map((b) => `<option value="${b.id}"${String(range.branch_id) === String(b.id) ? ' selected' : ''}>${this.esc(b.name)}</option>`).join('')}
+          </select></div>` : '';
+    const wds = r?.withdrawals || [];
+    const byBranch = r?.by_branch || [];
+    return `
+      <div class="quick-actions">
+        <button type="button" class="qa-btn qa-withdraw" data-open-withdrawal>💸<span>Money withdrawal</span></button>
+        <button type="button" class="qa-btn" id="exp-m-today">📅<span>Today</span></button>
+      </div>
+      <div class="form-card">
+        <div class="range-row">
+          <div class="field"><label for="exp-m-from">From</label><input id="exp-m-from" type="date" value="${this.esc(range.from)}"></div>
+          <div class="field"><label for="exp-m-to">To</label><input id="exp-m-to" type="date" value="${this.esc(range.to)}"></div>
+        </div>
+        ${branchOpts}
+        <button type="button" class="btn btn-ghost" id="exp-m-load" style="width:100%">↻ Show report</button>
+      </div>
+      ${m.loading ? '<div class="empty"><div class="ico">⏳</div><p>Loading daily money…</p></div>' : m.error ? `<div class="empty"><div class="ico">⚠</div><p>${this.esc(m.error)}</p></div>` : r ? `
+      <div class="money-hero">
+        <span>${single ? (range.from === this.today() ? "Today's" : this.esc(range.from)) : `${this.esc(range.from)} → ${this.esc(range.to)}`} · ${r.branch ? this.esc(r.branch.name) : 'All stores'}</span>
+        <div class="money-grid">
+          <div><label>Money in</label><strong class="ok-text">${this.fmt(t.money_in)}</strong></div>
+          <div><label>Out of today's money</label><strong class="warn-text">${this.fmt(t.out_today)}</strong></div>
+          <div class="money-net"><label>Net today's money</label><strong>${this.fmt(t.net_today)}</strong></div>
+        </div>
+      </div>
+      <div class="info-list">
+        <div class="info-row"><span>Cash · Card · EFT</span><span>${this.fmt(t.cash_in)} · ${this.fmt(t.card_in)} · ${this.fmt(t.eft_in)}</span></div>
+        <div class="info-row"><span>Expenses (today's money)</span><span>${this.fmt(t.expenses_today)}</span></div>
+        <div class="info-row"><span>Withdrawals (today's money)</span><span>${this.fmt(t.withdrawals_today)}</span></div>
+        <div class="info-row"><span>Paid from previous money</span><span>${this.fmt((t.expenses_previous || 0) + (t.withdrawals_previous || 0))}</span></div>
+        <div class="info-row"><span>Owner pocket expenses</span><span>${this.fmt(t.expenses_owner)}</span></div>
+        <div class="info-row"><span>Sales</span><span>${t.sale_count || 0}</span></div>
+      </div>
+      ${byBranch.length ? `<p class="section-label">By branch</p>${byBranch.map((b) => `
+        <div class="info-row branch-row"><span>${this.esc(b.branch_name)}</span><span>in ${this.fmt(b.totals.money_in)} · out ${this.fmt(b.totals.out_today)} · <strong>${this.fmt(b.totals.net_today)}</strong></span></div>`).join('')}` : ''}
+      <div class="report-actions">
+        <button type="button" class="rep-btn" id="exp-m-pdf">📄<span>PDF</span></button>
+        <button type="button" class="rep-btn" id="exp-m-wa">🟢<span>WhatsApp owner</span></button>
+        <button type="button" class="rep-btn" id="exp-m-print">🖨<span>Print</span></button>
+      </div>
+      <p class="section-label">Withdrawals${wds.length ? ` (${wds.length})` : ''}</p>
+      ${wds.length ? wds.map((w) => `
+        <div class="form-card wd-card">
+          <div style="display:flex;justify-content:space-between;gap:8px"><strong>${this.fmt(w.amount)}</strong><span class="tag">${this.cashSourceLabel(w.cash_source)}</span></div>
+          <p class="muted" style="margin:6px 0 0;font-size:0.85rem">${this.esc(w.withdrawal_date)} · ${this.esc(w.purpose || '')}</p>
+          <p class="muted" style="margin:4px 0 0;font-size:0.8rem">Taken by ${this.esc(w.taken_by || '—')} · Given by ${this.esc(w.given_by || '—')} · Authorised by ${this.esc(w.authorised_by || '—')}</p>
+        </div>`).join('') : '<p class="muted" style="margin:0 0 12px">No withdrawals in this period.</p>'}` : ''}`;
+  },
+
+  bindMoney() {
+    const reload = async () => {
+      const from = document.getElementById('exp-m-from')?.value || this.today();
+      const to = document.getElementById('exp-m-to')?.value || from;
+      this.money.from = from <= to ? from : to;
+      this.money.to = from <= to ? to : from;
+      this.money.branch_id = document.getElementById('exp-m-branch')?.value || this.money.branch_id || 'all';
+      this.money.loading = true;
+      this.paintBody();
+      await this.loadMoney();
+      this.paintBody();
+    };
+    document.getElementById('exp-m-load')?.addEventListener('click', reload);
+    document.getElementById('exp-m-branch')?.addEventListener('change', reload);
+    document.getElementById('exp-m-today')?.addEventListener('click', () => {
+      const f = document.getElementById('exp-m-from');
+      const t = document.getElementById('exp-m-to');
+      if (f) f.value = this.today();
+      if (t) t.value = this.today();
+      reload();
+    });
+    document.getElementById('exp-m-pdf')?.addEventListener('click', () => this.reportPdf());
+    document.getElementById('exp-m-wa')?.addEventListener('click', () => this.reportWhatsApp());
+    document.getElementById('exp-m-print')?.addEventListener('click', () => this.reportPrint());
+    this.bindSyncCard();
+  },
+
+  async fetchReportPdf() {
+    const out = await ExpenseAPI.dailyMoneyPdf(this.moneyRange());
+    if (!out?.base64) throw new Error('Could not build the PDF');
+    const bin = atob(out.base64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return { blob: new Blob([bytes], { type: 'application/pdf' }), filename: out.filename || 'daily-money.pdf' };
+  },
+
+  async reportPdf() {
+    try {
+      this.toast('Preparing PDF…');
+      const { blob, filename } = await this.fetchReportPdf();
+      const file = typeof File !== 'undefined' ? new File([blob], filename, { type: 'application/pdf' }) : null;
+      if (file && navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title: filename }).catch(() => {});
+        return;
+      }
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch (err) {
+      this.toast(err.message || 'Could not create PDF', 'error');
+    }
+  },
+
+  reportText() {
+    const r = this.money.report;
+    if (!r) return '';
+    const t = r.totals;
+    const shop = r.shop?.shop_name || this.settings.shop_name || 'Shop';
+    const period = r.from === r.to ? r.from : `${r.from} to ${r.to}`;
+    const lines = [
+      `*${shop} — Daily money*`,
+      `${r.branch ? `Branch: ${r.branch.name}` : 'All stores'} · ${period}`,
+      '',
+      `Money in: ${this.fmt(t.money_in)} (cash ${this.fmt(t.cash_in)}, card ${this.fmt(t.card_in)}, EFT ${this.fmt(t.eft_in)})`,
+      `Expenses from today's money: ${this.fmt(t.expenses_today)}`,
+      `Withdrawals from today's money: ${this.fmt(t.withdrawals_today)}`,
+      `*Net today's money: ${this.fmt(t.net_today)}*`,
+      `Paid from previous money: ${this.fmt((t.expenses_previous || 0) + (t.withdrawals_previous || 0))}`,
+      `Owner pocket expenses: ${this.fmt(t.expenses_owner)}`
+    ];
+    (r.by_branch || []).forEach((b) => lines.push(`• ${b.branch_name}: in ${this.fmt(b.totals.money_in)}, out ${this.fmt(b.totals.out_today)}, net ${this.fmt(b.totals.net_today)}`));
+    if ((r.withdrawals || []).length) {
+      lines.push('', '*Withdrawals*');
+      r.withdrawals.slice(0, 15).forEach((w) => lines.push(`• ${w.withdrawal_date} ${this.fmt(w.amount)} — ${w.purpose} (taken: ${w.taken_by}, given: ${w.given_by}, authorised: ${w.authorised_by}; ${this.cashSourceLabel(w.cash_source)})`));
+    }
+    lines.push('', `Sent by ${this.user?.full_name || this.user?.username || ''}`);
+    return lines.join('\n');
+  },
+
+  async reportWhatsApp() {
+    if (!this.money.report) return this.toast('Load the report first', 'error');
+    const saved = localStorage.getItem('expense_owner_wa') || this.money.report.owner_whatsapp || '';
+    const phone = window.prompt("Owner's WhatsApp number", saved);
+    if (phone == null) return;
+    const digits = String(phone).replace(/\D/g, '');
+    if (digits.length < 9) return this.toast('Enter a valid WhatsApp number', 'error');
+    localStorage.setItem('expense_owner_wa', phone);
+    const num = digits.startsWith('0') ? `27${digits.slice(1)}` : digits;
+    const url = `https://wa.me/${num}?text=${encodeURIComponent(this.reportText())}`;
+    const w = window.open(url, '_blank');
+    if (!w) location.href = url;
+  },
+
+  reportHtml() {
+    const r = this.money.report;
+    const t = r.totals;
+    const s = r.shop || this.settings || {};
+    const e = (v) => this.esc(v);
+    const period = r.from === r.to ? r.from : `${r.from} to ${r.to}`;
+    const logo = s.logo_path ? `<img src="${e(ExpenseAPI.origin())}/api/logo" style="height:56px;width:auto;border-radius:8px" onerror="this.remove()">` : '';
+    const row = (k, v, strong) => `<tr${strong ? ' class="strong"' : ''}><td>${k}</td><td class="r">${this.fmt(v)}</td></tr>`;
+    return `<!doctype html><html><head><meta charset="utf-8"><title>Daily money ${e(period)}</title>
+      <style>body{font-family:Segoe UI,Arial,sans-serif;color:#111;margin:24px}h1{margin:0;font-size:20px}
+      .hd{display:flex;gap:14px;align-items:center;border-bottom:2px solid #312e81;padding-bottom:10px;margin-bottom:12px}
+      table{width:100%;border-collapse:collapse;margin:10px 0;font-size:12px}th{background:#312e81;color:#fff;text-align:left;padding:6px}
+      td{padding:5px 6px;border-bottom:1px solid #e5e7eb}.r{text-align:right}.strong td{font-weight:700;background:#e0e7ff}.m{color:#555;font-size:12px}</style></head>
+      <body><div class="hd">${logo}<div><h1>${e(s.shop_name || 'Shop')}</h1>
+      <div class="m">${r.branch ? `Branch: ${e(r.branch.name)}${r.branch.address ? ` · ${e(r.branch.address)}` : ''}${r.branch.phone ? ` · Tel ${e(r.branch.phone)}` : ''}` : 'All stores'}</div>
+      <div class="m">${e(s.address || '')}${s.phone ? ` · Tel ${e(s.phone)}` : ''}${s.vat_number ? ` · VAT ${e(s.vat_number)}` : ''}</div></div></div>
+      <h2 style="font-size:16px;margin:0">Daily Money Report — ${e(period)}</h2>
+      <div class="m">Printed ${e(new Date().toLocaleString())} by ${e(this.user?.full_name || this.user?.username || '')}</div>
+      <table><tr><th>Summary</th><th class="r">Amount</th></tr>
+      ${row('Money in (sales takings)', t.money_in)}${row('&nbsp;&nbsp;Cash', t.cash_in)}${row('&nbsp;&nbsp;Card', t.card_in)}${row('&nbsp;&nbsp;EFT', t.eft_in)}
+      ${row("Expenses from today's money", t.expenses_today)}${row("Withdrawals from today's money", t.withdrawals_today)}
+      ${row("NET today's money", t.net_today, true)}${row("Expenses from previous money", t.expenses_previous)}${row("Withdrawals from previous money", t.withdrawals_previous)}
+      ${row('Owner pocket expenses', t.expenses_owner)}${row('Owner cash put in', t.owner_cash_in)}</table>
+      ${r.days.length > 1 ? `<table><tr><th>Date</th><th class="r">Money in</th><th class="r">Out (today)</th><th class="r">Net</th></tr>
+        ${r.days.map((d) => `<tr><td>${e(d.date)}</td><td class="r">${this.fmt(d.money_in)}</td><td class="r">${this.fmt(d.out_today)}</td><td class="r">${this.fmt(d.net_today)}</td></tr>`).join('')}</table>` : ''}
+      ${(r.by_branch || []).length ? `<table><tr><th>Branch</th><th class="r">Money in</th><th class="r">Out (today)</th><th class="r">Net</th></tr>
+        ${r.by_branch.map((b) => `<tr><td>${e(b.branch_name)}</td><td class="r">${this.fmt(b.totals.money_in)}</td><td class="r">${this.fmt(b.totals.out_today)}</td><td class="r">${this.fmt(b.totals.net_today)}</td></tr>`).join('')}</table>` : ''}
+      ${(r.withdrawals || []).length ? `<table><tr><th>Date</th><th class="r">Amount</th><th>Purpose</th><th>Taken by</th><th>Given by</th><th>Authorised</th><th>Money</th></tr>
+        ${r.withdrawals.map((w) => `<tr><td>${e(w.withdrawal_date)}</td><td class="r">${this.fmt(w.amount)}</td><td>${e(w.purpose)}</td><td>${e(w.taken_by)}</td><td>${e(w.given_by)}</td><td>${e(w.authorised_by)}</td><td>${e(this.cashSourceLabel(w.cash_source))}</td></tr>`).join('')}</table>` : ''}
+      </body></html>`;
+  },
+
+  reportPrint() {
+    if (!this.money.report) return this.toast('Load the report first', 'error');
+    const frame = document.createElement('iframe');
+    frame.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0';
+    document.body.appendChild(frame);
+    const doc = frame.contentWindow.document;
+    doc.open();
+    doc.write(this.reportHtml());
+    doc.close();
+    setTimeout(() => {
+      try {
+        frame.contentWindow.focus();
+        frame.contentWindow.print();
+      } catch (_) {
+        this.reportPdf();
+      }
+      setTimeout(() => frame.remove(), 60000);
+    }, 600);
+  },
+
+  openWithdrawalSheet() {
+    if (!this.isOwnerOrManager()) return this.toast('Only owners and managers can record withdrawals', 'error');
+    document.getElementById('exp-wd-overlay')?.remove();
+    const me = this.user?.full_name || this.user?.username || '';
+    const wrap = document.createElement('div');
+    wrap.id = 'exp-wd-overlay';
+    wrap.className = 'prod-pick-overlay';
+    wrap.innerHTML = `
+      <div class="prod-pick-sheet wd-sheet" role="dialog" aria-label="Money withdrawal">
+        <div class="prod-pick-head"><strong>💸 Money withdrawal</strong><button type="button" class="btn btn-ghost" data-wd-close>✕</button></div>
+        <p class="muted" style="margin:0 0 12px;font-size:0.85rem">Owner / manager drawing. It is deducted in accounting (Owner Drawings) and in the daily money report.</p>
+        <div class="range-row">
+          <div class="field"><label for="wd-amt">Amount</label><input id="wd-amt" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0.00"></div>
+          <div class="field"><label for="wd-date">Date</label><input id="wd-date" type="date" value="${this.esc(this.today())}"></div>
+        </div>
+        <div class="field"><label for="wd-purpose">Purpose</label><input id="wd-purpose" placeholder="e.g. Owner personal use, wages advance"></div>
+        <div class="field"><label for="wd-taken">Who took the money</label><input id="wd-taken" placeholder="Name"></div>
+        <div class="field"><label for="wd-given">Who gave the money</label><input id="wd-given" value="${this.esc(me)}"></div>
+        <div class="field"><label for="wd-auth">Who authorised it</label><input id="wd-auth" placeholder="Name"></div>
+        <div class="field"><label>From which money?</label>${this.cashSourceChips('wd-cash-chips', 'today')}</div>
+        <div class="field"><label for="wd-method">Paid as</label>
+          <select id="wd-method"><option value="cash">Cash from till</option><option value="eft">EFT / bank</option></select></div>
+        <button type="button" class="btn btn-primary" id="wd-save">Record withdrawal</button>
+      </div>`;
+    document.body.appendChild(wrap);
+    let cashSource = 'today';
+    const close = () => wrap.remove();
+    wrap.addEventListener('click', (e) => { if (e.target === wrap || e.target.closest('[data-wd-close]')) close(); });
+    wrap.querySelector('#wd-cash-chips')?.addEventListener('click', (e) => {
+      const chip = e.target.closest('[data-cash]');
+      if (!chip) return;
+      cashSource = chip.dataset.cash === 'previous' ? 'previous' : 'today';
+      wrap.querySelectorAll('#wd-cash-chips .fund-chip').forEach((c) => c.classList.toggle('active', c.dataset.cash === cashSource));
+    });
+    wrap.querySelector('#wd-save')?.addEventListener('click', async () => {
+      const val = (id) => (wrap.querySelector(id)?.value || '').trim();
+      const amount = parseFloat(val('#wd-amt'));
+      if (!(amount > 0)) return this.toast('Enter the amount', 'error');
+      if (!val('#wd-purpose')) return this.toast('Enter the purpose', 'error');
+      if (!val('#wd-taken') || !val('#wd-given') || !val('#wd-auth')) return this.toast('Fill in who took, who gave and who authorised', 'error');
+      const btn = wrap.querySelector('#wd-save');
+      btn.disabled = true;
+      btn.textContent = 'Saving…';
+      try {
+        const res = await ExpenseAPI.recordWithdrawal({
+          amount,
+          withdrawal_date: val('#wd-date') || this.today(),
+          purpose: val('#wd-purpose'),
+          taken_by: val('#wd-taken'),
+          given_by: val('#wd-given'),
+          authorised_by: val('#wd-auth'),
+          cash_source: cashSource,
+          payment_method: val('#wd-method') || 'cash',
+          branch_id: this.money.branch_id && this.money.branch_id !== 'all' ? this.money.branch_id : undefined
+        });
+        close();
+        this.toast(res?.__offlineQueued ? 'Withdrawal saved offline — will sync when online' : `Withdrawal of ${this.fmt(amount)} recorded`);
+        this.updateSyncBadge();
+        if (this.tab === 'funding') {
+          await this.loadMoney();
+          this.paintBody();
+        }
+      } catch (err) {
+        btn.disabled = false;
+        btn.textContent = 'Record withdrawal';
+        this.toast(err.message || 'Could not record withdrawal', 'error');
+      }
+    });
+    setTimeout(() => wrap.querySelector('#wd-amt')?.focus(), 50);
+  },
+
+  renderOwnerFunding() {
     if (this._loadingFunding) {
       return `<div class="empty"><div class="ico">⏳</div><p>Loading funding…</p></div>`;
     }
@@ -983,10 +1838,7 @@ const ExpenseApp = {
           platform: /iPhone|iPad|iPod/i.test(navigator.userAgent) ? 'ios' : 'android'
         };
         const res = await ExpenseAPI.login(username, password, device);
-        this.token = res.token;
-        this.user = res.user;
-        localStorage.setItem('expense_token', res.token);
-        localStorage.setItem('expense_user', JSON.stringify(res.user));
+        this.startSession(res);
         this.view = 'main';
         this.tab = 'new';
         await this.bootstrap();
@@ -1022,7 +1874,25 @@ const ExpenseApp = {
       document.querySelectorAll('#exp-fund-chips .fund-chip').forEach((c) => {
         c.classList.toggle('active', c.dataset.fund === this.form.funding_source);
       });
+      document.getElementById('exp-cash-source-wrap')?.classList.toggle('hidden', this.form.funding_source === 'owner');
     });
+
+    document.getElementById('exp-cash-chips')?.addEventListener('click', (e) => {
+      const chip = e.target.closest('[data-cash]');
+      if (!chip) return;
+      this.form.cash_source = chip.dataset.cash === 'previous' ? 'previous' : 'today';
+      document.querySelectorAll('#exp-cash-chips .fund-chip').forEach((c) => {
+        c.classList.toggle('active', c.dataset.cash === this.form.cash_source);
+      });
+    });
+
+    document.querySelectorAll('[data-open-withdrawal]').forEach((b) => {
+      b.addEventListener('click', () => this.openWithdrawalSheet());
+    });
+    document.querySelectorAll('[data-goto-money]').forEach((b) => {
+      b.addEventListener('click', () => this.switchTab('funding'));
+    });
+    this.bindMoney();
 
     document.getElementById('exp-date')?.addEventListener('change', (e) => {
       this.form.expense_date = e.target.value;
@@ -1052,13 +1922,14 @@ const ExpenseApp = {
       const btn = document.getElementById('exp-of-save');
       if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
       try {
-        await ExpenseAPI.recordOwnerFunding({
+        const res = await ExpenseAPI.recordOwnerFunding({
           funding_date: document.getElementById('exp-of-date')?.value || this.today(),
           amount,
           funding_type: 'cash_injection',
           description: document.getElementById('exp-of-desc')?.value?.trim() || 'Owner cash into business'
         });
-        this.toast('Owner cash injection recorded');
+        this.updateSyncBadge();
+        this.toast(res?.__offlineQueued ? 'Saved offline — will sync when online' : 'Owner cash injection recorded');
         await this.loadFunding(true);
         this.paintBody();
       } catch (err) {
@@ -1138,6 +2009,7 @@ const ExpenseApp = {
         reason: document.getElementById('w-reason')?.value || 'Damaged',
         notes: document.getElementById('w-notes')?.value || '',
         quantity: parseFloat(document.getElementById('w-qty')?.value) || 0,
+        unit: document.getElementById('w-unit')?.value || this.wasteForm?.unit || 'kg',
         photo_image: photo
       };
       if (kind === 'property') {
@@ -1151,9 +2023,10 @@ const ExpenseApp = {
       this._savingWaste = true;
       this.paintBody();
       try {
-        await ExpenseAPI.wasteRecord(payload);
+        const res = await ExpenseAPI.wasteRecord(payload);
         this.wasteForm = { kind: 'ingredient', quantity: '1' };
-        this.toast('Submitted for admin approval');
+        this.updateSyncBadge();
+        this.toast(res?.__offlineQueued ? 'No connection — waste saved offline and will sync when online' : 'Submitted for admin approval');
         await this.loadWaste(true);
         this.paintBody();
       } catch (err) {
@@ -1162,6 +2035,210 @@ const ExpenseApp = {
         this.paintBody();
       } finally {
         this._savingWaste = false;
+      }
+    });
+
+    document.getElementById('sby-new')?.addEventListener('click', () => {
+      this.sbyForm = this.defaultSbyForm();
+      this.sbyView = 'create';
+      this.paintBody();
+    });
+    document.getElementById('sby-refresh')?.addEventListener('click', async () => {
+      await this.loadBatches(true);
+      this.paintBody();
+    });
+    document.getElementById('sby-back')?.addEventListener('click', async () => {
+      this.sbyView = 'list';
+      this.sbyDetailId = null;
+      this.sbyDetail = null;
+      await this.loadBatches(true);
+      this.paintBody();
+    });
+    document.getElementById('sby-back-detail')?.addEventListener('click', () => {
+      this.sbyView = 'detail';
+      this.paintBody();
+    });
+    document.querySelectorAll('.sby-row-btn').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const id = Number(btn.dataset.sbyId);
+        if (!id) return;
+        this.sbyDetailId = id;
+        this.sbyView = 'detail';
+        this.paintBody();
+        try {
+          this.sbyDetail = await ExpenseAPI.stockBatchGet(id);
+          this.sbyEvents = await ExpenseAPI.stockBatchEvents(id, 30).catch(() => []);
+        } catch (err) {
+          this.toast(err.message || 'Could not load batch', 'error');
+          this.sbyView = 'list';
+        }
+        this.paintBody();
+      });
+    });
+    document.getElementById('sby-stock-pick')?.addEventListener('click', async () => {
+      if (!this.sbyProducts?.length) await this.loadBatches(true);
+      this.openProductPicker({
+        items: this.sbyProducts || [],
+        title: 'Stock / ingredient purchased',
+        onPick: async (row) => {
+          this.sbyForm = this.sbyForm || this.defaultSbyForm();
+          this.sbyForm.stock_product_id = row.id;
+          this.sbyForm.stock_product_name = row.name;
+          this.sbyForm.unit = row.unit || row.stock_unit || this.sbyForm.unit || 'kg';
+          try {
+            const meals = await ExpenseAPI.stockBatchMealsUsing(row.id);
+            this.sbyForm.mealsUsing = Array.isArray(meals) ? meals : [];
+            // Pre-check meals from recipes with recipe qty as default kg hint
+            this.sbyForm.allocations = this.sbyForm.mealsUsing.map((m) => ({
+              selling_product_id: m.id,
+              selling_product_name: m.name,
+              selling_price: m.selling_price,
+              qty_kg: m.recipe_qty != null ? String(m.recipe_qty) : '',
+              expected_portions: '',
+              enabled: true
+            }));
+          } catch (_) {
+            this.sbyForm.mealsUsing = [];
+          }
+          this.paintBody();
+        }
+      });
+    });
+    document.getElementById('sby-sell-pick')?.addEventListener('click', async () => {
+      if (!this.sbyProducts?.length) await this.loadBatches(true);
+      this.openProductPicker({
+        items: this.sbyProducts || [],
+        title: 'Selling product (POS item)',
+        onPick: (row) => {
+          this.sbyForm = this.sbyForm || this.defaultSbyForm();
+          this.sbyForm.selling_product_id = row.id;
+          this.sbyForm.selling_product_name = row.name;
+          this.sbyForm.selling_price = row.selling_price != null ? String(row.selling_price) : this.sbyForm.selling_price;
+          this.paintBody();
+        }
+      });
+    });
+    document.querySelectorAll('.sby-alloc-on').forEach((cb) => {
+      cb.addEventListener('change', () => {
+        this.syncSbyAllocFromDom();
+        this.paintBody();
+      });
+    });
+    const updatePreview = () => this.updateSbyPreview();
+    document.getElementById('sby-cost')?.addEventListener('input', updatePreview);
+    document.getElementById('sby-yield')?.addEventListener('input', updatePreview);
+    document.getElementById('sby-save')?.addEventListener('click', async () => {
+      if (this._savingBatch) return;
+      this.syncSbyAllocFromDom();
+      const stockName = document.getElementById('sby-stock-name')?.value?.trim();
+      const cost = Number(document.getElementById('sby-cost')?.value);
+      const allocs = (this.sbyForm?.allocations || []).filter((a) => a.enabled !== false && a.selling_product_id);
+      const yieldN = Number(document.getElementById('sby-yield')?.value)
+        || allocs.reduce((s, a) => s + (Number(a.expected_portions) || 0), 0)
+        || 1;
+      if (!stockName) return this.toast('Enter stock item name', 'error');
+      if (!(cost >= 0) || Number.isNaN(cost)) return this.toast('Enter purchase cost', 'error');
+      if (!(yieldN > 0) && !allocs.length) return this.toast('Enter expected yield or allocate meals', 'error');
+      const first = allocs[0];
+      this._savingBatch = true;
+      this.paintBody();
+      try {
+        const created = await ExpenseAPI.stockBatchCreate({
+          stock_product_name: stockName,
+          stock_product_id: Number(document.getElementById('sby-stock-id')?.value) || null,
+          selling_product_id: first?.selling_product_id || Number(this.sbyForm?.selling_product_id) || null,
+          selling_product_name: first?.selling_product_name || this.sbyForm?.selling_product_name || null,
+          purchase_cost: cost,
+          expected_yield: yieldN,
+          selling_price: Number(first?.selling_price) || Number(this.sbyForm?.selling_price) || 0,
+          purchase_date: document.getElementById('sby-date')?.value || this.today(),
+          supplier_name: document.getElementById('sby-supplier')?.value?.trim() || null,
+          quantity_purchased: Number(document.getElementById('sby-qty')?.value) || 0,
+          unit: document.getElementById('sby-unit')?.value?.trim() || 'kg',
+          notes: document.getElementById('sby-notes')?.value?.trim() || null,
+          allocations: allocs.map((a) => ({
+            selling_product_id: a.selling_product_id,
+            selling_product_name: a.selling_product_name,
+            qty_kg: Number(a.qty_kg) || 0,
+            expected_portions: Number(a.expected_portions) || 0,
+            selling_price: Number(a.selling_price) || 0
+          }))
+        });
+        this.updateSyncBadge();
+        if (created?.__offlineQueued) {
+          this.toast('No connection — batch saved offline and will sync when online');
+          this.sbyForm = null;
+          this.sbyView = 'list';
+          this.paintBody();
+          return;
+        }
+        this.toast(`Batch ${created?.batch_number || ''} saved`);
+        this.sbyForm = null;
+        this.sbyDetailId = created?.id || null;
+        this.sbyDetail = created || null;
+        this.sbyView = created?.id ? 'detail' : 'list';
+        await this.loadBatches(true);
+        this.paintBody();
+      } catch (err) {
+        this.toast(err.message || 'Could not save batch', 'error');
+        this._savingBatch = false;
+        this.paintBody();
+      } finally {
+        this._savingBatch = false;
+      }
+    });
+    document.getElementById('sby-d-waste')?.addEventListener('click', () => {
+      this.sbyWasteForm = { quantity: '1', reason: 'Damaged', notes: '' };
+      this.sbyView = 'waste';
+      this.paintBody();
+    });
+    document.getElementById('sby-d-actual')?.addEventListener('click', async () => {
+      const b = this.sbyDetail;
+      if (!b) return;
+      const raw = window.prompt('Actual yield (portions produced)', String(b.actual_yield || b.expected_yield || ''));
+      if (raw == null) return;
+      const y = Number(raw);
+      if (!(y > 0)) return this.toast('Enter a valid yield', 'error');
+      try {
+        this.sbyDetail = await ExpenseAPI.stockBatchSetActualYield(b.id, y);
+        this.toast('Actual yield updated');
+        await this.loadBatches(true);
+        this.paintBody();
+      } catch (err) {
+        this.toast(err.message || 'Update failed', 'error');
+      }
+    });
+    document.getElementById('sby-d-close')?.addEventListener('click', async () => {
+      const b = this.sbyDetail;
+      if (!b) return;
+      if (!window.confirm(`Close batch ${b.batch_number}?`)) return;
+      try {
+        this.sbyDetail = await ExpenseAPI.stockBatchClose(b.id, 'Closed from phone');
+        this.toast('Batch closed');
+        await this.loadBatches(true);
+        this.paintBody();
+      } catch (err) {
+        this.toast(err.message || 'Close failed', 'error');
+      }
+    });
+    document.getElementById('sby-w-save')?.addEventListener('click', async () => {
+      const b = this.sbyDetail;
+      if (!b) return;
+      const quantity = Number(document.getElementById('sby-w-qty')?.value);
+      if (!(quantity > 0)) return this.toast('Enter waste quantity', 'error');
+      try {
+        this.sbyDetail = await ExpenseAPI.stockBatchWaste(b.id, {
+          quantity,
+          reason: document.getElementById('sby-w-reason')?.value || 'Damaged',
+          notes: document.getElementById('sby-w-notes')?.value || ''
+        });
+        this.toast('Waste recorded');
+        this.sbyView = 'detail';
+        this.sbyEvents = await ExpenseAPI.stockBatchEvents(b.id, 30).catch(() => this.sbyEvents || []);
+        await this.loadBatches(true);
+        this.paintBody();
+      } catch (err) {
+        this.toast(err.message || 'Waste failed', 'error');
       }
     });
 
@@ -1218,6 +2295,7 @@ const ExpenseApp = {
     try {
       const payment_method = document.getElementById('exp-payment')?.value || this.form.payment_method || 'cash';
       const funding_source = this.form.funding_source === 'owner' ? 'owner' : 'business';
+      const cash_source = this.form.cash_source === 'previous' ? 'previous' : 'today';
       const saved = await ExpenseAPI.save({
         category,
         amount,
@@ -1227,8 +2305,10 @@ const ExpenseApp = {
         line_items,
         payment_method,
         funding_source,
+        cash_source,
         invoice_image: this.form.invoiceDataUrl || null
       });
+      this.updateSyncBadge();
       if (saved?.__offlineQueued) {
         this.addPendingExpense({
           category,
@@ -1239,6 +2319,7 @@ const ExpenseApp = {
           line_items,
           payment_method,
           funding_source,
+          cash_source,
           invoice_url: this.form.invoiceDataUrl || '',
           has_invoice: !!this.form.invoiceDataUrl
         });
@@ -1272,13 +2353,13 @@ const ExpenseApp = {
   },
 
   async logout() {
-    try { await ExpenseAPI.logout(); } catch (_) { /* ignore */ }
-    this.token = '';
-    this.user = null;
-    localStorage.removeItem('expense_token');
-    localStorage.removeItem('expense_user');
-    this.view = 'login';
-    this.render();
+    try { await ExpenseAPI.flushQueue(); } catch (_) { /* keep queued */ }
+    const pending = await ExpenseAPI.pendingCount();
+    // Queued items carry this user's session; keep it valid on the server until they sync.
+    if (!pending) {
+      try { await ExpenseAPI.logout(); } catch (_) { /* ignore */ }
+    }
+    this.lockToLogin(pending ? `Signed out — ${pending} offline item(s) will sync when online` : '');
   }
 };
 

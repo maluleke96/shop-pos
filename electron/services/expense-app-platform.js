@@ -124,7 +124,18 @@ function expenseProfile(token) {
 function mapExpenseRow(row) {
   const ed = require('../../lib/expense-documents');
   const li = require('../../lib/expense-line-items');
-  const line_items = li.parseLineItems(row.line_items_json);
+  let line_items = li.parseLineItems(row.line_items_json);
+  if (row?.id && line_items.length) {
+    line_items = line_items.map((r, idx) => {
+      if (r.photo_path || r.photo_url) {
+        return {
+          ...r,
+          photo_url: r.photo_url || `/api/expense-line-photo/${row.id}/${idx}`
+        };
+      }
+      return r;
+    });
+  }
   const { invoice_data, ...rest } = row || {};
   return {
     ...rest,
@@ -152,10 +163,18 @@ function expenseList(token, filters = {}) {
   return rows.slice(0, limit).map(mapExpenseRow);
 }
 
+function onceForClient(data, method, u, fn) {
+  return require('./expense-extras').idempotent(data && data.client_request_id, method, u.id, fn);
+}
+
 function expenseSave(token, data = {}) {
   const u = resolveSession(token);
+  return onceForClient(data, 'save', u, () => _expenseSave(u, data));
+}
+
+function _expenseSave(u, data) {
   const store = require('./store');
-  const id = store.saveExpense({
+  const payload = {
     category: data.category,
     description: data.description || data.notes || '',
     notes: data.notes || data.description || '',
@@ -165,14 +184,78 @@ function expenseSave(token, data = {}) {
     line_items: data.line_items || [],
     payment_method: data.payment_method || 'cash',
     funding_source: data.funding_source || 'business',
-    invoice_image: data.invoice_image || null
-  }, u.id, u.username);
+    cash_source: data.cash_source || 'today',
+    invoice_image: data.invoice_image || null,
+    stock_edit_reason: data.stock_edit_reason || null
+  };
+  if (data.id && ['owner', 'manager'].includes(u.role)) payload.id = Number(data.id);
+  const id = store.saveExpense(payload, u.id, u.username);
   const row = store.getExpenseById(id) || { id, user_id: u.id, user_name: u.full_name || u.username };
   if (data.invoice_image && !row.invoice_path) {
     row.invoice_path = `expense-docs/${id}/invoice.jpg`;
     row.has_invoice = true;
   }
   return mapExpenseRow(row);
+}
+
+function requireOwnerOrManager(u, what) {
+  if (!['owner', 'manager'].includes(u.role)) {
+    throw new Error(`Only owners and managers can ${what}`);
+  }
+}
+
+function expenseRecordWithdrawal(token, data = {}) {
+  const u = resolveSession(token);
+  requireOwnerOrManager(u, 'record money withdrawals');
+  return onceForClient(data, 'recordWithdrawal', u, () => require('./store').recordMoneyWithdrawal(data || {}, actorFromSession(u)));
+}
+
+function expenseWithdrawals(token, filters = {}) {
+  const u = resolveSession(token);
+  requireOwnerOrManager(u, 'view money withdrawals');
+  return require('./store').listMoneyWithdrawals(filters || {});
+}
+
+function dailyMoneyFilters(u, filters) {
+  requireOwnerOrManager(u, 'view the daily money report');
+  const f = { ...(filters || {}) };
+  if (u.role === 'manager' && u.branch_id && (f.branch_id == null || f.branch_id === 'all' || f.branch_id === '')) {
+    f.branch_id = u.branch_id;
+  }
+  return f;
+}
+
+function ownerWhatsAppNumber() {
+  try {
+    const s = require('./store').getSettingsParsed() || {};
+    let ws = s.whatsapp_settings || {};
+    if (typeof ws === 'string') ws = JSON.parse(ws);
+    return String(ws.cashout_whatsapp_phone || s.phone || '').trim();
+  } catch (_) {
+    return '';
+  }
+}
+
+function expenseDailyMoney(token, filters = {}) {
+  const u = resolveSession(token);
+  const report = require('./store').dailyMoneyReport(dailyMoneyFilters(u, filters));
+  return { ...report, shop: expenseShopSettings(), owner_whatsapp: ownerWhatsAppNumber() };
+}
+
+function expenseDailyMoneyPdf(token, filters = {}) {
+  const u = resolveSession(token);
+  const out = require('./store').dailyMoneyPdf(dailyMoneyFilters(u, filters), { by: u.full_name || u.username });
+  return { filename: out.filename, base64: out.base64 };
+}
+
+function expenseBranches(token) {
+  resolveSession(token);
+  try {
+    return require('../database/db').getDb().prepare('SELECT * FROM branches ORDER BY id').all()
+      .filter((b) => b.is_active == null || Number(b.is_active) === 1 || b.is_active === true);
+  } catch (_) {
+    return [];
+  }
 }
 
 function expenseOwnerFundings(token, filters = {}) {
@@ -190,12 +273,12 @@ function expenseRecordOwnerFunding(token, data = {}) {
     throw new Error('Only owners and managers can record cash injections');
   }
   const store = require('./store');
-  return store.recordOwnerFunding(data || {}, {
+  return onceForClient(data, 'recordOwnerFunding', u, () => store.recordOwnerFunding(data || {}, {
     id: u.id,
     username: u.username,
     full_name: u.full_name || u.username,
     role: u.role
-  });
+  }));
 }
 
 function expenseCategories() {
@@ -297,17 +380,25 @@ function expenseShopSettings() {
   return {
     shop_name: settings.shop_name || 'Shop POS',
     currency: settings.currency || 'R',
-    logo_path: settings.logo_path || null
+    logo_path: settings.logo_path || null,
+    address: settings.address || '',
+    phone: settings.phone || '',
+    email: settings.email || '',
+    vat_number: settings.vat_number || ''
   };
 }
 
 function expenseWasteProducts(token) {
   resolveSession(token);
   try {
+    const store = require('./store');
+    if (typeof store.getExpenseProductCatalog === 'function') {
+      return store.getExpenseProductCatalog();
+    }
     return require('../database/db').getDb().prepare(`
-      SELECT id, name, stock_quantity, unit, buying_price, item_type
+      SELECT id, name, stock_quantity, stock_unit AS unit, buying_price, item_type
       FROM products WHERE COALESCE(is_active,1)=1 AND name != '__Property Damage__'
-      ORDER BY name LIMIT 500`).all();
+      ORDER BY name`).all();
   } catch (_) {
     return [];
   }
@@ -327,6 +418,10 @@ function expenseWasteList(token, filters = {}) {
 
 function expenseWasteRecord(token, data = {}) {
   const u = resolveSession(token);
+  return onceForClient(data, 'wasteRecord', u, () => _expenseWasteRecord(u, data));
+}
+
+function _expenseWasteRecord(u, data) {
   const store = require('./store');
   const id = store.recordWaste({
     damage_kind: data.damage_kind || (data.product_id ? 'ingredient' : 'property'),
@@ -339,6 +434,87 @@ function expenseWasteRecord(token, data = {}) {
     photo_path_1: data.photo_path_1 || null
   }, u.id);
   return { id, status: 'pending' };
+}
+
+function actorFromSession(u) {
+  return {
+    id: u.id,
+    username: u.username,
+    full_name: u.full_name,
+    role: u.role
+  };
+}
+
+function expenseStockBatchProducts(token) {
+  resolveSession(token);
+  try {
+    return require('../database/db').getDb().prepare(`
+      SELECT id, name, selling_price, unit, stock_unit, stock_quantity
+      FROM products WHERE COALESCE(is_active,1)=1 AND name != '__Property Damage__'
+      ORDER BY name LIMIT 800`).all();
+  } catch (_) {
+    return [];
+  }
+}
+
+function expenseStockBatchDashboard(token, filters = {}) {
+  resolveSession(token);
+  return require('./stock-batch-yield').dashboard(filters || {});
+}
+
+function expenseStockBatchList(token, filters = {}) {
+  resolveSession(token);
+  return require('./stock-batch-yield').listBatches(filters || {});
+}
+
+function expenseStockBatchGet(token, id) {
+  resolveSession(token);
+  return require('./stock-batch-yield').getBatch(id);
+}
+
+function expenseStockBatchCreate(token, data = {}) {
+  const u = resolveSession(token);
+  return onceForClient(data, 'stockBatchCreate', u, () => require('./stock-batch-yield').createBatch(data || {}, actorFromSession(u)));
+}
+
+function expenseStockBatchUpdate(token, id, data = {}) {
+  const u = resolveSession(token);
+  return require('./stock-batch-yield').updateBatch(id, data || {}, actorFromSession(u));
+}
+
+function expenseStockBatchWaste(token, id, data = {}) {
+  const u = resolveSession(token);
+  return require('./stock-batch-yield').recordWaste(id, data || {}, actorFromSession(u));
+}
+
+function expenseStockBatchSetActualYield(token, id, yieldVal) {
+  const u = resolveSession(token);
+  return require('./stock-batch-yield').setActualYield(id, yieldVal, actorFromSession(u));
+}
+
+function expenseStockBatchClose(token, id, reason) {
+  const u = resolveSession(token);
+  return require('./stock-batch-yield').closeBatch(id, actorFromSession(u), reason);
+}
+
+function expenseStockBatchReopen(token, id) {
+  const u = resolveSession(token);
+  return require('./stock-batch-yield').reopenBatch(id, actorFromSession(u));
+}
+
+function expenseStockBatchCancel(token, id, reason) {
+  const u = resolveSession(token);
+  return require('./stock-batch-yield').cancelBatch(id, actorFromSession(u), reason);
+}
+
+function expenseStockBatchEvents(token, id, limit) {
+  resolveSession(token);
+  return require('./stock-batch-yield').listEvents(id, limit);
+}
+
+function expenseStockBatchMealsUsing(token, stockProductId) {
+  resolveSession(token);
+  return require('./stock-batch-yield').listMealsUsingIngredient(stockProductId);
 }
 
 module.exports = {
@@ -354,8 +530,34 @@ module.exports = {
   expenseShopSettings,
   expenseOwnerFundings,
   expenseRecordOwnerFunding,
+  expenseRecordWithdrawal,
+  expenseWithdrawals,
+  expenseDailyMoney,
+  expenseDailyMoneyPdf,
+  ownerWhatsAppNumber,
+  expenseBranches,
   expenseWasteProducts,
   expenseWasteList,
   expenseWasteRecord,
-  PERM
+  expenseStockBatchProducts,
+  expenseStockBatchDashboard,
+  expenseStockBatchList,
+  expenseStockBatchGet,
+  expenseStockBatchCreate,
+  expenseStockBatchUpdate,
+  expenseStockBatchWaste,
+  expenseStockBatchSetActualYield,
+  expenseStockBatchClose,
+  expenseStockBatchReopen,
+  expenseStockBatchCancel,
+  expenseStockBatchEvents,
+  expenseStockBatchMealsUsing,
+  expenseUnitsList: (token) => {
+    resolveSession(token);
+    return require('../../lib/units-catalog').listUnits(true);
+  },
+  expenseSearchIngredients: (token, q, limit) => {
+    resolveSession(token);
+    return require('./expense-stock').searchIngredients(q, limit);
+  }
 };
