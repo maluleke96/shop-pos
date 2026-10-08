@@ -377,10 +377,15 @@ function expenseShopSettings() {
   if (typeof settings === 'string') {
     try { settings = JSON.parse(settings); } catch (_) { settings = {}; }
   }
+  const rawLogo = settings.logo_path || settings.logo_url || null;
+  const hasLogo = !!(rawLogo && String(rawLogo).length > 4);
   return {
     shop_name: settings.shop_name || 'Shop POS',
     currency: settings.currency || 'R',
-    logo_path: settings.logo_path || null,
+    // Never ship logo blobs to mobile — huge base64 freezes WebView when injected into DOM.
+    has_logo: hasLogo,
+    logo_url: hasLogo ? '/api/logo' : null,
+    logo_path: null,
     address: settings.address || '',
     phone: settings.phone || '',
     email: settings.email || '',

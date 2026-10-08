@@ -367,17 +367,45 @@ const ExpenseApp = {
     });
   },
 
+  slimSettings(raw) {
+    const s = raw && typeof raw === 'object' ? { ...raw } : {};
+    const logo = s.logo_path || s.logo_url || null;
+    const blob = logo && String(logo).startsWith('data:');
+    if (blob || (logo && String(logo).length > 512)) {
+      s.has_logo = true;
+      s.logo_path = null;
+      s.logo_url = '/api/logo';
+    } else if (logo && !s.logo_url) {
+      s.has_logo = true;
+      s.logo_url = String(logo).startsWith('http') ? logo : '/api/logo';
+    }
+    return s;
+  },
+
+  logoUrl() {
+    if (this.settings?.has_logo || this.settings?.logo_url) {
+      const u = this.settings.logo_url || '/api/logo';
+      return String(u).startsWith('http') ? u : `${ExpenseAPI.origin()}${u.startsWith('/') ? u : `/${u}`}`;
+    }
+    const lp = this.settings?.logo_path;
+    if (lp && String(lp).startsWith('http')) return lp;
+    if (lp && !String(lp).startsWith('data:') && String(lp).length <= 512) {
+      return `${ExpenseAPI.origin()}/api/logo`;
+    }
+    return '';
+  },
+
   applyBranding() {
-    const logo = this.settings?.logo_path;
     const shop = this.settings?.shop_name || 'Expenses';
     document.title = `${shop} — Expenses`;
+    const iconHref = this.logoUrl() || `${ExpenseAPI.origin()}/api/logo`;
     let link = document.querySelector('link[rel="icon"]');
     if (!link) {
       link = document.createElement('link');
       link.rel = 'icon';
       document.head.appendChild(link);
     }
-    link.href = logo ? (String(logo).startsWith('http') ? logo : '/api/logo') : '/api/logo';
+    link.href = iconHref;
     let touch = document.querySelector('link[rel="apple-touch-icon"]');
     if (!touch) {
       touch = document.createElement('link');
@@ -645,7 +673,7 @@ const ExpenseApp = {
         ExpenseAPI.unitsList().catch(() => [])
       ]), 28000);
       this.units = (units || []).map((u) => u.code || u).filter(Boolean);
-      this.settings = settings || this.settings;
+      this.settings = this.slimSettings(settings || this.settings);
       this.categories = categories?.length ? categories : ['other'];
       this.user = profile || this.user;
       this.applyBranding();
@@ -654,7 +682,6 @@ const ExpenseApp = {
       this.updateSyncBadge();
       if (this.tab === 'history') await this.loadHistory();
       if (this.tab === 'funding') await this.loadFunding();
-      if (this.tab === 'new') await this.ensureCatalog().catch(() => []);
     } catch (err) {
       this.token = '';
       this.user = null;
@@ -665,7 +692,12 @@ const ExpenseApp = {
       this.render();
     } finally {
       this._bootstrapping = false;
-      if (this.view === 'main') this.paintBody();
+      if (this.view === 'main') {
+        this.paintBody();
+        if (this.tab === 'new') {
+          this.ensureCatalog().catch(() => []).then(() => this.paintBody());
+        }
+      }
     }
   },
 
@@ -797,7 +829,7 @@ const ExpenseApp = {
           <h2>${titles[this.tab] || 'Expenses'}</h2>
           <p>${this.esc(this.settings.shop_name || 'Shop POS')}</p>
         </div>
-        ${this.settings.logo_path ? `<div class="shop-badge"><img src="${this.esc(this.settings.logo_path)}" alt="" onerror="this.style.display='none'"><span>${this.esc(this.settings.shop_name)}</span></div>` : ''}
+        ${this.logoUrl() ? `<div class="shop-badge"><img src="${this.esc(this.logoUrl())}" alt="" onerror="this.style.display='none'"><span>${this.esc(this.settings.shop_name)}</span></div>` : ''}
       </header>
       <div id="exp-body">${this.renderBody()}</div>`;
   },
@@ -2413,6 +2445,24 @@ const ExpenseApp = {
   }
 };
 
-document.addEventListener('DOMContentLoaded', () => ExpenseApp.init());
+function bootExpenseApp() {
+  if (window.__expenseAppBooted) return;
+  window.__expenseAppBooted = true;
+  try {
+    ExpenseApp.init();
+  } catch (err) {
+    console.error('[ExpenseApp] init failed', err);
+    const root = document.getElementById('app');
+    if (root) {
+      root.innerHTML = `<div class="login-wrap"><div class="login-card"><h1>Expenses</h1><p class="error-msg">Could not start the app. Refresh the page or reinstall the APK.</p><p class="muted">${String(err.message || err).slice(0, 120)}</p></div></div>`;
+    }
+  }
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', bootExpenseApp);
+} else {
+  bootExpenseApp();
+}
 
 window.ExpenseApp = ExpenseApp;
