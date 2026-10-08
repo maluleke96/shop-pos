@@ -79,7 +79,17 @@ function resumeRefresh(opts = {}) {
       }
     }
     if (!opts.ingredientIds?.length && !opts.productIds?.length) {
-      refreshAllMealCapacities();
+      if (opts.deferFullRefresh) {
+        setImmediate(() => {
+          try { refreshAllMealCapacities(); } catch (_) { /* ignore */ }
+        });
+      } else {
+        refreshAllMealCapacities();
+      }
+    } else if (opts.deferFullRefresh) {
+      setImmediate(() => {
+        try { refreshAllMealCapacities(); } catch (_) { /* ignore */ }
+      });
     }
   }
 }
@@ -630,6 +640,10 @@ function validateSaleCapacity(items, opts = {}) {
       }
     }
     if (!cap) {
+      cap = calculateProductCapacity(productId, { selectedModifiers: modifiers });
+    }
+    // Stale persisted capacity (e.g. after new ingredients / restock) must not block valid sales.
+    if (cap.max_meals < need) {
       cap = calculateProductCapacity(productId, { selectedModifiers: modifiers });
     }
     lines.push({ product_id: productId, need, ...cap });

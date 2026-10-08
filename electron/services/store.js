@@ -1927,7 +1927,12 @@ function saveProduct(data, actorId, actorName) {
     if (data.conversions !== undefined || data.recipe !== undefined) {
       try {
         if (data.conversions !== undefined) inventory.saveProductConversions(data.id, data.conversions || []);
-        if (data.recipe !== undefined) inventory.saveProductRecipe(data.id, data.recipe || []);
+        if (data.recipe !== undefined) {
+          inventory.saveProductRecipe(data.id, data.recipe || []);
+          try {
+            require('./production-availability').refreshProductCapacity(data.id);
+          } catch (_) { /* ignore */ }
+        }
         inventory.updateProductRecipeMetrics(data.id, fields.selling_price);
       } catch (err) {
         console.error('Product inventory extras save warning:', err.message);
@@ -3094,7 +3099,18 @@ function completeSale(saleData, actorId, actorName, actorRole) {
 
   result = txn();
   } finally {
-    paEngine.resumeRefresh({ refresh: true });
+    const soldProductIds = [
+      ...new Set(
+        (saleData.items || [])
+          .map((i) => Number(i.product_id))
+          .filter((id) => id > 0)
+      )
+    ];
+    paEngine.resumeRefresh({
+      refresh: true,
+      productIds: soldProductIds,
+      deferFullRefresh: true
+    });
   }
 
   let loyaltyPointsEarned = 0;
