@@ -147,6 +147,14 @@ const apps = [
     artifact: 'ShopPOS-Radio',
     folder: 'Radio',
     livePath: '/radio-app.html'
+  },
+  {
+    mode: 'marketing',
+    name: 'Marketing Center',
+    appId: 'com.shoppos.marketing',
+    artifact: 'ShopPOS-MarketingCenter',
+    folder: 'Marketing-Center',
+    livePath: '/marketing-center-app.html'
   }
 ];
 

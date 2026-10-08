@@ -437,11 +437,15 @@ const App = {
       if (!raw || raw.startsWith('app=')) {
         const p = new URLSearchParams(raw.includes('=') ? raw : '');
         const page = p.get('page');
-        if (page) return { page, adminSection: p.get('section') || null };
+        const section = p.get('section');
+        if (page) return { page, adminSection: section || null };
+        if (section) return { page: 'admin', adminSection: section };
       }
       const p = new URLSearchParams(raw.includes('&') || raw.includes('=') ? raw : '');
       const page = p.get('page');
-      if (page) return { page, adminSection: p.get('section') || null };
+      const section = p.get('section');
+      if (page) return { page, adminSection: section || null };
+      if (section) return { page: 'admin', adminSection: section };
     } catch (_) { /* ignore */ }
     return null;
   },

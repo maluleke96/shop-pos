@@ -29,12 +29,11 @@ const ManagerOpsAPI = {
     const json = await res.json().catch(() => ({}));
     if (!res.ok || json.success === false) {
       const msg = json.error || `Request failed (${res.status})`;
-      if (/session|expired|not authenticated|MODULE_LOCKED|not included/i.test(msg)) {
-        if (!/not included|MODULE_LOCKED|package/i.test(msg)) {
-          localStorage.removeItem('mo_token');
-          sessionStorage.removeItem('mo_token');
-          localStorage.removeItem('mo_user');
-        }
+      if (/not authenticated|session expired|sign in again|authentication required/i.test(msg)
+        && !/not included|MODULE_LOCKED|package/i.test(msg)) {
+        localStorage.removeItem('mo_token');
+        sessionStorage.removeItem('mo_token');
+        localStorage.removeItem('mo_user');
       }
       throw new Error(msg);
     }

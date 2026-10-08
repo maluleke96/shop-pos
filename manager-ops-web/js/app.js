@@ -446,8 +446,20 @@
       await refreshHome();
       renderHome();
     } catch (e) {
-      clearSession();
-      renderLogin(e.message);
+      const msg = e.message || 'Could not open Manager Operations';
+      if (/not authenticated|session expired|sign in again|authentication required|invalid username/i.test(msg)) {
+        clearSession();
+        renderLogin(msg);
+        return;
+      }
+      nav.classList.add('hidden');
+      app.innerHTML = `<div class="login-wrap">
+        <h1>Manager Operations</h1>
+        <p style="color:#b91c1c">${String(msg).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]))}</p>
+        <button class="btn btn-primary" id="mo-retry" type="button">Try again</button>
+      </div>`;
+      const retry = document.getElementById('mo-retry');
+      if (retry) retry.onclick = () => boot();
     }
   }
 

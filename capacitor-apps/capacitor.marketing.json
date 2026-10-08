@@ -1,0 +1,6 @@
+{
+  "appId": "com.shoppos.marketing",
+  "appName": "Marketing Center",
+  "webDir": "www",
+  "android": { "allowMixedContent": true }
+}

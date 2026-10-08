@@ -815,6 +815,49 @@ function injectPanelCacheBust(html, deployVersion) {
   );
 }
 
+/** Live shells (Android/Windows) load these URLs. Serve the real app in place so the WebView never navigates away (that navigation was opening a blank screen). */
+const APP_SHELLS = {
+  '/admin-app.html': { mode: 'admin', hash: 'app=admin&page=dashboard' },
+  '/referral-commission-app.html': { mode: 'referral-commission', hash: 'app=referral-commission' },
+  '/communication-center-app.html': { mode: 'admin', hash: 'app=admin&page=admin&section=communication-center' },
+  '/radio-app.html': { mode: 'admin', hash: 'app=admin&page=admin&section=radio' },
+  '/marketing-center-app.html': { mode: 'admin', hash: 'app=admin&page=admin&section=marketing-center' }
+};
+
+function serveAppShell(res, spec) {
+  const index = path.join(SRC, 'index.html');
+  fs.readFile(index, (err, buf) => {
+    if (err) {
+      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8', ...corsHeaders() });
+      return res.end('Not found');
+    }
+    const mode = JSON.stringify(spec.mode);
+    const hash = JSON.stringify(spec.hash);
+    const boot = `<base href="/">
+<script>
+window.__SHOP_POS_APP_MODE__=${mode};
+try {
+  sessionStorage.setItem('SHOP_POS_APP_MODE', ${mode});
+  localStorage.setItem('SHOP_POS_APP_MODE', ${mode});
+} catch (e) {}
+try {
+  var want = ${hash};
+  if (!location.hash || location.hash === '#' || location.hash.indexOf('section=') < 0 && location.hash.indexOf('app=') < 0) {
+    location.hash = want;
+  }
+} catch (e) {}
+</script>`;
+    let html = decodeTextBuffer(buf).replace(/<head[^>]*>/i, (m) => `${m}\n${boot}`);
+    html = injectDeployCacheBust(html, readDeployVersion());
+    res.writeHead(200, {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-cache',
+      ...corsHeaders()
+    });
+    res.end(html);
+  });
+}
+
 function serveStatic(req, res) {
   let urlPath = (req.url || '/').split('?')[0];
   if (urlPath === '/') urlPath = '/index.html';
@@ -1628,6 +1671,10 @@ async function main() {
 
     if (urlPath.startsWith('/shared/')) {
       return serveShared(req, res);
+    }
+
+    if (APP_SHELLS[urlPath]) {
+      return serveAppShell(res, APP_SHELLS[urlPath]);
     }
 
     // Static UI

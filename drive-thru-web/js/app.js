@@ -13,23 +13,71 @@ const DriveThruApp = {
   },
 
   async init() {
-    await DriveThruAudio.init();
-    if (localStorage.getItem('dt_portal_token') && localStorage.getItem('dt_station_token')) {
+    DriveThruAudio.init().catch(() => {});
+    const station = localStorage.getItem('dt_station_token');
+    const portal = localStorage.getItem('dt_portal_token');
+    if (station && portal) {
       try {
         await DriveThruAPI.stationLogin();
         await this.loadCatalog();
         this.showApp();
         this.startHeartbeat();
         return;
-      } catch (_) { localStorage.clear(); }
+      } catch (_) {
+        localStorage.removeItem('dt_station_token');
+        localStorage.removeItem('dt_portal_token');
+      }
     }
-    if (localStorage.getItem('dt_portal_token')) {
-      document.getElementById('login-screen').classList.add('hidden');
-      document.getElementById('station-setup').classList.remove('hidden');
-      document.getElementById('station-connect-btn').onclick = () => this.connectStation();
+    if (station) {
+      this.showLogin();
       return;
     }
-    document.getElementById('dt-login-btn').onclick = () => this.login();
+    this.showPairing();
+  },
+
+  showLogin() {
+    document.getElementById('station-setup')?.classList.add('hidden');
+    document.getElementById('login-screen')?.classList.remove('hidden');
+    const btn = document.getElementById('dt-login-btn');
+    if (btn) btn.onclick = () => this.login();
+  },
+
+  showPairing() {
+    document.getElementById('login-screen')?.classList.add('hidden');
+    document.getElementById('station-setup')?.classList.remove('hidden');
+    const btn = document.getElementById('station-connect-btn');
+    if (btn) btn.onclick = () => this.connectStation();
+    this.startPairing();
+  },
+
+  async startPairing() {
+    if (this._pairTimer) clearInterval(this._pairTimer);
+    const codeEl = document.getElementById('pair-code');
+    const msgEl = document.getElementById('pair-msg');
+    try {
+      const r = await DriveThruAPI.requestPairing({ platform: navigator.platform || '' });
+      if (codeEl) codeEl.textContent = r.pairing_code || '------';
+      if (msgEl) msgEl.textContent = 'Approve this code in Admin → Business Modules → Drive-Thru.';
+      this._pairTimer = setInterval(async () => {
+        try {
+          const st = await DriveThruAPI.pairingStatus(r.pairing_code);
+          if (st.status === 'approved' && st.station_token) {
+            clearInterval(this._pairTimer);
+            localStorage.setItem('dt_station_token', st.station_token);
+            if (localStorage.getItem('dt_portal_token')) {
+              await this.connectStation(st.station_token);
+            } else {
+              this.showLogin();
+            }
+          } else if (st.status === 'expired' || st.status === 'rejected') {
+            clearInterval(this._pairTimer);
+            if (msgEl) msgEl.textContent = `Pairing ${st.status}. Refresh to get a new code.`;
+          }
+        } catch (_) { /* keep polling */ }
+      }, 3000);
+    } catch (e) {
+      if (msgEl) msgEl.textContent = e.message || 'Could not request a pairing code';
+    }
   },
 
   async login() {
@@ -38,24 +86,35 @@ const DriveThruApp = {
       localStorage.setItem('dt_portal_token', r.token);
       localStorage.setItem('dt_user', JSON.stringify(r.user));
       this.user = r.user;
-      document.getElementById('login-screen').classList.add('hidden');
-      document.getElementById('station-setup').classList.remove('hidden');
-      document.getElementById('station-connect-btn').onclick = () => this.connectStation();
+      if (!localStorage.getItem('dt_station_token')) {
+        this.showPairing();
+        return;
+      }
+      await this.connectStation(localStorage.getItem('dt_station_token'));
     } catch (e) { document.getElementById('login-err').textContent = e.message; }
   },
 
-  async connectStation() {
-    const tok = document.getElementById('station-token').value.trim();
+  async connectStation(token) {
+    const tok = String(token || document.getElementById('station-token')?.value || '').trim();
     if (!tok) return;
+    if (!localStorage.getItem('dt_portal_token')) {
+      localStorage.setItem('dt_station_token', tok);
+      this.showLogin();
+      return;
+    }
     try {
       localStorage.setItem('dt_station_token', tok);
       await DriveThruAPI.stationLogin();
       await this.loadCatalog();
-      document.getElementById('station-setup').classList.add('hidden');
+      document.getElementById('station-setup')?.classList.add('hidden');
+      document.getElementById('login-screen')?.classList.add('hidden');
       this.showApp();
       this.startHeartbeat();
     } catch (e) {
-      alert(e.message || 'Could not connect station');
+      const msg = e.message || 'Could not connect station';
+      const err = document.getElementById('pair-msg') || document.getElementById('login-err');
+      if (err) err.textContent = msg;
+      else alert(msg);
     }
   },
 
@@ -90,7 +149,14 @@ const DriveThruApp = {
     const items = this.order?.items || [];
     const total = items.reduce((s, i) => s + (i.total || i.unit_price * i.quantity), 0);
     const audio = DriveThruAudio;
-    const devices = await DriveThruAudio.refreshDevices().catch(() => ({ inputs: [], outputs: [] }));
+    const devices = DriveThruAudio.devices || { inputs: [], outputs: [] };
+    if (!DriveThruAudio.devices && !DriveThruAudio._devicesLoading) {
+      DriveThruAudio._devicesLoading = true;
+      DriveThruAudio.refreshDevices()
+        .then(() => { if (document.getElementById('app') && !document.getElementById('app').classList.contains('hidden')) this.render(); })
+        .catch(() => {})
+        .finally(() => { DriveThruAudio._devicesLoading = false; });
+    }
 
     app.innerHTML = `<div class="dt-header">
       <div><strong>${this.esc(this.catalog?.station?.name || 'Drive-Thru')}</strong> · ${this.esc(this.user?.full_name || '')}</div>

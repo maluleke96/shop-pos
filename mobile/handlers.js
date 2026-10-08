@@ -3660,7 +3660,7 @@ add('web:adminAnalytics', wrapSync((filters, actor) => {
     return s.adminPublishSlideshow(bizActor(a), data || {});
   }));
   add('signage:summary', wrapSync((a) => {
-    requireUserSession(['owner', 'manager']);
+    requireUserSession(['owner', 'manager', 'assistant_manager', 'supervisor']);
     return s.signageSummary?.();
   }));
   add('signage:requestPairing', wrapSync((meta) => s.requestPairing(meta || {})));
@@ -3739,18 +3739,19 @@ add('web:adminAnalytics', wrapSync((filters, actor) => {
   add('kiosk:settings', wrapSync((tok) => kioskSvc.getKioskSettings(tok)));
   add('kiosk:saveSettings', wrapSync((tok, d) => kioskSvc.saveKioskSettings(d || {}, tok)));
   add('kiosk:runTests', wrapAsync(() => kioskSvc.runKioskTests()));
-  add('kiosk:adminListDevices', wrapSync((a) => { requireUserSession(['owner', 'manager']); return kioskSvc.listDevicesAdmin(); }));
-  add('kiosk:adminPendingPairings', wrapSync((a) => { requireUserSession(['owner', 'manager']); return kioskSvc.listPendingPairingsAdmin(); }));
+  const portalRoles = ['owner', 'manager', 'assistant_manager', 'supervisor'];
+  add('kiosk:adminListDevices', wrapSync((a) => { requireUserSession(portalRoles); return kioskSvc.listDevicesAdmin(); }));
+  add('kiosk:adminPendingPairings', wrapSync((a) => { requireUserSession(portalRoles); return kioskSvc.listPendingPairingsAdmin(); }));
   add('kiosk:adminApprovePairing', wrapSync((code, data, a) => {
-    const u = requireUserSession(['owner', 'manager']);
+    const u = requireUserSession(portalRoles);
     return kioskSvc.approvePairingAdmin(code, data || {}, u.full_name || u.username);
   }));
   add('kiosk:adminRevokeDevice', wrapSync((id, a) => {
-    const u = requireUserSession(['owner', 'manager']);
+    const u = requireUserSession(portalRoles);
     return kioskSvc.revokeDeviceAdmin(id, u.full_name || u.username);
   }));
   add('kiosk:adminSaveDevice', wrapSync((data, a) => {
-    const u = requireUserSession(['owner', 'manager']);
+    const u = requireUserSession(portalRoles);
     return kioskSvc.saveDeviceAdmin(data || {}, u.full_name || u.username);
   }));
   add('kiosk:reportErrors', wrapSync((deviceTok, errors) => kioskSvc.reportKioskErrors(deviceTok, errors || [])));
@@ -3851,10 +3852,14 @@ add('web:adminAnalytics', wrapSync((filters, actor) => {
   add('driveThru:saveSettings', wrapSync((tok, d) => driveThruSvc.saveDriveThruSettings(d || {}, tok)));
   add('driveThru:listAuditLogs', wrapSync((tok, limit) => driveThruSvc.listAuditLogs(tok, limit || 100)));
   add('driveThru:runTests', wrapAsync(() => driveThruSvc.runDriveThruTests()));
-  add('driveThru:adminListStations', wrapSync((a) => { requireUserSession(['owner', 'manager']); return driveThruSvc.listStationsAdmin(); }));
-  add('driveThru:adminSaveStation', wrapSync((data, a) => { requireUserSession(['owner', 'manager']); return driveThruSvc.saveStationAdmin(data || {}); }));
-  add('driveThru:adminRegenerateStationToken', wrapSync((stationId, a) => { requireUserSession(['owner', 'manager']); return driveThruSvc.regenerateStationTokenAdmin(stationId); }));
-  add('driveThru:adminDeleteStation', wrapSync((stationId, a) => { requireUserSession(['owner', 'manager']); return driveThruSvc.deleteStationAdmin(stationId); }));
+  add('driveThru:requestPairing', wrapSync((meta) => driveThruSvc.requestPairing(meta || {})));
+  add('driveThru:pairingStatus', wrapSync((code) => driveThruSvc.pairingStatus(code)));
+  add('driveThru:adminListStations', wrapSync((a) => { requireUserSession(portalRoles); return driveThruSvc.listStationsAdmin(); }));
+  add('driveThru:adminPendingPairings', wrapSync((a) => { requireUserSession(portalRoles); return driveThruSvc.listPendingPairingsAdmin(); }));
+  add('driveThru:adminApprovePairing', wrapSync((code, data, a) => { requireUserSession(portalRoles); return driveThruSvc.approvePairingAdmin(code, data || {}); }));
+  add('driveThru:adminSaveStation', wrapSync((data, a) => { requireUserSession(portalRoles); return driveThruSvc.saveStationAdmin(data || {}); }));
+  add('driveThru:adminRegenerateStationToken', wrapSync((stationId, a) => { requireUserSession(portalRoles); return driveThruSvc.regenerateStationTokenAdmin(stationId); }));
+  add('driveThru:adminDeleteStation', wrapSync((stationId, a) => { requireUserSession(portalRoles); return driveThruSvc.deleteStationAdmin(stationId); }));
 
   // ─── Expenses mobile app ────────────────────────────────────────────────────
   add('expenseApp:login', wrapSync((u, p, d) => expenseApp.expenseLogin(u, p, d || {})));

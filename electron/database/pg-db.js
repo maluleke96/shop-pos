@@ -223,10 +223,26 @@ function rewriteSqliteSql(sql) {
       // SQLite scalar MAX(a,b) → Postgres GREATEST (aggregate MAX unchanged)
       .replace(/\bMAX\s*\(\s*([^,)]+)\s*,\s*([^)]+?)\s*\)/gi, 'GREATEST($1, $2)')
       .replace(/\bGLOB\b/gi, 'LIKE')
-      // SQLite 0/1 compared or assigned to Postgres BOOLEAN (avoids boolean = integer)
-      .replace(/\b((?:\w+\.)?(?:is_revoked|is_active|is_rest_day|paye_registered|uif_registered|pension_registered|medical_registered|sdl_registered))\s*=\s*0\b/gi, '$1 = FALSE')
-      .replace(/\b((?:\w+\.)?(?:is_revoked|is_active|is_rest_day|paye_registered|uif_registered|pension_registered|medical_registered|sdl_registered))\s*=\s*1\b/gi, '$1 = TRUE')
-      .replace(/\b((?:\w+\.)?(?:is_revoked|is_active|is_rest_day))\s*=\s*\?/gi, '$1 = ((?)::int <> 0)')
+      // Comparisons only: (col::int = 0|1) works for both INTEGER and BOOLEAN columns.
+      // Do not rewrite SET/INSERT literals to TRUE/FALSE — that breaks integer columns
+      // (signage, kiosk, users) with "operator does not exist: integer = boolean".
+      .replace(/\b((?:\w+\.)?(?:is_revoked|is_active|is_rest_day|paye_registered|uif_registered|pension_registered|medical_registered|sdl_registered))\s*=\s*(0|1)\b/gi, (match, col, n, offset, str) => {
+        const before = str.slice(Math.max(0, offset - 80), offset);
+        if (/\b(?:WHERE|AND|OR|ON)\s+$/i.test(before) || /\(\s*$/.test(before)) {
+          return `(${col}::int = ${n})`;
+        }
+        if (/ops_display_devices/i.test(str)) {
+          return `${col.replace(/^.*\./, '')} = ${n === '1' ? 'TRUE' : 'FALSE'}`;
+        }
+        return match;
+      })
+      .replace(/\b((?:\w+\.)?(?:is_revoked|is_active|is_rest_day))\s*=\s*\?/gi, (match, col, offset, str) => {
+        const before = str.slice(Math.max(0, offset - 80), offset);
+        if (/\b(?:WHERE|AND|OR|ON)\s+$/i.test(before) || /\(\s*$/.test(before)) {
+          return `(${col}::int = (?)::int)`;
+        }
+        return match;
+      })
       // SQLite "col IS ?" (null-safe eq) is invalid in Postgres as "col IS $n"
       .replace(/\b([a-zA-Z_][\w.]*)\s+IS\s+\?/gi, '($1 IS NOT DISTINCT FROM ?)')
       .replace(/\b([a-zA-Z_][\w.]*)\s+IS\s+NOT\s+\?/gi, '($1 IS DISTINCT FROM ?)')

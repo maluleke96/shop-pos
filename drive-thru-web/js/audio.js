@@ -28,11 +28,16 @@ const DriveThruAudio = {
   },
 
   async refreshDevices() {
+    if (!navigator.mediaDevices?.enumerateDevices) {
+      this.devices = { inputs: [], outputs: [] };
+      return this.devices;
+    }
     const devices = await navigator.mediaDevices.enumerateDevices();
-    return {
+    this.devices = {
       inputs: devices.filter((d) => d.kind === 'audioinput'),
       outputs: devices.filter((d) => d.kind === 'audiooutput')
     };
+    return this.devices;
   },
 
   async selectMic(deviceId) {

@@ -39,6 +39,17 @@ function ensureDriveThru() {
     try { dbRun('INSERT INTO drive_thru_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING'); } catch (__) { /* */ }
   }
   try {
+    dbRun(`CREATE TABLE IF NOT EXISTS drive_thru_pairings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      pairing_code TEXT NOT NULL,
+      device_meta TEXT,
+      status TEXT DEFAULT 'pending',
+      station_id INTEGER,
+      expires_at TEXT,
+      created_at TEXT
+    )`);
+  } catch (_) { /* */ }
+  try {
     const c = dbGet('SELECT COUNT(*) AS c FROM drive_thru_centre_users')?.c || 0;
     if (c === 0) {
       dbRun('INSERT INTO drive_thru_centre_users (username, password_hash, full_name, role) VALUES (?,?,?,?)',
@@ -157,6 +168,65 @@ function listStations(token) {
   return dbAll('SELECT id, station_code, name, lane_label, branch_id, status, is_active, mic_device_id, speaker_device_id, active_order_id, staff_name, last_heartbeat, error_state FROM drive_thru_stations ORDER BY name');
 }
 
+function requestPairing(meta = {}) {
+  ensureDriveThru();
+  const code = String(Math.floor(100000 + Math.random() * 900000));
+  const expires = new Date(Date.now() + 600000).toISOString().slice(0, 19).replace('T', ' ');
+  dbRun('INSERT INTO drive_thru_pairings (pairing_code, device_meta, status, expires_at, created_at) VALUES (?,?,?,?,?)',
+    [code, JSON.stringify(meta || {}), 'pending', expires, nowIso()]);
+  return { pairing_code: code, expires_in_seconds: 600 };
+}
+
+function pairingStatus(code) {
+  ensureDriveThru();
+  const row = dbGet('SELECT * FROM drive_thru_pairings WHERE pairing_code = ? ORDER BY id DESC LIMIT 1', [String(code || '').trim()]);
+  if (!row) return { status: 'not_found' };
+  if (row.status === 'pending' && row.expires_at && row.expires_at < nowIso()) {
+    dbRun("UPDATE drive_thru_pairings SET status = 'expired' WHERE id = ?", [row.id]);
+    return { status: 'expired' };
+  }
+  if (row.status === 'approved') {
+    const meta = parseJson(row.device_meta, {});
+    if (meta.station_token_once) {
+      const stationToken = meta.station_token_once;
+      delete meta.station_token_once;
+      dbRun('UPDATE drive_thru_pairings SET device_meta = ? WHERE id = ?', [JSON.stringify(meta), row.id]);
+      return { status: 'approved', station_id: row.station_id, station_token: stationToken };
+    }
+    return { status: 'approved', station_id: row.station_id, station_token: null };
+  }
+  return { status: row.status };
+}
+
+function listPendingPairingsAdmin() {
+  ensureDriveThru();
+  return dbAll('SELECT id, pairing_code, status, expires_at, created_at FROM drive_thru_pairings WHERE status = ? AND expires_at > ? ORDER BY id DESC', ['pending', nowIso()]);
+}
+
+function approvePairingAdmin(code, data = {}) {
+  ensureDriveThru();
+  const normalizedCode = String(code || '').trim();
+  const row = dbGet(
+    'SELECT * FROM drive_thru_pairings WHERE pairing_code = ? AND status = ? ORDER BY id DESC LIMIT 1',
+    [normalizedCode, 'pending']
+  );
+  if (!row) throw new Error('Pairing code not found or expired');
+  const name = String(data.name || `Drive-Thru ${normalizedCode}`).trim();
+  const stationToken = newToken();
+  const stationCode = uid('DT');
+  const r = dbRun(`INSERT INTO drive_thru_stations (station_code, name, lane_label, branch_id, token_hash, status)
+    VALUES (?,?,?,?,?,?)`,
+    [stationCode, name, data.lane_label || 'Lane 1', data.branch_id || null, hashToken(stationToken), 'offline']);
+  let stationId = r.lastInsertRowid;
+  if (!stationId) stationId = dbGet('SELECT id FROM drive_thru_stations WHERE station_code = ?', [stationCode])?.id;
+  if (!stationId) throw new Error('Could not save drive-thru station');
+  const meta = parseJson(row.device_meta, {});
+  dbRun('UPDATE drive_thru_pairings SET status = ?, station_id = ?, device_meta = ? WHERE id = ?',
+    ['approved', stationId, JSON.stringify({ ...meta, station_token_once: stationToken }), row.id]);
+  audit({ station_id: stationId, action: 'station_paired_admin', entity_id: stationId });
+  return { station_id: stationId, station_token: stationToken, name };
+}
+
 function listStationsAdmin() {
   ensureDriveThru();
   detectStaleStations();
@@ -180,7 +250,10 @@ function saveStationAdmin(data) {
   const code = uid('DT');
   const r = dbRun(`INSERT INTO drive_thru_stations (station_code, name, lane_label, branch_id, token_hash, status)
     VALUES (?,?,?,?,?,?)`, [code, name, data.lane_label || null, data.branch_id || null, hashToken(stationToken), 'offline']);
-  return { ...dbGet('SELECT id, station_code, name, lane_label, status, is_active, staff_name, last_heartbeat, error_state FROM drive_thru_stations WHERE id = ?', [r.lastInsertRowid]), station_token: stationToken };
+  let stationId = r.lastInsertRowid;
+  if (!stationId) stationId = dbGet('SELECT id FROM drive_thru_stations WHERE station_code = ?', [code])?.id;
+  if (!stationId) throw new Error('Could not save drive-thru station');
+  return { ...dbGet('SELECT id, station_code, name, lane_label, status, is_active, staff_name, last_heartbeat, error_state FROM drive_thru_stations WHERE id = ?', [stationId]), station_token: stationToken };
 }
 
 function deleteStationAdmin(stationId) {
@@ -618,7 +691,9 @@ async function runDriveThruTests() {
 
 module.exports = {
   ensureDriveThru, driveThruLogin, driveThruLogout, driveThruDashboard, driveThruSummary,
-  listStations, listStationsAdmin, saveStation, saveStationAdmin, deleteStationAdmin, regenerateStationTokenAdmin, stationHeartbeat, stationLogin,
+  listStations, listStationsAdmin, saveStation, saveStationAdmin, deleteStationAdmin, regenerateStationTokenAdmin,
+  requestPairing, pairingStatus, listPendingPairingsAdmin, approvePairingAdmin,
+  stationHeartbeat, stationLogin,
   saveAudioConfig, getAudioConfig, postAudioSignal, pollAudioSignals,
   getDriveThruCatalog, startOrder, updateOrder, confirmOrder, takePayment,
   sendToKitchen, markReady, markCollected, cancelOrder, getOrder, listOrders,

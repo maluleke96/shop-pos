@@ -25,7 +25,11 @@ const apps = [
   { id: 'com.shoppos.drivethru', apk: 'ShopPOS-Drive-Thru.apk', label: 'Drive-Thru' },
   { id: 'com.shoppos.kitchen', apk: 'ShopPOS-Kitchen-Display.apk', label: 'Kitchen Display' },
   { id: 'com.shoppos.customerdisplay', apk: 'ShopPOS-Customer-Order-Display.apk', label: 'Customer Order Display' },
-  { id: 'com.shoppos.order', apk: 'ShopPOS-OnlineOrdering.apk', label: 'Online Ordering' }
+  { id: 'com.shoppos.order', apk: 'ShopPOS-OnlineOrdering.apk', label: 'Online Ordering' },
+  { id: 'com.shoppos.admin', apk: 'ShopPOS-Admin.apk', label: 'Shop POS Admin' },
+  { id: 'com.shoppos.communication', apk: 'ShopPOS-CommunicationCenter.apk', label: 'Communication Center' },
+  { id: 'com.shoppos.radio', apk: 'ShopPOS-Radio.apk', label: 'Shop Radio' },
+  { id: 'com.shoppos.marketing', apk: 'ShopPOS-MarketingCenter.apk', label: 'Marketing Center' }
 ];
 
 const manifest = {};

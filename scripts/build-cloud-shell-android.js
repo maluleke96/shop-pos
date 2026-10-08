@@ -54,7 +54,8 @@ Built: ${new Date().toISOString()}
   { id: 'kitchen', config: 'capacitor.kitchen.json', apkName: 'ShopPOS-Kitchen-Display.apk', appName: 'Kitchen Display', serverPath: '/kitchen-display.html', destRoot: opsDestRoot },
   { id: 'customer-display', config: 'capacitor.customer-display.json', apkName: 'ShopPOS-Customer-Order-Display.apk', appName: 'Customer Order Display', serverPath: '/customer-display.html', destRoot: opsDestRoot },
   { id: 'radio', config: 'capacitor.radio.json', apkName: 'ShopPOS-Radio.apk', appName: 'Shop Radio', serverPath: '/radio-app.html' },
-  { id: 'communication', config: 'capacitor.communication.json', apkName: 'ShopPOS-CommunicationCenter.apk', appName: 'Communication Center', serverPath: '/communication-center-app.html' }
+  { id: 'communication', config: 'capacitor.communication.json', apkName: 'ShopPOS-CommunicationCenter.apk', appName: 'Communication Center', serverPath: '/communication-center-app.html' },
+  { id: 'marketing', config: 'capacitor.marketing.json', apkName: 'ShopPOS-MarketingCenter.apk', appName: 'Marketing Center', serverPath: '/marketing-center-app.html' }
 ];
 
 function buildApp(app) {
@@ -74,7 +75,7 @@ function main() {
   const list = arg === 'all' ? APPS : APPS.filter((a) => a.id === arg);
   if (!list.length) {
     console.error('Unknown app:', arg);
-    console.error('Usage: node scripts/build-cloud-shell-android.js [pos|staff|recipe|expense|studio|driver|delivery|manager|manager-ops|order|referral|referral-commission|mgr-hr|kiosk|drive-thru|kitchen|customer-display|all]');
+    console.error('Usage: node scripts/build-cloud-shell-android.js [pos|staff|recipe|expense|studio|driver|delivery|manager|manager-ops|order|referral|referral-commission|mgr-hr|kiosk|drive-thru|kitchen|customer-display|radio|communication|marketing|admin|all]');
     process.exit(1);
   }
 

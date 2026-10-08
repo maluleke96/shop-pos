@@ -3,7 +3,7 @@ const DriveThruAPI = {
   portalToken: () => localStorage.getItem('dt_portal_token') || '',
   stationToken: () => localStorage.getItem('dt_station_token') || '',
   async call(method, args = []) {
-    const noPortal = ['driveThru:login', 'driveThru:stationHeartbeat', 'driveThru:catalog', 'driveThru:getAudioConfig', 'driveThru:saveAudioConfig', 'driveThru:postAudioSignal', 'driveThru:pollAudioSignals'];
+    const noPortal = ['driveThru:login', 'driveThru:requestPairing', 'driveThru:pairingStatus', 'driveThru:stationHeartbeat', 'driveThru:catalog', 'driveThru:getAudioConfig', 'driveThru:saveAudioConfig', 'driveThru:postAudioSignal', 'driveThru:pollAudioSignals'];
     const tok = this.portalToken();
     if (tok && !noPortal.includes(method)) {
       args = [tok, ...args];
@@ -14,6 +14,8 @@ const DriveThruAPI = {
     return json.data != null ? json.data : json;
   },
   login: (u, p) => DriveThruAPI.call('driveThru:login', [u, p]),
+  requestPairing: (meta) => DriveThruAPI.call('driveThru:requestPairing', [meta || {}]),
+  pairingStatus: (code) => DriveThruAPI.call('driveThru:pairingStatus', [code]),
   catalog: () => DriveThruAPI.call('driveThru:catalog', [DriveThruAPI.stationToken()]),
   stationLogin: () => DriveThruAPI.call('driveThru:stationLogin', [DriveThruAPI.stationToken()]),
   stationHeartbeat: (p) => DriveThruAPI.call('driveThru:stationHeartbeat', [DriveThruAPI.stationToken(), p]),

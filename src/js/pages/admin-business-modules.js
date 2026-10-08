@@ -674,21 +674,32 @@ window.AdminBusinessModulesPage = {
 
   async renderDriveThru(body) {
     body.innerHTML = '<p class="muted">Loading stations…</p>';
-    const stations = await API.driveThruAdminListStations(this.actor).catch(() => []);
-    const list = stations?.data || stations || [];
+    const [stations, pending] = await Promise.all([
+      API.driveThruAdminListStations(this.actor).catch((e) => ({ error: e.message })),
+      API.driveThruAdminPendingPairings(this.actor).catch(() => [])
+    ]);
+    const list = stations?.error ? [] : this.rpcList(stations);
+    const pair = this.rpcList(pending);
+    const loadErr = stations?.error ? `<p style="color:#b91c1c">${this.esc(stations.error)}</p>` : '';
     body.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center;margin:12px 0">
       <h3>Drive-Thru stations</h3>
       <div><a href="/drive-thru/" target="_blank" class="btn btn-ghost">Open Station UI</a>
       <button class="btn btn-primary" id="dt-add-station">Add station</button></div></div>
+      ${loadErr}
       <div class="card card-body" style="margin-bottom:16px">
-        <h4 style="margin:0 0 8px">Where do I get the station token?</h4>
+        <h4 style="margin:0 0 8px">Pairing code</h4>
         <ol class="muted" style="margin:0 0 0 18px;line-height:1.55">
-          <li>Click <strong>Add station</strong> below (or regenerate token on an existing station)</li>
-          <li>Copy the token from the panel that appears — it is only shown once</li>
-          <li>On the station PC: open <a href="/drive-thru/" target="_blank" rel="noopener">/drive-thru/</a> → sign in as <code>drivethru</code> / <code>dt123456</code> → paste the token</li>
+          <li>Open <a href="/drive-thru/" target="_blank" rel="noopener">/drive-thru/</a> on the station — it shows a <strong>6-digit pairing code</strong></li>
+          <li>Approve that code below. The station connects by itself</li>
+          <li>Sign in on the station with your Admin username and password</li>
         </ol>
-        <p class="muted" style="margin:10px 0 0">Kiosk uses a pairing code, not this token. Lost a token? Use <strong>New token</strong> on that station row.</p>
+        <p class="muted" style="margin:10px 0 0">You can still add a station and paste its token if you prefer. Lost a token? Use <strong>New token</strong>.</p>
       </div>
+      <h4>Pending pairing</h4>
+      ${pair.map((p) => `<div class="card card-body" style="margin:8px 0;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+        <span>Code <strong style="font-size:1.25em;letter-spacing:2px">${this.esc(p.pairing_code)}</strong></span>
+        <button class="btn btn-primary btn-sm" data-approve-dt="${this.esc(p.pairing_code)}">Approve</button>
+      </div>`).join('') || '<p class="muted">No pending codes — open /drive-thru/ on the station first</p>'}
       <table><thead><tr><th>Station</th><th>Lane</th><th>Status</th><th>Staff</th><th>Audio</th><th></th></tr></thead>
       <tbody>${list.map((s) => {
         const audio = (() => { try { return JSON.parse(s.audio_status_json || '{}'); } catch (_) { return {}; } })();
@@ -704,6 +715,26 @@ window.AdminBusinessModulesPage = {
       }).join('') || '<tr><td colspan="6" class="muted">No stations — add one to create a station token</td></tr>'}</tbody></table>
       <button class="btn btn-ghost" id="dt-run-tests" style="margin-top:12px">Run drive-thru tests</button>
       <pre id="dt-test-out" class="muted" style="margin-top:8px"></pre>`;
+    body.querySelectorAll('[data-approve-dt]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const code = btn.dataset.approveDt;
+        this.openForm(`Approve drive-thru ${code}`, `
+          <div class="field"><label>Station name *</label><input id="bm-dt-pair-name" value="Drive-Thru 1"></div>
+          <div class="field"><label>Lane</label><input id="bm-dt-pair-lane" value="Lane 1"></div>`, {
+          submitLabel: 'Approve pairing',
+          onSubmit: async () => {
+            const name = document.getElementById('bm-dt-pair-name')?.value?.trim();
+            if (!name) throw new Error('Station name is required');
+            const lane_label = document.getElementById('bm-dt-pair-lane')?.value?.trim() || 'Lane 1';
+            const r = await API.driveThruAdminApprovePairing(code, { name, lane_label }, this.actor);
+            if (r?.success === false) throw new Error(r.error || 'Approve failed');
+            Utils.hideModal();
+            Utils.toast('Drive-thru paired — the station will connect on its own', 'success');
+            this.renderDriveThru(body);
+          }
+        });
+      });
+    });
     body.querySelector('#dt-add-station')?.addEventListener('click', () => {
       this.openForm('Add Drive-Thru station', `
         <div class="field"><label>Station name *</label><input id="bm-dt-name" value="Drive-Thru 1"></div>
