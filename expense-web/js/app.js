@@ -44,9 +44,20 @@ const ExpenseApp = {
   _hiddenAt: 0,
   _idleLockMs: 2 * 60 * 1000,
 
+  /** Full-screen sheets left open block the whole app on phone — clear on startup and tab changes. */
+  closeBlockingOverlays() {
+    const pick = document.getElementById('exp-prod-pick');
+    if (pick) {
+      pick.classList.add('hidden');
+      pick.innerHTML = '';
+    }
+    document.getElementById('exp-wd-overlay')?.remove();
+  },
+
   init() {
     localStorage.removeItem('expense_token');
     localStorage.removeItem('expense_user');
+    this.closeBlockingOverlays();
     this.user = ExpenseAPI.sessionUser();
     this.token = ExpenseAPI.token();
     this.form.expense_date = this.today();
@@ -143,16 +154,13 @@ const ExpenseApp = {
       this.toast(opts.emptyText || 'No products loaded yet', 'error');
       return;
     }
-    let overlay = document.getElementById('exp-prod-pick');
-    if (!overlay) {
-      overlay = document.createElement('div');
-      overlay.id = 'exp-prod-pick';
-      overlay.className = 'prod-pick-overlay';
-      document.body.appendChild(overlay);
-    }
+    document.getElementById('exp-prod-pick')?.remove();
+    const overlay = document.createElement('div');
+    overlay.id = 'exp-prod-pick';
+    overlay.className = 'prod-pick-overlay';
+    document.body.appendChild(overlay);
     const close = () => {
-      overlay.classList.add('hidden');
-      overlay.innerHTML = '';
+      overlay.remove();
     };
     const paint = (q = '') => {
       const list = overlay.querySelector('#exp-prod-pick-list');
@@ -292,13 +300,11 @@ const ExpenseApp = {
         const openPick = async () => {
           let catalog = await this.ensureCatalog().catch(() => []);
           if (!catalog.length) {
-            if (typeof ExpenseApp !== 'undefined' && ExpenseApp.toast) ExpenseApp.toast('Loading products…', 'info');
+            this.toast('Loading products…', 'info');
             catalog = await this.ensureCatalog(true).catch(() => []);
           }
           if (!catalog.length) {
-            if (typeof ExpenseApp !== 'undefined' && ExpenseApp.toast) {
-              ExpenseApp.toast('Could not load products — refresh and try again', 'error');
-            }
+            this.toast('Could not load products — refresh and try again', 'error');
             return;
           }
           this.openProductPicker({
@@ -527,6 +533,7 @@ const ExpenseApp = {
       if (!btn) return;
       this.tab = btn.dataset.tab;
       this.historyDetail = null;
+      this.closeBlockingOverlays();
       if (this.tab !== 'batches') {
         this.sbyView = 'list';
         this.sbyDetailId = null;
@@ -535,11 +542,14 @@ const ExpenseApp = {
       document.querySelectorAll('#exp-nav [data-tab]').forEach((b) => {
         b.classList.toggle('active', b.dataset.tab === this.tab);
       });
-      if (this.tab === 'history') await this.loadHistory(true);
-      if (this.tab === 'waste') await this.loadWaste(true);
-      if (this.tab === 'batches') await this.loadBatches(true);
-      if (this.tab === 'funding') await this.loadFunding(true);
-      if (this.tab === 'new') this.ensureCatalog().catch(() => {});
+      this.paintBody();
+      try {
+        if (this.tab === 'history') await this.loadHistory(true);
+        else if (this.tab === 'waste') await this.loadWaste(true);
+        else if (this.tab === 'batches') await this.loadBatches(true);
+        else if (this.tab === 'funding') await this.loadFunding(true);
+        else if (this.tab === 'new') await this.ensureCatalog().catch(() => []);
+      } catch (_) { /* paintBody shows error/empty states */ }
       this.paintBody();
     });
     window.addEventListener('portal-offline-flushed', (e) => {
@@ -618,17 +628,22 @@ const ExpenseApp = {
   },
 
   async bootstrap() {
+    this.closeBlockingOverlays();
     document.getElementById('exp-nav')?.classList.remove('hidden');
     this.view = 'main';
-    // Paint shell immediately — settings load in background
+    this._bootstrapping = true;
     this.render();
+    const bootTimeout = (p, ms) => Promise.race([
+      p,
+      new Promise((_, rej) => setTimeout(() => rej(new Error('Connection timed out — check signal and try again')), ms))
+    ]);
     try {
-      const [settings, categories, profile, units] = await Promise.all([
+      const [settings, categories, profile, units] = await bootTimeout(Promise.all([
         ExpenseAPI.settings().catch(() => this.settings),
         ExpenseAPI.categories().catch(() => ['other']),
         ExpenseAPI.profile().catch(() => this.user),
         ExpenseAPI.unitsList().catch(() => [])
-      ]);
+      ]), 28000);
       this.units = (units || []).map((u) => u.code || u).filter(Boolean);
       this.settings = settings || this.settings;
       this.categories = categories?.length ? categories : ['other'];
@@ -639,7 +654,7 @@ const ExpenseApp = {
       this.updateSyncBadge();
       if (this.tab === 'history') await this.loadHistory();
       if (this.tab === 'funding') await this.loadFunding();
-      this.paintBody();
+      if (this.tab === 'new') await this.ensureCatalog().catch(() => []);
     } catch (err) {
       this.token = '';
       this.user = null;
@@ -648,6 +663,9 @@ const ExpenseApp = {
       document.getElementById('exp-nav')?.classList.add('hidden');
       this.toast(err.message || 'Session expired', 'error');
       this.render();
+    } finally {
+      this._bootstrapping = false;
+      if (this.view === 'main') this.paintBody();
     }
   },
 
@@ -679,12 +697,41 @@ const ExpenseApp = {
   render() {
     const app = document.getElementById('exp-nav');
     if (this.view === 'main') app?.classList.remove('hidden');
-    else app?.classList.add('hidden');
+    else {
+      app?.classList.add('hidden');
+      this.closeBlockingOverlays();
+    }
     const root = document.getElementById('app');
     if (!root) return;
     root.innerHTML = this.view === 'login' ? this.renderLogin() : this.renderShell();
-    if (this.view === 'login') this.bindLogin();
-    else {
+    if (this.view === 'login') {
+      this.bindLogin();
+      if (this._grantFlow?.username) {
+        const card = document.getElementById('epg-root');
+        if (card) {
+          card.innerHTML = ExpensePermissionGrant.render(this._grantFlow.username);
+          const grantUser = this._grantFlow.username;
+          const grantPass = this._grantFlow.password;
+          ExpensePermissionGrant.bind(
+            card,
+            grantUser,
+            grantPass,
+            async (res) => {
+              this._grantFlow = null;
+              this.startSession(res);
+              this.view = 'main';
+              this.tab = 'new';
+              await this.bootstrap();
+              this.toast(`Permission granted — welcome, ${res.user?.full_name || grantUser}`);
+            },
+            () => {
+              this._grantFlow = null;
+              this.render();
+            }
+          );
+        }
+      }
+    } else {
       this.syncOwnerNav();
       this.bindMain();
     }
@@ -756,6 +803,9 @@ const ExpenseApp = {
   },
 
   renderBody() {
+    if (this._bootstrapping) {
+      return `<div class="empty"><div class="ico">⏳</div><p>Opening expenses…</p></div>`;
+    }
     if (this.tab === 'history' && this.historyDetail) return this.renderDetail(this.historyDetail);
     if (this.tab === 'history') return this.renderHistory();
     if (this.tab === 'profile') return this.renderProfile();
