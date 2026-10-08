@@ -429,10 +429,14 @@ const POSPage = {
   async loadDeliveryFee() {
     try {
       const branchId = this.app?.user?.branch_id || this.app?.settings?.branch_id || 1;
-      const settings = await API.getDeliveryBranchSettings(branchId, this.app?.user);
+      const settings = typeof API.getPosDeliveryPlaces === 'function'
+        ? await API.getPosDeliveryPlaces(branchId)
+        : await API.getDeliveryBranchSettings(branchId, this.app?.user);
+      if (settings?.success === false) throw new Error(settings.error || 'Could not load delivery places');
       const data = settings?.data ?? settings ?? {};
       const places = Array.isArray(data.places) ? data.places : (Array.isArray(data.zones) ? data.zones : []);
       this.deliveryPlaces = places;
+      this._deliveryPlacesError = null;
       this.deliverySettings = {
         delivery_fee: Number(data.delivery_fee) || 0,
         free_delivery_above: Number(data.free_delivery_above) || 0,
@@ -441,7 +445,9 @@ const POSPage = {
       };
       this.recalcDeliveryFee();
       this.renderCart?.();
-    } catch (_) {
+    } catch (err) {
+      console.warn('[POS] delivery places:', err?.message || err);
+      this._deliveryPlacesError = err?.message || 'Could not load delivery places';
       this.deliverySettings = { delivery_fee: 0, free_delivery_above: 0, min_order: 0, places: [] };
       this.deliveryPlaces = [];
       this.deliveryFee = 0;
@@ -764,7 +770,12 @@ const POSPage = {
         <span class="pos-target-pct ${met ? 'met' : ''}">${pct}%${met ? ' ✓ Met' : ''}</span>`
       : '';
     const productText = productActive
-      ? `Products: <strong>${prodSold}</strong>/${prodTarget} · ${Utils.formatMoney(prodValSold, currency)} / ${Utils.formatMoney(prodValTarget, currency)}`
+      ? `${progress.products.map((p) => {
+        const sold = Number(p.sold_qty) || 0;
+        const target = Number(p.target_qty) || 0;
+        const done = target > 0 && sold >= target;
+        return `<span class="pos-target-prod${done ? ' met' : ''}" style="white-space:nowrap">${Utils.escHtml(p.product_name || `#${p.product_id}`)}: <strong>${sold}</strong>/${target}${done ? ' ✓' : ''}</span>`;
+      }).join(' · ')}${progress.products.length > 1 ? ` · <span style="white-space:nowrap">All products: <strong>${prodSold}</strong>/${prodTarget} (${Utils.formatMoney(prodValSold, currency)} / ${Utils.formatMoney(prodValTarget, currency)})</span>` : ''}`
       : '';
     targetBanner.style.display = 'block';
     targetBanner.classList.remove('hidden');
@@ -1357,7 +1368,7 @@ const POSPage = {
               </div>
               <div class="pos-customer-row">
                 <div class="pos-customer-wrap">
-                  <input type="search" id="pos-customer-search" placeholder="Customer name or phone…" autocomplete="off">
+                  <input type="search" id="pos-customer-search" placeholder="Find customer — phone or name…" autocomplete="off">
                   <div id="pos-customer-dropdown" class="search-dropdown hidden"></div>
                 </div>
                 <button type="button" class="pos-till-btn ghost sm" id="pos-clear-customer" title="Clear customer" style="display:none">Clear</button>
@@ -1386,6 +1397,10 @@ const POSPage = {
               <button type="button" class="pos-action-chip" id="pos-quote" title="Save cart as quote">
                 <span class="pos-action-chip-icon"><svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6M16 13H8M16 17H8M10 9H8"/></svg></span>
                 <span class="pos-action-chip-label">Quote</span>
+              </button>
+              <button type="button" class="pos-action-chip pos-action-chip--warn" id="pos-backdated" title="Missed / backdated order">
+                <span class="pos-action-chip-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span>
+                <span class="pos-action-chip-label">Missed</span>
               </button>
               <button type="button" class="pos-action-chip pos-action-chip--danger" id="pos-void" title="Void sale">
                 <span class="pos-action-chip-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M15 9l-6 6M9 9l6 6"/></svg></span>
@@ -1668,8 +1683,8 @@ const POSPage = {
       } else {
         dropdown.innerHTML = list.slice(0, 12).map(c =>
           `<div class="search-item" data-id="${c.id}" style="padding:10px;cursor:pointer;border-bottom:1px solid var(--border)">
-            <strong>${Utils.escHtml(c.name)}</strong>${c.phone ? `<br><small>${Utils.escHtml(c.phone)}</small>` : ''}
-            ${c.loyalty_points > 0 ? `<br><small style="color:var(--primary)">⭐ ${c.loyalty_points} points</small>` : ''}
+            <strong>${Utils.escHtml(c.name)}</strong> <small class="muted">#${c.id}</small>${c.phone ? `<br><small>${Utils.escHtml(c.phone)}</small>` : ''}
+            <br><small style="color:var(--primary)">⭐ ${Math.floor(Number(c.loyalty_points) || 0)} points</small>
             ${c.balance > 0 ? `<br><small class="muted">Owes ${Utils.formatMoney(c.balance, this.app.settings?.currency)}</small>` : ''}
           </div>`).join('');
         dropdown.querySelectorAll('[data-id]').forEach(el => {
@@ -1821,6 +1836,130 @@ const POSPage = {
     }
     this._invalidateProductGridCache();
     this.updateProductStockDisplay?.();
+  },
+
+  makeSaleClientRequestId() {
+    try {
+      if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+    } catch (_) { /* ignore */ }
+    return `pos-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+  },
+
+  updateSuccessReceiptDisplay(sale) {
+    const receiptEl = document.getElementById('pos-success-screen')?.querySelector('#pos-success-receipt');
+    if (receiptEl && sale) {
+      receiptEl.textContent = `${sale.order_number || sale.receipt_number || '—'}`;
+    }
+    if (this.lastSale && sale) {
+      this.lastSale = { ...this.lastSale, ...sale, _pendingCommit: false };
+    }
+  },
+
+  beginInstantCheckoutUi({ change, payments, loyaltyRedeem, loyaltyDiscount }) {
+    const cartSnapshot = (this.cart || []).map((i) => ({ ...i }));
+    const giftCardPayment = (payments || []).find((p) => (p.type || p.payment_type) === 'giftcard' && p.gift_card_code);
+    this._instantCheckoutSnapshot = {
+      cart: cartSnapshot,
+      discount: this.discount,
+      discountVoucherCode: this.discountVoucherCode,
+      discountApprover: this.discountApprover,
+      discountManagerPin: this.discountManagerPin,
+      orderType: this.orderType,
+      selectedTable: this.selectedTable ? { ...this.selectedTable } : null,
+      deliveryAddress: this.deliveryAddress,
+      deliveryPlace: this.deliveryPlace ? { ...this.deliveryPlace } : null,
+      deliveryFee: this.deliveryFee,
+      selectedCustomer: this.selectedCustomer ? { ...this.selectedCustomer } : null,
+      loadedQuoteId: this.loadedQuoteId,
+      backdatedMode: this.backdatedMode,
+      referralCleared: this.referralCleared,
+      totals: { ...(this.totals || {}) }
+    };
+    const optimisticSale = {
+      _pendingCommit: true,
+      id: null,
+      receipt_number: '…',
+      order_number: '…',
+      total: this.totals?.total,
+      subtotal: this.totals?.subtotal,
+      discount: this.totals?.discount,
+      tax_amount: this.totals?.tax_amount,
+      amount_paid: (payments || []).reduce((s, p) => s + (Number(p.amount) || 0), 0),
+      change_amount: change,
+      order_type: this.orderType,
+      table_name: this.selectedTable?.name,
+      delivery_address: this.orderType === 'delivery' ? (this.deliveryAddress || null) : null,
+      customer_id: this.selectedCustomer?.id || null,
+      customer_name: this.selectedCustomer?.name || this.selectedCustomer?.full_name || null,
+      customer_phone: this.selectedCustomer?.phone || null,
+      items: cartSnapshot.map((i) => ({
+        product_id: i.product_id,
+        product_name: i.product_name,
+        quantity: i.quantity,
+        unit_price: i.unit_price,
+        total: i.total,
+        has_recipe: !!(i.has_recipe || i.item_type === 'restaurant'),
+        item_type: i.item_type || null,
+        modifiers_text: i.modifiers_text || null
+      })),
+      payments: (payments || []).map((p) => ({
+        payment_type: p.type || p.payment_type || 'cash',
+        amount: p.amount
+      }))
+    };
+    this.applyLocalSaleStockDeduction(this.cart);
+    this.lastSale = optimisticSale;
+    this.lastSaleCustomer = this.selectedCustomer ? { ...this.selectedCustomer } : null;
+    this.lastSaleGiftCardCode = giftCardPayment?.gift_card_code || null;
+    this.lastSaleGiftCardAmount = Number(giftCardPayment?.amount) || 0;
+    this.cart = [];
+    this.discount = 0;
+    this.discountVoucherCode = null;
+    this.discountApprover = null;
+    this.discountManagerPin = null;
+    this.clearBackdatedMode();
+    this.orderType = null;
+    this.selectedTable = null;
+    this.updateTableLabel?.();
+    this.selectedCustomer = null;
+    this.clearCustomer?.();
+    this.deliveryAddress = null;
+    this.loadedQuoteId = null;
+    this.renderCart?.();
+    this.renderProducts?.();
+    this.showOrderSuccess(
+      optimisticSale,
+      change,
+      payments,
+      0,
+      loyaltyRedeem || 0,
+      loyaltyDiscount || 0,
+      this.lastSaleCustomer
+    );
+  },
+
+  revertInstantCheckoutUi() {
+    const snap = this._instantCheckoutSnapshot;
+    if (!snap) return;
+    this._instantCheckoutSnapshot = null;
+    this.resetPosSaleUi({ dismissSuccess: true });
+    this.cart = snap.cart;
+    this.discount = snap.discount;
+    this.discountVoucherCode = snap.discountVoucherCode;
+    this.discountApprover = snap.discountApprover;
+    this.discountManagerPin = snap.discountManagerPin;
+    this.orderType = snap.orderType;
+    this.selectedTable = snap.selectedTable;
+    this.deliveryAddress = snap.deliveryAddress;
+    this.deliveryPlace = snap.deliveryPlace;
+    this.deliveryFee = snap.deliveryFee;
+    this.selectedCustomer = snap.selectedCustomer;
+    this.loadedQuoteId = snap.loadedQuoteId;
+    this.backdatedMode = snap.backdatedMode;
+    this.referralCleared = snap.referralCleared;
+    if (snap.selectedCustomer) this.selectCustomer?.(snap.selectedCustomer);
+    this.renderCart?.();
+    this.renderProducts?.();
   },
 
   allowOversell() {
@@ -2903,18 +3042,25 @@ const POSPage = {
       row.classList.add('hidden');
       return;
     }
-    const pts = Utils.loyaltyPreviewPoints(total, this.app.settings);
+    const loyaltyBase = Math.max(0, (Number(total) || 0) - (Number(this.totals?.delivery_fee) || 0));
+    const pts = Utils.loyaltyPreviewPoints(loyaltyBase, this.app.settings);
     const balance = Math.floor(this.selectedCustomer.loyalty_points || 0);
     const worth = Utils.loyaltyPointsValue(balance, this.app.settings, currency);
-    const maxRedeem = Utils.loyaltyMaxRedeemPoints(total, balance, this.app.settings);
+    const maxRedeem = this.hasReferralCode() ? 0 : Utils.loyaltyMaxRedeemPoints(loyaltyBase, balance, this.app.settings);
     row.classList.remove('hidden');
     if (val) {
       val.textContent = `${this.selectedCustomer.name} · ${balance} pts (${worth.formatted})`;
     }
     valueEl.innerHTML = maxRedeem > 0
       ? `Earn +${pts} · redeem up to ${maxRedeem} pts`
-      : `Earn +${pts}`;
+      : this.hasReferralCode() && balance > 0
+        ? `Earn +${pts} · no redeeming with a referral code`
+        : `Earn +${pts}`;
     valueEl.style.color = 'var(--primary)';
+  },
+
+  hasReferralCode() {
+    return !!(document.getElementById('pos-referral-code')?.value || '').trim();
   },
 
   toggleScanMode(force) {
@@ -3321,6 +3467,13 @@ const POSPage = {
     document.getElementById('pos-kitchen-display').addEventListener('click', () => this.openKitchenDisplay());
     document.getElementById('pos-customer-display')?.addEventListener('click', () => this.openCustomerDisplay());
     document.getElementById('pos-void').addEventListener('click', () => this.showVoidSale());
+    document.getElementById('pos-backdated')?.addEventListener('click', () => this.startBackdatedOrder());
+    const bdBtn = document.getElementById('pos-backdated');
+    if (bdBtn) {
+      const canReq = Utils.hasPermission(this.app.user, 'request_backdated_order')
+        || Utils.hasPermission(this.app.user, 'authorize_backdated_order');
+      bdBtn.style.display = canReq ? '' : 'none';
+    }
     document.getElementById('pos-refund')?.addEventListener('click', () => {
       const receipt = this.lastSale?.receipt_number || '';
       if (window.ReturnsPage?.showReturnForm) {
@@ -3376,10 +3529,12 @@ const POSPage = {
     let timer = null;
     this.referralCleared = false;
     const hide = () => drop?.classList.add('hidden');
+    const refreshLoyalty = () => this.updateLoyaltyDisplay(Number(this.totals?.total) || 0);
     const clearReferral = async () => {
       input.value = '';
       this.referralCleared = true;
       hide();
+      refreshLoyalty();
       if (hint) hint.textContent = 'Referral removed from this order — customer account kept';
       // Do NOT clear sticky customer→agent attribution globally — only this order
     };
@@ -3393,6 +3548,7 @@ const POSPage = {
       this.referralCleared = false;
       if (hint) hint.textContent = row.agent_name ? `Order under: ${row.agent_name}` : '';
       hide();
+      refreshLoyalty();
     };
     const run = async () => {
       const q = String(input.value || '').trim();
@@ -3436,6 +3592,7 @@ const POSPage = {
     };
     input.addEventListener('input', () => {
       clearTimeout(timer);
+      refreshLoyalty();
       if (!String(input.value || '').trim()) {
         this.referralCleared = true;
         if (hint) hint.textContent = 'Referral removed from this order — customer account kept';
@@ -4006,6 +4163,14 @@ const POSPage = {
       ${targetHtml}
       ${dropsHtml}
       <p><strong>Shift sales:</strong> ${Utils.formatMoney(preview.totalSales, currency)} (${preview.saleCount || 0} orders)</p>
+      <div class="co-expected" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin:8px 0 12px">
+        ${[['cash', preview.expectedCash], ['eft', preview.expectedPayments.eft || 0], ['card', preview.expectedPayments.card || 0]]
+          .concat(['mobile', 'account', 'giftcard', 'other'].filter(m => (preview.expectedPayments[m] || 0) > 0).map(m => [m, preview.expectedPayments[m]]))
+          .map(([m, v]) => `<div style="padding:8px 10px;border:1px solid var(--border,#e5e7eb);border-radius:8px">
+            <div class="muted" style="font-size:12px">Expected ${Utils.escHtml(labels[m] || m)}</div>
+            <div style="font-size:18px;font-weight:700">${Utils.formatMoney(v || 0, currency)}</div></div>`).join('')}
+      </div>
+      <p class="muted" style="margin:0 0 6px;font-size:12px">Enter what you actually counted for each method below.</p>
       <div class="form-grid">${paymentRows}</div>
       <div id="co-summary" class="muted" style="margin-top:8px;font-size:13px"></div>
       <div class="field"><label>Notes (optional)</label><input id="co-notes"></div>`,
@@ -4157,7 +4322,7 @@ const POSPage = {
         <button type="button" class="btn btn-ghost btn-sm" id="pos-sales-today-btn" ${isToday ? 'disabled' : ''}>Today</button>
         <button type="button" class="btn btn-primary btn-sm" id="pos-sales-refresh">Show</button>
       </div>
-      <p class="muted" style="margin:0 0 12px">Counter sales only. Tap a sale to reprint or <strong>Send Receipt</strong> on WhatsApp (same as after checkout).</p>
+      <p class="muted" style="margin:0 0 12px">Counter sales only (by sale date). Backdated orders appear on the day they were sold. Tap a sale for full details, print, PDF, or send.</p>
       <div style="max-height:420px;overflow:auto">
         ${rows.length ? rows.map((s) => {
           const otype = ({ delivery: 'Delivery', takeaway: 'Takeaway', sit_in: 'Sit-in', online: 'Online' })[s.order_type] || s.order_type || 'Walk-in';
@@ -4166,10 +4331,12 @@ const POSPage = {
           const feeNote = s.order_type === 'delivery'
             ? (fee > 0 ? ` · Delivery ${Utils.formatMoney(fee, currency)}${place}` : ` · Delivery free${place}`)
             : '';
-          const time = String(s.created_at || '').slice(11, 16) || '—';
+          const bizAt = Utils.saleBusinessAt?.(s) || s.sale_datetime || s.created_at || '';
+          const time = String(bizAt).replace('T', ' ').slice(11, 16) || '—';
+          const bd = Number(s.is_backdated) ? ' <span style="font-size:10px;font-weight:700;color:#b45309;background:#fef3c7;padding:1px 6px;border-radius:999px">Backdated</span>' : '';
           return `<button type="button" class="list-row pos-sale-open" data-id="${s.id}" style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 0;border:0;border-bottom:1px solid var(--border);background:transparent;width:100%;text-align:left;cursor:pointer;color:inherit;font:inherit">
           <div style="min-width:0">
-            <strong>${Utils.escHtml(s.order_number || s.receipt_number || `#${s.id}`)}</strong>
+            <strong>${Utils.escHtml(s.order_number || s.receipt_number || `#${s.id}`)}</strong>${bd}
             ${['void', 'voided'].includes(String(s.status || '').toLowerCase())
               ? '<span style="margin-left:6px;font-size:11px;font-weight:700;color:#b91c1c;background:#fee2e2;padding:2px 6px;border-radius:999px">VOIDED</span>'
               : ''}
@@ -4178,7 +4345,7 @@ const POSPage = {
           </div>
           <div style="text-align:right;white-space:nowrap">
             <div style="font-weight:700;${['void', 'voided'].includes(String(s.status || '').toLowerCase()) ? 'text-decoration:line-through;opacity:.7' : ''}">${Utils.formatMoney(s.total, currency)}</div>
-            <div class="muted" style="font-size:11px;margin-top:4px">${['void', 'voided'].includes(String(s.status || '').toLowerCase()) ? (s.void_reason || 'Voided') : 'Tap → Send receipt'}</div>
+            <div class="muted" style="font-size:11px;margin-top:4px">${['void', 'voided'].includes(String(s.status || '').toLowerCase()) ? (s.void_reason || 'Voided') : 'Tap → full slip'}</div>
           </div>
         </button>`;
         }).join('') : `<p class="muted">${Utils.escHtml(emptyMsg)}</p>`}
@@ -4220,19 +4387,44 @@ const POSPage = {
     }
 
     const otype = ({ delivery: 'Delivery', takeaway: 'Takeaway', sit_in: 'Sit-in', online: 'Online' })[sale.order_type] || sale.order_type || 'Walk-in';
-    const items = (sale.items || []).map((i) =>
-      `${i.quantity}× ${Utils.escHtml(Receipt.itemLabel?.(i) || i.product_name || i.name || 'Item')}`
-    ).join('<br>') || Utils.escHtml(sale.item_summary || '—');
-    const time = String(sale.created_at || '').replace('T', ' ').slice(0, 16);
+    const bizAt = Utils.saleBusinessAt?.(sale) || sale.sale_datetime || sale.created_at;
+    const isBd = Number(sale.is_backdated);
+    const itemsRows = (sale.items || []).map((i) =>
+      `<tr><td>${Utils.escHtml(Receipt.itemLabel?.(i) || i.product_name || i.name || 'Item')}</td>
+        <td align="right">${i.quantity}</td>
+        <td align="right">${Utils.formatMoney(i.unit_price, currency)}</td>
+        <td align="right">${Utils.formatMoney(i.total, currency)}</td></tr>`
+    ).join('') || `<tr><td colspan="4" class="muted">${Utils.escHtml(sale.item_summary || '—')}</td></tr>`;
+    const payments = (sale.payments || []).map((p) =>
+      `${Utils.paymentLabels?.[p.payment_type] || p.payment_type}: ${Utils.formatMoney(p.amount, currency)}`
+    ).join(' · ') || '—';
 
     Utils.showModal(`Receipt #${sale.receipt_number || sale.order_number || sale.id}`, `
-      <p class="muted" style="margin:0 0 8px">${Utils.escHtml(time)} · ${Utils.escHtml(otype)} · ${Utils.escHtml(sale.cashier_name || sale.customer_name || '—')}</p>
-      <p style="font-size:22px;font-weight:700;margin:0 0 12px">${Utils.formatMoney(sale.total, currency)}</p>
-      <div class="muted" style="font-size:13px;margin-bottom:16px;line-height:1.45">${items}</div>
+      ${isBd ? `<p style="margin:0 0 8px;padding:6px 10px;background:#fef3c7;border:1px solid #f59e0b;border-radius:6px;color:#78350f;font-size:0.82rem">⏱ Backdated — sale <strong>${Utils.formatDateTime(bizAt)}</strong>${sale.created_at ? ` · entered ${Utils.formatDateTime(sale.created_at)}` : ''}</p>` : ''}
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 12px;margin-bottom:12px;font-size:13px">
+        <div><strong>Order #</strong><br>${Utils.escHtml(sale.order_number || '—')}</div>
+        <div><strong>Receipt</strong><br>${Utils.escHtml(sale.receipt_number || '—')}</div>
+        <div><strong>Sale date</strong><br>${Utils.formatDateTime(bizAt)}</div>
+        <div><strong>Cashier</strong><br>${Utils.escHtml(sale.cashier_name || '—')}</div>
+        <div><strong>Customer</strong><br>${Utils.escHtml(sale.customer_name || 'Walk-in')}${sale.customer_phone ? ` · ${Utils.escHtml(sale.customer_phone)}` : ''}</div>
+        <div><strong>Type</strong><br>${Utils.escHtml(otype)}${sale.table_name ? ` · ${Utils.escHtml(sale.table_name)}` : ''}</div>
+        ${sale.delivery_address ? `<div style="grid-column:1/-1"><strong>Delivery</strong><br>${Utils.escHtml(sale.delivery_address)}</div>` : ''}
+        <div><strong>Status</strong><br>${Utils.escHtml(sale.status || 'completed')}</div>
+        ${sale.notes || sale.backdated_reason ? `<div style="grid-column:1/-1"><strong>Notes</strong><br>${Utils.escHtml(sale.backdated_reason || sale.notes || '')}</div>` : ''}
+      </div>
+      <table style="width:100%;font-size:13px;margin-bottom:10px"><thead><tr><th align="left">Item</th><th align="right">Qty</th><th align="right">Price</th><th align="right">Total</th></tr></thead>
+        <tbody>${itemsRows}</tbody></table>
+      <div style="font-size:13px;margin-bottom:14px;line-height:1.45">
+        <div>Subtotal: ${Utils.formatMoney(sale.subtotal, currency)}</div>
+        ${Number(sale.discount) ? `<div>Discount: ${Utils.formatMoney(sale.discount, currency)}</div>` : ''}
+        ${Number(sale.tax_amount) ? `<div>Tax: ${Utils.formatMoney(sale.tax_amount, currency)}</div>` : ''}
+        <div style="font-size:20px;font-weight:800;margin-top:4px">Total: ${Utils.formatMoney(sale.total, currency)}</div>
+        <div class="muted">Paid ${Utils.formatMoney(sale.amount_paid, currency)} · ${Utils.escHtml(payments)}</div>
+      </div>
       <div style="display:flex;flex-direction:column;gap:8px">
-        <button type="button" class="btn btn-primary btn-lg" id="pos-sale-act-wa">💬 Send Receipt on WhatsApp</button>
-        <button type="button" class="btn btn-ghost btn-lg" id="pos-sale-act-review">⭐ Request Review</button>
-        <button type="button" class="btn btn-ghost btn-lg" id="pos-sale-act-print">🖨️ Print Receipt</button>
+        <button type="button" class="btn btn-primary btn-lg" id="pos-sale-act-print">🖨️ Print Receipt</button>
+        <button type="button" class="btn btn-ghost btn-lg" id="pos-sale-act-pdf">📄 Save PDF</button>
+        <button type="button" class="btn btn-ghost btn-lg" id="pos-sale-act-wa">💬 Send Receipt</button>
       </div>
     `, `<button class="btn btn-ghost" id="pos-sale-act-back">← Back to list</button>`);
 
@@ -4256,11 +4448,14 @@ const POSPage = {
       });
     };
     runBtn('pos-sale-act-wa', () => this.resendSaleWhatsApp(sale.id), 'Sending…');
-    runBtn('pos-sale-act-review', () => this.resendSaleReview(sale.id), 'Opening…');
     runBtn('pos-sale-act-print', async () => {
       await Receipt.print(sale, this.app.settings);
       Utils.toast('Sent to printer', 'success');
     }, 'Printing…');
+    runBtn('pos-sale-act-pdf', async () => {
+      await Receipt.downloadPdf(sale, this.app.settings);
+      Utils.toast('PDF saved', 'success');
+    }, 'Saving…');
   },
 
   async resendSaleWhatsApp(saleId) {
@@ -4509,6 +4704,92 @@ const POSPage = {
       document.getElementById('sale-mgr-pin')?.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') document.getElementById('sale-mgr-ok')?.click();
       });
+    });
+  },
+
+  clearBackdatedMode() {
+    this.backdatedMode = null;
+    const banner = document.getElementById('pos-backdated-banner');
+    if (banner) banner.remove();
+    document.querySelector('.pos-till')?.classList.remove('has-backdated-banner');
+  },
+
+  startBackdatedOrder() {
+    if (!Utils.hasPermission(this.app.user, 'request_backdated_order')
+      && !Utils.hasPermission(this.app.user, 'authorize_backdated_order')) {
+      return Utils.toast('You do not have permission to request a backdated order', 'error');
+    }
+    const today = new Date().toLocaleDateString('en-CA');
+    const nowT = new Date().toTimeString().slice(0, 5);
+    Utils.showModal('Missed / Backdated Order', `
+      <div class="bd-modal-compact">
+        <p class="bd-modal-hint">Record against a previous date/time. Manager auth required at Pay.</p>
+        <div class="bd-modal-grid">
+          <div class="field"><label>Date</label><input type="date" id="bd-date" max="${today}" value="${today}"></div>
+          <div class="field"><label>Time</label><input type="time" id="bd-time" value="${nowT}"></div>
+        </div>
+        <div class="field" style="margin-bottom:0"><label>Reason</label>
+          <input type="text" id="bd-reason" placeholder="e.g. Network down, forgot to ring…" maxlength="200"></div>
+      </div>`,
+      '<button class="btn btn-primary" id="bd-continue">Continue</button><button class="btn btn-ghost" id="bd-cancel">Cancel</button>',
+      { compact: true });
+    document.getElementById('bd-cancel')?.addEventListener('click', () => Utils.hideModal());
+    document.getElementById('bd-continue')?.addEventListener('click', () => {
+      const date = document.getElementById('bd-date')?.value;
+      const time = document.getElementById('bd-time')?.value;
+      const reason = (document.getElementById('bd-reason')?.value || '').trim();
+      if (!date || !time) return Utils.toast('Enter original sale date and time', 'error');
+      if (reason.length < 3) return Utils.toast('Enter a reason for the missed order', 'error');
+      const saleDatetime = `${date}T${time}:00`;
+      if (new Date(saleDatetime).getTime() > Date.now() + 60_000) {
+        return Utils.toast('Sale time cannot be in the future', 'error');
+      }
+      this.backdatedMode = { sale_datetime: saleDatetime, reason };
+      Utils.hideModal();
+      let banner = document.getElementById('pos-backdated-banner');
+      const till = document.querySelector('.pos-till');
+      if (!banner) {
+        banner = document.createElement('div');
+        banner.id = 'pos-backdated-banner';
+        banner.className = 'pos-backdated-banner';
+        if (till) {
+          till.prepend(banner);
+          till.classList.add('has-backdated-banner');
+        } else {
+          const host = document.querySelector('.pos-layout');
+          if (host) host.prepend(banner);
+          else document.body.prepend(banner);
+        }
+      } else {
+        till?.classList.add('has-backdated-banner');
+      }
+      banner.innerHTML = `<span class="pos-backdated-banner-text">⏱ Backdated <strong>${Utils.escHtml(date)} ${Utils.escHtml(time)}</strong> — add items, then Pay</span>
+        <button type="button" class="pos-backdated-banner-cancel" id="bd-cancel-mode" title="Cancel backdated mode">✕</button>`;
+      document.getElementById('bd-cancel-mode')?.addEventListener('click', () => {
+        this.clearBackdatedMode();
+        Utils.toast('Backdated mode cancelled');
+      });
+      Utils.toast('Backdated mode on — add products and complete payment');
+    });
+  },
+
+  async promptBackdatedAuth(message) {
+    const canSelf = Utils.hasPermission(this.app.user, 'authorize_backdated_order');
+    return new Promise((resolve) => {
+      Utils.showModal('Authorize Backdated Order', `
+        <p class="muted">${message || 'Manager authorization required to finalize this backdated order.'}</p>
+        ${canSelf ? '<p class="muted" style="font-size:0.85rem">As a manager you may leave PIN blank to self-authorize (audit logged).</p>' : '<p class="muted" style="font-size:0.85rem;color:#b45309">A different manager must enter their PIN — you cannot authorize your own order.</p>'}
+        <div class="field"><label>Authorization PIN</label>
+          <input type="password" id="bd-auth-pin" maxlength="12" inputmode="numeric" autofocus placeholder="${canSelf ? 'Optional for managers' : 'Manager PIN'}"></div>`,
+        `<button class="btn btn-primary" id="bd-auth-ok">${canSelf ? 'Authorize / Continue' : 'Authorize'}</button>
+         <button class="btn btn-ghost" id="bd-auth-cancel">Cancel</button>`);
+      const done = (val) => { Utils.hideModal(); resolve(val); };
+      document.getElementById('bd-auth-ok')?.addEventListener('click', () => {
+        const pin = document.getElementById('bd-auth-pin')?.value?.trim() || '';
+        if (!canSelf && !pin) return Utils.toast('Manager PIN required', 'error');
+        done(pin || null);
+      });
+      document.getElementById('bd-auth-cancel')?.addEventListener('click', () => done(undefined));
     });
   },
 
@@ -4895,52 +5176,87 @@ const POSPage = {
         Utils.hideModal();
         return Utils.toast('No occupied tables', 'success');
       }
-      Utils.showModal('Mark Table Available', `
-      <p class="muted" style="margin-bottom:10px">When guests leave, mark the table available for the next sit-in.</p>
+      Utils.showModal('Mark Tables Available', `
+      <p class="muted" style="margin-bottom:10px">Tap each table the guests have left — the window stays open so you can free several tables. Or free them all at once.</p>
       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px">
         ${tables.map((t) => `<button type="button" class="btn btn-warning pos-free-opt" data-id="${t.id}" data-name="${Utils.escHtml(t.table_number)}"
           style="padding:14px">
           ${Utils.escHtml(t.table_number)}<br><small>occupied — free now</small></button>`).join('')}
       </div>`,
-      '<button class="btn btn-ghost" id="free-table-close">Close</button>');
+      `<button type="button" class="btn btn-warning" id="free-table-all">Free all (${tables.length})</button>
+       <button type="button" class="btn btn-ghost" id="free-table-close">Done</button>`);
       document.getElementById('free-table-close')?.addEventListener('click', Utils.hideModal);
-      document.querySelectorAll('.pos-free-opt').forEach((btn) => btn.addEventListener('click', async () => {
+      const freeOne = async (btn) => {
+        if (btn.dataset.freed === '1' || btn.dataset.busy === '1') return true;
         const id = parseInt(btn.dataset.id, 10);
         const name = btn.dataset.name;
+        btn.dataset.busy = '1';
         btn.disabled = true;
         btn.innerHTML = `${Utils.escHtml(name)}<br><small>Freeing…</small>`;
-        // Optimistic: mark free in cache immediately
-        if (Array.isArray(this._tablesCache)) {
-          this._tablesCache = this._tablesCache.map((t) =>
-            Number(t.id) === id ? { ...t, status: 'available', is_occupied: false, has_open_order: false } : t
-          );
-        }
+        const restore = () => {
+          btn.dataset.busy = '';
+          btn.disabled = false;
+          btn.innerHTML = `${Utils.escHtml(name)}<br><small>occupied — free now</small>`;
+        };
         try {
           const r = API.releaseTable
             ? await API.releaseTable(id, this.app.user)
             : await API.saveTable({ id, table_number: name, seats: 4, status: 'available', waiter_id: null }, this.app.user);
           if (!r?.success && r?.error) {
-            btn.disabled = false;
-            btn.innerHTML = `${Utils.escHtml(name)}<br><small>occupied — free now</small>`;
-            return Utils.toast(r.error || 'Could not free table', 'error');
+            restore();
+            Utils.toast(`${name}: ${r.error || 'Could not free table'}`, 'error');
+            return false;
           }
         } catch (err) {
-          btn.disabled = false;
-          btn.innerHTML = `${Utils.escHtml(name)}<br><small>occupied — free now</small>`;
-          return Utils.toast(err?.message || 'Could not free table', 'error');
+          restore();
+          Utils.toast(`${name}: ${err?.message || 'Could not free table'}`, 'error');
+          return false;
+        }
+        if (Array.isArray(this._tablesCache)) {
+          this._tablesCache = this._tablesCache.map((t) =>
+            Number(t.id) === id ? { ...t, status: 'available', is_occupied: false, has_open_order: false } : t
+          );
         }
         if (this.selectedTable?.id === id) {
           this.selectedTable = null;
           this.updateTableLabel();
         }
-        Utils.hideModal();
-        Utils.toast(`Table ${name} is now available`, 'success');
-        // Refresh cache quietly for next open
-        API.getTables?.().then((nr) => {
-          this._tablesCache = nr?.data || [];
-          this._tablesCacheAt = Date.now();
-        }).catch(() => {});
+        btn.dataset.busy = '';
+        btn.dataset.freed = '1';
+        btn.className = 'btn btn-ghost pos-free-opt';
+        btn.innerHTML = `${Utils.escHtml(name)}<br><small>available ✓</small>`;
+        return true;
+      };
+      const refreshCache = () => API.getTables?.().then((nr) => {
+        if (!nr?.data) return;
+        this._tablesCache = nr.data;
+        this._tablesCacheAt = Date.now();
+      }).catch(() => {});
+      const remaining = () => [...document.querySelectorAll('.pos-free-opt')].filter((b) => b.dataset.freed !== '1');
+      const updateAllBtn = () => {
+        const allBtn = document.getElementById('free-table-all');
+        if (!allBtn) return;
+        const n = remaining().length;
+        allBtn.textContent = n ? `Free all (${n})` : 'All tables free';
+        allBtn.disabled = !n;
+      };
+      document.querySelectorAll('.pos-free-opt').forEach((btn) => btn.addEventListener('click', async () => {
+        if (await freeOne(btn)) Utils.toast(`Table ${btn.dataset.name} is now available`, 'success');
+        updateAllBtn();
+        refreshCache();
       }));
+      document.getElementById('free-table-all')?.addEventListener('click', async (e) => {
+        const allBtn = e.currentTarget;
+        const todo = remaining();
+        if (!todo.length) return;
+        allBtn.disabled = true;
+        allBtn.textContent = 'Freeing…';
+        let ok = 0;
+        for (const b of todo) { if (await freeOne(b)) ok += 1; }
+        Utils.toast(`${ok} table${ok === 1 ? '' : 's'} now available`, ok === todo.length ? 'success' : 'error');
+        updateAllBtn();
+        refreshCache();
+      });
     };
 
     const cached = Array.isArray(this._tablesCache) ? this._tablesCache : [];
@@ -5109,7 +5425,11 @@ const POSPage = {
       this.deliveryPlace = this.deliverySettings || { delivery_fee: 0 };
       this.recalcDeliveryFee(gross);
       this.renderCart?.();
-      Utils.toast(`Delivery fee ${Utils.formatMoney(this.deliveryFee, cur)} added`, 'info');
+      if (this._deliveryPlacesError) {
+        Utils.toast(`Delivery places could not load (${this._deliveryPlacesError}) — flat fee used`, 'error');
+      } else {
+        Utils.toast(`Delivery fee ${Utils.formatMoney(this.deliveryFee, cur)} added`, 'info');
+      }
       onContinue();
       return;
     }
@@ -5208,6 +5528,9 @@ const POSPage = {
       taxRatePct: taxEnabled ? (Number(this.app.settings?.tax_rate) || 0) : 0,
       showTaxBreakdown: taxEnabled && (Number(this.totals?.tax_amount) || 0) > 0.009,
       gcBalancesRef: this._gcBalances,
+      loyaltyBlockedReason: this.hasReferralCode()
+        ? 'A referral code is on this order — loyalty points cannot be used together with a referral code. Clear the referral code to redeem points.'
+        : null,
       onAddCustomer: () => this.showAddCustomerModal(),
       onDismiss: releaseCheckout,
       onConfirm: async ({ payments, paid, change, loyaltyRedeem, loyaltyDiscount }) => {
@@ -5239,6 +5562,7 @@ const POSPage = {
           loyalty_redeem: loyaltyRedeem || 0,
           subtotal: this.totals.subtotal,
           discount: this.totals.discount,
+          discount_voucher_code: this.discount > 0 ? (this.discountVoucherCode || null) : null,
           discount_authorized: !!(this.discountApprover || (this.totals.discount > 0 && ['owner', 'manager'].includes(this.app.user?.role))),
           discount_approver_id: this.discountApprover?.id || null,
           discount_manager_pin: this.totals.discount > 0.02 ? this.discountManagerPin : null,
@@ -5271,13 +5595,70 @@ const POSPage = {
         if (saleData.order_type === 'delivery' && !saleData.delivery_address) {
           throw new Error('Delivery address is required');
         }
+
+        if (this.backdatedMode?.sale_datetime) {
+          saleData.backdated = true;
+          saleData.is_backdated = true;
+          saleData.sale_datetime = this.backdatedMode.sale_datetime;
+          saleData.backdated_reason = this.backdatedMode.reason;
+          const similar = await API.findSimilarSales({
+            sale_datetime: saleData.sale_datetime,
+            total: saleData.total,
+            branch_id: saleData.branch_id,
+            user_id: this.app.user?.id
+          }, this.app.user);
+          const sims = similar.success ? (similar.data || []) : (Array.isArray(similar) ? similar : []);
+          if (sims.length) {
+            const ok = window.confirm(
+              `A similar order already exists (${sims.length}). Please verify this is not a duplicate.\n\n` +
+              sims.slice(0, 3).map((s) => `#${s.receipt_number || s.id} · ${Utils.formatMoney(s.total, currency)} · ${s.cashier_name || ''}`).join('\n') +
+              '\n\nContinue anyway?'
+            );
+            if (!ok) throw new Error('Backdated order cancelled — possible duplicate');
+          }
+          const authPin = await this.promptBackdatedAuth(
+            'This order will be recorded against a previous date/time. Authorization is required.'
+          );
+          if (authPin === undefined) throw new Error('Authorization cancelled');
+          if (authPin) saleData.backdated_auth_pin = authPin;
+        }
+
         const sitInTableName = this.selectedTable?.name;
+        let useInstantCheckout = !this.backdatedMode?.sale_datetime;
+        if (useInstantCheckout) {
+          saleData.client_request_id = saleData.client_request_id || this.makeSaleClientRequestId();
+          this.beginInstantCheckoutUi({
+            change,
+            payments,
+            loyaltyRedeem,
+            loyaltyDiscount
+          });
+        }
         let res = await API.completeSale(saleData, this.app.user);
-        if (!res.success && /Manager PIN required/i.test(res.error || '')) {
+        if (!res.success && /Manager PIN required|authorization PIN|authorize your own|Invalid authorization/i.test(res.error || '')) {
+          if (useInstantCheckout) {
+            this.revertInstantCheckoutUi();
+            useInstantCheckout = false;
+          }
+          const pin = await this.promptBackdatedAuth(res.error);
+          if (pin === undefined) throw new Error(res.error || 'Authorization required');
+          if (pin) saleData.backdated_auth_pin = pin;
+          else saleData.manager_pin = await this.promptSaleManagerPin(res.error);
+          res = await API.completeSale(saleData, this.app.user);
+        }
+        if (!res.success && /Manager PIN required/i.test(res.error || '') && !saleData.backdated) {
+          if (useInstantCheckout) {
+            this.revertInstantCheckoutUi();
+            useInstantCheckout = false;
+          }
           const pin = await this.promptSaleManagerPin(res.error);
           if (!pin) throw new Error(res.error || 'Manager PIN required for this sale');
           saleData.manager_pin = pin;
           res = await API.completeSale(saleData, this.app.user);
+        }
+        if (!res.success && useInstantCheckout) {
+          this.revertInstantCheckoutUi();
+          useInstantCheckout = false;
         }
         if (res.offlineQueued) {
           // Treat as accepted till-side: cart must clear so cashier cannot Pay again (duplicate).
@@ -5317,8 +5698,10 @@ const POSPage = {
           this.lastSaleGiftCardAmount = Number(giftCardPayment?.amount) || 0;
           this.cart = [];
           this.discount = 0;
+          this.discountVoucherCode = null;
           this.discountApprover = null;
           this.discountManagerPin = null;
+          this.clearBackdatedMode();
           this.orderType = null;
           this.selectedTable = null;
           this.updateTableLabel?.();
@@ -5354,74 +5737,100 @@ const POSPage = {
         const loyaltyBalanceAfter = res.data?.loyaltyBalanceAfter;
         const customerReward = res.data?.customerReward || null;
         if (!sale || !sale.receipt_number) throw new Error('Sale completed but receipt data missing');
-        if (this.loadedQuoteId) {
-          const qid = this.loadedQuoteId;
-          let marked = false;
-          for (let attempt = 0; attempt < 3 && !marked; attempt++) {
-            try {
-              const m = await API.markQuoteConverted(qid, saleId, this.app.user);
-              marked = !!(m && m.success !== false);
-            } catch (_) { /* retry */ }
-          }
-          if (!marked) {
-            Utils.toast('Sale saved, but quote was not marked sold — check Quotes', 'warning');
-          }
-          this.loadedQuoteId = null;
-          if (this.quoteTab === 'saved' || this.quoteTab === 'history') {
-            await this.renderSavedQuotesPanel(this.quoteTab === 'history');
-          }
-          this.updatePosBadges();
-        }
-        Utils.forceHideModal();
-        // Carry meal flags from cart so success screen can offer Send Recipe
         const cartRecipeMap = new Map(
-          (this.cart || []).map((i) => [String(i.product_id), !!(i.has_recipe || i.item_type === 'restaurant')])
+          (this._instantCheckoutSnapshot?.cart || this.cart || []).map((i) => [
+            String(i.product_id),
+            !!(i.has_recipe || i.item_type === 'restaurant')
+          ])
         );
         if (Array.isArray(sale.items)) {
           sale.items = sale.items.map((it) => ({
             ...it,
             has_recipe: !!(it.has_recipe || cartRecipeMap.get(String(it.product_id)) || it.item_type === 'restaurant')
           }));
-        } else if (this.cart?.length) {
-          sale.items = this.cart.map((i) => ({
-            product_id: i.product_id,
-            product_name: i.product_name,
-            quantity: i.quantity,
-            unit_price: i.unit_price,
-            total: i.total,
-            has_recipe: !!(i.has_recipe || i.item_type === 'restaurant'),
-            item_type: i.item_type || null
-          }));
         }
-        this.lastSale = sale;
-        this.lastSaleCustomer = this.selectedCustomer ? { ...this.selectedCustomer } : null;
-        if (this.lastSaleCustomer && loyaltyBalanceAfter != null) {
-          this.lastSaleCustomer.loyalty_points = loyaltyBalanceAfter;
-        } else if (this.lastSaleCustomer) {
-          const startPts = Math.floor(this.lastSaleCustomer.loyalty_points || 0);
-          this.lastSaleCustomer.loyalty_points = Math.max(0, startPts - (loyaltyPointsRedeemed || 0) + (loyaltyPointsEarned || 0));
+        const quoteIdToMark = this._instantCheckoutSnapshot?.loadedQuoteId ?? this.loadedQuoteId;
+        if (useInstantCheckout || this._instantCheckoutSnapshot) {
+          this._instantCheckoutSnapshot = null;
+          this.lastSale = sale;
+          if (this.lastSaleCustomer && loyaltyBalanceAfter != null) {
+            this.lastSaleCustomer.loyalty_points = loyaltyBalanceAfter;
+          } else if (this.lastSaleCustomer) {
+            const startPts = Math.floor(this.lastSaleCustomer.loyalty_points || 0);
+            this.lastSaleCustomer.loyalty_points = Math.max(0, startPts - (loyaltyPointsRedeemed || 0) + (loyaltyPointsEarned || 0));
+          }
+          this.updateSuccessReceiptDisplay(sale);
+          if (loyaltyPointsEarned || loyaltyPointsRedeemed) {
+            this.showOrderSuccess(
+              sale,
+              change,
+              payments,
+              loyaltyPointsEarned,
+              loyaltyPointsRedeemed,
+              loyaltyDiscountApplied,
+              this.lastSaleCustomer
+            );
+          }
+        } else {
+          Utils.forceHideModal();
+          if (Array.isArray(sale.items) && !sale.items.length && this.cart?.length) {
+            sale.items = this.cart.map((i) => ({
+              product_id: i.product_id,
+              product_name: i.product_name,
+              quantity: i.quantity,
+              unit_price: i.unit_price,
+              total: i.total,
+              has_recipe: !!(i.has_recipe || i.item_type === 'restaurant'),
+              item_type: i.item_type || null
+            }));
+          }
+          this.lastSale = sale;
+          this.lastSaleCustomer = this.selectedCustomer ? { ...this.selectedCustomer } : null;
+          if (this.lastSaleCustomer && loyaltyBalanceAfter != null) {
+            this.lastSaleCustomer.loyalty_points = loyaltyBalanceAfter;
+          } else if (this.lastSaleCustomer) {
+            const startPts = Math.floor(this.lastSaleCustomer.loyalty_points || 0);
+            this.lastSaleCustomer.loyalty_points = Math.max(0, startPts - (loyaltyPointsRedeemed || 0) + (loyaltyPointsEarned || 0));
+          }
+          const giftCardPayment = (payments || []).find(p => (p.type || p.payment_type) === 'giftcard' && p.gift_card_code);
+          this.lastSaleGiftCardCode = giftCardPayment?.gift_card_code || null;
+          this.lastSaleGiftCardAmount = Number(giftCardPayment?.amount) || 0;
+          this.applyLocalSaleStockDeduction(this.cart);
+          this.cart = [];
+          this.discount = 0;
+          this.discountVoucherCode = null;
+          this.discountApprover = null;
+          this.discountManagerPin = null;
+          this.clearBackdatedMode();
+          this.orderType = null;
+          this.selectedTable = null;
+          this.updateTableLabel();
+          this.selectedCustomer = null;
+          this.clearCustomer();
+          this.deliveryAddress = null;
+          this.renderCart();
+          this.renderProducts();
+          this.showOrderSuccess(sale, change, payments, loyaltyPointsEarned, loyaltyPointsRedeemed, loyaltyDiscountApplied, this.lastSaleCustomer);
         }
-        const giftCardPayment = (payments || []).find(p => (p.type || p.payment_type) === 'giftcard' && p.gift_card_code);
-        this.lastSaleGiftCardCode = giftCardPayment?.gift_card_code || null;
-        this.lastSaleGiftCardAmount = Number(giftCardPayment?.amount) || 0;
-
-        // Optimistic local stock patch so cart/grid stay accurate without blocking on getProducts
-        this.applyLocalSaleStockDeduction(this.cart);
-
-        this.cart = [];
-        this.discount = 0;
-        this.discountApprover = null;
-        this.discountManagerPin = null;
-        this.orderType = null;
-        this.selectedTable = null;
-        this.updateTableLabel();
-        this.selectedCustomer = null;
-        this.clearCustomer();
-        // Keep deliveryAddress until success screen WhatsApp uses sale.delivery_address from DB
-        this.deliveryAddress = null;
-        this.renderCart();
-        this.renderProducts();
-        this.showOrderSuccess(sale, change, payments, loyaltyPointsEarned, loyaltyPointsRedeemed, loyaltyDiscountApplied, this.lastSaleCustomer);
+        if (quoteIdToMark) {
+          const qid = quoteIdToMark;
+          const markQuote = async () => {
+            let marked = false;
+            for (let attempt = 0; attempt < 3 && !marked; attempt++) {
+              try {
+                const m = await API.markQuoteConverted(qid, saleId, this.app.user);
+                marked = !!(m && m.success !== false);
+              } catch (_) { /* retry */ }
+            }
+            if (!marked) Utils.toast('Sale saved, but quote was not marked sold — check Quotes', 'warning');
+            this.loadedQuoteId = null;
+            if (this.quoteTab === 'saved' || this.quoteTab === 'history') {
+              await this.renderSavedQuotesPanel(this.quoteTab === 'history');
+            }
+            this.updatePosBadges();
+          };
+          markQuote();
+        }
         if (customerReward?.grants?.length && !this.app.isPosKiosk?.()) {
           this.handleCustomerRewardNotifications(customerReward, currency);
         }

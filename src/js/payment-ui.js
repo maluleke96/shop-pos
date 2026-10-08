@@ -3,7 +3,8 @@ const PaymentUI = {
     const pm = settings?.payment_settings || {};
     const as = settings?.account_settings || {};
     let types = Utils.paymentTypes;
-    if (pm.enabled_methods?.length) types = types.filter(t => pm.enabled_methods.includes(t));
+    const posEnabled = (pm.enabled_methods_pos?.length ? pm.enabled_methods_pos : pm.enabled_methods) || [];
+    if (posEnabled.length) types = types.filter(t => posEnabled.includes(t));
     if (pm.giftcard_enabled === false) types = types.filter(t => t !== 'giftcard');
     if (pm.account_enabled === false || as.enabled === false) types = types.filter(t => t !== 'account');
     if (pm.eft_enabled === false) types = types.filter(t => t !== 'eft');
@@ -42,7 +43,8 @@ const PaymentUI = {
       onConfirm,
       gcBalancesRef = {},
       onAddCustomer,
-      onDismiss
+      onDismiss,
+      loyaltyBlockedReason = null
     } = options;
     const delFee = Math.max(0, Number(deliveryFee) || 0);
     const showDelivery = String(orderType || '').toLowerCase() === 'delivery' || delFee > 0;
@@ -58,8 +60,8 @@ const PaymentUI = {
     const loyaltyEnabled = ls.enabled !== false && !!customer;
     const customerPoints = Math.floor(customer?.loyalty_points || 0);
     const pointValue = Utils.loyaltyPointValue(settings);
-    const maxRedeemPoints = loyaltyEnabled
-      ? Utils.loyaltyMaxRedeemPoints(total, customerPoints, settings)
+    const maxRedeemPoints = loyaltyEnabled && !loyaltyBlockedReason
+      ? Utils.loyaltyMaxRedeemPoints(Math.max(0, Number(total) - delFee), customerPoints, settings)
       : 0;
     let loyaltyRedeemPoints = 0;
 
@@ -180,8 +182,10 @@ const PaymentUI = {
       input.value = loyaltyRedeemPoints;
       const discount = getLoyaltyDiscount();
       if (info) {
+        const paidBase = Math.max(0, getAmountDue() - delFee);
+        const earns = Utils.loyaltyPreviewPoints(paidBase, settings);
         info.textContent = loyaltyRedeemPoints > 0
-          ? `Saves ${Utils.formatMoney(discount, currency)} on this sale`
+          ? `Saves ${Utils.formatMoney(discount, currency)} · earns +${earns} pts on the ${Utils.formatMoney(paidBase, currency)} paid (points used do not earn points)`
           : `Each point = ${Utils.formatMoney(pointValue, currency)}`;
       }
       if (discountEl) {
@@ -300,7 +304,9 @@ const PaymentUI = {
               <strong id="pay-loyalty-discount" style="color:var(--primary)">${Utils.formatMoney(0, currency)}</strong>
             </div>
             <small id="pay-loyalty-info" class="muted">Each point = ${Utils.formatMoney(pointValue, currency)}</small>
-          </div>` : loyaltyEnabled
+          </div>` : loyaltyEnabled && loyaltyBlockedReason
+          ? `<p class="muted" style="margin:10px 0 0;font-size:13px">${Utils.escHtml(loyaltyBlockedReason)}</p>`
+          : loyaltyEnabled
           ? `<p class="muted" style="margin:10px 0 0;font-size:13px">No points available to redeem on this sale.</p>`
           : `<p class="muted" style="margin:10px 0 0;font-size:13px">Loyalty points are disabled in Admin settings.</p>`}
       </div>` : `
@@ -397,7 +403,7 @@ const PaymentUI = {
         return;
       }
       confirmBtn.disabled = true;
-      confirmBtn.textContent = 'Processing…';
+      Utils.forceHideModal();
       try {
         updateLoyaltyUi();
         const amountDue = getAmountDue();

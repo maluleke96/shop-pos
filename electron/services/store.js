@@ -1806,6 +1806,16 @@ function overlayBranchStockOnProducts(products, branchId) {
   }
 }
 
+/** POS checkout pricing only — avoids loading recipe/modifiers/branch overlay per line. */
+function getProductForSalePricing(id) {
+  const p = getDb().prepare(`
+    SELECT id, name, selling_price, buying_price, recipe_cost, has_recipe FROM products WHERE id = ?
+  `).get(id);
+  if (!p) return null;
+  const [enriched] = promoRequestsSvc.applyPromoPricesToProducts([{ ...p }], null, { channel: 'pos' });
+  return enriched || p;
+}
+
 function getProduct(id) {
   const p = getDb().prepare(`
     SELECT p.*, c.name AS category_name FROM products p
@@ -2625,7 +2635,7 @@ function completeSale(saleData, actorId, actorName, actorRole) {
       }, 0);
       originalUnitPrice = Number(combo.normal_price) || null;
     } else if (item.product_id) {
-      const product = getProduct(item.product_id);
+      const product = getProductForSalePricing(item.product_id);
       if (!product) throw new Error(`Product not found: ${item.product_name || item.product_id}`);
       const priced = serverPromoUnitPrice(product, item.modifiers);
       if (saleData.order_type === 'online' && item.unit_price != null && discountAuthorized) {
@@ -3106,10 +3116,15 @@ function completeSale(saleData, actorId, actorName, actorRole) {
           .filter((id) => id > 0)
       )
     ];
-    paEngine.resumeRefresh({
-      refresh: true,
-      productIds: soldProductIds,
-      deferFullRefresh: true
+    paEngine.resumeRefresh({ refresh: false });
+    setImmediate(() => {
+      try {
+        paEngine.resumeRefresh({
+          refresh: true,
+          productIds: soldProductIds,
+          deferFullRefresh: true
+        });
+      } catch (_) { /* ignore */ }
     });
   }
 
@@ -3137,19 +3152,102 @@ function completeSale(saleData, actorId, actorName, actorRole) {
         try { require('./cc-scheduler').notifyPointsEarned(notice); } catch (_) { /* never affects the sale */ }
       });
     }
-    try {
-      customerReward = customerRewardsSvc.processCustomerRewards(
-        saleData.customer_id,
-        result.saleId,
-        saleTotal,
-        (data, aId, aName) => features.createGiftCard(data, aId, aName),
-        actorId,
-        actorName
-      );
-    } catch (_) {}
   }
 
-  audit(actorId, actorName, 'complete_sale', 'sale', result.saleId, { receipt_number: result.receiptNumber, order_number: result.orderNumber, total: saleTotal });
+  setImmediate(() => {
+    try {
+      runCompleteSalePostWork({
+        result,
+        saleData,
+        payments,
+        saleTotal,
+        actorId,
+        actorName,
+        dbRole,
+        branchId,
+        deviceId,
+        isBackdatedSale,
+        backdatedAuth,
+        autoRules,
+        loyaltyRedemption,
+        resolvedSaleDtSql
+      });
+    } catch (err) {
+      console.warn('[sale] post-work:', err.message || err);
+    }
+  });
+
+  const saleRow = buildFastSaleSnapshot(result, saleData, payments, {
+    saleTotal,
+    amountPaid,
+    changeAmount
+  });
+  return {
+    ...result,
+    sale: saleRow,
+    automation: autoRules,
+    loyaltyPointsEarned,
+    loyaltyPointsRedeemed: loyaltyRedemption.points,
+    loyaltyDiscount: loyaltyRedemption.discount,
+    loyaltyBalanceAfter: loyaltyBalanceAfter != null
+      ? loyaltyBalanceAfter
+      : Math.max(0, Math.floor(
+        (Number(saleData._loyalty_start_balance) || 0) - (loyaltyRedemption.points || 0) + (loyaltyPointsEarned || 0)
+      )),
+    customerReward
+  };
+}
+
+function buildFastSaleSnapshot(result, saleData, payments, totals) {
+  const payRows = (payments || []).map((p) => ({
+    payment_type: p.type || p.payment_type || 'cash',
+    amount: Number(p.amount) || 0,
+    gift_card_code: p.gift_card_code || null
+  }));
+  return {
+    id: result.saleId,
+    receipt_number: result.receiptNumber,
+    order_number: result.orderNumber || result.receiptNumber,
+    total: totals.saleTotal,
+    subtotal: saleData.subtotal,
+    discount: saleData.discount,
+    tax_amount: saleData.tax_amount,
+    amount_paid: totals.amountPaid,
+    change_amount: totals.changeAmount,
+    notes: saleData.notes || null,
+    order_type: saleData.order_type || null,
+    table_id: saleData.table_id || null,
+    table_name: saleData.table_name || null,
+    delivery_address: saleData.delivery_address || null,
+    delivery_fee: saleData.delivery_fee || 0,
+    delivery_place: saleData.delivery_place || null,
+    customer_id: saleData.customer_id || null,
+    customer_name: saleData.customer_name || null,
+    customer_phone: saleData.customer_phone || null,
+    items: (saleData.items || []).map((i) => ({
+      product_id: i.product_id,
+      product_name: i.product_name,
+      quantity: i.quantity,
+      unit_price: i.unit_price,
+      total: i.total,
+      item_type: i.item_type || null,
+      modifiers_text: i.modifiers_text || null,
+      combo_id: i.combo_id || null
+    })),
+    payments: payRows
+  };
+}
+
+function runCompleteSalePostWork(ctx) {
+  const {
+    result, saleData, payments, saleTotal, actorId, actorName, dbRole, branchId, deviceId,
+    isBackdatedSale, backdatedAuth, autoRules, loyaltyRedemption
+  } = ctx;
+  try {
+    audit(actorId, actorName, 'complete_sale', 'sale', result.saleId, {
+      receipt_number: result.receiptNumber, order_number: result.orderNumber, total: saleTotal
+    });
+  } catch (_) { /* ignore */ }
   if (isBackdatedSale) {
     try {
       const itemsSnap = (saleData.items || []).map((i) => ({
@@ -3162,7 +3260,7 @@ function completeSale(saleData, actorId, actorName, actorRole) {
         order_number: result.orderNumber,
         branch_id: branchId,
         pos_terminal_id: deviceId || saleData.pos_terminal_id || null,
-        actual_sale_datetime: resolvedSaleDtSql,
+        actual_sale_datetime: ctx.resolvedSaleDtSql,
         entry_datetime: new Date().toISOString(),
         employee_id: actorId,
         employee_name: actorName,
@@ -3180,10 +3278,14 @@ function completeSale(saleData, actorId, actorName, actorRole) {
       console.warn('[backdated] audit:', e.message || e);
     }
   }
-  features.log('info', 'sale', `Sale ${result.receiptNumber} completed`, { total: saleTotal, actorId });
+  try {
+    features.log('info', 'sale', `Sale ${result.receiptNumber} completed`, { total: saleTotal, actorId });
+  } catch (_) { /* ignore */ }
   try {
     if (payments.some((p) => (p.type || p.payment_type) === 'taken')) {
-      require('./taken-orders').recordTakenSale(result.saleId, saleData, { id: actorId, username: actorName, full_name: actorName });
+      require('./taken-orders').recordTakenSale(result.saleId, saleData, {
+        id: actorId, username: actorName, full_name: actorName
+      });
     }
   } catch (err) {
     console.warn('[taken] record:', err.message);
@@ -3197,7 +3299,6 @@ function completeSale(saleData, actorId, actorName, actorRole) {
   try {
     const mobileMgr = require('./mobile-manager');
     mobileMgr.notifyNewSale(result.saleId);
-    const branchId = saleData.branch_id || getDb().prepare('SELECT branch_id FROM shop_settings WHERE id = 1').get()?.branch_id || 1;
     mobileMgr.recordPosHeartbeat(branchId, deviceId || 'pos', 'POS Till');
   } catch (err) {
     console.warn('[mobile] sale notify:', err.message);
@@ -3220,25 +3321,26 @@ function completeSale(saleData, actorId, actorName, actorRole) {
     }
   }
   try {
-    require('./order-sla').onSaleCompleted(result.saleId, saleData, { id: actorId, name: actorName, role: dbRole });
+    require('./order-sla').onSaleCompleted(result.saleId, saleData, {
+      id: actorId, name: actorName, role: dbRole
+    });
   } catch (err) {
     console.warn('[sla] sale:', err.message);
   }
-  const saleRow = getSale(result.saleId, { skipEditHistory: true });
-  return {
-    ...result,
-    sale: saleRow,
-    automation: autoRules,
-    loyaltyPointsEarned,
-    loyaltyPointsRedeemed: loyaltyRedemption.points,
-    loyaltyDiscount: loyaltyRedemption.discount,
-    loyaltyBalanceAfter: loyaltyBalanceAfter != null
-      ? loyaltyBalanceAfter
-      : Math.max(0, Math.floor(
-        (Number(saleData._loyalty_start_balance) || 0) - (loyaltyRedemption.points || 0) + (loyaltyPointsEarned || 0)
-      )),
-    customerReward
-  };
+  if (saleData.customer_id) {
+    try {
+      customerRewardsSvc.processCustomerRewards(
+        saleData.customer_id,
+        result.saleId,
+        saleTotal,
+        (data, aId, aName) => features.createGiftCard(data, aId, aName),
+        actorId,
+        actorName
+      );
+    } catch (_) {}
+  }
+  void autoRules;
+  void loyaltyRedemption;
 }
 
 function attachSaleEditHistory(sale, saleId) {
