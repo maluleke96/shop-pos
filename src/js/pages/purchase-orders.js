@@ -12,7 +12,7 @@ const PurchaseOrdersPage = {
       </table></div></div>`;
     document.getElementById('new-po').addEventListener('click', () => this.showForm());
 
-    const [poRes, supRes, prodRes] = await Promise.all([API.getPurchaseOrders(), API.getSuppliers(), API.getProducts()]);
+    const [poRes, supRes, prodRes] = await Promise.all([API.getPurchaseOrders(), API.getSuppliers(), API.getProducts({ omit_images: true })]);
     this.orders = poRes.data || [];
     this.suppliers = supRes.data || [];
     this.products = prodRes.data || [];

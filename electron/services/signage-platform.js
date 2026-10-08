@@ -226,7 +226,11 @@ function approvePairingAdmin(code, data, actor) {
 }
 
 function approvePairingCore(code, data, user) {
-  const row = dbGet('SELECT * FROM signage_device_pairings WHERE pairing_code = ? AND status = ?', [code, 'pending']);
+  const normalizedCode = String(code || '').trim();
+  const row = dbGet(
+    'SELECT * FROM signage_device_pairings WHERE pairing_code = ? AND status = ? ORDER BY id DESC LIMIT 1',
+    [normalizedCode, 'pending']
+  );
   if (!row) throw new Error('Pairing code not found or expired');
   const deviceToken = newToken();
   const deviceCode = uid('TV');
@@ -236,7 +240,11 @@ function approvePairingCore(code, data, user) {
     VALUES (?,?,?,?,?,?,?,?,?)`,
     [deviceCode, name, data.location || null, data.group_id || null, 'online', hashToken(deviceToken),
       row.device_meta, data.orientation || 'landscape', meta.player_version || 'web']);
-  const deviceId = r.lastInsertRowid;
+  let deviceId = r.lastInsertRowid;
+  if (!deviceId) {
+    deviceId = dbGet('SELECT id FROM signage_devices WHERE device_code = ?', [deviceCode])?.id;
+  }
+  if (!deviceId) throw new Error('Could not save TV device');
   dbRun(`UPDATE signage_device_pairings SET status = 'approved', device_id = ?, approved_by = ?, device_meta = ? WHERE id = ?`,
     [deviceId, user.portal_user_id || user.id, JSON.stringify({ ...meta, device_token_once: deviceToken }), row.id]);
   audit({ user_id: user.id, user_name: user.full_name || user.username, device_id: deviceId, action: 'device_paired', entity_type: 'device', entity_id: deviceId });

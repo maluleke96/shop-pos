@@ -1,0 +1,7 @@
+{
+  "appId": "com.shoppos.kitchen",
+  "appName": "Shop POS Kitchen",
+  "webDir": "www",
+  "server": { "androidScheme": "https" },
+  "android": { "allowMixedContent": false }
+}

@@ -62,6 +62,13 @@ window.AdminBusinessModulesPage = {
     return [];
   },
 
+  /** Surface RPC failures instead of treating a failed approve as success. */
+  rpcOk(res, fallback = 'Request failed') {
+    if (res == null) throw new Error(fallback);
+    if (res.success === false) throw new Error(res.error || fallback);
+    return res.data != null ? res.data : res;
+  },
+
   rpcErr(res) {
     if (res && res.success === false) return res.error || 'Request failed';
     return '';
@@ -549,7 +556,8 @@ window.AdminBusinessModulesPage = {
             const name = document.getElementById('ops-dev-name')?.value?.trim();
             const branchRaw = document.getElementById('ops-dev-branch')?.value?.trim();
             const branch_id = branchRaw ? Number(branchRaw) : null;
-            await API.opsDisplayAdminApprove(code, { name, branch_id }, this.actor);
+            const r = await API.opsDisplayAdminApprove(code, { name, branch_id }, this.actor);
+            if (r?.success === false) throw new Error(r.error || 'Approve failed');
             Utils.hideModal();
             Utils.toast('Display approved', 'success');
             this.renderOpsDevices(body);
@@ -612,6 +620,7 @@ window.AdminBusinessModulesPage = {
             if (!name) throw new Error('Name is required');
             const location = document.getElementById('bm-kiosk-loc')?.value || '';
             const r = await API.kioskAdminApprovePairing(code, { name, location }, this.actor);
+            if (r?.success === false) throw new Error(r.error || 'Kiosk approve failed');
             Utils.hideModal();
             const tok = (r?.data || r)?.device_token;
             Utils.toast(tok ? `Approved — device linked (${String(tok).slice(0, 10)}…)` : 'Approved', 'success');

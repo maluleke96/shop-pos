@@ -411,6 +411,64 @@ const OnlineOrdersWidget = {
     this.renderPanel();
   },
 
+  kioskActiveCount() {
+    return (this._kioskOrders || []).filter((o) => ['new', 'preparing', 'ready'].includes(o.group)).length;
+  },
+
+  async loadKioskOrders(force) {
+    if (!API.slaKioskOrders) return;
+    if (!force && this._kioskLoadedAt && Date.now() - this._kioskLoadedAt < 8000) return;
+    this._kioskLoadedAt = Date.now();
+    try {
+      const r = await API.slaKioskOrders({});
+      if (r && r.success !== false) this._kioskOrders = Array.isArray(r.data) ? r.data : (Array.isArray(r) ? r : []);
+      else this._kioskError = (r && r.error) || 'Could not load kiosk orders';
+    } catch (e) {
+      this._kioskError = e?.message || 'Could not load kiosk orders';
+    }
+    if (this._panelOpen && this._panelTab === 'kiosk') {
+      const list = document.getElementById('oo-list');
+      if (list) list.innerHTML = this.renderKioskList();
+    }
+    const tag = document.querySelector('#oo-tabs [data-oo-tab="kiosk"] .tag');
+    if (tag) tag.textContent = String(this.kioskActiveCount());
+  },
+
+  renderKioskList() {
+    const rows = this._kioskOrders;
+    if (!rows) return `<p class="muted" style="padding:16px 0;text-align:center">${this.esc(this._kioskError || 'Loading kiosk orders…')}</p>`;
+    if (!rows.length) return '<p class="muted" style="padding:16px 0;text-align:center">No kiosk orders today.</p>';
+    const groups = [
+      ['new', 'New'], ['preparing', 'Preparing'], ['ready', 'Ready'], ['failed', 'Failed / payment problems'],
+      ['completed', 'Completed (paid)'], ['cancelled', 'Cancelled / refunded']
+    ];
+    const icon = { on_time: '🟢', warning: '🟡', overdue: '🔴', critical: '⚫', new: '🔵', completed: '✅', cancelled: '✖', failed: '❗' };
+    const money = (v) => Utils.formatMoney(v, this.currency());
+    const when = (v) => {
+      if (!v) return '—';
+      const s = String(v);
+      const d = new Date(/[zZ]|[+-]\d\d:?\d\d$/.test(s) ? s : `${s.replace(' ', 'T')}Z`);
+      return Number.isNaN(d.getTime()) ? s : d.toLocaleTimeString('en-ZA', { hour: '2-digit', minute: '2-digit' });
+    };
+    return groups.map(([g, title]) => {
+      const list = rows.filter((o) => o.group === g);
+      if (!list.length) return '';
+      return `<h5 style="margin:12px 0 6px">${title} (${list.length})</h5>
+        <table class="table" style="font-size:12px"><thead><tr><th>Order</th><th>Kiosk</th><th>Customer</th><th>Items</th><th>Total</th><th>Payment</th><th>Timer</th><th>Responsible</th><th>Time</th></tr></thead><tbody>
+        ${list.map((o) => `<tr>
+          <td><strong>${this.esc(o.order_number || '—')}</strong>${o.error ? `<div class="muted">${this.esc(o.error)}</div>` : ''}</td>
+          <td>${this.esc(o.kiosk_name || 'Kiosk')}</td>
+          <td>${this.esc(o.customer_name || 'Walk-in')}</td>
+          <td>${this.esc((o.items || []).join(', ') || '—')}</td>
+          <td>${money(o.total)}</td>
+          <td>${this.esc(o.payment_status || '—')}</td>
+          <td>${o.timer_text ? `<span style="font-family:ui-monospace,Consolas,monospace;font-weight:700">${this.esc(o.timer_text)}</span><div>${icon[o.state] || ''} ${this.esc(o.state_label || '')}</div>` : `${icon[o.state] || ''} ${this.esc(o.state_label || '')}`}</td>
+          <td>${this.esc(o.responsible_employee || '—')}</td>
+          <td>${when(o.created_at)}</td>
+        </tr>`).join('')}</tbody></table>`;
+    }).join('');
+  },
+
   refreshPanelList() {
     const tab = this._panelTab || 'pending';
     const pending = this.pendingOrders();
@@ -419,11 +477,16 @@ const OnlineOrdersWidget = {
     const rows = tab === 'accepted' ? accepted : tab === 'history' ? history : pending;
     const list = document.getElementById('oo-list');
     if (!list) return;
-    list.innerHTML = rows.length
-      ? rows.map((o) => this.renderOrderRow(o)).join('')
-      : `<p class="muted" style="padding:16px 0;text-align:center">No orders in this list.</p>`;
+    if (tab === 'kiosk') {
+      this.loadKioskOrders(false);
+    } else {
+      list.innerHTML = rows.length
+        ? rows.map((o) => this.renderOrderRow(o)).join('')
+        : `<p class="muted" style="padding:16px 0;text-align:center">No orders in this list.</p>`;
+    }
     document.querySelectorAll('#oo-tabs .form-tab').forEach((btn) => {
       const t = btn.dataset.ooTab;
+      if (t === 'kiosk') return;
       const count = t === 'accepted' ? accepted.length : t === 'history' ? history.length : pending.length;
       const tag = btn.querySelector('.tag');
       if (tag) tag.textContent = String(count);
@@ -436,7 +499,8 @@ const OnlineOrdersWidget = {
     const accepted = this.acceptedOrders();
     const history = this.historyOrders();
     const rows = tab === 'accepted' ? accepted : tab === 'history' ? history : pending;
-    const title = tab === 'accepted' ? 'Accepted on POS' : tab === 'history' ? 'Order history' : 'New online orders';
+    const title = tab === 'accepted' ? 'Accepted on POS' : tab === 'history' ? 'Order history' : tab === 'kiosk' ? 'Kiosk orders today' : 'New online orders';
+    if (tab === 'kiosk') this.loadKioskOrders(true);
 
     Utils.showModal('🛒 Online Orders', `
       <p class="muted" style="margin:0 0 10px">Live web orders — updates every few seconds. Reminder after ${this.reminderMinutes()} min unattended.</p>
@@ -444,10 +508,11 @@ const OnlineOrdersWidget = {
         <button type="button" class="form-tab ${tab === 'pending' ? 'active' : ''}" data-oo-tab="pending">New <span class="tag tag-warn" style="margin-left:4px">${pending.length}</span></button>
         <button type="button" class="form-tab ${tab === 'accepted' ? 'active' : ''}" data-oo-tab="accepted">Accepted <span class="tag tag-ok" style="margin-left:4px">${accepted.length}</span></button>
         <button type="button" class="form-tab ${tab === 'history' ? 'active' : ''}" data-oo-tab="history">History <span class="tag" style="margin-left:4px">${history.length}</span></button>
+        ${API.slaKioskOrders ? `<button type="button" class="form-tab ${tab === 'kiosk' ? 'active' : ''}" data-oo-tab="kiosk">Kiosk <span class="tag" style="margin-left:4px">${this.kioskActiveCount()}</span></button>` : ''}
       </div>
       <h4 style="margin:14px 0 8px">${title}</h4>
       <div id="oo-list" style="max-height:420px;overflow:auto">
-        ${rows.length
+        ${tab === 'kiosk' ? this.renderKioskList() : rows.length
           ? rows.map((o) => this.renderOrderRow(o)).join('')
           : `<p class="muted" style="padding:16px 0;text-align:center">No orders in this list.</p>`}
       </div>`,

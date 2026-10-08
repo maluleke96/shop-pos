@@ -227,7 +227,7 @@ const LaybyPage = {
 
   async showCreateForm() {
     const [custRes, prodRes, setRes] = await Promise.all([
-      API.getCustomers(), API.getProducts(), API.getLaybySettings(this.app.user).catch(() => ({ data: {} }))
+      API.getCustomers(), API.getProducts({ omit_images: true }), API.getLaybySettings(this.app.user).catch(() => ({ data: {} }))
     ]);
     const days = setRes.data?.duration_days || 30;
     Utils.showModal('New Lay-Bye', `

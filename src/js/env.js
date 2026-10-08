@@ -8,3 +8,4 @@ window.__SHOP_POS_ENV__ = {
   SHOP_POS_RPC_URL: ""
 };
 window.__SHOP_POS_USE_SUPABASE__ = true;
+window.__SHOP_POS_DEPLOY__ = "deploy-20260925-pc-customers-crashfix-v2";

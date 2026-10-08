@@ -26,5 +26,6 @@ const DriveThruAPI = {
   cancelOrder: (id, reason) => DriveThruAPI.call('driveThru:cancelOrder', [id, reason]),
   getAudioConfig: () => DriveThruAPI.call('driveThru:getAudioConfig', [DriveThruAPI.stationToken()]),
   saveAudioConfig: (cfg) => DriveThruAPI.call('driveThru:saveAudioConfig', [DriveThruAPI.stationToken(), cfg]),
-  postAudioSignal: (type, payload) => DriveThruAPI.call('driveThru:postAudioSignal', [DriveThruAPI.stationToken(), type, payload])
+  postAudioSignal: (type, payload) => DriveThruAPI.call('driveThru:postAudioSignal', [DriveThruAPI.stationToken(), type, payload]),
+  validateVoucher: (code, opts) => DriveThruAPI.call('driveThru:validateVoucher', [code, opts || {}])
 };

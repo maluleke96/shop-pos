@@ -348,6 +348,7 @@ function saveCombo(data, actor) {
     );
     comboId = r.lastInsertRowid;
   }
+  if (!Number(comboId)) comboId = db.prepare('SELECT id FROM combos WHERE combo_code = ? ORDER BY id DESC').get(code)?.id;
   items.forEach(item => insertComboItem(db, comboId, item));
   audit(actor?.id, actor?.username, 'create_combo', comboId, { combo_code: code, approval_status: payload.approval_status });
   try {

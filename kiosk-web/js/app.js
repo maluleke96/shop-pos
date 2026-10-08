@@ -550,7 +550,12 @@ const KioskApp = {
       <div class="cart-bar"><button class="btn-primary" ${this.cart.length ? '' : 'disabled'} data-act="checkout">Checkout</button></div>`;
     app.onclick = (e) => {
       if (e.target.closest('[data-act="back"]')) { this.view = 'browse'; this.render(); }
-      if (e.target.closest('[data-rm]')) { this.cart.splice(Number(e.target.closest('[data-rm]').dataset.rm), 1); this.render(); }
+      if (e.target.closest('[data-rm]')) {
+        this.cart.splice(Number(e.target.closest('[data-rm]').dataset.rm), 1);
+        if (this.view === 'cart') this.renderCart(app);
+        else this.render();
+        return;
+      }
       if (e.target.closest('[data-act="checkout"]')) { this.view = 'checkout'; this.render(); }
     };
   },

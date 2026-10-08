@@ -217,6 +217,8 @@ function formatRow(row, opts = {}) {
     if (row.driver_id) out.driver = driverPublicInfo(row.driver_id);
   } else if (opts.driver) {
     out.delivery_number = row.confirmation_code;
+    out.sale_id = row.sale_id;
+    out.source_id = row.source_id;
     out.items = items.map((i) => ({ name: i.name || i.product_name, quantity: i.quantity || 1 }));
     delete out.order_number;
     if (opts.maskCustomer || (opts.history && ['delivered', 'failed', 'cancelled'].includes(row.status))) {
@@ -235,6 +237,9 @@ function recordHistory(deliveryId, fromStatus, toStatus, actor, notes) {
     deliveryId, fromStatus || null, toStatus,
     actor?.role || actor?.type || 'system', actor?.id || null, actor?.full_name || actor?.name || null, notes || null
   ]);
+  try { require('./order-sla').onDeliveryStatus(deliveryId, fromStatus, toStatus, actor, notes); } catch (err) {
+    console.warn('[sla] delivery:', err.message);
+  }
 }
 
 function notifyCustomer(row, event, extra = {}) {
@@ -850,13 +855,44 @@ function normalizePlaces(raw) {
     arr = typeof raw === 'string' ? JSON.parse(raw || '[]') : (Array.isArray(raw) ? raw : []);
   } catch (_) { arr = []; }
   if (!Array.isArray(arr)) arr = [];
+  const flag = (v) => !(v === false || v === 0 || v === '0' || v === 'false');
   return arr.map((p, i) => ({
     id: String(p.id || `place_${i + 1}_${Date.now().toString(36)}`),
     name: String(p.name || '').trim(),
     delivery_fee: Number(p.delivery_fee) || 0,
     free_delivery_above: Number(p.free_delivery_above) || 0,
-    min_order: Number(p.min_order) || 0
+    min_order: Number(p.min_order) || 0,
+    available_pos: flag(p.available_pos),
+    available_online: flag(p.available_online)
   })).filter((p) => p.name);
+}
+
+/**
+ * Places the POS may offer (read-only, any signed-in till user).
+ * Falls back to the only configured branch when the till's branch has none.
+ */
+function getPosDeliveryPlaces(branchId) {
+  ensureSchema();
+  let settings = getBranchSettings(branchId);
+  let usedBranch = branchId;
+  if (!settings.places.length) {
+    const withPlaces = dbAll('SELECT branch_id, zones_json FROM delivery_branch_settings')
+      .filter((r) => normalizePlaces(r.zones_json).length);
+    if (withPlaces.length === 1) {
+      usedBranch = withPlaces[0].branch_id;
+      settings = getBranchSettings(usedBranch);
+    }
+  }
+  const places = settings.places.filter((p) => p.available_pos);
+  return {
+    branch_id: usedBranch,
+    delivery_enabled: settings.delivery_enabled != null ? !!Number(settings.delivery_enabled) : true,
+    delivery_fee: Number(settings.delivery_fee) || 0,
+    free_delivery_above: Number(settings.free_delivery_above) || 0,
+    min_order: Number(settings.min_order) || 0,
+    places,
+    zones: places
+  };
 }
 
 /** Same delivery fee rules as online checkout (free above threshold, else flat fee). */
@@ -890,7 +926,7 @@ function syncBranchFeesToOnline(branchId, data) {
     const fee = Number(data.delivery_fee) || 0;
     const freeAbove = Number(data.free_delivery_above) || 0;
     const minOrder = Number(data.min_order) || 0;
-    const places = normalizePlaces(data.places || data.zones || data.zones_json);
+    const places = normalizePlaces(data.places || data.zones || data.zones_json).filter((p) => p.available_online);
     const existing = dbGet('SELECT branch_id FROM branch_online_settings WHERE branch_id=?', [branchId]);
     if (existing) {
       dbRun(`UPDATE branch_online_settings SET delivery_fee=?, free_delivery_above=?, min_delivery_order=?, delivery_enabled=1, delivery_zones_json=?, updated_at=datetime('now') WHERE branch_id=?`,
@@ -1150,7 +1186,15 @@ function driverDashboard(token) {
     payout_day_label: deptSettings.payout_day_label,
     delivery_settings: deptSettings,
     assigned_count: assigned.length,
-    assigned: assigned.map((r) => formatRow(r, { driver: true })),
+    assigned: (() => {
+      const rows = assigned.map((r) => formatRow(r, { driver: true }));
+      try {
+        const raw = assigned.map((r) => ({ source_type: r.source_type, source_id: r.source_id, sale_id: r.sale_id }));
+        require('./order-sla').attachToDeliveries(raw);
+        raw.forEach((r, i) => { if (r.sla && rows[i]) rows[i].sla = r.sla; });
+      } catch (_) { /* timers are optional on the driver app */ }
+      return rows;
+    })(),
     available: available.map((r) => formatRow(r, { driver: true })),
     completed_today, fees_today, earnings_total,
     owed_amount: owed.amount,
@@ -1724,11 +1768,11 @@ module.exports = {
   listDrivers, getDriver, saveDriver, registerDriver, adminRegisterDriver, approveDriver, rejectDriver, suspendDriver, deleteDriver,
   assignDriver, assignMultipleOrders, autoAssignDriver, releaseToDriverPool, updateDeliveryStatus, updateDeliveryAdmin, cancelDeliveryAdmin,
   getSettings, saveSettings,
-  getBranchSettings, calcDeliveryFeeForSubtotal, calcPlaceDeliveryFee, findDeliveryPlace, normalizePlaces, saveBranchSettings, listAllBranchSettings, deleteBranchSettings, deliveryReports, driverEarningsReport,
+  getBranchSettings, getPosDeliveryPlaces, calcDeliveryFeeForSubtotal, calcPlaceDeliveryFee, findDeliveryPlace, normalizePlaces, saveBranchSettings, listAllBranchSettings, deleteBranchSettings, deliveryReports, driverEarningsReport,
   getDeliveryByTracking, driverLogin, driverLogout, driverDashboard, driverListOrders, driverHistory, driverEarnings, driverPayments,
   driverGetProfile, driverUpdateProfile,
   listDriverPaymentSummary, recordDriverPayout, getDriverPayoutHistory, previewDriverPayout, getDriverPayoutDetail, buildDriverPayoutHtml, buildDriverPayoutWhatsAppText, buildDriverPayoutPdf, buildDriverPayoutPdfForDriver, driverPayoutDetailForDriver, submitPayoutClaim, listPayoutClaims, approvePayoutClaim, rejectPayoutClaim,
   driverPublicInfo, enrichDriver, isClaimWindowOpen, driverAcceptDelivery,
-  driverRejectDelivery, driverReleaseDelivery, driverUpdateStatus, setDriverAvailability,
+  driverRejectDelivery, driverReleaseDelivery, driverUpdateStatus, setDriverAvailability, driverFromToken,
   getDeliveryByOnlineOrder, releaseOnlineDeliveryAfterPosAccept
 };

@@ -266,6 +266,8 @@ function saveWhatsAppSettings(data, actor) {
     // keep existing unless explicitly cleared via clear_api_key
     if (!data.clear_api_key) merged.api_key = current.api_key;
   }
+  // The environment token must never be copied into the database.
+  if (envWhatsAppCreds().api_key) delete merged.api_key;
   getDb().prepare(`UPDATE shop_settings SET whatsapp_settings = ?, updated_at = datetime('now') WHERE id = 1`)
     .run(JSON.stringify(merged));
   audit(actor?.id, actor?.username, 'whatsapp_settings_update', null, { keys: Object.keys(data || {}) });
@@ -766,6 +768,10 @@ module.exports = {
   renderTemplate,
   buildWaUrl,
   getWhatsAppSettings,
+  getWhatsAppSettingsRaw,
+  envWhatsAppCreds,
+  postWhatsAppCloud,
+  e164Digits,
   saveWhatsAppSettings,
   ensureDefaultTemplates,
   getTemplates,

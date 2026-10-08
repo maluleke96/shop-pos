@@ -407,6 +407,7 @@ function updateIngredient(data, actor) {
   }
   logActivity(actor, 'update_ingredient', 'product', id, { name: row.name }, { name, unit, purchaseUnit, packQty, packLabel });
   try { require('./production-availability').refreshAffectedByIngredient(id); } catch (_) { /* ignore */ }
+  try { require('./recipe-food-cost').noteIngredientCostChange(id, 'ingredient_edit', actor, row.buying_price); } catch (_) { /* history is best effort */ }
   const updated = db.prepare('SELECT * FROM products WHERE id=?').get(id);
   return { ...updated, conversions: inventory.getProductConversions(id) };
 }
@@ -3516,6 +3517,9 @@ function restockIngredient(data, actor) {
   } else if (data.unit_cost != null && Number(data.unit_cost) > 0) {
     getDb().prepare(`UPDATE products SET buying_price = ?, updated_at=datetime('now') WHERE id = ?`)
       .run(Number(data.unit_cost), productId);
+  }
+  if (Number(data.total_cost) > 0 || Number(data.unit_cost) > 0) {
+    try { require('./recipe-food-cost').noteIngredientCostChange(productId, 'restock', actor, product.buying_price); } catch (_) { /* history is best effort */ }
   }
 
   logActivity(actor, 'restock_ingredient', 'product', productId, null, {

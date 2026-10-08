@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>Communication Center</title>
+  <script>
+    window.__SHOP_POS_APP_MODE__ = 'admin';
+    try {
+      sessionStorage.setItem('SHOP_POS_APP_MODE', 'admin');
+      sessionStorage.setItem('shoppos_admin_section', 'communication-center');
+      localStorage.setItem('SHOP_POS_APP_MODE', 'admin');
+    } catch (e) {}
+  </script>
+</head>
+<body>
+  <p style="font-family:system-ui;padding:24px;text-align:center">Opening Communication Center…</p>
+  <script>location.replace('/index.html#app=admin&section=communication-center');</script>
+</body>
+</html>

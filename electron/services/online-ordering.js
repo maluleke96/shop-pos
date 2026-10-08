@@ -23,6 +23,23 @@ function round2(n) { return Math.round((Number(n) || 0) * 100) / 100; }
 function nowIso() { return new Date().toISOString(); }
 function nowPlusMin(min) { return new Date(Date.now() + min * 60000).toISOString(); }
 
+/** Shop wall clock — hours are stored in local shop time, not UTC (Railway runs in UTC). */
+function shopTimezone() { return process.env.SHOP_TIMEZONE || 'Africa/Johannesburg'; }
+
+function shopClockParts(at = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: shopTimezone(), weekday: 'short', hour: '2-digit', minute: '2-digit', hour12: false
+  }).formatToParts(at);
+  const pick = (t) => Number(parts.find((p) => p.type === t)?.value) || 0;
+  const wd = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 }[parts.find((p) => p.type === 'weekday')?.value] ?? at.getDay();
+  return { day: wd, hour: pick('hour'), minute: pick('minute') };
+}
+
+function parseClockMinutes(timeStr) {
+  const [h, m] = String(timeStr || '08:00').split(':').map(Number);
+  return (h || 0) * 60 + (m || 0);
+}
+
 function isPgCloud() {
   try {
     return typeof process !== 'undefined' && process.env &&
@@ -64,7 +81,13 @@ function getLoyaltyPublicSettings() {
 
 /** Build online checkout payment options from POS payment_settings (no DB write) */
 function buildMethodsFromPaymentSettings(paymentSettings = {}) {
-  const enabled = Array.isArray(paymentSettings.enabled_methods) ? paymentSettings.enabled_methods : [];
+  let enabled;
+  try {
+    const pcm = require('../../lib/payment-channel-methods');
+    enabled = pcm.channelEnabledIds(paymentSettings, 'online');
+  } catch (_) {
+    enabled = Array.isArray(paymentSettings.enabled_methods) ? paymentSettings.enabled_methods : [];
+  }
   const custom = Array.isArray(paymentSettings.custom_methods) ? paymentSettings.custom_methods : [];
   if (!enabled.length) return [];
 
@@ -202,6 +225,8 @@ function getGlobalSettings() {
     tax_inclusive: shop.tax_inclusive !== 0 && shop.tax_inclusive !== '0' && shop.tax_inclusive !== false,
     tax_show_on_pos: shop.tax_show_on_pos !== 0 && shop.tax_show_on_pos !== '0' && shop.tax_show_on_pos !== false,
     operating_hours: operatingHours,
+    shop_timezone: shopTimezone(),
+    online_open: isOnlineOpenFromHours(operatingHours),
     online: {
       enabled: online?.enabled !== false,
       loyalty_enabled: online?.loyalty_enabled !== false,
@@ -238,30 +263,23 @@ function parseOperatingHours(raw) {
   return operatingHours;
 }
 
-function parseClockToday(timeStr) {
-  const now = new Date();
-  const [h, m] = String(timeStr || '08:00').split(':').map(Number);
-  const d = new Date(now);
-  d.setHours(h || 0, m || 0, 0, 0);
-  return d;
-}
-
 function isOnlineOpenFromHours(oh) {
   const hours = oh || {};
   if (hours.force_online === 'open') return true;
   if (hours.force_online === 'closed') return false;
   if (hours.apply_to_online === false || hours.apply_to_online === 0 || hours.apply_to_online === '0') return true;
   const weekly = Array.isArray(hours.weekly) ? hours.weekly : [];
-  const now = new Date();
-  const day = weekly.find((w) => Number(w.day) === now.getDay())
+  const clock = shopClockParts();
+  const nowMin = clock.hour * 60 + clock.minute;
+  const day = weekly.find((w) => Number(w.day) === clock.day)
     || { open: hours.open_time || '08:00', close: hours.close_time || '18:00', closed: false };
   if (day.closed) return false;
-  const openAt = parseClockToday(day.open || hours.open_time || '08:00');
-  const closeAt = parseClockToday(day.close || hours.close_time || '18:00');
-  if (closeAt.getTime() <= openAt.getTime()) {
-    return now >= openAt || now < closeAt;
+  const openMin = parseClockMinutes(day.open || hours.open_time || '08:00');
+  const closeMin = parseClockMinutes(day.close || hours.close_time || '18:00');
+  if (closeMin <= openMin) {
+    return nowMin >= openMin || nowMin < closeMin;
   }
-  return now >= openAt && now < closeAt;
+  return nowMin >= openMin && nowMin < closeMin;
 }
 
 function getHoursStatus() {
@@ -275,6 +293,7 @@ function getHoursStatus() {
     force_online: operating_hours.force_online,
     force_pos: operating_hours.force_pos,
     hours_revision: operating_hours.hours_revision || 0,
+    shop_timezone: shopTimezone(),
     online_open: isOnlineOpenFromHours(operating_hours),
     operating_hours
   };
@@ -461,10 +480,13 @@ function getBranchOnlineSettings(branchId) {
     if (delRow.min_order != null) base.min_delivery_order = Number(delRow.min_order) || 0;
     if (delRow.delivery_enabled != null) base.delivery_enabled = delRow.delivery_enabled ? 1 : 0;
     try {
-      const places = require('./delivery-platform').normalizePlaces(delRow.zones_json);
-      if (places.length) {
+      const all = require('./delivery-platform').normalizePlaces(delRow.zones_json);
+      const places = all.filter((p) => p.available_online);
+      if (all.length) {
         base.delivery_zones = places;
         base.delivery_places = places;
+        // Every place is POS-only → no online delivery at this branch
+        if (!places.length) base.delivery_enabled = 0;
       }
     } catch (_) { /* optional */ }
   }
@@ -564,9 +586,11 @@ function getPublicBranches() {
     .filter((b) => b.online_enabled == null || Number(b.online_enabled) !== 0)
     .map((b) => {
       let places = [];
+      let deliveryOn = b.delivery_enabled == null ? true : Number(b.delivery_enabled) !== 0;
       try {
         const full = getBranchOnlineSettings(b.id);
         places = full.delivery_places || full.delivery_zones || [];
+        if (full.delivery_enabled != null && !Number(full.delivery_enabled)) deliveryOn = false;
       } catch (_) { places = []; }
       return {
     id: b.id,
@@ -575,7 +599,7 @@ function getPublicBranches() {
     address: b.address,
     phone: b.phone,
     online_enabled: b.online_enabled == null ? true : Number(b.online_enabled) !== 0,
-    delivery_enabled: b.delivery_enabled == null ? true : Number(b.delivery_enabled) !== 0,
+    delivery_enabled: deliveryOn,
     collection_enabled: b.collection_enabled == null ? true : Number(b.collection_enabled) !== 0,
     status: b.online_status || 'open',
     busy_mode: !!b.busy_mode,
@@ -1058,13 +1082,15 @@ function findPosCustomerByContact(phone, email) {
 
 function webAccountExists(phone, email) {
   const emailLower = String(email || '').trim().toLowerCase();
-  if (emailLower && dbGet('SELECT id FROM web_customers WHERE lower(email) = ? AND is_active = 1', [emailLower])) {
+  // Phone-access rows have no password yet — full registration may add one.
+  const byEmail = emailLower ? dbGet('SELECT id, password_hash FROM web_customers WHERE lower(email) = ? AND is_active = 1', [emailLower]) : null;
+  if (byEmail && byEmail.password_hash) {
     return { exists: true, message: 'This email already has an online account. Please sign in.' };
   }
   if (phone) {
-    const rows = dbAll('SELECT id, phone FROM web_customers WHERE is_active = 1 AND phone IS NOT NULL');
+    const rows = dbAll('SELECT id, phone, password_hash FROM web_customers WHERE is_active = 1 AND phone IS NOT NULL');
     for (const r of rows) {
-      if (phonesMatch(phone, r.phone)) {
+      if (r.password_hash && phonesMatch(phone, r.phone)) {
         return { exists: true, message: 'This mobile number already has an online account. Please sign in.' };
       }
     }
@@ -1187,62 +1213,58 @@ async function sendWebRegistrationCode(data = {}) {
   const verifyPhone = String(pos.phone || data.phone || '').trim();
   if (!verifyPhone) throw new Error('No mobile number on file for verification');
 
-  const code = String(Math.floor(100000 + Math.random() * 900000));
-  const hash = bcrypt.hashSync(code, 10);
-  const expires = nowPlusMin(15);
-  try { dbRun('DELETE FROM web_registration_codes WHERE customer_id = ?', [pos.id]); } catch (_) { /* */ }
-  dbRun(`INSERT INTO web_registration_codes (phone, email, customer_id, code_hash, expires_at)
-    VALUES (?,?,?,?,?)`, [verifyPhone, String(data.email || '').trim().toLowerCase() || null, pos.id, hash, expires]);
-
   const shopName = dbGet('SELECT shop_name FROM shop_settings WHERE id = 1')?.shop_name || 'Shop';
-  const body = `${shopName} — Your online ordering verification code is: ${code}\n\nEnter this code to activate your account. Valid for 15 minutes.\n\nDo not share this code with anyone.`;
-  let sentViaApi = false;
-  let url = null;
-  try {
-    const whatsapp = require('./whatsapp');
-    const r = await whatsapp.sendMessage({
-      phone: verifyPhone,
-      body,
-      message_type: 'verification',
-      recipient_type: 'customer',
-      customer_id: pos.id,
-      recipient_name: pos.name,
-      otp_code: code
-    }, { role: 'system' });
-    sentViaApi = r?.status === 'sent' || r?.via === 'cloud_api';
-    if (!sentViaApi) {
-      url = whatsapp.buildWaUrl(verifyPhone, body);
-    }
-  } catch (err) {
-    console.warn('[web-reg] WhatsApp API send skipped', err.message || err);
-    try {
-      const whatsapp = require('./whatsapp');
-      url = whatsapp.buildWaUrl(verifyPhone, body);
-    } catch (_) { /* */ }
-  }
-  if (!sentViaApi && !url) {
-    url = `https://wa.me/?text=${encodeURIComponent(body)}`;
-  }
+  const email = String(data.email || pos.email || '').trim().toLowerCase();
+  const sent = await require('./cc-otp').issue({
+    purpose: 'web_registration',
+    subject: `customer:${pos.id}`,
+    phone: verifyPhone,
+    email,
+    name: pos.name,
+    digits: 6,
+    expiryMinutes: 15,
+    emailSubject: `${shopName} — verification code`,
+    buildText: (code, minutes) => `${shopName} — Your online ordering verification code is: ${code}\n\nEnter this code to activate your account. Valid for ${minutes} minutes.\n\nDo not share this code with anyone.`
+  });
+  return otpSendResult(sent, verifyPhone, email, 'Verification code');
+}
 
+/** Shared response for OTP sends (keeps the legacy WhatsApp-link fallback when configured). */
+function otpSendResult(sent, phone, email, label) {
+  const bits = [];
+  if (sent.delivered.includes('whatsapp')) bits.push(`WhatsApp ${maskPhone(phone)}`);
+  if (sent.delivered.includes('sms')) bits.push(`SMS ${maskPhone(phone)}`);
+  if (sent.delivered.includes('email')) bits.push(maskEmail(email));
+  if (sent.delivered.length) {
+    return {
+      sent: true,
+      via: sent.delivered.join('+'),
+      whatsapp_url: null,
+      phone_masked: phone ? maskPhone(phone) : '',
+      email_masked: email ? maskEmail(email) : '',
+      message: `${label} sent to ${bits.join(' and ')}`,
+      _dev_code: sent._dev_code
+    };
+  }
+  let url = null;
+  if (sent.wa_link_text && phone) {
+    try { url = require('./whatsapp').buildWaUrl(phone, sent.wa_link_text); } catch (_) { url = null; }
+  }
   return {
     sent: true,
-    via: sentViaApi ? 'cloud_api' : 'whatsapp_open',
-    whatsapp_url: sentViaApi ? null : url,
-    phone_masked: maskPhone(verifyPhone),
-    message: sentViaApi
-      ? `Verification code sent to WhatsApp ${maskPhone(verifyPhone)}`
-      : `WhatsApp is ready with your code for ${maskPhone(verifyPhone)}. Tap Send, then enter the 6-digit code here.`
+    via: url ? 'whatsapp_open' : 'dev',
+    whatsapp_url: url,
+    phone_masked: phone ? maskPhone(phone) : '',
+    email_masked: email ? maskEmail(email) : '',
+    message: url
+      ? `WhatsApp is ready with your code for ${maskPhone(phone)}. Tap Send, then enter the code here.`
+      : `${label} created.`,
+    _dev_code: sent._dev_code
   };
 }
 
 function verifyRegistrationCode(customerId, code) {
-  ensureRegistrationSchema();
-  const row = dbGet('SELECT * FROM web_registration_codes WHERE customer_id = ? AND expires_at > ? ORDER BY id DESC LIMIT 1',
-    [Number(customerId), nowIso()]);
-  if (!row) throw new Error('Verification code expired — request a new code');
-  if (!bcrypt.compareSync(String(code || '').trim(), row.code_hash)) throw new Error('Incorrect verification code');
-  dbRun('DELETE FROM web_registration_codes WHERE id = ?', [row.id]);
-  return row;
+  return require('./cc-otp').verify({ purpose: 'web_registration', subject: `customer:${Number(customerId)}`, code });
 }
 
 function createWebSession(customerId) {
@@ -1331,7 +1353,7 @@ function registerWebCustomer(data = {}) {
   }
 
   const existingWeb = findWebCustomerRow(phone, email, null);
-  if (existingWeb && isWebRowActive(existingWeb)) {
+  if (existingWeb && isWebRowActive(existingWeb) && existingWeb.password_hash) {
     throw new Error('This email or mobile already has an online account. Please sign in.');
   }
 
@@ -1512,82 +1534,22 @@ async function sendWebPasswordReset(data = {}) {
   const row = findWebCustomerByLogin(login);
   if (!row) throw new Error('No online account found for that email or phone');
 
-  const code = String(Math.floor(100000 + Math.random() * 900000));
-  const hash = bcrypt.hashSync(code, 10);
-  try { dbRun('DELETE FROM web_password_resets WHERE web_customer_id = ?', [row.id]); } catch (_) { /* */ }
-  const channel = (email || login.includes('@')) ? 'email' : 'phone';
-  dbRun(`INSERT INTO web_password_resets (web_customer_id, contact, channel, code_hash, expires_at)
-    VALUES (?,?,?,?,?)`, [row.id, row.phone || row.email || login, channel, hash, nowPlusMin(15)]);
-
   const shopName = dbGet('SELECT shop_name FROM shop_settings WHERE id = 1')?.shop_name || 'Shop';
-  const body = `${shopName} — Your password reset code is: ${code}\n\nEnter this code on Order Online, then type your new password. Valid for 15 minutes.\n\nDo not share this code.`;
   const waPhone = row.phone || (!login.includes('@') ? phone : '');
-  let via = 'none';
-  let whatsappUrl = null;
-  let emailUrl = null;
-  if (waPhone) {
-    const sent = await sendCustomerWhatsApp(waPhone, body, {
-      customer_id: row.customer_id || null,
-      recipient_name: `${row.first_name || ''} ${row.last_name || ''}`.trim(),
-      otp_code: code,
-      message_type: 'password_reset'
-    });
-    via = sent.sentViaApi ? 'whatsapp' : 'whatsapp_open';
-    // Always expose wa.me so the customer can open WhatsApp and send the code to themselves (same as Order Online UX).
-    whatsappUrl = sent.url || null;
-    if (!whatsappUrl && waPhone) {
-      try {
-        const whatsapp = require('./whatsapp');
-        whatsappUrl = whatsapp.buildWaUrl(waPhone, body);
-      } catch (_) { /* */ }
-    }
-  }
-  // Also route through Communication Center using configured recovery channels (SMS/Email/WhatsApp)
-  try {
-    const cc = require('./communication-center');
-    const recovery = cc.getSettings()?.recovery || {};
-    const channels = Array.isArray(recovery.channels) && recovery.channels.length
-      ? recovery.channels
-      : ['whatsapp'];
-    cc.emit('auth.password_recovery', {
-      customer_name: `${row.first_name || ''} ${row.last_name || ''}`.trim(),
-      customer_phone: waPhone || row.phone,
-      customer_email: row.email,
-      phone: waPhone || row.phone,
-      email: row.email,
-      verification_code: code,
-      expiry: 15
-    }, {
-      channels,
-      recipients: ['customer'],
-      body,
-      transactional: true,
-      source_module: 'online-ordering',
-      priority: 5,
-      dedupe_key: `pwdreset:${row.id}:${new Date().toISOString().slice(0, 16)}`
-    });
-  } catch (_) { /* CC optional */ }
-  if (row.email && (channel === 'email' || !waPhone)) {
-    emailUrl = `mailto:${encodeURIComponent(row.email)}?subject=${encodeURIComponent(`${shopName} password reset`)}&body=${encodeURIComponent(body)}`;
-    if (via === 'none') via = 'email_open';
-  }
-  if (via === 'none') throw new Error('This account has no WhatsApp number or email to send a reset code');
-
-  const bits = [];
-  if (waPhone) bits.push(`WhatsApp ${maskPhone(waPhone)}`);
-  if (row.email && (channel === 'email' || !waPhone)) bits.push(maskEmail(row.email));
-  return {
-    sent: true,
-    via,
-    whatsapp_url: whatsappUrl,
-    email_url: emailUrl,
-    phone_masked: waPhone ? maskPhone(waPhone) : '',
-    email_masked: row.email ? maskEmail(row.email) : '',
-    login_hint: login,
-    message: via === 'whatsapp'
-      ? `Reset code sent to ${bits.join(' and ')}`
-      : `Your reset code is ready for ${bits.join(' and ')}. Open the message, then enter the 6-digit code here.`
-  };
+  const toEmail = String(row.email || '').trim().toLowerCase();
+  if (!waPhone && !toEmail) throw new Error('This account has no WhatsApp number or email to send a reset code');
+  const sent = await require('./cc-otp').issue({
+    purpose: 'web_password_reset',
+    subject: `web:${row.id}`,
+    phone: waPhone,
+    email: toEmail,
+    name: `${row.first_name || ''} ${row.last_name || ''}`.trim(),
+    digits: 6,
+    expiryMinutes: 15,
+    emailSubject: `${shopName} password reset code`,
+    buildText: (code, minutes) => `${shopName} — Your password reset code is: ${code}\n\nEnter this code on Order Online, then type your new password. Valid for ${minutes} minutes.\n\nDo not share this code.`
+  });
+  return { ...otpSendResult(sent, waPhone, toEmail, 'Reset code'), email_url: null, login_hint: login };
 }
 
 function resetWebPassword(data = {}) {
@@ -1601,12 +1563,8 @@ function resetWebPassword(data = {}) {
   if (password.length < 6) throw new Error('New password must be at least 6 characters');
   const row = findWebCustomerByLogin(login);
   if (!row) throw new Error('No online account found for that email or phone');
-  const reset = dbGet('SELECT * FROM web_password_resets WHERE web_customer_id = ? AND expires_at > ? ORDER BY id DESC LIMIT 1',
-    [row.id, nowIso()]);
-  if (!reset) throw new Error('Reset code expired — request a new code');
-  if (!bcrypt.compareSync(code, reset.code_hash)) throw new Error('Incorrect reset code');
+  require('./cc-otp').verify({ purpose: 'web_password_reset', subject: `web:${row.id}`, code });
   dbRun('UPDATE web_customers SET password_hash = ?, updated_at = ? WHERE id = ?', [bcrypt.hashSync(password, 10), nowIso(), row.id]);
-  dbRun('DELETE FROM web_password_resets WHERE web_customer_id = ?', [row.id]);
   try { dbRun('UPDATE web_customer_sessions SET expires_at = ? WHERE web_customer_id = ?', [nowIso(), row.id]); } catch (_) { /* */ }
   return { success: true, message: 'Password updated. Sign in with your new password.' };
 }
@@ -1773,7 +1731,7 @@ function validateCart(branchId, cart = {}) {
   let discount = 0;
   let couponApplied = null;
   if (cart.coupon_code) {
-    const couponResult = validateCoupon(cart.coupon_code, branchId, { subtotal, items: lines }, cart.web_customer_id);
+    const couponResult = validateCoupon(cart.coupon_code, branchId, { subtotal, items: lines, fulfillment }, cart.web_customer_id);
     const isReferral = couponResult && (couponResult.type === 'referral' || couponResult.ok);
     if (isReferral) {
       discount = Number(couponResult.discount) || 0;
@@ -1792,6 +1750,10 @@ function validateCart(branchId, cart = {}) {
     } else {
       discount = Number(couponResult.discount) || 0;
       couponApplied = couponResult.coupon || couponResult;
+      if (couponApplied?.discount_type === 'free_delivery' && fulfillment === 'delivery') {
+        couponApplied = { ...couponApplied, delivery_fee_waived: deliveryFee };
+        deliveryFee = 0;
+      }
     }
   }
 
@@ -1966,7 +1928,9 @@ function validateCoupon(code, branchId, cartCtx = {}, webCustomerId = null) {
       subtotal: Number(cartCtx.subtotal) || 0,
       items: cartCtx.items || [],
       customerId,
-      requireCustomer: false
+      requireCustomer: false,
+      branchId: branchId || null,
+      forDelivery: cartCtx.fulfillment === 'delivery'
     });
     if (v.ok) {
       if (v.customer_id && customerId && Number(v.customer_id) !== Number(customerId)) {
@@ -1977,6 +1941,7 @@ function validateCoupon(code, branchId, cartCtx = {}, webCustomerId = null) {
         type: 'discount_voucher',
         code: v.code,
         discount: v.discount,
+        discount_type: v.discount_type,
         discount_percent: v.discount_type === 'percent' ? v.discount_value : 0,
         voucher_id: v.voucher_id,
         product_id: v.product_id,
@@ -2008,12 +1973,17 @@ function logOrderEvent(orderId, status, note, actorType = 'system', actorId = nu
     audit.push({ status, note, at: new Date().toISOString(), actor_type: actorType, actor_id: actorId });
     dbRun('UPDATE online_orders_local SET audit_json = ? WHERE id = ?', [JSON.stringify(audit), orderId]);
   } catch (_) { /* */ }
+  try { require('./order-sla').onOnlineEvent(orderId, status, actorType, actorId, note); } catch (err) {
+    console.warn('[sla] online:', err.message);
+  }
 }
 
 function submitOrder(branchId, payload = {}, webToken = null, idempotencyKey = null) {
   ensureSchema();
   const global = getGlobalSettings();
   if (!global.online.enabled) throw new Error('Online ordering is currently disabled');
+  const hours = getHoursStatus();
+  if (!hours.online_open) throw new Error('We are closed for online orders right now');
 
   if (idempotencyKey) {
     const existing = dbGet('SELECT * FROM online_orders_local WHERE idempotency_key = ?', [idempotencyKey]);
@@ -2149,7 +2119,10 @@ function submitOrder(branchId, payload = {}, webToken = null, idempotencyKey = n
           subtotal: cart.subtotal,
           items: cart.lines || cart.items || [],
           channel: 'order_online',
-          customerId: customer?.customer_id || null
+          customerId: customer?.customer_id || null,
+          orderId,
+          branchId,
+          forDelivery: fulfillment === 'delivery'
         });
       }
     } catch (_) { /* voucher already used or missing */ }
@@ -2421,6 +2394,11 @@ function updateOrderStatus(orderId, status, actor, opts = {}) {
     try {
       const saleId = order.sale_id;
       if (saleId) {
+        try {
+          require('./features').reverseSaleLoyalty(saleId, 1, { restoreRedeemed: false });
+        } catch (err) {
+          console.warn('[online] loyalty reverse:', err?.message || err);
+        }
         require('./referral-commission').reverseCommissionForSale(
           saleId, 1, status === 'rejected' ? 'Order rejected' : 'Order cancelled', actor
         );
@@ -2862,6 +2840,11 @@ function replyCustomerIssue(id, reply, actor) {
 }
 
 module.exports = {
+  phoneDigits,
+  phonesMatch,
+  maskPhone,
+  findWebCustomerRow,
+  createWebSession,
   getGlobalSettings,
   getHoursStatus,
   getOnlinePaymentMethods,

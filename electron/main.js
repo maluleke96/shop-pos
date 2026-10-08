@@ -413,6 +413,24 @@ function registerIpc() {
     const user = store.requireActor(actor, ['owner', 'manager', 'cashier', 'supervisor', 'assistant_manager']);
     return store.completeSale(data, user.id, user.full_name, user.role);
   }));
+  ipcMain.handle('sales:findSimilar', wrapSync((filters, actor) => {
+    store.requireActor(actor, ['owner', 'manager', 'cashier', 'supervisor', 'assistant_manager']);
+    return store.findSimilarSales(filters || {});
+  }));
+  ipcMain.handle('sales:listBackdated', wrapSync((filters, actor) => {
+    const user = store.requireActor(actor, ['owner', 'manager', 'supervisor', 'assistant_manager']);
+    if (!require('./services/authz').hasUserPermission(user, 'view_backdated_orders') && user.role !== 'owner') {
+      throw new Error('You do not have permission to view backdated orders');
+    }
+    return store.listBackdatedOrders(filters || {});
+  }));
+  ipcMain.handle('sales:backdatedSummary', wrapSync((filters, actor) => {
+    const user = store.requireActor(actor, ['owner', 'manager', 'supervisor', 'assistant_manager']);
+    if (!require('./services/authz').hasUserPermission(user, 'view_backdated_orders') && user.role !== 'owner') {
+      throw new Error('You do not have permission to view backdated orders');
+    }
+    return store.backdatedOrdersSummary(filters || {});
+  }));
   ipcMain.handle('sales:hold', wrapSync((name, cart, actor) => {
     const user = store.requireActor(actor, ['owner', 'manager', 'cashier', 'supervisor', 'assistant_manager']);
     return store.holdOrder(name, cart, user.id);
@@ -498,6 +516,26 @@ function registerIpc() {
     const user = store.requireActor(actor, ['owner', 'manager']);
     return store.recordOwnerFunding(data, user);
   }));
+  ipcMain.handle('expenses:itemSummary', wrap((filters) => {
+    requireUserSession(['owner', 'manager', 'supervisor', 'assistant_manager', 'accountant', 'bookkeeper']);
+    return store.expenseItemSummary(filters || {});
+  }));
+  ipcMain.handle('expenses:recordWithdrawal', wrapSync((data, actor) => {
+    const user = store.requireActor(actor, ['owner', 'manager']);
+    return store.recordMoneyWithdrawal(data || {}, user);
+  }));
+  ipcMain.handle('expenses:withdrawals', wrap((filters) => {
+    requireUserSession(['owner', 'manager', 'supervisor', 'assistant_manager', 'accountant', 'bookkeeper']);
+    return store.listMoneyWithdrawals(filters || {});
+  }));
+  ipcMain.handle('expenses:dailyMoney', wrap((filters) => {
+    requireUserSession(['owner', 'manager', 'supervisor', 'assistant_manager', 'accountant', 'bookkeeper']);
+    return { ...store.dailyMoneyReport(filters || {}), owner_whatsapp: require('./services/expense-app-platform').ownerWhatsAppNumber() };
+  }));
+  ipcMain.handle('expenses:dailyMoneyPdf', wrap((filters) => {
+    const u = requireUserSession(['owner', 'manager', 'supervisor', 'assistant_manager', 'accountant', 'bookkeeper']);
+    return store.dailyMoneyPdf(filters || {}, { by: u?.full_name || u?.username });
+  }));
 
   // Stock Batch & Yield (Expenses)
   ipcMain.handle('stockBatch:dashboard', wrapF((f) => { requireSession(); return store.stockBatchDashboard(f || {}); }));
@@ -513,7 +551,7 @@ function registerIpc() {
   }));
   ipcMain.handle('stockBatch:waste', wrapSync((id, d, a) => {
     const user = store.requireActor(a, ['owner', 'manager', 'assistant_manager', 'supervisor']);
-    return store.recordWaste(id, d || {}, user);
+    return store.recordBatchWaste(id, d || {}, user);
   }));
   ipcMain.handle('stockBatch:setActualYield', wrapSync((id, y, a) => {
     const user = store.requireActor(a, ['owner', 'manager', 'assistant_manager', 'supervisor']);
@@ -538,10 +576,12 @@ function registerIpc() {
     return store.saveStockBatchSettings(d || {}, user);
   }));
   ipcMain.handle('stockBatch:productAnalysis', wrapF((f) => { requireSession(); return store.productYieldAnalysis(f || {}); }));
+  ipcMain.handle('stockBatch:mealsUsing', wrapF((id) => { requireSession(); return require('./services/stock-batch-yield').listMealsUsingIngredient(id); }));
   ipcMain.handle('stockBatch:profitability', wrapF((f) => { requireSession(); return store.profitabilityReport(f || {}); }));
 
   // Customers
   ipcMain.handle('customers:get', wrap((search) => store.getCustomers(search)));
+  ipcMain.handle('customers:summary', wrap(() => store.getCustomersSummary()));
   ipcMain.handle('customers:getOne', wrap((id) => store.getCustomer(id)));
   ipcMain.handle('customers:save', wrap((data, actor) => {
     const user = store.requireActor(actor, ['owner', 'manager', 'cashier', 'supervisor', 'assistant_manager']);
@@ -1290,6 +1330,14 @@ function registerIpc() {
     const user = store.requireActor(actor, ['owner', 'manager', 'cashier', 'supervisor', 'assistant_manager']);
     return require('./services/taken-orders').payTakenOrder(id, data || {}, user);
   }));
+  ipcMain.handle('taken:update', wrapF((id, data, actor) => {
+    const user = store.requireActor(actor, ['owner', 'manager', 'assistant_manager', 'supervisor']);
+    return require('./services/taken-orders').updateTakenOrder(id, data || {}, user);
+  }));
+  ipcMain.handle('taken:delete', wrapF((id, actor) => {
+    const user = store.requireActor(actor, ['owner', 'manager', 'assistant_manager', 'supervisor']);
+    return require('./services/taken-orders').deleteTakenOrder(id, user);
+  }));
   // Gift cards
   ipcMain.handle('giftcards:get', wrapF((s) => { requireSession(); return store.getGiftCards(s); }));
   ipcMain.handle('giftcards:create', wrapF((data, actor) => {
@@ -1495,9 +1543,40 @@ function registerIpc() {
   }));
   ipcMain.handle('kitchen:get', wrapF((status) => store.getKitchenOrders(status)));
   ipcMain.handle('kitchen:status', wrapF((id, status, actor) => {
-    store.requireActor(actor || store.getUserSession(), ['owner', 'manager', 'cashier', 'supervisor', 'assistant_manager']);
-    return store.updateKitchenOrderStatus(id, status);
+    const user = store.requireActor(actor || store.getUserSession(), ['owner', 'manager', 'cashier', 'supervisor', 'assistant_manager']);
+    return store.updateKitchenOrderStatus(id, status, user);
   }));
+  {
+    const sla = require('./services/order-sla');
+    const kioskSvc = require('./services/kiosk-platform');
+    const SLA_VIEW = ['owner', 'manager', 'assistant_manager', 'supervisor'];
+    const SLA_OPS = ['owner', 'manager', 'assistant_manager', 'supervisor', 'cashier'];
+    ipcMain.handle('sla:meta', wrapF(() => {
+      requireUserSession(SLA_OPS);
+      return { stages: sla.STAGES, order_types: sla.ORDER_TYPES, kitchen_reasons: sla.KITCHEN_REASONS, delivery_reasons: sla.DELIVERY_REASONS,
+        exception_types: sla.EXCEPTION_TYPES, incident_levels: sla.INCIDENT_LEVELS };
+    }));
+    ipcMain.handle('sla:settings', wrapF(() => { requireUserSession(SLA_VIEW); return sla.getSettings(); }));
+    ipcMain.handle('sla:saveSettings', wrapF((data) => sla.saveSettings(data || {}, requireUserSession(['owner', 'manager']))));
+    ipcMain.handle('sla:live', wrapF((f) => { requireUserSession(SLA_OPS); return sla.liveBoard(f || {}); }));
+    ipcMain.handle('sla:timeline', wrapF((ref) => {
+      const u = requireUserSession(SLA_OPS);
+      return sla.timeline(ref, { includeIncidents: SLA_VIEW.includes(u.role) });
+    }));
+    ipcMain.handle('sla:delayReason', wrapF((id, data) => sla.setDelayReason(id, data || {}, requireUserSession(SLA_OPS))));
+    ipcMain.handle('sla:exception', wrapF((id, data) => sla.setException(id, data || {}, requireUserSession(SLA_VIEW))));
+    ipcMain.handle('sla:pause', wrapF((id, reason) => sla.pauseTimer(id, reason, requireUserSession(SLA_VIEW))));
+    ipcMain.handle('sla:resume', wrapF((id) => sla.resumeTimer(id, requireUserSession(SLA_VIEW))));
+    ipcMain.handle('sla:report', wrapF((f) => { requireUserSession(SLA_VIEW); return sla.slaReport(f || {}); }));
+    ipcMain.handle('sla:dailyReport', wrapF((f) => { requireUserSession(SLA_VIEW); return sla.dailyOrderReport(f || {}); }));
+    ipcMain.handle('sla:kioskReport', wrapF((f) => { requireUserSession(SLA_VIEW); return sla.kioskReport(f || {}); }));
+    ipcMain.handle('sla:incidents', wrapF((f) => { requireUserSession(SLA_VIEW); return sla.listIncidents(f || {}); }));
+    ipcMain.handle('sla:updateIncident', wrapF((id, data) => sla.updateIncident(id, data || {}, requireUserSession(SLA_VIEW))));
+    ipcMain.handle('sla:adjustment', wrapF((id, action, data) => sla.adjustmentAction(id, action, data || {}, requireUserSession(SLA_VIEW))));
+    ipcMain.handle('sla:kioskOrders', wrapF((f) => { requireUserSession(SLA_OPS); return sla.kioskOrdersForPos(f || {}); }));
+    ipcMain.handle('sla:kioskHealth', wrapF((f) => { requireUserSession(SLA_VIEW); return kioskSvc.kioskHealth(f || {}); }));
+    ipcMain.handle('sla:kioskErrors', wrapF((f) => { requireUserSession(SLA_VIEW); return kioskSvc.listKioskErrors(f || {}); }));
+  }
   ipcMain.handle('kitchen:create', wrapF((data, actor) => {
     const user = store.requireActor(actor, ['owner', 'manager', 'cashier', 'supervisor', 'assistant_manager']);
     return store.createKitchenOrder(data, user.id);
@@ -1545,7 +1624,16 @@ function registerIpc() {
     return store.updatePurchaseOrder(id, data, user.id, user.username);
   }));
   // Audit & sales management
-  ipcMain.handle('audit:salesList', wrapF((f) => { requireSession(); return store.getUnifiedSalesList(f); }));
+  ipcMain.handle('audit:salesList', wrapF((f) => {
+    const u = requireSession();
+    const filters = { ...(f || {}) };
+    if (String(u?.role || '').toLowerCase() === 'cashier' && u.id) filters.cashier_id = u.id;
+    return store.getUnifiedSalesList(filters);
+  }));
+  ipcMain.handle('audit:salesByCashier', wrapF((f) => {
+    requireUserSession(['owner', 'manager', 'supervisor', 'assistant_manager', 'accountant']);
+    return store.getSalesByCashier(f || {});
+  }));
   ipcMain.handle('audit:searchSales', wrapF((f) => store.searchSalesExplorer(f)));
   ipcMain.handle('audit:voidSale', wrapF((id, reason, actor, supervisorCode) => {
     const user = store.requireActor(actor, ['owner', 'manager', 'cashier', 'supervisor', 'assistant_manager']);
@@ -2943,6 +3031,7 @@ function registerIpc() {
     deliveryActor();
     return delivery.getBranchSettings(branchId);
   }));
+  ipcMain.handle('delivery:posPlaces', wrap((branchId) => delivery.getPosDeliveryPlaces(branchId)));
   ipcMain.handle('delivery:saveBranchSettings', wrap((branchId, data, actor) => {
     const user = actor || deliveryActor();
     return delivery.saveBranchSettings(branchId, data || {}, user);

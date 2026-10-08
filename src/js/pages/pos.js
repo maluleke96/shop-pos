@@ -3833,6 +3833,8 @@ const POSPage = {
         <div style="margin-top:6px">📞 ${Utils.escHtml(o.phone || '—')}</div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px">
           <button type="button" class="btn btn-success btn-sm" data-taken-pay="${o.id}">PAY</button>
+          <button type="button" class="btn btn-ghost btn-sm" data-taken-edit="${o.id}">Edit</button>
+          <button type="button" class="btn btn-danger btn-sm" data-taken-del="${o.id}">Delete</button>
           <a class="btn btn-ghost btn-sm" href="tel:${Utils.escHtml(String(o.phone || '').replace(/\s/g, ''))}">CALL</a>
           <button type="button" class="btn btn-ghost btn-sm" data-taken-wa="${o.id}" data-phone="${Utils.escHtml(o.phone || '')}" data-name="${Utils.escHtml(o.customer_name || '')}">WHATSAPP</button>
         </div>
@@ -3840,6 +3842,41 @@ const POSPage = {
     }).join('');
     Utils.showModal('UNPAID / TAKEN ORDERS', `<div style="max-height:60vh;overflow:auto">${html}</div>`,
       '<button class="btn btn-ghost" onclick="Utils.hideModal()">Close</button>');
+    const canAdmin = ['owner', 'manager', 'assistant_manager', 'supervisor'].includes(this.app.user?.role);
+    document.querySelectorAll('[data-taken-edit], [data-taken-del]').forEach((btn) => {
+      if (!canAdmin) btn.style.display = 'none';
+    });
+    document.querySelectorAll('[data-taken-edit]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const o = rows.find((x) => Number(x.id) === Number(btn.dataset.takenEdit));
+        if (!o) return;
+        Utils.showModal('Edit taken order', `
+          <div class="field"><label>Customer</label><input id="to-name" value="${Utils.escHtml(o.customer_name || '')}"></div>
+          <div class="field"><label>Phone</label><input id="to-phone" value="${Utils.escHtml(o.phone || '')}"></div>
+          <div class="field"><label>Order</label><input id="to-summary" value="${Utils.escHtml(o.order_summary || '')}"></div>
+          <div class="field"><label>Amount</label><input id="to-amount" type="number" step="0.01" value="${Number(o.amount_owed) || 0}"></div>`,
+          '<button type="button" class="btn btn-primary" id="to-save">Save</button>');
+        document.getElementById('to-save')?.addEventListener('click', async () => {
+          const r = await API.updateTakenOrder(o.id, {
+            customer_name: document.getElementById('to-name')?.value,
+            phone: document.getElementById('to-phone')?.value,
+            order_summary: document.getElementById('to-summary')?.value,
+            amount_owed: document.getElementById('to-amount')?.value
+          }, this.app.user);
+          if (!r || r.success === false) return Utils.toast(r?.error || 'Save failed', 'error');
+          Utils.hideModal();
+          this.showUnpaidTakenOrders();
+        });
+      });
+    });
+    document.querySelectorAll('[data-taken-del]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        if (!confirm('Permanently delete this taken order?')) return;
+        const r = await API.deleteTakenOrder(Number(btn.dataset.takenDel), this.app.user);
+        if (!r || r.success === false) return Utils.toast(r?.error || 'Delete failed', 'error');
+        this.showUnpaidTakenOrders();
+      });
+    });
     document.querySelectorAll('[data-taken-pay]').forEach((btn) => {
       const row = rows.find((o) => Number(o.id) === Number(btn.dataset.takenPay));
       btn.addEventListener('click', () => this.payTakenOrderPrompt(Number(btn.dataset.takenPay), currency, Number(row?.amount_owed) || 0));

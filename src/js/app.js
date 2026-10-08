@@ -125,7 +125,7 @@ const App = {
     ]
   },
   _adminSectionScripts: {
-    staffhr: ['js/pages/admin-staff.js', 'js/pages/staff.js', 'js/pages/staff-owner-salary.js'],
+    staffhr: ['js/pages/admin-staff.js', 'js/pages/staff.js', 'js/pages/staff-owner-salary.js', 'js/pages/admin-recruitment.js'],
     staffportal: ['js/pages/staff.js', 'js/pages/staff-owner-salary.js'],
     'hr-workspace': ['js/pages/admin-hr.js', 'js/pages/admin-staff.js'],
     'hr-approvals': ['js/pages/admin-hr.js', 'js/pages/admin-staff.js'],
@@ -140,7 +140,10 @@ const App = {
     'menu-builder': ['js/pages/admin-menu-builder.js', 'js/promo-poster.js'],
     'promo-video-builder': ['js/pages/admin-promo-video-builder.js', 'js/pages/admin-promo-video-advanced.js'],
     radio: ['js/pages/admin-radio.js'],
-    'communication-center': ['js/pages/admin-communication-center.js'],
+    'communication-center': ['js/pages/admin-communication-center.js', 'js/pages/admin-app-channel.js'],
+    'marketing-center': ['js/pages/admin-marketing-center.js'],
+    'order-sla': ['js/pages/admin-order-sla.js'],
+    'financial-intelligence': ['js/pages/admin-financial-intelligence.js'],
     'delivery-dept': ['js/pages/admin-delivery.js'],
     'referral-dept': ['js/pages/admin-referral.js'],
     'business-modules': ['js/pages/admin-business-modules.js'],
@@ -156,6 +159,7 @@ const App = {
     'pos-menu': ['js/pages/admin-audit.js'],
     overview: ['js/pages/admin-audit.js'],
     'taken-orders': ['js/pages/admin-pro.js'],
+    'backdated-orders': ['js/pages/admin-backdated-orders.js'],
     onaccount: ['js/pages/admin-pro.js'],
     developer: ['js/pages/admin-pro.js'],
     formats: ['js/pages/admin-pro.js'],
@@ -164,6 +168,7 @@ const App = {
     database: ['js/pages/admin-pro.js'],
     'system-health': ['js/pages/admin-pro.js'],
     analytics: ['js/pages/admin-web-analytics.js'],
+    'online-orders': ['js/pages/admin-web-analytics.js', 'js/pages/admin-customer-access.js'],
     users: ['js/pages/users.js'],
     permissions: ['js/pages/users.js']
   },
@@ -183,11 +188,16 @@ const App = {
     'js/pages/admin-promo-video-advanced.js',
     'js/pages/admin-radio.js',
     'js/pages/admin-communication-center.js',
+    'js/pages/admin-app-channel.js',
+    'js/pages/admin-marketing-center.js',
+    'js/pages/admin-order-sla.js',
+    'js/pages/admin-financial-intelligence.js',
     'js/pages/admin-quotes.js',
     'js/pages/admin-payroll.js',
     'js/pages/admin-employee-month.js',
     'js/pages/admin-recruitment.js',
     'js/pages/admin-web-analytics.js',
+    'js/pages/admin-customer-access.js',
     'js/pages/admin-delivery.js',
     'js/pages/admin-referral.js',
     'js/pages/admin-business-modules.js',
@@ -3669,7 +3679,10 @@ const App = {
         if (oh) this.applyOperatingHours(oh);
       } catch (_) { /* keep last hours */ }
     };
-    this._hoursWatch = setInterval(tick, 2000);
+    this._hoursWatch = setInterval(() => {
+      if (document.hidden) return;
+      tick();
+    }, 10000);
     tick();
   },
 

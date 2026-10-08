@@ -839,3 +839,30 @@ input:focus, textarea:focus, select:focus {
 .web-consent-card p { margin: 0 0 8px; font-size: 13px; line-height: 1.45; }
 .web-consent-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .web-consent-actions .btn-outline { border-color: #94a3b8; color: #e2e8f0; }
+
+/* App notifications channel */
+.app-bell-btn{position:relative;border:0;background:transparent;font-size:18px;cursor:pointer;padding:6px 8px;line-height:1}
+.app-bell-badge{position:absolute;top:0;right:0;min-width:16px;height:16px;padding:0 4px;border-radius:999px;background:#dc2626;color:#fff;font-size:10px;font-weight:800;display:grid;place-items:center}
+.inbox-card,.promo-card{display:block;width:100%;text-align:left;border:1px solid var(--border);background:var(--surface);border-radius:var(--radius-sm);padding:12px;margin:10px 0;cursor:pointer;color:inherit;font:inherit}
+.inbox-unread{border-color:var(--primary);box-shadow:0 0 0 1px var(--primary-soft)}.pref-on{background:var(--primary)!important;color:#fff!important}
+
+/* Simple Phone Access */
+.pa-card{text-align:center}
+.pa-card label{text-align:left}
+.pa-wave{font-size:44px;line-height:1;margin-bottom:6px}
+.pa-lead{font-size:18px;margin:4px 0 16px}
+.pa-phone-input{width:100%;font-size:26px;padding:14px 16px;border-radius:14px;border:2px solid var(--border);text-align:center;letter-spacing:1px;box-sizing:border-box;margin:6px 0 10px}
+.pa-phone-input:focus{outline:none;border-color:var(--primary)}
+.pa-code-input{letter-spacing:12px;font-size:32px}
+.pa-continue{font-size:18px;padding:16px;font-weight:700;letter-spacing:.5px;margin-top:6px}
+.pa-stay{display:flex!important;align-items:center;gap:8px;font-size:14px;justify-content:center;margin:4px 0 10px}
+.pa-phone-chip{display:inline-block;background:var(--primary-soft);color:var(--primary-dark);border-radius:999px;padding:6px 14px;font-weight:600;margin-bottom:12px}
+.pa-stats{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin:16px 0}
+.pa-stat{background:var(--primary-soft);border-radius:14px;padding:12px 8px;display:flex;flex-direction:column;align-items:center;gap:2px}
+.pa-stat span{font-size:22px}
+.pa-stat strong{font-size:22px;color:var(--primary-dark)}
+.pa-stat small{font-size:12px;color:var(--muted,#64748b)}
+.pa-account-row{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)}
+.pa-account-row span{color:var(--muted,#64748b)}
+.pa-account-links{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+

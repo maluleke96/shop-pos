@@ -546,7 +546,7 @@ function postTakenOrderPayment(saleId, method, amount, actor) {
     event_key: `taken_pay_${saleId}_${method}_${amt}`,
     status: 'posted',
     lines
-  }, actor || { id: 0, username: 'system', role: 'owner' });
+  }, actor || SYSTEM_ACTOR);
 }
 
 function queueIntegrationError(system, type, id, err, payload) {
@@ -711,7 +711,7 @@ function reverseSaleAccounting(saleId, reason) {
   if (!sale) return null;
 
   const voidReason = reason || 'Sale voided';
-  const actor = { id: null, username: 'system', role: 'owner', full_name: voidReason };
+  const actor = { _system: true, id: null, username: 'system', role: 'owner', full_name: voidReason };
 
   let journal = dbGet(
     `SELECT id FROM acc_journals WHERE source_type='sale' AND source_id=? AND event_key='sale_main' AND status='posted'`,
@@ -767,24 +767,71 @@ function reverseSaleAccountingSnapshot(snapshot = {}, stableSourceId = null, rea
   return reverseJournal(existing.id, actor);
 }
 
-function postFromExpense(expenseId) {
+const OWNER_CAPITAL_ACCOUNT_ID = 17;
+const OWNER_DRAWING_ACCOUNT_ID = 18;
+
+function expenseCreditLine(e, amt) {
+  if (String(e?.funding_source || '').toLowerCase() === 'owner') {
+    return { account_id: OWNER_CAPITAL_ACCOUNT_ID, debit: 0, credit: amt, description: 'Paid by owner (capital)' };
+  }
+  return { account_id: tenderAccount(e?.payment_method), debit: 0, credit: amt, description: 'Expense payment' };
+}
+
+/** Owner cash put into the business: Dr cash/bank, Cr Owner Capital. Owner-funded purchases post via the linked expense. */
+function postFromOwnerFunding(funding) {
+  ensureReady();
+  if (!funding || funding.funding_type !== 'cash_injection' || funding.expense_id) return null;
+  const amt = round2(funding.amount);
+  if (!(amt > 0)) return null;
+  const existing = dbGet(
+    `SELECT id FROM acc_journals WHERE source_type='owner_funding' AND source_id=? AND event_key='owner_funding' AND status='posted'`,
+    [funding.id]
+  );
+  if (existing) return getJournal(existing.id);
+  return postJournal({
+    date: String(funding.funding_date || today()).slice(0, 10),
+    type: 'owner',
+    description: funding.description || 'Owner cash into business',
+    reference: `OWN-${funding.id}`,
+    source_type: 'owner_funding', source_id: funding.id, event_key: 'owner_funding',
+    lines: [
+      { account_id: tenderAccount(funding.payment_method), debit: amt, credit: 0, description: 'Owner capital in' },
+      { account_id: OWNER_CAPITAL_ACCOUNT_ID, debit: 0, credit: amt, description: 'Owner capital' }
+    ],
+    status: 'posted'
+  }, SYSTEM_ACTOR);
+}
+
+function postFromOwnerWithdrawal(w) {
+  ensureReady();
+  const amt = round2(w?.amount);
+  if (!w || !(amt > 0)) return null;
+  const existing = dbGet(
+    `SELECT id FROM acc_journals WHERE source_type='owner_withdrawal' AND source_id=? AND event_key='owner_withdrawal' AND status='posted'`,
+    [w.id]
+  );
+  if (existing) return getJournal(existing.id);
+  const who = [w.taken_by && `taken by ${w.taken_by}`, w.authorised_by && `authorised by ${w.authorised_by}`].filter(Boolean).join(', ');
+  return postJournal({
+    date: String(w.withdrawal_date || today()).slice(0, 10),
+    type: 'owner',
+    description: `Money withdrawal: ${w.purpose || 'Owner drawing'}${who ? ` (${who})` : ''}`,
+    reference: `WDR-${w.id}`,
+    source_type: 'owner_withdrawal', source_id: w.id, event_key: 'owner_withdrawal',
+    lines: [
+      { account_id: OWNER_DRAWING_ACCOUNT_ID, debit: amt, credit: 0, description: 'Owner drawing' },
+      { account_id: tenderAccount(w.payment_method || 'cash'), debit: 0, credit: amt, description: 'Money withdrawn' }
+    ],
+    status: 'posted'
+  }, SYSTEM_ACTOR);
+}
+
+function postFromExpense(expenseId, meta = {}) {
   ensureReady();
   try {
     const e = dbGet(`SELECT * FROM expenses WHERE id=?`, [expenseId]);
     if (!e) throw new Error('Expense not found');
-    const d = defaults();
-    const amt = round2(e.amount);
-    const lines = [
-      { account_id: d.expense, debit: amt, credit: 0, description: e.category || e.description || 'Expense' },
-      { account_id: tenderAccount(e.payment_method), debit: 0, credit: amt, description: 'Expense payment' }
-    ];
-    return postJournal({
-      date: String(e.expense_date || e.created_at || today()).slice(0, 10),
-      type: 'expense',
-      description: e.description || e.category || 'Expense',
-      source_type: 'expense', source_id: expenseId, event_key: 'expense_main',
-      lines, status: 'posted'
-    }, { id: e.created_by, role: 'owner', username: 'system', full_name: 'Expense sync' });
+    return postFromExpenseSnapshot({ expense: e }, expenseId, meta || {});
   } catch (err) {
     queueIntegrationError('expenses', 'expense', expenseId, err);
     throw err;
@@ -812,7 +859,7 @@ function postFromPurchaseReceive(poId) {
       date: today(), type: 'purchase', description: `Stock received PO #${poId}`,
       source_type: 'purchase_order', source_id: poId, event_key: 'po_receive',
       lines, status: 'posted'
-    }, { role: 'owner', username: 'system', full_name: 'PO sync' });
+    }, { ...SYSTEM_ACTOR, full_name: 'PO sync' });
   } catch (err) {
     queueIntegrationError('purchasing', 'purchase_order', poId, err);
     throw err;
@@ -836,7 +883,7 @@ function postFromSupplierPayment(paymentId) {
       type: 'payment', description: 'Supplier payment',
       source_type: 'supplier_payment', source_id: paymentId, event_key: 'supplier_pay',
       lines, status: 'posted'
-    }, { role: 'owner', username: 'system', full_name: 'Supplier pay sync' });
+    }, { ...SYSTEM_ACTOR, full_name: 'Supplier pay sync' });
   } catch (err) {
     queueIntegrationError('purchasing', 'supplier_payment', paymentId, err);
     throw err;
@@ -876,7 +923,7 @@ function postFromExpenseSnapshot(snapshot = {}, stableSourceId = null, meta = {}
   if (amt <= 0) return null;
   const lines = [
     { account_id: d.expense, debit: amt, credit: 0, description: e.category || e.description || 'Expense' },
-    { account_id: tenderAccount(e.payment_method), debit: 0, credit: amt, description: 'Expense payment' }
+    expenseCreditLine(e, amt)
   ];
   return postJournal({
     date: String(e.expense_date || e.created_at || today()).slice(0, 10),
@@ -3048,6 +3095,8 @@ module.exports = {
   reverseSaleAccountingSnapshot,
   postFromExpense,
   postFromExpenseSnapshot,
+  postFromOwnerFunding,
+  postFromOwnerWithdrawal,
   postFromReturnSnapshot,
   postFromPurchaseReceiveSnapshot,
   postFromSupplierPaymentSnapshot,

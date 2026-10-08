@@ -8,7 +8,7 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 
 const root = path.join(__dirname, '..');
-const installersRoot = path.join(
+const installersRoot = process.env.SHOP_POS_INSTALLERS_DIR || path.join(
   process.env.USERPROFILE || process.env.HOME || '',
   'Downloads',
   'ShopPOS-Installers'
@@ -91,6 +91,62 @@ const apps = [
     appId: 'com.shoppos.accounting',
     artifact: 'ShopPOS-Accounting',
     folder: 'Accounting'
+  },
+  {
+    mode: 'manager',
+    name: 'Business Manager',
+    appId: 'com.shoppos.manager',
+    artifact: 'ShopPOS-Manager',
+    folder: 'Manager',
+    liveShell: 'electron/manager-shell.js'
+  },
+  {
+    mode: 'expense',
+    name: 'Expenses',
+    appId: 'com.shoppos.expense',
+    artifact: 'ShopPOS-Expenses',
+    folder: 'Expenses',
+    livePath: '/expenses/'
+  },
+  {
+    mode: 'mgr-hr',
+    name: 'Manager Supervisor Portal',
+    appId: 'com.shoppos.mgrhr',
+    artifact: 'ShopPOS-MgrHr',
+    folder: 'Manager-Supervisor',
+    liveShell: 'electron/mgr-hr-shell.js'
+  },
+  {
+    mode: 'driver',
+    name: 'Driver App',
+    appId: 'com.shoppos.driver',
+    artifact: 'ShopPOS-Driver',
+    folder: 'Driver',
+    livePath: '/driver/'
+  },
+  {
+    mode: 'order',
+    name: 'Online Ordering',
+    appId: 'com.shoppos.order',
+    artifact: 'ShopPOS-OnlineOrdering',
+    folder: 'Online-Ordering',
+    liveShell: 'electron/order-shell.js'
+  },
+  {
+    mode: 'communication',
+    name: 'Communication Center',
+    appId: 'com.shoppos.communication',
+    artifact: 'ShopPOS-CommunicationCenter',
+    folder: 'Communication-Center',
+    livePath: '/communication-center-app.html'
+  },
+  {
+    mode: 'radio',
+    name: 'Shop Radio',
+    appId: 'com.shoppos.radio',
+    artifact: 'ShopPOS-Radio',
+    folder: 'Radio',
+    livePath: '/radio-app.html'
   }
 ];
 
@@ -136,7 +192,15 @@ function safeCopy(src, dest) {
 for (const a of apps) {
   console.log(`\n=== Building ${a.name} (${a.mode}) — local-first ===`);
   const bake = path.join(root, 'electron', `cloud-shell-config-${a.mode}.js`);
-  if (a.liveShell) {
+  if (a.livePath) {
+    fs.writeFileSync(
+      bake,
+      `process.env.SHOP_POS_SYNC_URL = ${JSON.stringify(cloudUrl)};\n` +
+        `process.env.SHOP_POS_LIVE_PATH = ${JSON.stringify(a.livePath)};\n` +
+        `process.env.SHOP_POS_WINDOW_TITLE = ${JSON.stringify(a.name)};\n` +
+        `require('./live-url-shell.js');\n`
+    );
+  } else if (a.liveShell) {
     fs.writeFileSync(
       bake,
       `process.env.SHOP_POS_APP_MODE = ${JSON.stringify(a.mode)};\n` +
@@ -157,10 +221,12 @@ for (const a of apps) {
     appId: a.appId,
     productName: a.name,
     directories: { output: path.join('dist', 'cloud-apps', a.mode), buildResources: 'build' },
-    files: a.liveShell
-      ? [a.liveShell, 'package.json']
-      : ['electron/**/*', 'src/**/*', 'mobile/**/*', 'lib/**/*', 'package.json'],
-    extraMetadata: { main: a.liveShell || `electron/cloud-shell-config-${a.mode}.js`, name: a.appId },
+    files: a.livePath
+      ? ['electron/live-url-shell.js', `electron/cloud-shell-config-${a.mode}.js`, 'package.json']
+      : (a.liveShell
+        ? [a.liveShell, `electron/cloud-shell-config-${a.mode}.js`, 'package.json']
+        : ['electron/**/*', 'src/**/*', 'mobile/**/*', 'lib/**/*', 'package.json']),
+    extraMetadata: { main: `electron/cloud-shell-config-${a.mode}.js`, name: a.appId },
     win: {
       target: [
         { target: 'nsis', arch: ['x64'] },

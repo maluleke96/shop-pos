@@ -997,6 +997,12 @@ async function main() {
   } catch (e) {
     console.error('[DB] Accounting bootstrap failed:', e.message || e);
   }
+  try {
+    require('./electron/services/order-sla').startScanner(60000);
+    console.log('[DB] Order SLA scanner started');
+  } catch (e) {
+    console.warn('[DB] Order SLA scanner:', e.message || e);
+  }
   console.log(`RPC ready — ${Object.keys(rpc.handlers).length} handlers`);
 
   const server = http.createServer(async (req, res) => {
@@ -1253,6 +1259,24 @@ async function main() {
       }
     }
 
+    if (urlPath.startsWith('/api/expense-line-photo/')) {
+      const parts = urlPath.replace('/api/expense-line-photo/', '').split('/').filter(Boolean);
+      const expenseId = parts[0];
+      const lineIndex = parts[1];
+      try {
+        const { getExpenseLinePhoto } = require('./lib/expense-documents');
+        const file = getExpenseLinePhoto(expenseId, lineIndex);
+        return fs.readFile(file.path, (err, buf) => {
+          if (err) { res.writeHead(404); return res.end('Not found'); }
+          res.writeHead(200, { 'Content-Type': file.mime || 'image/jpeg', 'Cache-Control': 'private, max-age=3600', ...corsHeaders() });
+          res.end(buf);
+        });
+      } catch (e) {
+        res.writeHead(404);
+        return res.end('Not found');
+      }
+    }
+
     const PUBLIC_IMAGE_CACHE = 'public, max-age=86400, stale-while-revalidate=604800';
 
     if (urlPath.startsWith('/api/product-image/')) {
@@ -1260,6 +1284,10 @@ async function main() {
       try {
         const { getProductImage } = require('./lib/product-images');
         const file = getProductImage(Number(productId));
+        if (file.redirectUrl) {
+          res.writeHead(302, { Location: file.redirectUrl, 'Cache-Control': PUBLIC_IMAGE_CACHE, ...corsHeaders() });
+          return res.end();
+        }
         res.writeHead(200, { 'Content-Type': file.mime, 'Cache-Control': PUBLIC_IMAGE_CACHE, ...corsHeaders() });
         return res.end(file.buffer);
       } catch (e) {
@@ -1370,6 +1398,10 @@ async function main() {
       try {
         const kiosk = require('./electron/services/kiosk-platform');
         const file = kiosk.getKioskProductImage(Number(productId), token);
+        if (file.redirectUrl) {
+          res.writeHead(302, { Location: file.redirectUrl, 'Cache-Control': 'private, max-age=3600', ...corsHeaders() });
+          return res.end();
+        }
         if (file.buffer) {
           res.writeHead(200, { 'Content-Type': file.mime, 'Cache-Control': 'private, max-age=3600', ...corsHeaders() });
           return res.end(file.buffer);
@@ -1407,6 +1439,26 @@ async function main() {
       }
     }
 
+    if (urlPath === '/cc/unsubscribe') {
+      const u = new URL(req.url, 'http://local');
+      const p = String(u.searchParams.get('p') || '').replace(/\D/g, '');
+      const sig = String(u.searchParams.get('s') || '').replace(/[^a-f0-9]/gi, '');
+      const page = (msg, form) => `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Unsubscribe</title></head><body style="font-family:Arial,sans-serif;max-width:480px;margin:40px auto;padding:0 16px"><h2>Marketing messages</h2><p>${msg}</p>${form || ''}</body></html>`;
+      if (req.method === 'POST') {
+        try {
+          require('./electron/services/cc-scheduler').optOutSigned(p, sig);
+          res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+          return res.end(page('You have been unsubscribed from marketing messages. You will still receive order, loyalty points and security messages.'));
+        } catch (e) {
+          res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
+          return res.end(page('This unsubscribe link is not valid.'));
+        }
+      }
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      return res.end(page('Stop receiving marketing messages (promotions and scheduled offers)?',
+        `<form method="post" action="/cc/unsubscribe?p=${p}&s=${sig}"><button type="submit" style="padding:10px 18px">Unsubscribe</button></form>`));
+    }
+
     if (urlPath === '/rpc') {
       if (req.method === 'GET') {
         return writeJson(res, 200, {
@@ -1432,14 +1484,19 @@ async function main() {
       const idem = req.headers['x-idempotency-key'];
       if (idem && !body.clientRequestId) body.clientRequestId = String(idem);
 
-      const result = await handleRpcPost({
+      const requestContext = require('./lib/request-context');
+      const result = await requestContext.run({
+        ip: requestContext.clientIpFromReq(req),
+        device: String(req.headers['x-device-id'] || '').slice(0, 120)
+      }, () => handleRpcPost({
         handlers: rpc.handlers,
         session: rpc.session,
         persistNow: rpc.persistNow,
         sessions: rpc.sessions,
+        userPrimarySession: rpc.userPrimarySession,
         body,
         sessionTokenHeader: req.headers['x-session-token'] || ''
-      });
+      }));
       return writeJson(res, result.status, result.json, result.headers);
     }
 

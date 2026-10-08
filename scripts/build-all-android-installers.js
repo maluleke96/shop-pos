@@ -52,6 +52,15 @@ ${apks.map((f) => `  • ${f}`).join('\n')}
   ShopPOS-Driver.apk         → …/driver/
   ShopPOS-Manager.apk        → …/manager/
   ShopPOS-OnlineOrdering.apk → …/order/
+  ShopPOS-ManagerOperations.apk → …/manager-ops/
+  ShopPOS-ReferralCommission.apk → …/referral-commission-app.html
+  ShopPOS-Kiosk.apk → …/kiosk/
+  ShopPOS-Drive-Thru.apk → …/drive-thru/
+  ShopPOS-Kitchen-Display.apk → …/kitchen-display.html
+  ShopPOS-Customer-Order-Display.apk → …/customer-display.html
+
+If an APK shows "Update" instead of Install, uninstall the old app first — earlier
+ops builds accidentally shared one Android package name.
 
 Requires internet. When you update the shop online, Android apps update automatically
 (no new APK needed for UI/data changes). APK updates only needed for native shell changes.

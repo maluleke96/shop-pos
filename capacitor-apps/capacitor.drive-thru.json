@@ -1,0 +1,7 @@
+{
+  "appId": "com.shoppos.drivethru",
+  "appName": "Shop POS Drive-Thru",
+  "webDir": "www",
+  "server": { "androidScheme": "https" },
+  "android": { "allowMixedContent": false }
+}

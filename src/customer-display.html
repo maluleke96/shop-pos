@@ -7,59 +7,74 @@
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: Segoe UI, system-ui, sans-serif; background: #0b1220; color: #f8fafc; min-height: 100vh; }
-    header { padding: 16px 28px; background: #1e293b; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #334155; }
+    header { padding: 16px 28px; background: #1e293b; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #334155; gap: 16px; }
+    header .brand { display: flex; align-items: center; gap: 14px; }
+    #cds-logo { width: 48px; height: 48px; object-fit: contain; border-radius: 8px; display: none; }
+    #cds-logo[src]:not([src=""]) { display: block; }
+    header h1 { font-size: clamp(22px, 3vw, 32px); font-weight: 800; }
+    header .clock { color: #94a3b8; font-size: 15px; text-align: right; }
+    .conn { font-size: 12px; font-weight: 700; margin-top: 4px; }
+    .conn.ok { color: #4ade80; }
+    .conn.warn { color: #fbbf24; }
     .cart-strip { margin: 12px 20px 0; padding: 12px 16px; background: #111827; border: 1px solid #334155; border-radius: 12px; }
     .cart-strip[hidden] { display: none !important; }
-    .cart-strip strong { display: block; margin-bottom: 8px; }
-    #cds-cart-lines { display: flex; flex-direction: column; gap: 4px; color: #cbd5e1; font-size: 14px; }
-    #cds-cart-lines span { float: right; color: #f8fafc; }
-    #cds-cart-total { margin-top: 8px; font-weight: 800; }
-    header h1 { font-size: 22px; font-weight: 800; }
-    header .clock { color: #94a3b8; font-size: 15px; }
-    .board { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; padding: 20px; min-height: calc(100vh - 70px); }
+    .board { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; padding: 20px; min-height: calc(100vh - 80px); }
     .col { background: #111827; border: 1px solid #334155; border-radius: 16px; display: flex; flex-direction: column; overflow: hidden; }
-    .col-head { padding: 14px 16px; font-weight: 800; font-size: 18px; letter-spacing: 0.04em; text-align: center; }
+    .col-head { padding: 16px; font-weight: 800; font-size: clamp(16px, 2.2vw, 22px); letter-spacing: 0.06em; text-align: center; }
+    .col.received .col-head { background: #374151; color: #e5e7eb; }
     .col.preparing .col-head { background: #78350f; color: #fde68a; }
-    .col.ready .col-head { background: #1d4ed8; color: #dbeafe; }
-    .col.collection .col-head { background: #14532d; color: #bbf7d0; }
-    .col-body { padding: 12px; display: flex; flex-direction: column; gap: 10px; overflow: auto; flex: 1; }
-    .ticket { background: #1e293b; border-radius: 12px; padding: 14px; border: 1px solid #334155; cursor: pointer; transition: transform .15s, border-color .15s; }
-    .ticket:hover { transform: translateY(-2px); border-color: #94a3b8; }
-    .ticket .num { font-size: 28px; font-weight: 900; letter-spacing: 0.03em; }
-    .ticket .meta { margin-top: 6px; color: #94a3b8; font-size: 13px; }
-    .ticket .hint { margin-top: 8px; font-size: 12px; color: #64748b; }
+    .col.ready .col-head { background: #14532d; color: #bbf7d0; }
+    .col-body { padding: 12px; display: flex; flex-direction: column; gap: 12px; overflow: auto; flex: 1; }
+    .ticket { background: #1e293b; border-radius: 14px; padding: 18px 14px; border: 1px solid #334155; text-align: center; }
+    .ticket .num { font-size: clamp(36px, 6vw, 64px); font-weight: 900; letter-spacing: 0.04em; line-height: 1.1; }
+    .ticket .meta { margin-top: 8px; color: #64748b; font-size: 13px; }
     .empty { color: #64748b; text-align: center; padding: 40px 12px; font-size: 15px; }
+    .pair-card { max-width: 420px; margin: 80px auto; text-align: center; padding: 32px; background: #111827; border-radius: 16px; border: 1px solid #334155; }
+    .pair-code { font-size: 42px; letter-spacing: 8px; font-weight: 900; margin: 16px 0; }
+    #cds-promo { margin: 0 20px 8px; padding: 10px 14px; background: #1e293b; border-radius: 10px; text-align: center; color: #fde68a; font-weight: 700; }
+    #cds-promo[hidden] { display: none !important; }
+    .board.hidden { display: none !important; }
+    .ticket .num { font-size: calc(clamp(36px, 6vw, 64px) * var(--cds-scale, 1)); }
     @media (max-width: 900px) { .board { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
   <header>
-    <h1>Order Status</h1>
-    <div class="clock" id="cds-clock"></div>
+    <div class="brand">
+      <img id="cds-logo" alt="">
+      <h1 id="cds-title">Order Status</h1>
+    </div>
+    <div class="clock">
+      <div id="cds-clock"></div>
+      <div id="cds-conn" class="conn ok">Live</div>
+    </div>
   </header>
   <div id="cds-cart" class="cart-strip" hidden>
-    <strong>Now ordering</strong>
+    <strong>Now ordering (staff preview only)</strong>
     <div id="cds-cart-lines"></div>
     <div id="cds-cart-total"></div>
   </div>
+  <div id="cds-pair"></div>
+  <div id="cds-promo" hidden></div>
   <div class="board">
+    <section class="col received">
+      <div class="col-head">RECEIVED</div>
+      <div class="col-body" id="col-received"><div class="empty">—</div></div>
+    </section>
     <section class="col preparing">
       <div class="col-head">PREPARING</div>
       <div class="col-body" id="col-preparing"><div class="empty">—</div></div>
     </section>
     <section class="col ready">
-      <div class="col-head">READY</div>
+      <div class="col-head">READY FOR COLLECTION</div>
       <div class="col-body" id="col-ready"><div class="empty">—</div></div>
-    </section>
-    <section class="col collection">
-      <div class="col-head">COLLECTION</div>
-      <div class="col-body" id="col-collection"><div class="empty">—</div></div>
     </section>
   </div>
   <script src="js/env.js"></script>
   <script src="js/supabase-bootstrap.js"></script>
   <script src="js/api.js"></script>
   <script src="js/utils.js"></script>
+  <script src="js/ops-display-client.js"></script>
   <script src="js/display-auth.js"></script>
   <script src="js/customer-display-app.js"></script>
 </body>

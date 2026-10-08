@@ -53,6 +53,16 @@ const CustomersPage = {
       const res = await API.getCustomers(q);
       const rows = res?.data ?? (Array.isArray(res) ? res : []);
       this.customers = rows.length || !q ? rows : this.filterLocal(q);
+      const canIdentity = ['owner', 'manager', 'supervisor', 'assistant_manager'].includes(this.app?.user?.role);
+      if (q && canIdentity && typeof API.customerIdentitySearch === 'function') {
+        const idRes = await API.customerIdentitySearch(q).catch(() => null);
+        const extra = idRes?.data ?? (Array.isArray(idRes) ? idRes : []);
+        const seen = new Set(this.customers.map((c) => String(c.id)));
+        extra.forEach((c) => {
+          if (seen.has(String(c.id))) return;
+          this.customers.push({ id: c.id, name: c.name, phone: c.phone, email: c.email, balance: c.balance || 0, loyalty_points: c.loyalty_points });
+        });
+      }
     } catch (_) {
       this.customers = this.filterLocal(q);
     }
@@ -70,11 +80,12 @@ const CustomersPage = {
   paint(el) {
     el.innerHTML = `
       <div class="page-toolbar">
-        <input type="search" id="cust-search" placeholder="Search by name, phone or email…" value="${Utils.escHtml(this._searchQuery || '')}" style="padding:8px 14px;border:1.5px solid var(--border);border-radius:8px;width:min(100%,320px)">
+        <input type="search" id="cust-search" placeholder="Search name, phone, email, customer ID or order no…" value="${Utils.escHtml(this._searchQuery || '')}" style="padding:8px 14px;border:1.5px solid var(--border);border-radius:8px;width:min(100%,320px)">
         <button class="btn btn-primary" id="add-cust">+ Add Customer</button>
       </div>
+      <div class="stats-grid" id="cust-summary" style="margin-bottom:12px">${this.summaryHtml()}</div>
       <div class="card"><div class="table-wrap"><table>
-        <thead><tr><th>Name</th><th>Phone</th><th>Email</th><th>Balance</th><th>Loyalty Points</th><th></th></tr></thead>
+        <thead><tr><th>Name</th><th>Phone</th><th>Email</th><th>Balance</th><th>Loyalty Points</th><th>Points Used</th><th></th></tr></thead>
         <tbody id="cust-table">${this.renderRows()}</tbody>
       </table></div></div>`;
 
@@ -93,6 +104,29 @@ const CustomersPage = {
       }
     });
     this.bindEvents();
+    this.loadSummary();
+  },
+
+  summaryHtml() {
+    const s = this._summary;
+    const currency = this.app?.settings?.currency || 'R';
+    const card = (label, value, sub) => `<div class="stat-card"><div class="label">${label}</div><div class="value">${value}</div>${sub ? `<small class="muted">${sub}</small>` : ''}</div>`;
+    if (!s) return card('Total customers', '…') + card('Total loyalty points', '…') + card('Points money value', '…') + card('Total points used', '…');
+    return card('Total customers', Number(s.customers).toLocaleString(), `${Number(s.with_points).toLocaleString()} with points`)
+      + card('Total loyalty points', Number(s.points).toLocaleString(), 'Unredeemed balance')
+      + card('Points money value', Utils.formatMoney(s.points_value, currency), `1 pt = ${Utils.formatMoney(s.point_value, currency)}`)
+      + card('Total points used', Number(s.points_used || 0).toLocaleString(), `Worth ${Utils.formatMoney(s.points_used_value || 0, currency)}`);
+  },
+
+  async loadSummary() {
+    try {
+      const res = await API.getCustomersSummary();
+      const data = res?.data ?? res;
+      if (!data || typeof data.customers === 'undefined') return;
+      this._summary = data;
+      const box = document.getElementById('cust-summary');
+      if (box) box.innerHTML = this.summaryHtml();
+    } catch (_) { /* optional header */ }
   },
 
   async activate(el, app) {
@@ -108,6 +142,7 @@ const CustomersPage = {
           this.bindEvents();
         }
       }).catch(() => {});
+      this.loadSummary();
       return;
     }
     return this.render(el, app);
@@ -116,17 +151,18 @@ const CustomersPage = {
   renderRows() {
     const currency = this.app.settings?.currency || 'R';
     return this.customers.map(c => `<tr>
-      <td><strong>${Utils.escHtml(c.name)}</strong></td>
+      <td><strong>${Utils.escHtml(c.name)}</strong> <small class="muted">#${c.id}</small></td>
       <td>${Utils.escHtml(c.phone || '—')}</td>
       <td>${Utils.escHtml(c.email || '—')}</td>
       <td>${Utils.formatMoney(c.balance, currency)}</td>
       <td>${Math.floor(c.loyalty_points || 0)}</td>
+      <td>${c.points_used != null ? Math.floor(c.points_used) : '—'}</td>
       <td class="actions">
         <button class="btn btn-sm btn-ghost edit-cust" data-id="${c.id}">Edit</button>
         <button class="btn btn-sm btn-ghost hist-cust" data-id="${c.id}">History</button>
         <button class="btn btn-sm btn-danger del-cust" data-id="${c.id}">Delete</button>
         ${c.balance > 0 ? `<button class="btn btn-sm btn-success pay-cust" data-id="${c.id}">Pay Balance</button>` : ''}
-      </td></tr>`).join('') || `<tr><td colspan="6" class="muted">${this._searchQuery ? 'No customers match your search' : 'No customers'}</td></tr>`;
+      </td></tr>`).join('') || `<tr><td colspan="7" class="muted">${this._searchQuery ? 'No customers match your search' : 'No customers'}</td></tr>`;
   },
 
   bindEvents() {
@@ -358,7 +394,16 @@ const CustomersPage = {
   async showForm(c = null) {
     const currency = this.app.settings?.currency || 'R';
     let pointsSummary = null;
+    let anniversaryLoaded = !c?.id;
     if (c?.id) {
+      try {
+        const full = await API.getCustomer(c.id);
+        const row = full?.data ?? full;
+        if (row && row.id) {
+          c = { ...c, anniversary_date: row.anniversary_date || null, anniversary_type: row.anniversary_type || null };
+          anniversaryLoaded = true;
+        }
+      } catch (_) { /* ignore */ }
       try {
         const r = await API.getCustomerPointsSummary(c.id);
         pointsSummary = r?.data ?? r;
@@ -397,6 +442,8 @@ const CustomersPage = {
         <div class="field"><label>Phone</label><input id="cu-phone" type="tel" value="${Utils.escHtml(c?.phone || '')}"></div>
         <div class="field"><label>Email</label><input id="cu-email" type="email" value="${Utils.escHtml(c?.email || '')}"></div>
         <div class="field"><label>Birthday</label><input id="cu-birthday" type="date" value="${Utils.escHtml((c?.birthday || '').slice(0, 10))}"></div>
+        <div class="field"><label>Anniversary <span class="muted">(optional)</span></label><input id="cu-anniversary" type="date" value="${Utils.escHtml((c?.anniversary_date || '').slice(0, 10))}"></div>
+        <div class="field"><label>Anniversary type <span class="muted">(optional)</span></label><input id="cu-anniversary-type" maxlength="80" placeholder="e.g. Wedding, Customer since" value="${Utils.escHtml(c?.anniversary_type || '')}"></div>
         <div class="field"><label>Balance owed (${currency})</label><input type="number" id="cu-balance" step="0.01" value="${c?.balance ?? 0}"></div>
         <div class="field"><label>Credit Limit (${currency})</label><input type="number" id="cu-credit-limit" step="0.01" min="0" placeholder="Use shop default" value="${c?.credit_limit ?? ''}"></div>
         <div class="field full"><label><input type="checkbox" id="cu-on-account" ${c?.allow_on_account ? 'checked' : ''}> Approved for On Account purchases</label></div>
@@ -470,6 +517,8 @@ const CustomersPage = {
         email: document.getElementById('cu-email')?.value.trim(),
         address: document.getElementById('cu-address')?.value.trim(),
         birthday: document.getElementById('cu-birthday')?.value || null,
+        anniversary_date: document.getElementById('cu-anniversary')?.value || null,
+        anniversary_type: document.getElementById('cu-anniversary-type')?.value.trim() || null,
         notes: document.getElementById('cu-notes')?.value.trim(),
         balance: parseFloat(document.getElementById('cu-balance')?.value) || 0,
         allow_on_account: document.getElementById('cu-on-account')?.checked,

@@ -227,6 +227,9 @@
     el.innerHTML = `<div class="admin-section"><h3>Sales Management</h3>
       ${Utils.dateFilterHTML('sales-mgmt-filter', from, to)}
       <div style="margin:12px 0;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <div class="field" style="margin:0;flex:1;min-width:220px;max-width:420px">
+          <input type="search" id="sales-mgmt-search" placeholder="Search order #, receipt, cashier, customer, payment…" autocomplete="off" style="width:100%">
+        </div>
         <button class="btn btn-primary" id="sales-mgmt-pdf">📄 Save PDF Report</button>
         <button class="btn btn-ghost" id="sales-mgmt-print">🖨️ Print</button>
         <span id="sales-bulk-toolbar" class="hidden" style="margin-left:auto;display:flex;gap:8px;align-items:center">
@@ -234,19 +237,80 @@
           <button type="button" class="btn btn-danger btn-sm" id="sales-bulk-delete">Delete selected</button>
         </span>
       </div>
+      <div id="sales-by-cashier" style="margin-top:16px"></div>
       <div id="sales-mgmt-table" style="margin-top:16px"><p class="muted">Loading…</p></div></div>`;
 
     let lastSales = [];
     let lastFrom = from;
     let lastTo = to;
+    let searchQ = '';
+
+    const filterSalesLocal = (sales) => {
+      const q = String(searchQ || '').trim().toLowerCase();
+      if (!q) return sales;
+      return sales.filter((s) => {
+        const hay = [
+          s.order_number, s.receipt_number, s.cashier_name, s.customer_name,
+          s.primary_payment, s.payment_methods, s.order_type, s.status,
+          s.table_name, s.delivery_address, s.item_summary, s.total, s.notes
+        ].map((v) => String(v || '').toLowerCase()).join(' ');
+        return hay.includes(q);
+      });
+    };
+
+    const syncDualScroll = () => {
+      const top = document.getElementById('sales-mgmt-scroll-top');
+      const main = document.getElementById('sales-mgmt-scroll');
+      const topInner = document.getElementById('sales-mgmt-scroll-top-inner');
+      const table = main?.querySelector('table');
+      if (!top || !main || !topInner || !table) return;
+      topInner.style.width = `${table.scrollWidth}px`;
+      if (top._bound) return;
+      top._bound = true;
+      let syncing = false;
+      top.addEventListener('scroll', () => {
+        if (syncing) return;
+        syncing = true;
+        main.scrollLeft = top.scrollLeft;
+        syncing = false;
+      });
+      main.addEventListener('scroll', () => {
+        if (syncing) return;
+        syncing = true;
+        top.scrollLeft = main.scrollLeft;
+        syncing = false;
+      });
+    };
+
+    const paintCashierSummary = async (f, t) => {
+      const host = document.getElementById('sales-by-cashier');
+      if (!host || !API.getSalesByCashier) return;
+      const currency = this.settings.currency || 'R';
+      try {
+        const res = await API.getSalesByCashier({ from: f, to: t });
+        if (res?.success === false) { host.innerHTML = ''; return; }
+        const data = res?.data || res || {};
+        const rows = data.cashiers || [];
+        const grand = data.grand_total || { sale_count: 0, total: 0 };
+        host.innerHTML = `<div class="card"><div class="card-body">
+          <h4 style="margin:0 0 8px">Sales by cashier</h4>
+          <div class="table-wrap"><table>
+            <thead><tr><th>Cashier</th><th>Orders</th><th>Total</th></tr></thead>
+            <tbody>${rows.length ? rows.map((r) => `<tr><td>${Utils.escHtml(r.cashier_name || '—')}</td><td>${r.sale_count}</td><td>${Utils.formatMoney(r.total, currency)}</td></tr>`).join('')
+              : '<tr><td colspan="3" class="muted">No completed sales in this period.</td></tr>'}</tbody>
+            <tfoot><tr><th>All cashiers</th><th>${grand.sale_count}</th><th>${Utils.formatMoney(grand.total, currency)}</th></tr></tfoot>
+          </table></div></div></div>`;
+      } catch (_) { host.innerHTML = ''; }
+    };
 
     const load = async (f, t) => {
       lastFrom = f; lastTo = t;
       const filters = { from: f, to: t, limit: 200, lite: true };
+      paintCashierSummary(f, t);
       const cached = window.DataCache?.peek?.('salesList', [filters]);
       if (cached?.data?.length) {
         lastSales = cached.data;
-        paintSalesTable(cached.data);
+        paintSalesTable(filterSalesLocal(cached.data));
       }
       const res = await API.getSalesList(filters);
       if (res?.success === false) {
@@ -259,7 +323,7 @@
       }
       const sales = res.data || [];
       lastSales = sales;
-      paintSalesTable(sales);
+      paintSalesTable(filterSalesLocal(sales));
     };
 
     const getSelectedSaleIds = () => Array.from(document.querySelectorAll('.sale-select:checked'))
@@ -289,10 +353,13 @@
       AdminPage._salesCanDelete = canDelete;
       const host = document.getElementById('sales-mgmt-table');
       if (!host) return;
-      host.innerHTML = `<div class="card"><div class="table-wrap"><table>
+      host.innerHTML = `<div class="card">
+        <div class="table-scroll-top" id="sales-mgmt-scroll-top" aria-hidden="true"><div class="table-scroll-top-inner" id="sales-mgmt-scroll-top-inner"></div></div>
+        <div class="table-wrap" id="sales-mgmt-scroll"><table>
         <thead><tr>${canDelete ? '<th><input type="checkbox" id="sales-select-all" title="Select all deletable sales"></th>' : ''}<th>Order #</th><th>Receipt</th><th>Date</th><th>Time</th><th>Cashier</th><th>Customer</th><th>Type</th><th>Payment</th><th>Gift Card</th><th>Loyalty Pts</th><th>Total</th><th>Discount</th><th>Tax</th><th>Status</th><th></th></tr></thead>
         <tbody>${sales.map(s => {
-          const dt = s.created_at ? new Date(s.created_at) : null;
+          const bizAt = Utils.saleBusinessAt(s) || s.created_at;
+          const dt = bizAt ? new Date(bizAt) : null;
           const gc = Number(s.gift_card_amount) || 0;
           const lp = Number(s.loyalty_points_redeemed) || 0;
           const otype = s.is_online_pending ? 'Online (pending)' : (s.order_type ? ({ delivery: 'Delivery', takeaway: 'Takeaway', sit_in: 'Sit-in', online: 'Online Order' }[s.order_type] || s.order_type) : 'Walk-in');
@@ -306,11 +373,13 @@
             : (s.table_name ? ` · ${s.table_name}` : (placeBit || feeBit));
           const rowClass = s.status==='void'||s.status==='voided'?'row-void':(s.is_online_pending?'row-online-pending':'');
           const selectable = canDelete && !s.is_online_pending && Number.isFinite(Number(s.id));
+          const bdTag = (Number(s.is_backdated) ? ' <span class="tag tag-warn">Backdated</span>' : '')
+            + (s.edited_at ? ` <span class="tag" style="background:#dbeafe;color:#1e40af" title="Edited ${Utils.escHtml(Utils.formatDateTime(s.edited_at))}${s.edited_by_name ? ` by ${Utils.escHtml(s.edited_by_name)}` : ''}">Edited${s.edited_by_name ? ` · ${Utils.escHtml(s.edited_by_name)}` : ''}</span>` : '');
           return `<tr class="${rowClass}">
           ${canDelete ? `<td>${selectable ? `<input type="checkbox" class="sale-select" value="${s.id}">` : ''}</td>` : ''}
-          <td><strong>${s.order_number || '—'}</strong></td>
+          <td><strong>${s.order_number || '—'}</strong>${bdTag}</td>
           <td>${(s.receipt_number && s.receipt_number !== '—') ? s.receipt_number : (s.order_number || '—')}</td>
-          <td>${dt ? Utils.formatDate(s.created_at) : '—'}</td>
+          <td>${dt ? Utils.formatDate(bizAt) : '—'}</td>
           <td>${dt ? dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'}</td>
           <td>${s.cashier_name||'—'}</td>
           <td>${s.customer_name||'Walk-in'}</td>
@@ -352,7 +421,10 @@
           },0),currency)}</td>
           <td colspan="2"></td>
         </tr></tfoot></table></div>
-        <p class="muted" style="padding:12px">${sales.length} record(s) — includes POS sales and pending online orders. Gift card and loyalty redemptions shown when used.</p></div>`;
+        <p class="muted" style="padding:12px">${sales.length} record(s)${searchQ ? ` matching “${Utils.escHtml(searchQ)}”` : ''} — includes POS sales and pending online orders. Gift card and loyalty redemptions shown when used.</p></div>`;
+
+      requestAnimationFrame(() => syncDualScroll());
+      window.setTimeout(syncDualScroll, 50);
 
       el.querySelectorAll('.view-sale').forEach(b => b.addEventListener('click', () => {
         const id = b.dataset.id;
@@ -385,30 +457,13 @@
           Utils.hideModal();
           const slip = r.data?.receipt_number || r.data?.order_number || '';
           Utils.toast(slip ? `Sale voided (${slip}) — stock restored` : 'Sale voided — stock restored', 'success');
-          window.DataCache?.invalidate?.('salesList', 'adminDashboard');
+          window.DataCache?.invalidate?.('salesList', 'adminDashboard'); Utils.sessionCacheClear?.('admin_dash_');
           load(lastFrom, lastTo);
         });
       }));
-      el.querySelectorAll('.edit-sale').forEach(b => b.addEventListener('click', async () => {
-        const saleId = parseInt(b.dataset.id, 10);
-        const row = lastSales.find((s) => Number(s.id) === saleId);
-        Utils.showModal('Edit Sale', `
-          <div class="field"><label>Receipt number</label><input id="edit-receipt" value="${Utils.escHtml(row?.receipt_number || '')}"></div>
-          <div class="field"><label>Notes</label><textarea id="edit-notes" rows="3">${Utils.escHtml(row?.notes || '')}</textarea></div>
-          <div class="field"><label>Table name</label><input id="edit-table" value="${Utils.escHtml(row?.table_name || '')}"></div>
-          <div class="field"><label>Delivery address</label><input id="edit-delivery" value="${Utils.escHtml(row?.delivery_address || '')}"></div>`,
-          '<button class="btn btn-primary" id="confirm-edit-sale">Save changes</button>');
-        document.getElementById('confirm-edit-sale').addEventListener('click', async () => {
-          const patch = {
-            receipt_number: document.getElementById('edit-receipt').value.trim(),
-            notes: document.getElementById('edit-notes').value.trim(),
-            table_name: document.getElementById('edit-table').value.trim(),
-            delivery_address: document.getElementById('edit-delivery').value.trim()
-          };
-          const r = await API.updateSale(saleId, patch, this.app.user);
-          if (!r.success) return Utils.toast(r.error, 'error');
-          Utils.hideModal(); Utils.toast('Sale updated', 'success');
-          window.DataCache?.invalidate?.('salesList', 'adminDashboard');
+      el.querySelectorAll('.edit-sale').forEach(b => b.addEventListener('click', () => {
+        this.showSaleEditor(parseInt(b.dataset.id, 10), () => {
+          window.DataCache?.invalidate?.('salesList', 'adminDashboard'); Utils.sessionCacheClear?.('admin_dash_');
           load(lastFrom, lastTo);
         });
       }));
@@ -422,7 +477,7 @@
           const r = await API.deleteSale(saleId, reason, this.app.user);
           if (!r.success) return Utils.toast(r.error, 'error');
           Utils.hideModal(); Utils.toast('Sale deleted', 'success');
-          window.DataCache?.invalidate?.('salesList', 'adminDashboard');
+          window.DataCache?.invalidate?.('salesList', 'adminDashboard'); Utils.sessionCacheClear?.('admin_dash_');
           load(lastFrom, lastTo);
         });
       }));
@@ -453,25 +508,32 @@
           ? `Deleted ${r.deleted_count}, failed ${r.failed_count}`
           : `Deleted ${r?.deleted_count ?? ids.length} sale(s)`;
         Utils.toast(msg, r?.failed_count ? 'warning' : 'success');
-        window.DataCache?.invalidate?.('salesList', 'adminDashboard');
+        window.DataCache?.invalidate?.('salesList', 'adminDashboard'); Utils.sessionCacheClear?.('admin_dash_');
         load(lastFrom, lastTo);
       });
     });
     Utils.bindDateFilter('sales-mgmt-filter', load);
+    let searchTimer = null;
+    document.getElementById('sales-mgmt-search')?.addEventListener('input', (e) => {
+      searchQ = e.target.value || '';
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(() => paintSalesTable(filterSalesLocal(lastSales)), 120);
+    });
     document.getElementById('sales-mgmt-pdf')?.addEventListener('click', async () => {
       const currency = this.settings.currency || 'R';
       const headers = ['Order #', 'Receipt', 'Date', 'Time', 'Cashier', 'Customer', 'Type', 'Payment', 'Total', 'Discount', 'Tax', 'Status'];
       const rows = lastSales.map((s) => {
-        const dt = s.created_at ? new Date(s.created_at) : null;
+        const bizAt = Utils.saleBusinessAt?.(s) || s.sale_datetime || s.created_at;
+        const dt = bizAt ? new Date(bizAt) : null;
         const otype = s.order_type ? ({ delivery: 'Delivery', takeaway: 'Takeaway', sit_in: 'Sit-in', online: 'Online' }[s.order_type] || s.order_type) : 'Walk-in';
         return [
           s.order_number || '',
           s.receipt_number || '',
-          dt ? Utils.formatDate(s.created_at) : '',
+          dt ? Utils.formatDate(bizAt) : '',
           dt ? dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '',
           s.cashier_name || '',
           s.customer_name || 'Walk-in',
-          otype,
+          otype + (Number(s.is_backdated) ? ' (Backdated)' : ''),
           s.primary_payment || s.payment_methods || '',
           Utils.formatMoney(s.total, currency),
           Utils.formatMoney(s.discount || 0, currency),
@@ -506,6 +568,200 @@
     load(from, to);
   };
 
+  AdminPage.showSaleEditor = async function (saleId, onSaved) {
+    Utils.showModal('Edit sale', `<div id="se-root"><p class="muted">Loading sale…</p></div>`, '', { wide: true });
+    const cachedProducts = this._saleEditorProducts && Date.now() - this._saleEditorProducts.at < 10 * 60 * 1000
+      ? this._saleEditorProducts.data : null;
+    const [saleRes, custRes, prodRes] = await Promise.all([
+      API.getSale(saleId),
+      API.getCustomers('').catch(() => ({ data: [] })),
+      cachedProducts
+        ? { data: cachedProducts }
+        : API.getProducts({ menu_flags_only: true, omit_images: true, all_branches: true, sync_highlights: false }).catch(() => ({ data: [] }))
+    ]);
+    if (!cachedProducts && Array.isArray(prodRes?.data) && prodRes.data.length) {
+      this._saleEditorProducts = { at: Date.now(), data: prodRes.data };
+    }
+    const s = saleRes?.data;
+    if (!saleRes?.success || !s) { Utils.hideModal(); return Utils.toast(saleRes?.error || 'Could not load sale', 'error'); }
+    const esc = Utils.escHtml;
+    const currency = this.settings.currency || 'R';
+    const customers = Array.isArray(custRes?.data) ? custRes.data : [];
+    const products = (Array.isArray(prodRes?.data) ? prodRes.data : []).filter((p) => p && p.id && p.name);
+    const voided = ['void', 'voided'].includes(String(s.status || '').toLowerCase());
+    const custLabel = (c) => `#${c.id} — ${c.name || 'Customer'}${c.phone ? ` — ${c.phone}` : ''}`;
+    const prodLabel = (p) => `#${p.id} — ${p.name}`;
+    const currentCust = s.customer_id ? customers.find((c) => Number(c.id) === Number(s.customer_id)) : null;
+    const origItems = (s.items || []).map((i) => ({
+      id: i.id, product_id: i.product_id, name: i.product_name, quantity: Number(i.quantity) || 0,
+      unit_price: Number(i.unit_price) || 0, discount: Number(i.discount) || 0, combo: !!i.combo_id, modifiers_text: i.modifiers_text || ''
+    }));
+    const origPays = (s.payments || []).map((p) => ({ id: p.id, payment_type: p.payment_type, amount: Number(p.amount) || 0 }));
+    let items = origItems.map((i) => ({ ...i }));
+    let pays = origPays.map((p) => ({ ...p }));
+    const payTypes = [...new Set([...(Utils.paymentTypes || ['cash', 'card']), ...pays.map((p) => p.payment_type)])];
+
+    const itemRowsHtml = () => items.map((i, idx) => `<tr>
+        <td>${esc(i.name)}${i.modifiers_text ? ` <small class="muted">(${esc(i.modifiers_text)})</small>` : ''}${i.combo ? ' <small class="muted">combo</small>' : ''}</td>
+        <td><input type="number" min="0.01" step="any" class="se-qty" data-idx="${idx}" value="${i.quantity}" style="width:80px" ${voided || i.combo ? 'disabled' : ''}></td>
+        <td><input type="number" min="0" step="0.01" class="se-price" data-idx="${idx}" value="${i.unit_price}" style="width:100px" ${voided || i.combo ? 'disabled' : ''}></td>
+        <td class="se-line">${Utils.formatMoney(Math.max(0, i.quantity * i.unit_price - (i.discount || 0)), currency)}</td>
+        <td>${voided ? '' : `<button type="button" class="btn btn-sm btn-ghost se-remove" data-idx="${idx}" title="Remove line">✕</button>`}</td>
+      </tr>`).join('');
+    const payRowsHtml = () => pays.map((p, idx) => `<div style="display:flex;gap:8px;margin-bottom:6px">
+        <select class="se-paytype" data-idx="${idx}" ${voided ? 'disabled' : ''}>${payTypes.map((t) =>
+          `<option value="${esc(t)}" ${t === p.payment_type ? 'selected' : ''}>${esc(Utils.paymentLabels?.[t] || t)}</option>`).join('')}</select>
+        <input type="number" min="0" step="0.01" class="se-payamt" data-idx="${idx}" value="${p.amount}" style="width:120px" ${voided ? 'disabled' : ''}>
+        ${voided ? '' : `<button type="button" class="btn btn-sm btn-ghost se-payremove" data-idx="${idx}" title="Remove payment">✕</button>`}
+      </div>`).join('');
+
+    Utils.showModal(`Edit sale ${s.receipt_number || s.order_number || saleId}`, `<div id="se-root">
+      ${voided ? '<p style="margin:0 0 10px;padding:8px 10px;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;color:#991b1b">This sale is voided — you can correct its details, but not its items or payments.</p>' : ''}
+      ${s.edited_at ? `<p class="muted" style="margin:0 0 10px">Last edited ${esc(Utils.formatDateTime(s.edited_at))}${s.edited_by_name ? ` by <strong>${esc(s.edited_by_name)}</strong>` : ''}</p>` : ''}
+      <div class="form-grid">
+        <div class="field"><label>Receipt number</label><input id="se-receipt" value="${esc(s.receipt_number || '')}"></div>
+        <div class="field"><label>Order type</label><select id="se-otype">
+          ${[['', 'Walk-in'], ['takeaway', 'Takeaway'], ['sit_in', 'Sit-in'], ['delivery', 'Delivery'], ['online', 'Online order']]
+            .map(([v, l]) => `<option value="${v}" ${String(s.order_type || '') === v ? 'selected' : ''}>${l}</option>`).join('')}
+          ${s.order_type && !['takeaway', 'sit_in', 'delivery', 'online'].includes(s.order_type) ? `<option value="${esc(s.order_type)}" selected>${esc(s.order_type)}</option>` : ''}
+        </select></div>
+        <div class="field"><label>Customer</label><input id="se-customer" list="se-customer-list" placeholder="Walk-in (leave empty)" value="${currentCust ? esc(custLabel(currentCust)) : (s.customer_id ? `#${s.customer_id}` : '')}">
+          <datalist id="se-customer-list">${customers.slice(0, 2000).map((c) => `<option value="${esc(custLabel(c))}"></option>`).join('')}</datalist></div>
+        <div class="field"><label>Table</label><input id="se-table" value="${esc(s.table_name || '')}"></div>
+        <div class="field" style="grid-column:1/-1"><label>Delivery address</label><input id="se-address" value="${esc(s.delivery_address || '')}"></div>
+        <div class="field"><label>Delivery place</label><input id="se-place" value="${esc(s.delivery_place || '')}"></div>
+        <div class="field"><label>Delivery fee</label><input type="number" min="0" step="0.01" id="se-fee" value="${Number(s.delivery_fee) || 0}" ${voided ? 'disabled' : ''}></div>
+      </div>
+      <h4 style="margin:14px 0 6px">Items</h4>
+      <div class="table-wrap"><table style="width:100%"><thead><tr><th>Product</th><th>Qty</th><th>Price</th><th>Total</th><th></th></tr></thead>
+        <tbody id="se-items">${itemRowsHtml()}</tbody></table></div>
+      ${voided ? '' : `<div style="display:flex;gap:8px;align-items:flex-end;margin:8px 0;flex-wrap:wrap">
+        <div class="field" style="flex:1;min-width:200px;margin:0"><label>Add product</label><input id="se-add-product" list="se-product-list" placeholder="Type to search products">
+          <datalist id="se-product-list">${products.slice(0, 3000).map((p) => `<option value="${esc(prodLabel(p))}"></option>`).join('')}</datalist></div>
+        <div class="field" style="margin:0"><label>Qty</label><input type="number" id="se-add-qty" value="1" min="0.01" step="any" style="width:80px"></div>
+        <button type="button" class="btn btn-ghost" id="se-add-btn">+ Add</button>
+      </div>`}
+      <div class="form-grid" style="margin-top:8px">
+        <div class="field"><label>Cart discount</label><input type="number" min="0" step="0.01" id="se-discount" value="${Number(s.discount) || 0}" ${voided ? 'disabled' : ''}></div>
+        <div class="field"><label>New total (before tax changes)</label><div id="se-total" style="font-weight:700;font-size:1.1rem;padding-top:6px"></div></div>
+      </div>
+      <h4 style="margin:14px 0 6px">Payments</h4>
+      <div id="se-pays">${payRowsHtml()}</div>
+      ${voided ? '' : '<button type="button" class="btn btn-sm btn-ghost" id="se-pay-add">+ Add payment</button> <small class="muted">If you change items but not payments, the last payment is adjusted to the new total.</small>'}
+      <div class="field" style="margin-top:12px"><label>Notes</label><textarea id="se-notes" rows="2">${esc(s.notes || '')}</textarea></div>
+      <div class="field"><label>Reason for this edit <span class="muted">(required when items, prices, discount, fee or payments change)</span></label><input id="se-reason" placeholder="e.g. Customer changed order, wrong price captured"></div>
+      <p class="muted" style="margin:6px 0 0">Changes show on POS, Delivery, the Business Manager app and the customer's online order. The sale is marked as edited by <strong>${esc(this.app.user?.full_name || this.app.user?.username || 'you')}</strong>.</p></div>`,
+      '<button class="btn btn-primary" id="se-save">Save changes</button>', { wide: true });
+
+    const body = document.getElementById('se-root');
+    const recalc = () => {
+      const gross = items.reduce((n, i) => n + Math.max(0, i.quantity * i.unit_price - (i.discount || 0)), 0);
+      const disc = Number(document.getElementById('se-discount')?.value) || 0;
+      const fee = Number(document.getElementById('se-fee')?.value) || 0;
+      const t = document.getElementById('se-total');
+      if (t) t.textContent = Utils.formatMoney(Math.max(0, gross - disc) + fee, currency);
+    };
+    const repaintItems = () => { document.getElementById('se-items').innerHTML = itemRowsHtml(); recalc(); };
+    const repaintPays = () => { document.getElementById('se-pays').innerHTML = payRowsHtml(); };
+    body.addEventListener('input', (e) => {
+      const idx = Number(e.target.dataset.idx);
+      if (e.target.classList.contains('se-qty')) items[idx].quantity = Number(e.target.value) || 0;
+      else if (e.target.classList.contains('se-price')) items[idx].unit_price = Number(e.target.value) || 0;
+      else if (e.target.classList.contains('se-payamt')) pays[idx].amount = Number(e.target.value) || 0;
+      if (e.target.classList.contains('se-qty') || e.target.classList.contains('se-price')) {
+        const cell = e.target.closest('tr')?.querySelector('.se-line');
+        const i = items[idx];
+        if (cell) cell.textContent = Utils.formatMoney(Math.max(0, i.quantity * i.unit_price - (i.discount || 0)), currency);
+      }
+      recalc();
+    });
+    body.addEventListener('change', (e) => {
+      if (e.target.classList.contains('se-paytype')) pays[Number(e.target.dataset.idx)].payment_type = e.target.value;
+    });
+    body.addEventListener('click', (e) => {
+      const rm = e.target.closest('.se-remove');
+      if (rm) { items.splice(Number(rm.dataset.idx), 1); repaintItems(); return; }
+      const prm = e.target.closest('.se-payremove');
+      if (prm) { pays.splice(Number(prm.dataset.idx), 1); repaintPays(); return; }
+      if (e.target.id === 'se-pay-add') {
+        pays.push({ id: null, payment_type: 'cash', amount: 0 });
+        repaintPays();
+        return;
+      }
+      if (e.target.id === 'se-add-btn') {
+        const val = document.getElementById('se-add-product').value.trim();
+        const pid = Number((val.match(/^#(\d+)/) || [])[1]);
+        const p = products.find((x) => Number(x.id) === pid) || products.find((x) => x.name.toLowerCase() === val.toLowerCase());
+        if (!p) return Utils.toast('Pick a product from the list', 'error');
+        const qty = Number(document.getElementById('se-add-qty').value) || 1;
+        items.push({ id: null, product_id: p.id, name: p.name, quantity: qty, unit_price: Number(p.selling_price) || 0, discount: 0, combo: false, modifiers_text: '' });
+        document.getElementById('se-add-product').value = '';
+        document.getElementById('se-add-qty').value = '1';
+        repaintItems();
+      }
+    });
+    recalc();
+
+    document.getElementById('se-save').addEventListener('click', async () => {
+      const custVal = document.getElementById('se-customer').value.trim();
+      let customerId = null;
+      if (custVal) {
+        customerId = Number((custVal.match(/^#(\d+)/) || [])[1]) || null;
+        if (!customerId) {
+          const match = customers.find((c) => String(c.name || '').toLowerCase() === custVal.toLowerCase() || String(c.phone || '') === custVal);
+          customerId = match?.id || null;
+        }
+        if (!customerId) return Utils.toast('Pick the customer from the list, or leave it empty for walk-in', 'error');
+      }
+      const patch = {
+        receipt_number: document.getElementById('se-receipt').value.trim(),
+        order_type: document.getElementById('se-otype').value,
+        customer_id: customerId,
+        table_name: document.getElementById('se-table').value.trim(),
+        delivery_address: document.getElementById('se-address').value.trim(),
+        delivery_place: document.getElementById('se-place').value.trim(),
+        notes: document.getElementById('se-notes').value.trim(),
+        edit_reason: document.getElementById('se-reason').value.trim()
+      };
+      if (!voided) {
+        const itemsKey = (list) => JSON.stringify(list.map((i) => [i.id || null, i.product_id || null, Number(i.quantity), Number(i.unit_price)]));
+        if (itemsKey(items) !== itemsKey(origItems)) {
+          patch.items = items.map((i) => ({ id: i.id || undefined, product_id: i.product_id, quantity: i.quantity, unit_price: i.unit_price, modifiers_text: i.modifiers_text || null }));
+        }
+        const paysKey = (list) => JSON.stringify(list.map((p) => [p.id || null, p.payment_type, Number(p.amount)]));
+        if (paysKey(pays) !== paysKey(origPays)) patch.payments = pays.map((p) => ({ id: p.id || undefined, payment_type: p.payment_type, amount: p.amount }));
+        const disc = Number(document.getElementById('se-discount').value) || 0;
+        if (Math.abs(disc - (Number(s.discount) || 0)) > 0.001) patch.discount = disc;
+        const fee = Number(document.getElementById('se-fee').value) || 0;
+        if (Math.abs(fee - (Number(s.delivery_fee) || 0)) > 0.001) patch.delivery_fee = fee;
+        if ((patch.items || patch.payments || patch.discount !== undefined || patch.delivery_fee !== undefined) && !patch.edit_reason) {
+          document.getElementById('se-reason').focus();
+          return Utils.toast('Give a reason for changing items, prices or payments', 'error');
+        }
+      }
+      const btn = document.getElementById('se-save');
+      btn.disabled = true;
+      btn.textContent = 'Saving…';
+      const r = await API.updateSale(saleId, patch, this.app.user);
+      btn.disabled = false;
+      btn.textContent = 'Save changes';
+      if (!r.success) return Utils.toast(r.error || 'Could not save', 'error');
+      Utils.hideModal();
+      const loy = r.data?.loyalty;
+      Utils.toast('Sale updated everywhere', 'success');
+      if (typeof onSaved === 'function') onSaved(r.data);
+      if (loy?.message) {
+        if (loy.shortfall > 0 || loy.error) {
+          setTimeout(() => Utils.showModal('Loyalty points adjusted',
+            `<p>${Utils.escHtml(loy.message)}</p>`,
+            '<button type="button" class="btn btn-primary" onclick="Utils.hideModal()">OK</button>'), 300);
+        } else {
+          Utils.toast(loy.message, 'info');
+        }
+      }
+    });
+  };
+
   AdminPage.showSaleDetail = async function (saleId) {
     const res = await API.getSale(saleId);
     if (!res.success) return Utils.toast(res.error || 'Could not load sale', 'error');
@@ -513,21 +769,41 @@
     if (!s) return Utils.toast('Sale not found', 'error');
     const currency = this.settings.currency || 'R';
     const otype = s.order_type ? ({ delivery: 'Delivery', takeaway: 'Takeaway', sit_in: 'Sit-in', online: 'Online Order' }[s.order_type] || s.order_type) : 'Walk-in';
-    Utils.showModal(`Receipt ${s.receipt_number}`, `
+    const bizAt = Utils.saleBusinessAt(s) || s.created_at;
+    const isBd = Number(s.is_backdated);
+    const slipPreview = (typeof Receipt !== 'undefined' && Receipt.build)
+      ? Receipt.build(s, this.settings, 'RECEIPT')
+      : '';
+    Utils.showModal(`Receipt ${s.receipt_number || s.order_number || saleId}`, `
+      ${isBd ? `<p style="margin:0 0 10px;padding:6px 10px;background:#fef3c7;border:1px solid #f59e0b;border-radius:6px;color:#78350f;font-size:0.85rem">⏱ Backdated order — sale date <strong>${Utils.formatDateTime(bizAt)}</strong>${s.created_at ? ` · entered ${Utils.formatDateTime(s.created_at)}` : ''}${s.backdated_reason ? ` · ${Utils.escHtml(s.backdated_reason)}` : ''}</p>` : ''}
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px">
         <div><strong>Order #</strong><br>${s.order_number || '—'}</div>
-        <div><strong>Receipt</strong><br>${s.receipt_number}</div>
-        <div><strong>Date</strong><br>${Utils.formatDateTime(s.created_at)}</div>
+        <div><strong>Receipt</strong><br>${s.receipt_number || '—'}</div>
+        <div><strong>Sale date</strong><br>${Utils.formatDateTime(bizAt)}${isBd ? ' <span class="tag tag-warn">Backdated</span>' : ''}</div>
         <div><strong>Cashier</strong><br>${s.cashier_name||'—'}</div>
-        <div><strong>Customer</strong><br>${s.customer_name||'Walk-in Customer'}</div>
+        <div><strong>Customer</strong><br>${s.customer_name||'Walk-in Customer'}${s.customer_phone ? ` · ${Utils.escHtml(s.customer_phone)}` : ''}</div>
         <div><strong>Order type</strong><br>${otype}${s.table_name ? ` · Table ${s.table_name}` : ''}</div>
-        ${s.delivery_address ? `<div class="full" style="grid-column:1/-1"><strong>Delivery address</strong><br>${s.delivery_address}</div>` : ''}
-        <div><strong>Status</strong><br>${s.status||'completed'}${s.void_reason?` (${s.void_reason})`:''}</div>
-        ${s.notes ? `<div class="full" style="grid-column:1/-1"><strong>Notes</strong><br>${s.notes}</div>` : ''}
+        ${s.delivery_address ? `<div class="full" style="grid-column:1/-1"><strong>Delivery address</strong><br>${Utils.escHtml(s.delivery_address)}</div>` : ''}
+        ${s.delivery_place ? `<div><strong>Delivery place</strong><br>${Utils.escHtml(s.delivery_place)}</div>` : ''}
+        ${Number(s.delivery_fee) ? `<div><strong>Delivery fee</strong><br>${Utils.formatMoney(s.delivery_fee, currency)}</div>` : ''}
+        <div><strong>Status</strong><br>${['void', 'voided'].includes(String(s.status || '').toLowerCase()) ? '<span class="tag tag-danger">VOIDED</span>' : Utils.escHtml(s.status || 'completed')}${s.void_reason?` (${Utils.escHtml(s.void_reason)})`:''}</div>
+        ${s.order_source ? `<div><strong>Source</strong><br>${Utils.escHtml(s.order_source)}</div>` : ''}
+        ${s.notes ? `<div class="full" style="grid-column:1/-1"><strong>Notes</strong><br>${Utils.escHtml(s.notes)}</div>` : ''}
       </div>
+      ${s.edited_at ? `<div style="margin:0 0 14px;padding:8px 10px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;color:#1e3a8a;font-size:0.9rem">
+        ✎ <strong>Edited</strong> ${Utils.escHtml(Utils.formatDateTime(s.edited_at))}${s.edited_by_name ? ` by <strong>${Utils.escHtml(s.edited_by_name)}</strong>` : ''}${Number(s.edit_count) > 1 ? ` · ${Number(s.edit_count)} edits` : ''}
+        ${(s.edit_history || []).length ? `<ul style="margin:6px 0 0;padding-left:18px">${s.edit_history.map((h) => `<li style="margin-bottom:4px"><strong>${Utils.escHtml(Utils.formatDateTime(h.at))} — ${Utils.escHtml(h.by || 'Unknown')}</strong>${h.reason ? ` <em>(${Utils.escHtml(h.reason)})</em>` : ''}
+          ${(h.changes || []).length
+            ? `<div>${h.changes.map((c) => Utils.escHtml(c)).join('<br>')}</div>`
+            : `<div>${Utils.escHtml([
+              h.changed.length ? `changed ${h.changed.join(', ')}` : '',
+              h.items_added.length ? `added ${h.items_added.join(', ')}` : '',
+              h.items_removed.length ? `removed ${h.items_removed.join(', ')}` : ''
+            ].filter(Boolean).join('; ') || 'details updated')}</div>`}</li>`).join('')}</ul>` : ''}
+      </div>` : ''}
       <h4>Items Purchased</h4>
       <table style="width:100%;margin:8px 0"><tr><th>Product</th><th>Qty</th><th>Price</th><th>Total</th></tr>
-      ${(s.items||[]).map(i=>`<tr><td>${i.product_name}</td><td>${i.quantity}</td><td>${Utils.formatMoney(i.unit_price,currency)}</td><td>${Utils.formatMoney(i.total,currency)}</td></tr>`).join('')}
+      ${(s.items||[]).map(i=>`<tr><td>${Utils.escHtml(i.product_name)}${i.modifiers_text ? ` <small class="muted">(${Utils.escHtml(i.modifiers_text)})</small>` : ''}</td><td>${i.quantity}</td><td>${Utils.formatMoney(i.unit_price,currency)}</td><td>${Utils.formatMoney(i.total,currency)}</td></tr>`).join('')}
       </table>
       <div style="margin-top:12px">
         <div>Subtotal: ${Utils.formatMoney(s.subtotal,currency)}</div>
@@ -536,20 +812,48 @@
         <div><strong>Total: ${Utils.formatMoney(s.total,currency)}</strong></div>
         <div>Paid: ${Utils.formatMoney(s.amount_paid,currency)}</div>
         <div>Change: ${Utils.formatMoney(s.change_amount||0,currency)}</div>
-        <div>Payment: ${(s.payments||[]).map(p=>`${p.payment_type} ${Utils.formatMoney(p.amount,currency)}`).join(', ')}</div>
+        <div>Payment: ${(s.payments||[]).map(p=>`${p.payment_type} ${Utils.formatMoney(p.amount,currency)}`).join(', ') || '—'}</div>
         ${s.gift_card_amount ? `<div>Gift Card Used: ${Utils.formatMoney(s.gift_card_amount,currency)}</div>` : ''}
         ${s.loyalty_points_redeemed ? `<div>Loyalty Redeemed: ${s.loyalty_points_redeemed} pts</div>` : ''}
         ${s.loyalty_points_earned ? `<div>Loyalty Earned: ${s.loyalty_points_earned} pts</div>` : ''}
-      </div>`,
+      </div>
+      ${slipPreview ? `<details style="margin-top:16px"><summary style="cursor:pointer;font-weight:600">Receipt slip preview</summary>
+        <iframe id="sd-slip-frame" title="Receipt preview" sandbox="" style="display:block;margin-top:8px;width:100%;height:360px;border:1px solid var(--border);border-radius:8px;background:#fff"></iframe>
+      </details>` : ''}`,
       `<button class="btn btn-primary" id="sd-print">Print Receipt</button>
        <button class="btn btn-ghost" id="sd-invoice">Print Invoice</button>
-       <button class="btn btn-ghost" id="sd-reprint">Reprint</button>
-       <button class="btn btn-ghost" id="sd-download">Download PDF</button>
-       ${s.status==='completed'?`<button class="btn btn-warning" id="sd-refund">Refund</button>`:''}`);
+       <button class="btn btn-ghost" id="sd-download">Save PDF</button>
+       <button class="btn btn-ghost" id="sd-send">Send</button>
+       ${this.app.user?.role === 'owner' ? '<button class="btn btn-ghost" id="sd-edit">Edit</button>' : ''}
+       ${s.status==='completed'?`<button class="btn btn-warning" id="sd-refund">Refund</button>`:''}`, { wide: true });
+    // Receipt HTML carries its own <style> (body max-width: 80mm) — isolate it so it cannot restyle the admin page
+    const slipFrame = document.getElementById('sd-slip-frame');
+    if (slipFrame) slipFrame.srcdoc = slipPreview;
+    document.getElementById('sd-edit')?.addEventListener('click', () => {
+      this.showSaleEditor(s.id, () => {
+        window.DataCache?.invalidate?.('salesList', 'adminDashboard'); Utils.sessionCacheClear?.('admin_dash_');
+        this.showSaleDetail(s.id);
+      });
+    });
     document.getElementById('sd-print')?.addEventListener('click', () => Receipt.print(s, this.settings));
     document.getElementById('sd-invoice')?.addEventListener('click', () => Receipt.print(s, this.settings, 'INVOICE'));
-    document.getElementById('sd-reprint')?.addEventListener('click', () => Receipt.print(s, this.settings));
     document.getElementById('sd-download')?.addEventListener('click', () => Receipt.downloadPdf(s, this.settings));
+    document.getElementById('sd-send')?.addEventListener('click', async () => {
+      try {
+        if (typeof PosPage !== 'undefined' && PosPage.resendSaleWhatsApp) {
+          await PosPage.resendSaleWhatsApp(s.id);
+        } else if (navigator.share && Receipt.buildWhatsAppLines) {
+          const text = (Receipt.buildWhatsAppLines(s, this.settings) || []).join('\n');
+          await navigator.share({ title: `Receipt ${s.receipt_number || s.id}`, text });
+        } else {
+          const text = (Receipt.buildWhatsAppLines?.(s, this.settings) || []).join('\n') || `Receipt ${s.receipt_number} · ${Utils.formatMoney(s.total, currency)}`;
+          await navigator.clipboard?.writeText(text);
+          Utils.toast('Receipt text copied', 'success');
+        }
+      } catch (err) {
+        if (err?.name !== 'AbortError') Utils.toast(err.message || 'Could not send', 'error');
+      }
+    });
     document.getElementById('sd-refund')?.addEventListener('click', () => { Utils.hideModal(); this.app.navigate('returns'); });
   };
 

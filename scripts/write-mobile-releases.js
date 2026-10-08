@@ -19,6 +19,12 @@ const apps = [
   { id: 'com.shoppos.studio', apk: 'ShopPOS-Studio.apk', label: 'Menu & Promo Studio' },
   { id: 'com.shoppos.driver', apk: 'ShopPOS-Driver.apk', label: 'Driver App' },
   { id: 'com.shoppos.manager', apk: 'ShopPOS-Manager.apk', label: 'Business Manager' },
+  { id: 'com.shoppos.managerops', apk: 'ShopPOS-ManagerOperations.apk', label: 'Manager Operations' },
+  { id: 'com.shoppos.referralcommission', apk: 'ShopPOS-ReferralCommission.apk', label: 'Referral Commission' },
+  { id: 'com.shoppos.kiosk', apk: 'ShopPOS-Kiosk.apk', label: 'Kiosk' },
+  { id: 'com.shoppos.drivethru', apk: 'ShopPOS-Drive-Thru.apk', label: 'Drive-Thru' },
+  { id: 'com.shoppos.kitchen', apk: 'ShopPOS-Kitchen-Display.apk', label: 'Kitchen Display' },
+  { id: 'com.shoppos.customerdisplay', apk: 'ShopPOS-Customer-Order-Display.apk', label: 'Customer Order Display' },
   { id: 'com.shoppos.order', apk: 'ShopPOS-OnlineOrdering.apk', label: 'Online Ordering' }
 ];
 

@@ -1,0 +1,6 @@
+{
+  "appId": "com.shoppos.communication",
+  "appName": "Communication Center",
+  "webDir": "www",
+  "android": { "allowMixedContent": true }
+}

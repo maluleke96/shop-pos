@@ -876,6 +876,11 @@ function updateUser(id, data, actorId, actorName) {
     }
     if (data.is_active === false || data.is_active === 0) radio.revokeUserSessions(userId);
   } catch (_) { /* radio optional */ }
+  if (data.is_active === false || data.is_active === 0) {
+    try { require('./expense-app-platform').revokeUserSessions(userId); } catch (_) { /* optional */ }
+    const sess = session.getUserSession?.();
+    if (sess?.id && Number(sess.id) === Number(userId)) session.clearAll();
+  }
 }
 
 function actorRecord(actorId) {
@@ -900,6 +905,9 @@ function deleteUser(id, actorId, actorName) {
   audit(actorId, actorName, 'delete_user', 'user', userId, null);
   try { require('./studio-app-platform').revokeUserSessions(userId); } catch (_) { /* */ }
   try { require('./radio-platform').revokeUserSessions(userId); } catch (_) { /* */ }
+  try { require('./expense-app-platform').revokeUserSessions(userId); } catch (_) { /* */ }
+  const sess = session.getUserSession?.();
+  if (sess?.id && Number(sess.id) === Number(userId)) session.clearAll();
 }
 
 function permanentlyDeleteUser(id, confirmUsername, actorId, actorName) {
@@ -1954,6 +1962,7 @@ function saveProduct(data, actorId, actorName) {
       auditSvc.logPriceChange(data.id, fields.name, existing.selling_price, fields.selling_price, actorId, actorName);
     }
     audit(actorId, actorName, 'update_product', 'product', data.id, { name: fields.name });
+    try { require('./kiosk-platform').invalidateKioskCatalogCache?.(data.branch_id); } catch (_) { /* optional */ }
     if (data.branch_id !== undefined) {
       try {
         getDb().prepare('UPDATE products SET branch_id = ? WHERE id = ?').run(data.branch_id || null, data.id);

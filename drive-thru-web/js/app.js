@@ -1,8 +1,16 @@
 const DriveThruApp = {
-  user: null, catalog: null, order: null, categoryId: null,
+  user: null, catalog: null, order: null, categoryId: null, paymentMethod: 'card', voucherCode: '', voucherDiscount: 0,
 
   esc(s) { const d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; },
   money(n) { return `R${Number(n || 0).toFixed(2)}`; },
+
+  productImageUrl(p) {
+    if (!p?.has_image || !p?.image_url) return null;
+    const station = localStorage.getItem('dt_station_token') || '';
+    const base = (window.__DRIVE_THRU_CONFIG__?.apiBase || window.location.origin || '').replace(/\/$/, '');
+    const path = String(p.image_url).startsWith('http') ? p.image_url : `${base}${p.image_url}`;
+    return `${path}?token=${encodeURIComponent(station)}`;
+  },
 
   async init() {
     await DriveThruAudio.init();
@@ -54,6 +62,8 @@ const DriveThruApp = {
   async loadCatalog() {
     this.catalog = await DriveThruAPI.catalog();
     if (!this.categoryId && this.catalog.categories?.length) this.categoryId = this.catalog.categories[0].id;
+    const methods = this.catalog.payment_methods || ['cash', 'card'];
+    if (!methods.includes(this.paymentMethod)) this.paymentMethod = methods[0] || 'cash';
   },
 
   startHeartbeat() {
@@ -89,11 +99,20 @@ const DriveThruApp = {
         <div class="panel"><h3>Menu</h3>
           ${(this.catalog?.categories || []).map((c) => `<button class="product-btn ${c.id === this.categoryId ? 'style="outline:2px solid #22c55e"' : ''}" data-cat="${c.id}">${this.esc(c.name)}</button>`).join('')}
           <hr style="margin:12px 0;border-color:#334155">
-          ${this.products().map((p) => `<button class="product-btn" data-pid="${p.id}" ${p.available ? '' : 'disabled'}>
-            ${this.esc(p.name)} <small>${this.money(p.selling_price)}</small></button>`).join('')}</div>
+          ${this.products().map((p) => {
+            const img = this.productImageUrl(p);
+            return `<button class="product-btn dt-product-btn" data-pid="${p.id}" ${p.available ? '' : 'disabled'}>
+              ${img ? `<img class="dt-product-thumb" src="${this.esc(img)}" alt="">` : ''}
+              <span>${this.esc(p.name)} <small>${this.money(p.selling_price)}</small></span></button>`;
+          }).join('')}</div>
         <div class="panel"><h3>Current Order</h3>
           ${items.map((it, i) => `<div class="order-line"><span>${it.quantity}× ${this.esc(it.product_name)}</span><span>${this.money(it.total || it.unit_price * it.quantity)}</span></div>`).join('') || '<p class="muted">Start order or add items</p>'}
-          <p style="font-size:20px;margin-top:12px"><strong>Total: ${this.money(total)}</strong></p>
+          <p style="font-size:20px;margin-top:12px"><strong>Total: ${this.money(Math.max(0, total - this.voucherDiscount))}</strong></p>
+          <div style="display:flex;gap:8px;margin-top:8px">
+            <input id="dt-voucher" placeholder="Voucher" value="${this.esc(this.voucherCode)}" style="flex:1;padding:8px">
+            <button type="button" class="btn-gray" data-act="apply-voucher">Apply</button>
+          </div>
+          <p class="muted" style="font-size:12px;margin-top:6px">Payment: ${this.esc((this.catalog?.payment_methods || []).join(', ') || 'cash, card')}</p>
           <textarea id="order-notes" placeholder="Order notes" style="width:100%;margin-top:8px;padding:8px;background:#0f172a;color:#fff;border:1px solid #334155;border-radius:6px">${this.esc(this.order?.notes || '')}</textarea>
           <div class="dt-actions">
             ${!this.order ? '<button class="btn-green" data-act="start">New Vehicle</button>' : ''}
@@ -153,9 +172,31 @@ const DriveThruApp = {
           this.order = await DriveThruAPI.confirmOrder(this.order.id);
           this.render();
         }
+        if (act === 'apply-voucher') {
+          const code = document.getElementById('dt-voucher')?.value.trim();
+          if (!code) { this.voucherCode = ''; this.voucherDiscount = 0; this.render(); return; }
+          try {
+            const r = await DriveThruAPI.validateVoucher(code, { subtotal: total, items: this.order?.items || [] });
+            if (!r.ok) throw new Error(r.error || 'Invalid voucher');
+            this.voucherCode = r.code || code;
+            this.voucherDiscount = Number(r.discount) || 0;
+            this.render();
+          } catch (ex) { if (err) err.textContent = ex.message; }
+          return;
+        }
         if (act === 'pay') {
           await this.saveOrder();
-          this.order = await DriveThruAPI.takePayment(this.order.id, { payment_method: 'card', client_request_id: `dt-${this.order.id}-${Date.now()}` });
+          const methods = this.catalog?.payment_methods || ['cash', 'card'];
+          const pick = methods.length > 1
+            ? await this.pickPaymentMethod(methods)
+            : (methods[0] || 'card');
+          if (!pick) return;
+          this.order = await DriveThruAPI.takePayment(this.order.id, {
+            payment_method: pick,
+            voucher_code: this.voucherCode || undefined,
+            client_request_id: `dt-${this.order.id}`
+          });
+          this.voucherCode = ''; this.voucherDiscount = 0;
           this.render();
         }
         if (act === 'ready') { this.order = await DriveThruAPI.markReady(this.order.id); this.render(); }
@@ -178,6 +219,22 @@ const DriveThruApp = {
     const items = [...(this.order.items || []), { product_id: p.id, quantity: 1, modifiers: [] }];
     this.order = await DriveThruAPI.updateOrder(this.order.id, { items, notes: document.getElementById('order-notes')?.value });
     this.render();
+  },
+
+  pickPaymentMethod(methods) {
+    return new Promise((resolve) => {
+      const wrap = document.createElement('div');
+      wrap.className = 'modal';
+      wrap.innerHTML = `<div class="modal-inner"><h3>Payment method</h3>
+        ${methods.map((m) => `<button type="button" class="pay-btn" data-m="${m}">${m.toUpperCase()}</button>`).join('')}
+        <button type="button" class="btn-gray" data-cancel style="margin-top:12px;width:100%">Cancel</button></div>`;
+      document.body.appendChild(wrap);
+      wrap.onclick = (e) => {
+        if (e.target.closest('[data-cancel]')) { wrap.remove(); resolve(null); return; }
+        const b = e.target.closest('[data-m]');
+        if (b) { wrap.remove(); resolve(b.dataset.m); }
+      };
+    });
   },
 
   async saveOrder() {

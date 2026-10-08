@@ -157,8 +157,7 @@ function findReferralAgent(identifier) {
 /**
  * Step 1 (Order Online style): phone → WhatsApp 6-digit code (does NOT change password yet).
  */
-function sendReferralAgentResetCode(identifier) {
-  ensureReferralResetSchema();
+async function sendReferralAgentResetCode(identifier) {
   const id = String(identifier || '').trim();
   if (!id) throw new Error('Enter your WhatsApp / mobile number');
   const agent = findReferralAgent(id);
@@ -168,29 +167,33 @@ function sendReferralAgentResetCode(identifier) {
   const phone = agent.phone?.trim();
   if (!phone) throw new Error('No phone on file — contact the shop administrator');
 
-  const code = genCode();
-  const db = getDb();
-  try { db.prepare('DELETE FROM referral_password_resets WHERE agent_id=?').run(agent.id); } catch (_) { /* */ }
-  db.prepare(
-    `INSERT INTO referral_password_resets (agent_id, contact, code_hash, expires_at, created_at) VALUES (?,?,?,?,?)`
-  ).run(agent.id, phone, bcrypt.hashSync(code, 10), nowPlusMin(15), nowIso());
-
-  const shopName = db.prepare('SELECT shop_name FROM shop_settings WHERE id=1').get()?.shop_name || 'Shop';
-  const body = `${shopName} — Your Referral Agent password reset code is: ${code}\n\nEnter this code on the Referral Agent portal, then type your new password. Valid for 15 minutes.\n\nUsername: ${agent.username || '—'}\nDo not share this code.`;
-  const wa = sendRecoveryWhatsApp(phone, body, { message_type: 'password_reset', otp_code: code });
-  // Always return a wa.me link (Order Online style) so the agent can open WhatsApp and send the code to themselves.
-  let whatsappUrl = wa.url || null;
-  if (!whatsappUrl) {
-    try { whatsappUrl = require('./whatsapp').buildWaUrl(phone, body); } catch (_) { /* */ }
+  const shopName = getDb().prepare('SELECT shop_name FROM shop_settings WHERE id=1').get()?.shop_name || 'Shop';
+  const sent = await require('./cc-otp').issue({
+    purpose: 'referral_password_reset',
+    subject: `agent:${agent.id}`,
+    phone,
+    email: agent.email || '',
+    name: agent.full_name || agent.username,
+    digits: 6,
+    expiryMinutes: 15,
+    emailSubject: `${shopName} Referral Agent password reset code`,
+    buildText: (code, minutes) => `${shopName} — Your Referral Agent password reset code is: ${code}\n\nEnter this code on the Referral Agent portal, then type your new password. Valid for ${minutes} minutes.\n\nUsername: ${agent.username || '—'}\nDo not share this code.`
+  });
+  let whatsappUrl = null;
+  if (!sent.delivered.length && sent.wa_link_text) {
+    try { whatsappUrl = require('./whatsapp').buildWaUrl(phone, sent.wa_link_text); } catch (_) { /* */ }
   }
   return {
     success: true,
     sent: true,
-    via: 'whatsapp_open',
+    via: sent.delivered.length ? sent.delivered.join('+') : 'whatsapp_open',
     whatsapp_url: whatsappUrl,
     phone_masked: maskPhone(phone),
     username_hint: agent.username || null,
-    message: `Open WhatsApp for ${maskPhone(phone)}, tap Send to get your 6-digit code, then enter it here.`
+    message: sent.delivered.length
+      ? `Reset code sent (${sent.delivered.join(' + ')}) to ${maskPhone(phone)}. Enter it here.`
+      : `Open WhatsApp for ${maskPhone(phone)}, tap Send to get your 6-digit code, then enter it here.`,
+    _dev_code: sent._dev_code
   };
 }
 
@@ -212,11 +215,7 @@ function resetReferralAgentPassword(data = {}) {
   if (!['APPROVED', 'ACTIVE'].includes(status)) throw new Error('Only approved agents can reset their password');
 
   const db = getDb();
-  const reset = db.prepare(
-    `SELECT * FROM referral_password_resets WHERE agent_id=? AND expires_at > ? ORDER BY id DESC LIMIT 1`
-  ).get(agent.id, nowIso());
-  if (!reset) throw new Error('Reset code expired — request a new code');
-  if (!bcrypt.compareSync(code, reset.code_hash)) throw new Error('Incorrect reset code');
+  require('./cc-otp').verify({ purpose: 'referral_password_reset', subject: `agent:${agent.id}`, code });
 
   const hash = bcrypt.hashSync(password, 10);
   db.prepare(`UPDATE referral_agents SET password_hash=?, updated_at=datetime('now') WHERE id=?`).run(hash, agent.id);

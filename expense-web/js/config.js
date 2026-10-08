@@ -1,5 +1,5 @@
 window.__EXPENSE_CONFIG__ = {
-  rpcUrl: "",
+  rpcUrl: "/rpc",
   apiBase: "",
   expensePath: "/expenses/"
 };

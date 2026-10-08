@@ -70,7 +70,11 @@
     "audit:business-manager": "node scripts/live-operations-audit.js --module=business-manager",
     "audit:expenses": "node scripts/live-operations-audit.js --module=expenses",
     "test:signage": "node scripts/signage-test-suite.js",
-    "test:kiosk-drivethru": "node scripts/kiosk-drive-thru-test-suite.js"
+    "test:kiosk-drivethru": "node scripts/kiosk-drive-thru-test-suite.js",
+    "build:ops-android": "node scripts/build-ops-apps-android.js all",
+    "build:ops-windows": "node scripts/build-ops-apps-windows.js all",
+    "test:expense-line-total": "node scripts/test-expense-line-total.js",
+    "test:ops-e2e-lab": "node scripts/kiosk-drive-thru-test-suite.js"
   },
   "dependencies": {
     "@capacitor/camera": "^6.1.3",
@@ -81,6 +85,7 @@
     "bcryptjs": "^2.4.3",
     "jspdf": "^2.5.2",
     "jspdf-autotable": "^3.8.4",
+    "nodemailer": "^6.10.1",
     "pg": "^8.23.0",
     "sql.js": "^1.12.0",
     "xlsx": "^0.18.5"

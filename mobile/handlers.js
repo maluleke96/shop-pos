@@ -1088,6 +1088,14 @@ function buildHandlers(store) {
     const user = s.requireActor(a, ['owner', 'manager', 'cashier', 'supervisor', 'assistant_manager']);
     return require('../electron/services/taken-orders').payTakenOrder(id, data || {}, user);
   }));
+  add('taken:update', wrapSync((id, data, a) => {
+    const user = s.requireActor(a, ['owner', 'manager', 'assistant_manager', 'supervisor']);
+    return require('../electron/services/taken-orders').updateTakenOrder(id, data || {}, user);
+  }));
+  add('taken:delete', wrapSync((id, a) => {
+    const user = s.requireActor(a, ['owner', 'manager', 'assistant_manager', 'supervisor']);
+    return require('../electron/services/taken-orders').deleteTakenOrder(id, user);
+  }));
   add('layby:refund', wrapSync((id, actor) => {
     const user = s.requireActor(actor, ['owner', 'manager', 'assistant_manager', 'supervisor']);
     return s.refundLayby(id, user.id, user.username);

@@ -174,6 +174,20 @@
     const data = await r.json().catch(() => ({ success: false, error: 'Bad server response from /rpc' }));
     if (data && data.sessionToken) saveToken(data.sessionToken);
     if (method === 'auth_logout' || method === 'auth:logout') saveToken('');
+    if (data && (data.code === 'SESSION_SUPERSEDED' || data.code === 'ACCOUNT_DEACTIVATED' || (data.frozen && data.active === false))) {
+      saveToken('');
+      try {
+        window.App?.doLogout?.();
+      } catch (_) { /* ignore */ }
+      if (data.code === 'SESSION_SUPERSEDED') {
+        try { Utils?.toast?.('Signed out — this account is active on another device.', 'warning'); } catch (_) { /* */ }
+      }
+    } else if (data && data.success === false && /deactivated.*frozen/i.test(String(data.error || ''))) {
+      saveToken('');
+      try {
+        window.App?.doLogout?.();
+      } catch (_) { /* ignore */ }
+    }
     return data;
   }
 

@@ -154,6 +154,7 @@ const RestaurantPage = {
           <button class="btn btn-primary" id="open-kds">Open Kitchen Display Window</button>
           <button class="btn btn-ghost" id="open-cds-from-kds">Open Customer Board</button>
           <button class="btn btn-ghost" id="refresh-kds">Refresh</button>
+          <button class="btn btn-warning" id="clear-all-kds" title="Mark every active ticket completed">Clear all tickets</button>
         </div>
       </div></div>
         <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px">
@@ -165,6 +166,11 @@ const RestaurantPage = {
             ${items.map(o => `<div class="kot-ticket" style="padding:12px;border-bottom:1px solid var(--border);touch-action:manipulation">
               <strong style="font-size:1.15rem">${Utils.escHtml(o.order_number)}</strong>
               ${o.table_number ? `<span class="muted"> · Table ${Utils.escHtml(String(o.table_number))}</span>` : ''}
+              ${o.sla ? `<div style="margin-top:4px;font-size:12px;font-weight:700">
+                <span style="font-family:ui-monospace,Consolas,monospace">${Utils.escHtml(o.sla.timer_text)}</span>
+                · ${({ on_time: '🟢', warning: '🟡', overdue: '🔴', critical: '⚫', new: '🔵' })[o.sla.state] || ''} ${Utils.escHtml(o.sla.state_label)}
+                <span class="muted"> · ${Utils.escHtml(String(o.sla.source || '').toUpperCase())}${o.station ? ` · ${Utils.escHtml(o.station)}` : ''}</span>
+              </div>` : ''}
               <ul style="margin:8px 0 0;padding-left:16px;font-size:13px">${(o.items||[]).map(i => `<li>${i.quantity}× ${Utils.escHtml(i.product_name)}</li>`).join('')}</ul>
               <div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap">
               ${st === 'pending' ? `<button class="btn btn-sm btn-primary kot-advance" data-id="${o.id}" data-status="preparing">▶ Start cooking</button>` : ''}
@@ -191,6 +197,21 @@ const RestaurantPage = {
         this._rerender();
       });
       document.getElementById('refresh-kds')?.addEventListener('click', () => paint());
+      document.getElementById('clear-all-kds')?.addEventListener('click', async () => {
+        if (!confirm('Clear ALL active kitchen tickets? They will be marked completed.')) return;
+        const r = await API.kitchenAdminClearAllActive({
+          reason: 'admin_reset',
+          note: 'Admin clear all from Restaurant → Kitchen'
+        }, this.app.user);
+        if (r?.success === false) return Utils.toast(r.error || 'Could not clear', 'error');
+        Utils.toast(`Cleared ${r?.data?.updated ?? r?.updated ?? 0} ticket(s)`, 'success');
+        try {
+          const bc = new BroadcastChannel('shoppos-kitchen');
+          bc.postMessage({ type: 'refresh' });
+          bc.close();
+        } catch (_) { /* */ }
+        await paint();
+      });
       el.querySelectorAll('.kot-advance').forEach(b => b.addEventListener('click', async () => {
         const id = parseInt(b.dataset.id, 10);
         const status = b.dataset.status;

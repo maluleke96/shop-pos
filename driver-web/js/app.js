@@ -952,6 +952,55 @@ const DriverApp = {
     </button>`;
   },
 
+  DELAY_REASONS: ['traffic', 'wrong_address', 'customer_unavailable', 'vehicle_problem', 'restaurant_delay', 'weather', 'driver_delay', 'other'],
+
+  slaClock(sec) {
+    const t = Math.max(0, Math.round(Number(sec) || 0));
+    const h = Math.floor(t / 3600);
+    const m = String(Math.floor((t % 3600) / 60)).padStart(2, '0');
+    const s = String(t % 60).padStart(2, '0');
+    return h ? `${h}:${m}:${s}` : `${m}:${s}`;
+  },
+
+  slaLine(o) {
+    const s = o.sla;
+    if (!s) return '';
+    this._slaRenderedAt = Date.now();
+    if (!this._slaTicker) {
+      this._slaTicker = setInterval(() => {
+        const extra = (Date.now() - (this._slaRenderedAt || Date.now())) / 1000;
+        document.querySelectorAll('[data-drv-elapsed]').forEach((n) => {
+          const running = n.dataset.drvRunning === '1';
+          n.textContent = `${this.slaClock((Number(n.dataset.drvElapsed) || 0) + (running ? extra : 0))} / ${this.slaClock((Number(n.dataset.drvTarget) || 0) * 60)}`;
+        });
+      }, 1000);
+    }
+    const icon = { on_time: '🟢', warning: '🟡', overdue: '🔴', critical: '⚫', new: '🔵' }[s.state] || '';
+    const running = !s.completed && !s.paused;
+    return `<p style="font-weight:700;margin:6px 0">⏱ <span style="font-family:ui-monospace,Consolas,monospace" data-drv-elapsed="${s.elapsed_seconds || 0}" data-drv-target="${s.target_minutes || 0}" data-drv-running="${running ? 1 : 0}">${this.esc(s.timer_text)}</span> · ${icon} ${this.esc(s.state_label)}${s.delivery_minutes != null ? ` <span class="muted" style="font-weight:400">· delivery ${s.delivery_minutes}/${s.delivery_target} min</span>` : ''}</p>`;
+  },
+
+  askDelayReason(order) {
+    return new Promise((resolve) => {
+      const label = (v) => String(v).replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+      this.showModal({
+        title: 'This delivery is late',
+        body: `<p class="muted">Please tell us why it was delayed.</p>
+          <select id="drv-delay-reason" class="drv-input" style="width:100%;margin:8px 0">${this.DELAY_REASONS.map((r) => `<option value="${r}">${label(r)}</option>`).join('')}</select>
+          <textarea id="drv-delay-note" class="drv-input" rows="3" style="width:100%" placeholder="Explanation (required for Other)"></textarea>`,
+        actions: '<button type="button" class="drv-btn secondary" id="drv-delay-skip">Skip</button><button type="button" class="drv-btn" id="drv-delay-ok">Save</button>'
+      });
+      document.getElementById('drv-delay-skip')?.addEventListener('click', () => { this.hideModal(); resolve(null); });
+      document.getElementById('drv-delay-ok')?.addEventListener('click', () => {
+        const reason = document.getElementById('drv-delay-reason').value;
+        const note = document.getElementById('drv-delay-note').value.trim();
+        if (reason === 'other' && note.length < 3) { this.toast('Please explain the reason', 'error'); return; }
+        this.hideModal();
+        resolve({ reason, note });
+      });
+    });
+  },
+
   orderCard(o, opts = {}) {
     const items = (o.items || []).slice(0, 6).map((i) => `${i.quantity || 1}× ${i.name || i.product_name}`).join(', ');
     const delNum = o.delivery_number || o.confirmation_code || 'Delivery';
@@ -974,6 +1023,7 @@ const DriverApp = {
         </div>
       </div>
       <p class="muted">${this.esc(items)}</p>
+      ${this.slaLine(o)}
       <p><strong>Your fee: ${this.money(o.delivery_fee)}</strong></p>
       <div class="order-actions">
         ${pool || st === 'awaiting_driver' ? '<button type="button" class="drv-btn" data-act="accept">Accept delivery</button>' : ''}
@@ -1208,6 +1258,13 @@ const DriverApp = {
           reason = prompt('Reason?');
           if (reason === null) return;
           reason = reason || 'Failed';
+        }
+        const slaOrder = (this.orders || []).find((o) => String(o.id) === String(id));
+        if (act === 'delivered' && slaOrder?.sla?.needs_reason && DriverAPI.delayReason) {
+          const pick = await this.askDelayReason(slaOrder);
+          if (pick) {
+            try { await DriverAPI.delayReason(id, pick); } catch (_) { /* the delivery itself must still go through */ }
+          }
         }
         this.orders = (this.orders || []).map((o) => String(o.id) === String(id) ? { ...o, status } : o);
         if (status === 'delivered') this.orders = this.orders.filter((o) => String(o.id) !== String(id));

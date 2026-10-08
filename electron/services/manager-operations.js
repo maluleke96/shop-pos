@@ -467,11 +467,11 @@ function saveMoSettings(data, actor) {
   return getMoSettings();
 }
 
-/** Owners/managers always allowed (same Admin/POS password). Other staff only when granted. */
+/** Owners/managers/supervisors always allowed (same Admin/POS password). Other staff only when granted. */
 function assertPortalAccess(user) {
   if (!user?.id) throw new Error('Authentication required');
   const role = String(user.role || '').toLowerCase();
-  if (role === 'owner' || role === 'manager') return true;
+  if (role === 'owner' || role === 'manager' || role === 'supervisor' || role === 'assistant_manager') return true;
   const allowed = getMoSettings().allowed_user_ids || [];
   if (allowed.includes(Number(user.id))) return true;
   const err = new Error('No Manager Operations access. Ask an owner or manager to grant you access in Admin → Manager Operations → Staff Access.');
@@ -722,7 +722,7 @@ function getSalesSummary(branchId) {
   let orderCount = 0;
   try {
     const day = todayLocal();
-    let sql = `SELECT COUNT(*) AS c FROM sales WHERE date(created_at) = date(?) AND status IN ('completed','paid','partial')`;
+    let sql = `SELECT COUNT(*) AS c FROM sales WHERE date(COALESCE(sale_datetime, created_at)) = date(?) AND status IN ('completed','paid','partial')`;
     const params = [day];
     if (branchId != null && branchId !== '' && branchId !== 'all') {
       sql += ' AND branch_id = ?';

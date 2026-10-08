@@ -70,6 +70,17 @@ const DisplayAuth = {
         if (r?.success === false || r?.error) throw new Error(r.error || 'Login failed');
         const user = r.user || r.data?.user;
         if (!user) throw new Error('Login failed');
+        if (user.is_active === 0 || user.is_active === false) {
+          throw new Error('You do not have access — account suspended. Contact the administrator.');
+        }
+        const perms = user.permissions && typeof user.permissions === 'object' ? user.permissions : {};
+        const role = user.role || '';
+        const adminRoles = new Set(['owner', 'manager', 'supervisor', 'assistant_manager']);
+        const canUse = adminRoles.has(role) || perms.ops_device_use === true
+          || perms.kitchen === true || perms.operations === true;
+        if (!canUse) {
+          throw new Error('You do not have permission to open this device. Sign in as owner/manager or ask admin to enable “Ops device use”.');
+        }
         window.App = window.App || {};
         window.App.user = user;
         overlay.remove();

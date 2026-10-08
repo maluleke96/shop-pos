@@ -2,12 +2,19 @@
  * Communication Center — single outbound engine for the whole app.
  * Reuses WhatsApp (whatsapp.js), in-app notifications (store), customers/staff/branches.
  */
-const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
 const { getDb } = require('../database/db');
+const control = require('./cc-control');
+const providers = require('./cc-providers');
 
-const CHANNELS = ['whatsapp', 'sms', 'email', 'inapp', 'facebook', 'instagram', 'tiktok', 'youtube', 'x'];
+const SECRET_KEYS = ['api_key', 'smtp_pass', 'access_token', 'client_secret', 'password', 'secret', 'token'];
+// Rows written only as a record of an immediate send; their stored address is masked.
+const LOG_ONLY_EVENTS = ['auth.otp', 'manual.test'];
+const RETRYABLE_STATUSES = ['failed', 'held', 'blocked', 'cancelled'];
+
+const SOCIAL_CHANNELS = ['facebook', 'instagram', 'tiktok', 'youtube', 'x', 'linkedin'];
+const CHANNELS = ['whatsapp', 'sms', 'email', 'inapp', ...SOCIAL_CHANNELS];
 
 const DEFAULT_EVENT_TYPES = [
   { event_key: 'order.new', label: 'New Order', category: 'orders', default_channels_json: '["whatsapp","inapp"]', default_recipients_json: '["customer","shop","owner"]', is_transactional: 1 },
@@ -37,6 +44,11 @@ const DEFAULT_EVENT_TYPES = [
   { event_key: 'supplier.invoice', label: 'Supplier Invoice', category: 'suppliers', default_channels_json: '["whatsapp","email","inapp"]', default_recipients_json: '["owner","manager"]', is_transactional: 1 },
   { event_key: 'delivery.failed', label: 'Failed Delivery', category: 'delivery', default_channels_json: '["whatsapp","inapp"]', default_recipients_json: '["owner","manager","customer"]', is_transactional: 1 },
   { event_key: 'cash.variance', label: 'Cash Variance', category: 'ops', default_channels_json: '["whatsapp","inapp"]', default_recipients_json: '["owner","manager"]', is_transactional: 1 },
+  { event_key: 'order.sla_warning', label: 'Order SLA — Supervisor Warning', category: 'ops', default_channels_json: '["inapp"]', default_recipients_json: '["manager"]', is_transactional: 1 },
+  { event_key: 'order.sla_overdue', label: 'Order SLA — Overdue', category: 'ops', default_channels_json: '["inapp"]', default_recipients_json: '["manager"]', is_transactional: 1 },
+  { event_key: 'order.sla_escalation', label: 'Order SLA — Manager Escalation', category: 'ops', default_channels_json: '["inapp"]', default_recipients_json: '["manager","owner"]', is_transactional: 1 },
+  { event_key: 'order.sla_critical', label: 'Order SLA — Critical', category: 'ops', default_channels_json: '["inapp"]', default_recipients_json: '["manager","owner"]', is_transactional: 1 },
+  { event_key: 'kiosk.offline', label: 'Kiosk Offline', category: 'system', default_channels_json: '["inapp"]', default_recipients_json: '["manager","owner"]', is_transactional: 1 },
   { event_key: 'builder.share', label: 'Share / Publish Content', category: 'marketing', default_channels_json: '["whatsapp"]', default_recipients_json: '["customer_group"]', is_transactional: 0 },
   { event_key: 'manual.message', label: 'Manual Message', category: 'manual', default_channels_json: '["whatsapp"]', default_recipients_json: '["customer"]', is_transactional: 0 }
 ];
@@ -60,8 +72,8 @@ function parseJson(v, fb) {
   try { return typeof v === 'string' ? JSON.parse(v) : v; } catch { return fb; }
 }
 
-function nowIso() {
-  return new Date().toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, '');
+function nowIso(d = new Date()) {
+  return d.toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, '');
 }
 
 function dbRun(sql, params = []) {
@@ -83,9 +95,36 @@ function ensureSchema() {
       if (fs.existsSync(mig)) getDb().exec(fs.readFileSync(mig, 'utf8'));
     }
   } catch (_) { /* */ }
+  control.ensureSchema();
   seedDefaults();
+  scrubStoredSecrets();
   _schemaReady = true;
   startQueueWorker();
+}
+
+/** Provider secrets must live in server environment variables, never in the database. */
+function scrubStoredSecrets() {
+  try {
+    const raw = control.rawSettings();
+    const removed = [];
+    ['sms', 'email'].forEach((k) => {
+      if (raw[k] && typeof raw[k] === 'object') {
+        SECRET_KEYS.forEach((s) => { if (raw[k][s] != null) { delete raw[k][s]; removed.push(`${k}.${s}`); } });
+      }
+    });
+    if (removed.length) {
+      control.writeRawSettings(raw);
+      control.ccAudit(null, 'secrets_removed_from_db', 'cc_settings', 1, { keys: removed });
+    }
+    (dbAll(`SELECT id, channel, config_json FROM cc_connections WHERE channel IN ('sms','email')`) || []).forEach((c) => {
+      const cfg = parseJson(c.config_json, {});
+      const gone = SECRET_KEYS.filter((s) => cfg[s] != null);
+      if (!gone.length) return;
+      gone.forEach((s) => delete cfg[s]);
+      dbRun('UPDATE cc_connections SET config_json = ? WHERE id = ?', [JSON.stringify(cfg), c.id]);
+      control.ccAudit(null, 'secrets_removed_from_db', 'cc_connections', c.id, { channel: c.channel, keys: gone });
+    });
+  } catch (_) { /* */ }
 }
 
 function seedDefaults() {
@@ -103,7 +142,7 @@ function seedDefaults() {
         VALUES (?, ?, ?, 'any', ?, 1, 1)`, [t.slug, t.name, t.category, t.body]);
     } catch (_) { /* */ }
   });
-  ['whatsapp', 'sms', 'email', 'facebook', 'instagram', 'tiktok', 'youtube', 'x'].forEach((ch) => {
+  ['whatsapp', 'sms', 'email', ...SOCIAL_CHANNELS].forEach((ch) => {
     try { dbRun(`INSERT OR IGNORE INTO cc_connections (channel, status, config_json) VALUES (?, 'disconnected', '{}')`, [ch]); }
     catch (_) { /* */ }
   });
@@ -123,20 +162,28 @@ function getSettings() {
   return parseJson(dbGet('SELECT settings_json FROM cc_settings WHERE id = 1')?.settings_json, {});
 }
 
+function stripSecrets(obj) {
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return obj;
+  const out = {};
+  Object.keys(obj).forEach((k) => {
+    if (SECRET_KEYS.includes(k)) return;
+    out[k] = stripSecrets(obj[k]);
+  });
+  return out;
+}
+
 function saveSettings(partial, actor) {
   ensureSchema();
-  const next = { ...getSettings(), ...partial, updated_at: nowIso() };
+  const clean = stripSecrets({ ...(partial || {}) });
+  delete clean.control;
+  const next = { ...getSettings(), ...clean, updated_at: nowIso() };
   dbRun('UPDATE cc_settings SET settings_json = ?, updated_at = ? WHERE id = 1', [JSON.stringify(next), nowIso()]);
-  audit(actor, 'save_settings', 'cc_settings', 1, { keys: Object.keys(partial || {}) });
+  audit(actor, 'save_settings', 'cc_settings', 1, { keys: Object.keys(clean) });
   return maskSettings(next);
 }
 
 function maskSettings(s) {
-  const out = { ...s };
-  if (out.sms?.api_key) out.sms = { ...out.sms, api_key: '••••configured' };
-  if (out.email?.smtp_pass) out.email = { ...out.email, smtp_pass: '••••configured' };
-  if (out.email?.api_key) out.email = { ...out.email, api_key: out.email.api_key === '••••configured' ? out.email.api_key : '••••configured' };
-  return out;
+  return stripSecrets({ ...s });
 }
 
 function syncWhatsAppConnectionStatus() {
@@ -155,12 +202,48 @@ function syncWhatsAppConnectionStatus() {
   } catch (_) { /* */ }
 }
 
+/** Supports both {{var}} and {var} placeholders. */
 function renderTemplate(body, vars = {}) {
   let out = String(body || '');
   Object.keys(vars || {}).forEach((k) => {
-    out = out.replace(new RegExp(`\\{\\{${k}\\}\\}`, 'gi'), vars[k] != null ? String(vars[k]) : '');
+    if (!/^[A-Za-z0-9_]+$/.test(k)) return;
+    const val = vars[k] != null && typeof vars[k] !== 'object' ? String(vars[k]) : '';
+    out = out.replace(new RegExp(`\\{\\{${k}\\}\\}`, 'gi'), () => val);
+    out = out.replace(new RegExp(`\\{${k}\\}`, 'gi'), () => val);
   });
-  return out.replace(/\{\{[A-Za-z0-9_]+\}\}/g, '').trim();
+  return out.replace(/\{\{[A-Za-z0-9_]+\}\}/g, '').replace(/\{[a-z][a-z0-9_]*\}/g, '').trim();
+}
+
+const SHOP_VARS = ['shop_name', 'branch_name', 'shop_phone', 'shop_address', 'website', 'order_link'];
+
+/** Shop / branch variables resolved server-side for the job's branch. */
+function shopVars(branchId) {
+  const s = dbGet('SELECT * FROM shop_settings WHERE id = 1') || {};
+  let online = {};
+  try { online = parseJson(s.online_settings_json, {}) || {}; } catch (_) { online = {}; }
+  let branch = null;
+  if (branchId) {
+    try { branch = dbGet('SELECT * FROM branches WHERE id = ?', [branchId]) || null; } catch (_) { branch = null; }
+  }
+  const base = String(process.env.PUBLIC_BASE_URL || process.env.PUBLIC_URL || online.public_url || online.website || '').replace(/\/$/, '');
+  const now = new Date(Date.now() + 2 * 3600 * 1000);
+  return {
+    shop_name: s.shop_name || '',
+    branch_name: branch?.name || '',
+    branch: branch?.name || s.shop_name || '',
+    shop_phone: branch?.phone || s.phone || '',
+    shop_address: branch?.address || s.address || '',
+    website: base,
+    order_link: base ? `${base}/order` : '',
+    date: now.toISOString().slice(0, 10),
+    time: now.toISOString().slice(11, 16)
+  };
+}
+
+/** Block messages whose template needs a shop/branch detail that is missing. */
+function missingShopDetails(text, vars) {
+  const s = String(text || '');
+  return SHOP_VARS.filter((k) => (s.includes(`{${k}}`) || s.includes(`{{${k}}}`)) && !String(vars[k] || '').trim());
 }
 
 function getTemplate(slug) {
@@ -336,26 +419,79 @@ function resolveRecipients(recipientType, ctx = {}) {
   return out.filter((r) => r.recipient_address || r.email || r.recipient_type === 'owner' || r.recipient_type === 'manager' || r.recipient_type === 'shop');
 }
 
-function respectsMarketingOptOut(recipient, channel, isTransactional) {
-  if (isTransactional) return true;
-  if (!['whatsapp', 'sms', 'email'].includes(channel)) return true;
+function findPrefs(address) {
+  const a = String(address || '').trim();
+  if (!a) return null;
   try {
-    const phone = String(recipient.recipient_address || '').replace(/\D/g, '');
-    if (!phone) return true;
-    const prefs = dbGet('SELECT * FROM cc_customer_prefs WHERE phone = ? OR phone = ?', [phone, phone.slice(-9)]);
-    if (!prefs) {
-      try {
-        const wc = dbGet(`SELECT marketing_opt_in FROM web_customers WHERE REPLACE(REPLACE(phone,' ',''),'+','') LIKE ? LIMIT 1`, [`%${phone.slice(-9)}`]);
-        if (wc && Number(wc.marketing_opt_in) === 0) return false;
-      } catch (_) { /* */ }
-      return true;
-    }
-    if (channel === 'whatsapp' && !Number(prefs.whatsapp_marketing)) return false;
-    if (channel === 'sms' && !Number(prefs.sms_marketing)) return false;
-    if (channel === 'email' && !Number(prefs.email_marketing)) return false;
-    if (!Number(prefs.promotions)) return false;
-  } catch (_) { /* */ }
+    if (a.includes('@')) return dbGet('SELECT * FROM cc_customer_prefs WHERE LOWER(email_address) = ? LIMIT 1', [a.toLowerCase()]) || null;
+    const phone = a.replace(/\D/g, '');
+    if (!phone) return null;
+    return dbGet('SELECT * FROM cc_customer_prefs WHERE phone = ? OR phone = ? OR phone = ? LIMIT 1',
+      [phone, phone.slice(-9), phone.startsWith('27') ? `0${phone.slice(2)}` : phone]) || null;
+  } catch (_) { return null; }
+}
+
+const flagOn = (v) => v == null || Number(v) !== 0;
+
+/** Customer consent check per channel + message category (security/internal always allowed). */
+function prefsAllow(address, channel, category) {
+  if (!['whatsapp', 'sms', 'email'].includes(channel)) return true;
+  if (category === 'security' || category === 'internal') return true;
+  const prefs = findPrefs(address);
+  if (!prefs) {
+    if (category !== 'marketing' && category !== 'scheduled') return true;
+    try {
+      const phone = String(address || '').replace(/\D/g, '');
+      if (!phone) return true;
+      const wc = dbGet(`SELECT marketing_opt_in FROM web_customers WHERE REPLACE(REPLACE(phone,' ',''),'+','') LIKE ? LIMIT 1`, [`%${phone.slice(-9)}`]);
+      if (wc && Number(wc.marketing_opt_in) === 0) return false;
+    } catch (_) { /* */ }
+    return true;
+  }
+  if (!flagOn(prefs[channel])) return false;
+  if (category === 'transaction') return flagOn(prefs.transactional);
+  if (category === 'points') return flagOn(prefs.loyalty);
+  if (category === 'reminder') return flagOn(prefs.reminders);
+  if (prefs.opted_out_at) return false;
+  if (!flagOn(prefs.marketing) || !flagOn(prefs.promotions)) return false;
+  if (!flagOn(prefs[`${channel}_marketing`])) return false;
   return true;
+}
+
+function outboundBody(body, opts, channel, tpl, vars, rec, isTransactional) {
+  let text = !opts.body && channel === 'sms' && tpl?.sms_body
+    ? renderTemplate(tpl.sms_body, { ...vars, customer_name: rec.recipient_name || vars.customer_name })
+    : body;
+  if (isTransactional || !['sms', 'whatsapp', 'email'].includes(channel)) return text;
+  if (String(text).includes('/cc/unsubscribe')) return text;
+  try {
+    const link = require('./cc-scheduler').optOutLink(rec.recipient_address);
+    if (link) text += `\n\nOpt out: ${link}`;
+  } catch (_) { /* */ }
+  return text;
+}
+
+function presentQueueRow(row) {
+  if (!row) return row;
+  return { ...row, recipient_address: control.maskAddress(row.recipient_address) };
+}
+
+/** Email consent can be recorded against the email address or the customer's phone; both must allow it. */
+function consentAllows(address, phone, channel, category) {
+  if (!prefsAllow(address, channel, category)) return false;
+  if (channel === 'email' && phone && phone !== address && !prefsAllow(phone, channel, category)) return false;
+  return true;
+}
+
+function respectsMarketingOptOut(recipient, channel, isTransactional) {
+  const address = channel === 'email' ? (recipient.email || recipient.recipient_address) : recipient.recipient_address;
+  return consentAllows(address, recipient.recipient_address, channel, isTransactional ? 'transaction' : 'marketing');
+}
+
+/** Send-time category must match the enqueue decision (a non-transactional manual message is marketing). */
+function queuedCategory(eventKey, sourceModule, isTransactional) {
+  const base = control.categoryFor(eventKey, sourceModule);
+  return !isTransactional && base === 'transaction' ? 'marketing' : base;
 }
 
 function emit(eventKey, payload = {}, opts = {}) {
@@ -367,15 +503,19 @@ function emit(eventKey, payload = {}, opts = {}) {
   const recipientTypes = opts.recipients || parseJson(event?.default_recipients_json, ['owner']);
   const fallback = opts.fallback || parseJson(event?.fallback_channels_json, []);
   const isTransactional = event ? !!Number(event.is_transactional) : !!opts.transactional;
-  const vars = { ...(payload.vars || {}), ...payload };
-  const bodyTemplate = opts.body
-    || (opts.template_slug ? getTemplate(opts.template_slug)?.body : null)
-    || event?.label || eventKey;
+  const branchId = payload.branch_id || opts.branch_id || null;
+  const vars = { ...shopVars(branchId), ...(payload.vars || {}), ...payload };
+  const tpl = opts.template_slug ? getTemplate(opts.template_slug) : null;
+  const bodyTemplate = opts.body || tpl?.body || event?.label || eventKey;
+  const missing = missingShopDetails(`${bodyTemplate} ${opts.subject || ''}`, vars);
+  if (missing.length) {
+    audit(opts.actor, 'blocked_missing_shop_details', 'cc_event', null, { event_key: eventKey, missing, branch_id: branchId });
+    return { ok: false, reason: 'missing_shop_details', missing, queued: 0 };
+  }
   const body = renderTemplate(bodyTemplate, vars);
   const subject = opts.subject ? renderTemplate(opts.subject, vars) : null;
   const scheduledAt = opts.scheduled_at || null;
   const sourceModule = opts.source_module || payload.source_module || 'system';
-  const branchId = payload.branch_id || opts.branch_id || null;
 
   try { fireAutomations(eventKey, payload); } catch (_) { /* */ }
 
@@ -402,12 +542,18 @@ function emit(eventKey, payload = {}, opts = {}) {
           recipient_type: rec.recipient_type, recipient_id: rec.recipient_id,
           recipient_name: rec.recipient_name,
           recipient_address: channel === 'email' ? (rec.email || rec.recipient_address) : rec.recipient_address,
-          branch_id: branchId, subject, body,
+          branch_id: branchId,
+          subject: channel === 'email' && !subject && tpl?.email_subject ? renderTemplate(tpl.email_subject, { ...vars, customer_name: rec.recipient_name || vars.customer_name }) : subject,
+          body: outboundBody(body, opts, channel, tpl, vars, rec, isTransactional),
           media_url: opts.media_url || payload.media_url || null, media_id: opts.media_id || null,
           template_slug: opts.template_slug || null, vars_json: JSON.stringify(vars),
           scheduled_at: scheduledAt, priority: opts.priority != null ? Number(opts.priority) : (isTransactional ? 20 : 50),
           campaign_id: opts.campaign_id || null, automation_id: opts.automation_id || null,
-          created_by: opts.actor?.id || null, provider_meta_json: JSON.stringify({ fallback: useFallback })
+          created_by: opts.actor?.id || null,
+          provider_meta_json: JSON.stringify({
+            fallback: useFallback, phone: rec.recipient_address || null, email: rec.email || null,
+            category: queuedCategory(eventKey, sourceModule, isTransactional)
+          })
         });
         if (id) { queued += 1; ids.push(id); }
       });
@@ -420,10 +566,7 @@ function emit(eventKey, payload = {}, opts = {}) {
 
 function enqueue(row) {
   ensureSchema();
-  if (row.dedupe_key) {
-    const existing = dbGet(`SELECT id FROM cc_queue WHERE dedupe_key = ? AND status IN ('pending','processing','sent','delivered','retrying') LIMIT 1`, [row.dedupe_key]);
-    if (existing) return null;
-  }
+  if (row.dedupe_key && !control.claimDedupe(row.dedupe_key)) return null;
   try {
     const r = dbRun(`INSERT INTO cc_queue (
       dedupe_key, event_key, source_module, channel, recipient_type, recipient_id,
@@ -441,8 +584,10 @@ function enqueue(row) {
     if (!id) {
       id = Number(dbGet(`SELECT id FROM cc_queue ORDER BY id DESC LIMIT 1`)?.id) || 0;
     }
+    control.linkDedupe(row.dedupe_key, id);
     return id || true;
   } catch (err) {
+    control.releaseDedupe(row.dedupe_key);
     if (String(err.message || '').includes('UNIQUE')) return null;
     throw err;
   }
@@ -466,19 +611,40 @@ async function processQueue(limit = 15) {
   let processed = 0;
   try {
     ensureSchema();
+    try { require('./cc-scheduler').runDue(); } catch (_) { /* scheduler optional */ }
     const due = dbAll(`SELECT * FROM cc_queue WHERE status IN ('pending','retrying')
       AND (scheduled_at IS NULL OR datetime(scheduled_at) <= datetime('now'))
       ORDER BY priority ASC, id ASC LIMIT ?`, [limit]) || [];
     for (const job of due) {
+      const ctl = control.getControl();
+      const gate = control.gateJob(job, ctl);
+      if (!gate.allow) {
+        if (gate.action === 'defer') {
+          dbRun(`UPDATE cc_queue SET scheduled_at = ?, last_error = ? WHERE id = ?`, [nowIso(gate.until), gate.reason, job.id]);
+        } else {
+          dbRun(`UPDATE cc_queue SET status = ?, last_error = ? WHERE id = ?`,
+            [gate.action === 'hold' ? 'held' : 'blocked', gate.reason, job.id]);
+        }
+        continue;
+      }
+      const jobMeta = parseJson(job.provider_meta_json, {});
+      if (job.recipient_type === 'customer' && !consentAllows(job.recipient_address, jobMeta.phone, job.channel, gate.category)) {
+        dbRun(`UPDATE cc_queue SET status = 'blocked', last_error = 'customer_opted_out' WHERE id = ?`, [job.id]);
+        continue;
+      }
       dbRun(`UPDATE cc_queue SET status = 'processing', attempts = attempts + 1, processed_at = ? WHERE id = ?`, [nowIso(), job.id]);
       try {
         const result = await deliverJob(job);
+        if (job.channel !== 'inapp') {
+          control.recordAttempt({ queue_id: job.id, channel: job.channel, provider: result.provider, recipient: job.recipient_address,
+            status: result.ok ? 'sent' : 'failed', error: result.ok ? null : result.error, external_id: result.external_id });
+        }
         if (result.ok) {
           dbRun(`UPDATE cc_queue SET status = ?, sent_at = ?, external_id = ?, last_error = NULL WHERE id = ?`,
             [result.delivered ? 'delivered' : 'sent', nowIso(), result.external_id || null, job.id]);
-        } else await failOrRetry(job, result.error || 'Delivery failed');
+        } else await failOrRetry(job, result.error || 'Delivery failed', ctl, !!result.not_configured);
       } catch (err) {
-        await failOrRetry(job, err.message || String(err));
+        await failOrRetry(job, err.message || String(err), control.getControl(), false);
       }
       processed += 1;
     }
@@ -488,27 +654,31 @@ async function processQueue(limit = 15) {
   return { processed };
 }
 
-async function failOrRetry(job, error) {
+async function failOrRetry(job, error, ctl = control.getControl(), notConfigured = false) {
   const attempts = Number(job.attempts || 0) + 1;
-  const max = Number(job.max_attempts || 3);
+  const max = Math.min(Number(job.max_attempts || 3), Number(ctl.retry?.max_attempts || 3));
   const meta = parseJson(job.provider_meta_json, {});
   const fallback = Array.isArray(meta.fallback) ? meta.fallback : [];
-  if (attempts < max) {
-    dbRun(`UPDATE cc_queue SET status = 'retrying', last_error = ?, attempts = ? WHERE id = ?`, [String(error).slice(0, 500), attempts, job.id]);
+  if (attempts < max && !notConfigured) {
+    const backoff = Number(ctl.retry?.backoff_seconds || 60) * attempts;
+    dbRun(`UPDATE cc_queue SET status = 'retrying', last_error = ?, attempts = ?, scheduled_at = ? WHERE id = ?`,
+      [String(error).slice(0, 500), attempts, nowIso(new Date(Date.now() + backoff * 1000)), job.id]);
     return;
   }
-  const next = fallback.find((c) => c && c !== job.channel);
+  const phoneOf = () => meta.phone || (job.channel !== 'email' ? job.recipient_address : null);
+  const emailOf = () => meta.email || (job.channel === 'email' ? job.recipient_address : null);
+  const next = fallback.find((c) => c && c !== job.channel && (c === 'email' ? emailOf() : phoneOf()));
   if (next) {
     enqueue({
       dedupe_key: job.dedupe_key ? `${job.dedupe_key}:fb:${next}` : null,
       event_key: job.event_key, source_module: job.source_module, channel: next,
       recipient_type: job.recipient_type, recipient_id: job.recipient_id,
-      recipient_name: job.recipient_name, recipient_address: job.recipient_address,
+      recipient_name: job.recipient_name, recipient_address: next === 'email' ? emailOf() : phoneOf(),
       branch_id: job.branch_id, subject: job.subject, body: job.body,
       media_url: job.media_url, media_id: job.media_id, template_slug: job.template_slug,
       vars_json: job.vars_json, priority: Math.max(1, Number(job.priority || 50) - 5),
       campaign_id: job.campaign_id, automation_id: job.automation_id, created_by: job.created_by,
-      provider_meta_json: JSON.stringify({ fallback: fallback.filter((c) => c !== next), from_fallback_of: job.channel })
+      provider_meta_json: JSON.stringify({ fallback: fallback.filter((c) => c !== next), from_fallback_of: job.channel, phone: phoneOf(), email: emailOf() })
     });
   }
   dbRun(`UPDATE cc_queue SET status = 'failed', last_error = ?, attempts = ? WHERE id = ?`, [String(error).slice(0, 500), attempts, job.id]);
@@ -528,69 +698,47 @@ async function deliverJob(job) {
   if (job.channel === 'whatsapp') return deliverWhatsApp(job);
   if (job.channel === 'sms') return deliverSms(job);
   if (job.channel === 'email') return deliverEmail(job);
-  if (['facebook', 'instagram', 'tiktok', 'youtube', 'x'].includes(job.channel)) return deliverSocial(job, job.channel);
+  if (SOCIAL_CHANNELS.includes(job.channel)) return deliverSocial(job, job.channel);
   return { ok: false, error: `Unknown channel: ${job.channel}` };
 }
 
+function jobTemplate(job) {
+  if (!job.template_slug) return null;
+  try { return getTemplate(job.template_slug); } catch (_) { return null; }
+}
+
 async function deliverWhatsApp(job) {
-  if (!job.recipient_address) return { ok: false, error: 'No WhatsApp phone' };
-  try {
-    const wa = require('./whatsapp');
-    const actor = { id: job.created_by || 0, role: 'system', username: 'communication-center', full_name: 'Communication Center' };
+  if (!job.recipient_address) return { ok: false, provider: 'whatsapp_cloud', error: 'No WhatsApp phone' };
+  const tpl = jobTemplate(job);
+  let template = null;
+  if (tpl?.wa_template_name && String(tpl.wa_approval_status || '').toLowerCase() === 'approved') {
     const vars = parseJson(job.vars_json, {});
-    const result = await wa.sendMessage({
-      phone: job.recipient_address,
-      body: job.body,
-      message_type: job.event_key?.startsWith('auth.') ? 'verification' : 'custom',
-      customer_name: job.recipient_name,
-      recipient_name: job.recipient_name,
-      otp_code: vars.verification_code || vars.code || undefined,
-      verification_code: vars.verification_code || vars.code || undefined
-    }, actor);
-    if (result?.id || result?.url || result?.status === 'sent' || result?.status === 'pending') {
-      return { ok: true, delivered: result?.via === 'cloud_api', external_id: result?.id || null };
-    }
-    return { ok: false, error: result?.cloud_error || result?.error || 'WhatsApp send failed' };
-  } catch (err) { return { ok: false, error: err.message || String(err) }; }
+    const order = parseJson(tpl.wa_variables_json, []);
+    template = {
+      name: tpl.wa_template_name,
+      language: tpl.wa_language || 'en',
+      params: (Array.isArray(order) ? order : []).map((k) => (vars[k] != null ? String(vars[k]) : ''))
+    };
+  }
+  return providers.sendWhatsApp({ to: job.recipient_address, text: job.body, template });
 }
 
 async function deliverSms(job) {
-  const sms = getSettings().sms || {};
-  if (!job.recipient_address) return { ok: false, error: 'No SMS phone' };
-  if (!sms.provider || !sms.api_url) return { ok: false, error: 'SMS provider not configured' };
-  try {
-    const headers = { 'Content-Type': 'application/json' };
-    if (sms.api_key && !String(sms.api_key).includes('••')) headers.Authorization = `Bearer ${sms.api_key}`;
-    const res = await fetch(sms.api_url, {
-      method: 'POST', headers,
-      body: JSON.stringify({ to: job.recipient_address, from: sms.from || undefined, message: job.body, ...(sms.extra || {}) })
-    });
-    const json = await res.json().catch(() => ({}));
-    if (!res.ok) return { ok: false, error: json?.error || json?.message || `SMS HTTP ${res.status}` };
-    return { ok: true, delivered: true, external_id: json?.id || json?.message_id || null };
-  } catch (err) { return { ok: false, error: err.message || String(err) }; }
+  return providers.sendSms({ to: job.recipient_address, text: job.body });
 }
 
 async function deliverEmail(job) {
-  const emailCfg = getSettings().email || {};
-  const to = job.recipient_address;
-  if (!to || !String(to).includes('@')) return { ok: false, error: 'No email address' };
-  if (!emailCfg.provider || !emailCfg.api_url) return { ok: false, error: 'Email provider not configured' };
-  try {
-    const headers = { 'Content-Type': 'application/json' };
-    if (emailCfg.api_key && !String(emailCfg.api_key).includes('••')) headers.Authorization = `Bearer ${emailCfg.api_key}`;
-    const res = await fetch(emailCfg.api_url, {
-      method: 'POST', headers,
-      body: JSON.stringify({
-        to, from: emailCfg.from || undefined,
-        subject: job.subject || 'Message from Chisanyama Connection',
-        text: job.body, html: String(job.body).replace(/\n/g, '<br>')
-      })
-    });
-    const json = await res.json().catch(() => ({}));
-    if (!res.ok) return { ok: false, error: json?.error || json?.message || `Email HTTP ${res.status}` };
-    return { ok: true, delivered: true, external_id: json?.id || null };
-  } catch (err) { return { ok: false, error: err.message || String(err) }; }
+  const tpl = jobTemplate(job);
+  const vars = parseJson(job.vars_json, {});
+  const html = tpl?.email_html ? renderTemplate(tpl.email_html, vars) : null;
+  const text = tpl?.email_text ? renderTemplate(tpl.email_text, vars) : job.body;
+  const shop = vars.shop_name || '';
+  return providers.sendEmail({
+    to: job.recipient_address,
+    subject: job.subject || (tpl?.email_subject ? renderTemplate(tpl.email_subject, vars) : (shop ? `Message from ${shop}` : 'Message')),
+    text,
+    html
+  });
 }
 
 async function deliverSocial(job, channel) {
@@ -657,6 +805,7 @@ function createMessage(data, actor) {
 function expandAudience(audience) {
   const type = audience?.type || 'all_eligible';
   let rows = [];
+  let fromWeb = false;
   try {
     if (type === 'selected' && Array.isArray(audience.ids) && audience.ids.length) {
       const ph = audience.ids.map(() => '?').join(',');
@@ -677,12 +826,13 @@ function expandAudience(audience) {
       try {
         rows = dbAll(`SELECT id, full_name AS name, phone, email FROM web_customers WHERE phone IS NOT NULL AND COALESCE(marketing_opt_in,1)=1 LIMIT 5000`) || [];
       } catch (_) { rows = []; }
+      fromWeb = rows.length > 0;
       if (!rows.length) rows = dbAll(`SELECT id, name, phone, email FROM customers WHERE phone IS NOT NULL AND phone != '' LIMIT 5000`) || [];
     }
   } catch (_) { rows = []; }
   return rows.map((r) => ({
     recipient_type: 'customer', recipient_id: r.id, recipient_name: r.name || 'Customer',
-    recipient_address: r.phone, email: r.email || null
+    recipient_address: r.phone, email: r.email || null, ...(fromWeb ? { web_customer: true } : {})
   }));
 }
 
@@ -716,14 +866,16 @@ function sharePublish(data, actor) {
   let queued = 0;
   recipients.forEach((rec) => {
     (data.channels || ['whatsapp']).forEach((channel) => {
-      if (['facebook', 'instagram', 'tiktok', 'youtube', 'x'].includes(channel)) return;
+      if (SOCIAL_CHANNELS.includes(channel)) return;
       if (!respectsMarketingOptOut(rec, channel, false)) return;
       const id = enqueue({
         dedupe_key: `share:${campaignId}:${channel}:${rec.recipient_id || rec.recipient_address}`,
         event_key: 'builder.share', source_module: data.source_module || 'builder', channel,
         recipient_type: rec.recipient_type || 'customer', recipient_id: rec.recipient_id,
         recipient_name: rec.recipient_name, recipient_address: channel === 'email' ? rec.email : rec.recipient_address,
-        body: data.body || data.message || data.title || 'New update from us!', subject: data.subject || data.title,
+        body: outboundBody(data.body || data.message || data.title || 'New update from us!', { body: true }, channel, null, {}, rec, false),
+        subject: data.subject || data.title,
+        provider_meta_json: JSON.stringify({ phone: rec.recipient_address || null, email: rec.email || null }),
         media_url: data.media_url, media_id: mediaId,
         scheduled_at: data.mode === 'schedule' ? data.scheduled_at : null,
         campaign_id: campaignId, created_by: actor?.id || null, priority: 55
@@ -731,7 +883,7 @@ function sharePublish(data, actor) {
       if (id) queued += 1;
     });
   });
-  (data.channels || []).filter((c) => ['facebook', 'instagram', 'tiktok', 'youtube', 'x'].includes(c)).forEach((channel) => {
+  (data.channels || []).filter((c) => SOCIAL_CHANNELS.includes(c)).forEach((channel) => {
     const id = enqueue({
       dedupe_key: `share:${campaignId}:${channel}:social`, event_key: 'builder.share',
       source_module: data.source_module || 'builder', channel, recipient_type: 'social', recipient_name: channel,
@@ -778,18 +930,21 @@ function listHistory(filters = {}) {
   if (filters.to) { sql += ` AND date(created_at) <= date(?)`; params.push(filters.to); }
   sql += ` ORDER BY id DESC LIMIT ?`;
   params.push(Math.min(Number(filters.limit) || 200, 500));
-  return dbAll(sql, params) || [];
+  return (dbAll(sql, params) || []).map(presentQueueRow);
 }
 
 function listFailed() { return listHistory({ status: 'failed', limit: 200 }); }
 function listScheduled() {
   ensureSchema();
-  return dbAll(`SELECT * FROM cc_queue WHERE status IN ('pending','retrying') AND scheduled_at IS NOT NULL ORDER BY scheduled_at ASC LIMIT 200`) || [];
+  return (dbAll(`SELECT * FROM cc_queue WHERE status IN ('pending','retrying') AND scheduled_at IS NOT NULL ORDER BY scheduled_at ASC LIMIT 200`) || []).map(presentQueueRow);
 }
 
 function retryJob(id, actor) {
   ensureSchema();
-  if (!dbGet('SELECT id FROM cc_queue WHERE id = ?', [id])) throw new Error('Message not found');
+  const job = dbGet('SELECT id, event_key, status FROM cc_queue WHERE id = ?', [id]);
+  if (!job) throw new Error('Message not found');
+  if (LOG_ONLY_EVENTS.includes(job.event_key)) throw new Error('Verification codes and test messages cannot be resent from the log');
+  if (!RETRYABLE_STATUSES.includes(job.status)) throw new Error(`Cannot retry — status is ${job.status}`);
   dbRun(`UPDATE cc_queue SET status = 'pending', last_error = NULL, attempts = 0 WHERE id = ?`, [id]);
   audit(actor, 'retry', 'cc_queue', id);
   setImmediate(() => { try { processQueue(5); } catch (_) { /* */ } });
@@ -805,7 +960,12 @@ function cancelJob(id, actor) {
 
 function sendJobNow(id, actor) {
   ensureSchema();
-  dbRun(`UPDATE cc_queue SET scheduled_at = NULL, status = 'pending' WHERE id = ?`, [id]);
+  const job = dbGet('SELECT id, event_key, status FROM cc_queue WHERE id = ?', [id]);
+  if (!job) throw new Error('Message not found');
+  if (LOG_ONLY_EVENTS.includes(job.event_key) || !['pending', 'retrying'].includes(job.status)) {
+    throw new Error(`Cannot send now — status is ${job.status}`);
+  }
+  dbRun(`UPDATE cc_queue SET scheduled_at = NULL WHERE id = ? AND status IN ('pending','retrying')`, [id]);
   audit(actor, 'send_now', 'cc_queue', id);
   setImmediate(() => { try { processQueue(5); } catch (_) { /* */ } });
   return { ok: true };
@@ -858,20 +1018,26 @@ function saveConnection(data, actor) {
   const existing = dbGet('SELECT * FROM cc_connections WHERE channel = ?', [channel]);
   const prev = parseJson(existing?.config_json, {});
   const incoming = { ...(data.config || {}) };
-  ['api_key', 'access_token', 'client_secret', 'smtp_pass'].forEach((k) => {
+  const offered = SECRET_KEYS.filter((k) => incoming[k] && !String(incoming[k]).includes('••'));
+  if (offered.length && ['whatsapp', 'sms', 'email'].includes(channel)) {
+    throw new Error('Provider keys and passwords cannot be saved here. Add them as server environment variables (Railway → Variables).');
+  }
+  SECRET_KEYS.forEach((k) => { if (['whatsapp', 'sms', 'email'].includes(channel)) delete incoming[k]; });
+  ['access_token', 'client_secret'].forEach((k) => {
     if (incoming[k] && String(incoming[k]).includes('••')) incoming[k] = prev[k];
     if (incoming[k] === '' || incoming[k] == null) delete incoming[k];
   });
   const merged = { ...prev, ...incoming };
 
   if (channel === 'whatsapp') {
-    if (incoming.api_key || incoming.phone_number_id) {
+    if (incoming.phone_number_id || incoming.business_account_id) {
       try {
         const wa = require('./whatsapp');
         const cur = wa.getWhatsAppSettings() || {};
-        const patch = { ...cur, phone_number_id: incoming.phone_number_id || cur.phone_number_id, business_account_id: incoming.business_account_id || cur.business_account_id };
-        if (incoming.api_key && !String(incoming.api_key).includes('••')) patch.api_key = incoming.api_key;
-        wa.saveWhatsAppSettings(patch, actor);
+        wa.saveWhatsAppSettings({
+          phone_number_id: incoming.phone_number_id || cur.phone_number_id,
+          business_account_id: incoming.business_account_id || cur.business_account_id
+        }, actor);
       } catch (_) { /* */ }
     }
     syncWhatsAppConnectionStatus();
@@ -924,58 +1090,31 @@ function saveBranchDestination(data, actor) {
   return getBranchDestinations().find((b) => b.id === data.branch_id);
 }
 
-function createVerificationCode(data, actor) {
+function otpSubject(data) {
+  const phone = String(data.phone || '').replace(/\D/g, '');
+  const email = String(data.email || '').trim().toLowerCase();
+  return phone || email;
+}
+
+async function createVerificationCode(data, actor) {
   ensureSchema();
-  const recovery = getSettings().recovery || {};
-  const channels = data.channels || recovery.channels || ['whatsapp'];
-  const expiryMin = Number(data.expiry_minutes || recovery.expiry_minutes || 10);
-  const phone = String(data.phone || '').trim();
-  const email = String(data.email || '').trim();
-  if (!phone && !email) throw new Error('Phone or email required');
-  const recent = dbGet(`SELECT COUNT(*) AS c FROM cc_verification_codes WHERE (phone = ? OR email = ?) AND datetime(created_at) > datetime('now', '-15 minutes')`,
-    [phone || '__', email || '__']);
-  if (Number(recent?.c || 0) >= 3) throw new Error('Too many verification requests. Please wait and try again.');
-
-  const code = String(crypto.randomInt(100000, 999999));
-  const codeHash = crypto.createHash('sha256').update(code + (phone || email)).digest('hex');
-  const expiresAt = new Date(Date.now() + expiryMin * 60000).toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, '');
-  dbRun(`INSERT INTO cc_verification_codes (purpose, target_type, target_id, phone, email, code_hash, channels_json, expires_at, ip_hint)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  [data.purpose || 'password_recovery', data.target_type || 'customer', data.target_id || null, phone || null, email || null,
-    codeHash, JSON.stringify(channels), expiresAt, data.ip_hint || null]);
-
-  const tpl = getTemplate('cc_password_recovery');
-  const body = renderTemplate(tpl?.body || 'Your verification code is {{verification_code}}. Expires in {{expiry}} minutes.', {
-    verification_code: code, code, expiry: expiryMin, customer_name: data.customer_name || ''
+  const purpose = String(data.purpose || 'verification');
+  const subject = otpSubject(data);
+  if (!subject) throw new Error('Phone or email required');
+  const shop = shopVars(null).shop_name || 'Shop';
+  const r = await require('./cc-otp').issue({
+    purpose: `cc:${purpose}`, subject, phone: data.phone, email: data.email, name: data.customer_name,
+    emailSubject: `${shop} verification code`,
+    buildText: (code, minutes) => `${shop}: your verification code is ${code}. It expires in ${minutes} minutes. Do not share this code.`
   });
-  emit(data.purpose === 'registration' ? 'auth.registration' : (data.purpose === 'verification' ? 'auth.verification' : 'auth.password_recovery'), {
-    customer_name: data.customer_name, customer_phone: phone, customer_email: email, phone, email,
-    verification_code: code, expiry: expiryMin
-  }, { channels, recipients: ['customer'], body, transactional: true, source_module: 'auth', actor, priority: 5 });
-
-  audit(actor, 'create_verification', 'cc_verification_codes', null, { purpose: data.purpose, channels });
-  return { ok: true, expires_in_minutes: expiryMin, channels, _dev_code: process.env.CC_DEV_RETURN_CODES === '1' ? code : undefined };
+  audit(actor, 'create_verification', 'cc_otp_requests', r.request_id, { purpose, delivered: r.delivered, failed: r.failed.map((f) => f.channel) });
+  return { ok: r.delivered.length > 0, delivered: r.delivered, failed: r.failed, expires_in_minutes: r.expires_in_minutes, _dev_code: r._dev_code };
 }
 
 function verifyCode(data) {
   ensureSchema();
-  const phone = String(data.phone || '').trim();
-  const email = String(data.email || '').trim();
-  const code = String(data.code || '').trim();
-  if (!code) throw new Error('Code required');
-  const row = dbGet(`SELECT * FROM cc_verification_codes WHERE used_at IS NULL AND (phone = ? OR email = ?) AND purpose = ? ORDER BY id DESC LIMIT 1`,
-    [phone || '__', email || '__', data.purpose || 'password_recovery']);
-  if (!row) throw new Error('No active verification code');
-  const exp = Date.parse(String(row.expires_at).includes('T') ? row.expires_at : `${row.expires_at.replace(' ', 'T')}Z`);
-  if (exp && exp < Date.now()) throw new Error('Code expired');
-  if (Number(row.attempts) >= Number(row.max_attempts || 5)) throw new Error('Too many attempts');
-  const hash = crypto.createHash('sha256').update(code + (row.phone || row.email || '')).digest('hex');
-  if (hash !== row.code_hash) {
-    dbRun(`UPDATE cc_verification_codes SET attempts = attempts + 1 WHERE id = ?`, [row.id]);
-    throw new Error('Invalid code');
-  }
-  dbRun(`UPDATE cc_verification_codes SET used_at = ? WHERE id = ?`, [nowIso(), row.id]);
-  return { ok: true, target_type: row.target_type, target_id: row.target_id, phone: row.phone, email: row.email };
+  const purpose = String(data.purpose || 'verification');
+  return require('./cc-otp').verify({ purpose: `cc:${purpose}`, subject: otpSubject(data), code: data.code });
 }
 
 function last7DaysSeries() {
@@ -1071,7 +1210,124 @@ function saveCustomerPrefs(data, actor) {
   return getCustomerPrefs(phone);
 }
 
+/** Meta WhatsApp webhook: provider-confirmed delivered / read / failed statuses. */
+function applyWhatsAppStatuses(payload) {
+  ensureSchema();
+  let updated = 0;
+  (payload?.entry || []).forEach((e) => (e.changes || []).forEach((ch) => (ch.value?.statuses || []).forEach((st) => {
+    if (!st?.id) return;
+    const s = String(st.status || '');
+    if (s === 'delivered' || s === 'read') {
+      const r = dbRun(`UPDATE cc_queue SET status = 'delivered', last_error = NULL WHERE external_id = ? AND status IN ('sent','delivered')`, [st.id]);
+      updated += Number(r?.changes || 0);
+    } else if (s === 'failed') {
+      const err = st.errors?.[0]?.title || st.errors?.[0]?.message || 'WhatsApp delivery failed';
+      const r = dbRun(`UPDATE cc_queue SET status = 'failed', last_error = ? WHERE external_id = ?`, [String(err).slice(0, 400), st.id]);
+      updated += Number(r?.changes || 0);
+      control.recordAttempt({ channel: 'whatsapp', provider: 'whatsapp_cloud', recipient: st.recipient_id, status: 'failed', error: err, external_id: st.id });
+    }
+  })));
+  return { updated };
+}
+
+function controlDashboard() {
+  ensureSchema();
+  return {
+    control: control.getControl(),
+    providers: providers.providerStatus(),
+    usage: control.usage(),
+    alerts: control.listAlerts(20),
+    otp: require('./cc-otp').stats(),
+    held: Number(dbGet(`SELECT COUNT(*) AS c FROM cc_queue WHERE status = 'held'`)?.c || 0),
+    blocked_today: Number(dbGet(`SELECT COUNT(*) AS c FROM cc_queue WHERE status = 'blocked' AND datetime(created_at) >= datetime(?)`,
+      [nowIso(new Date(Date.now() - 86400000))])?.c || 0)
+  };
+}
+
+function listDeliveryAttempts(limit = 200) {
+  ensureSchema();
+  return dbAll('SELECT * FROM cc_delivery_attempts ORDER BY id DESC LIMIT ?', [Math.min(Number(limit) || 200, 500)]) || [];
+}
+
+function listAudit(limit = 200) {
+  ensureSchema();
+  return dbAll('SELECT * FROM cc_audit ORDER BY id DESC LIMIT ?', [Math.min(Number(limit) || 200, 500)]) || [];
+}
+
+/** Admin test send through the real provider (goes through switches + logs). */
+async function testSend(data, actor) {
+  ensureSchema();
+  const channel = String(data.channel || '');
+  if (!control.MESSAGE_CHANNELS.includes(channel)) throw new Error('Choose SMS, WhatsApp or Email');
+  const to = String(data.to || '').trim();
+  if (!to) throw new Error('Enter a recipient');
+  const ctl = control.getControl();
+  if (ctl.emergency_off) throw new Error('Emergency OFF is active — nothing can be sent');
+  if (!ctl.channels[channel]) throw new Error(`${channel.toUpperCase()} is switched off`);
+  const shop = shopVars(null).shop_name || 'Shop';
+  const text = String(data.text || `Test message from ${shop} Communication Center.`).slice(0, 1000);
+  const r = await providers.send(channel, { to, text, subject: `${shop} — test message` });
+  const q = dbRun(`INSERT INTO cc_queue (event_key, source_module, channel, recipient_type, recipient_name, recipient_address, body, status,
+    priority, attempts, last_error, external_id, processed_at, sent_at, created_by, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+  ['manual.test', 'admin_test', channel, 'staff', actor?.full_name || actor?.username || 'admin', control.maskAddress(to), text, r.ok ? 'sent' : 'failed', 1, 1,
+    r.ok ? null : String(r.error || '').slice(0, 500), r.external_id || null, nowIso(), r.ok ? nowIso() : null, actor?.id || null, nowIso()]);
+  control.recordAttempt({ queue_id: Number(q?.lastInsertRowid) || null, channel, provider: r.provider, recipient: to,
+    status: r.ok ? 'sent' : 'failed', error: r.ok ? null : r.error, external_id: r.external_id });
+  audit(actor, 'test_send', 'cc_queue', Number(q?.lastInsertRowid) || null, { channel, to: control.maskAddress(to), ok: !!r.ok, provider: r.provider });
+  return { ok: !!r.ok, provider: r.provider, error: r.ok ? null : r.error, external_id: r.external_id || null, used_fallback: !!r.used_fallback };
+}
+
+/** Read-only webhook status for the admin UI. Never returns the verify token or app secret. */
+function webhookStatus() {
+  ensureSchema();
+  let callbackUrl = '/api/webhooks/whatsapp';
+  try { callbackUrl = require('./whatsapp-webhook').webhookPublicInfo().callback_url || callbackUrl; } catch (_) { /* */ }
+  const count = (sql, params) => { try { return Number(dbGet(sql, params || [])?.c || 0); } catch (_) { return 0; } };
+  const statusRows = (() => { try { return dbAll(`SELECT status, COUNT(*) AS c FROM cc_queue WHERE channel = 'whatsapp' GROUP BY status`) || []; } catch (_) { return []; } })();
+  return {
+    endpoints: [{
+      name: 'WhatsApp Cloud API (Meta)', method: 'GET + POST', path: '/api/webhooks/whatsapp', callback_url: callbackUrl,
+      purpose: 'Meta verification (GET) and inbound messages + delivered/read/failed receipts (POST)',
+      verify_token_set: !!process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN,
+      app_secret_set: !!process.env.WHATSAPP_APP_SECRET,
+      subscribe_fields: ['messages']
+    }, {
+      name: 'SMS delivery receipts (Vodacom)', method: '—', path: null, callback_url: null,
+      purpose: 'UNVERIFIED — pending official API specification. No SMS webhook is exposed until the provider specification is confirmed.',
+      verify_token_set: null, app_secret_set: null
+    }],
+    whatsapp_status_counts: Object.fromEntries(statusRows.map((r) => [r.status, Number(r.c || 0)])),
+    whatsapp_delivered_total: count(`SELECT COUNT(*) AS c FROM cc_queue WHERE channel = 'whatsapp' AND status = 'delivered'`),
+    note: 'Receipts marked "delivered" only come from the provider webhook. Without the webhook, WhatsApp messages stay "sent" (accepted by Meta).'
+  };
+}
+
+/** Read-only role access matrix for Communication Center actions (mirrors the RPC handler checks). */
+function permissionsMatrix() {
+  const rows = [
+    ['View dashboard and message log', ['owner', 'manager', 'supervisor']],
+    ['Share / publish to social, view media library', ['owner', 'manager', 'supervisor']],
+    ['Failed and scheduled messages, retry / cancel / send now', ['owner', 'manager']],
+    ['Create / send messages and campaigns', ['owner', 'manager']],
+    ['Templates, automation, reminders, routing', ['owner', 'manager']],
+    ['Provider status, connections and test sends', ['owner', 'manager']],
+    ['Settings, branch destinations, OTP events', ['owner', 'manager']],
+    ['Emergency OFF / resume a channel', ['owner', 'manager']],
+    ['Control switches and releasing held messages', ['owner']],
+    ['Customer message preferences / opt-out', ['owner', 'manager', 'supervisor', 'cashier']],
+    ['Audit trail', ['owner']]
+  ];
+  return {
+    roles: ['owner', 'manager', 'supervisor', 'cashier'],
+    rows: rows.map(([action, roles]) => ({ action, roles })),
+    secrets_note: 'Provider keys are server environment variables only (Railway → Variables). No role can view or enter them in the app.',
+    marketing_note: 'Marketing Center campaigns are delivered through the Communication Center and require the Marketing send/approve permissions (Users → Permissions).'
+  };
+}
+
 module.exports = {
+  webhookStatus, permissionsMatrix, SOCIAL_CHANNELS,
+  applyWhatsAppStatuses, controlDashboard, listDeliveryAttempts, listAudit, testSend, prefsAllow,
   CHANNELS, ensureSchema, emit, enqueue, processQueue, createMessage, sharePublish,
   previewAudienceCount, expandAudience, dashboard, listHistory, listFailed, listScheduled,
   retryJob, cancelJob, sendJobNow, listTemplates, saveTemplate, getTemplate, listEventTypes,

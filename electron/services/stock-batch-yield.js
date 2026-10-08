@@ -89,7 +89,11 @@ function ensureSchema() {
     } catch (__) { /* */ }
   }
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_stock_batches_selling ON stock_batches(selling_product_id, status, purchase_date, id)'); } catch (_) { /* */ }
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_stock_batches_stock ON stock_batches(stock_product_id, status, purchase_date, id)'); } catch (_) { /* */ }
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_stock_batch_events_batch ON stock_batch_events(batch_id, id)'); } catch (_) { /* */ }
+  try { db.exec('ALTER TABLE stock_batches ADD COLUMN allocations_json TEXT'); } catch (_) {
+    try { db.exec('ALTER TABLE stock_batches ADD COLUMN IF NOT EXISTS allocations_json TEXT'); } catch (__) { /* */ }
+  }
 }
 
 function getSettings() {
@@ -120,10 +124,14 @@ function saveSettings(data, actor) {
 
 function requireRole(actor) {
   const r = String(actor?.role || '').toLowerCase();
-  if (!['owner', 'manager', 'assistant_manager', 'supervisor'].includes(r)) {
-    throw new Error('Not authorized for Stock Batch & Yield');
-  }
-  return actor;
+  if (['owner', 'manager', 'assistant_manager', 'supervisor'].includes(r)) return actor;
+  // Phone Expenses users with expense_capture may report purchases / waste
+  try {
+    const { hasUserPermission, loadUserById } = require('./authz');
+    const user = (actor?.id != null ? loadUserById(actor.id) : null) || actor;
+    if (user && hasUserPermission(user, 'expense_capture')) return actor;
+  } catch (_) { /* */ }
+  throw new Error('Not authorized for Stock Batch & Yield');
 }
 
 function yieldBase(batch) {
@@ -199,9 +207,19 @@ function enrich(batch) {
   const settings = getSettings();
   const derived = computeDerived(batch);
   const status = deriveStatus(batch, settings);
+  let allocations = [];
+  try {
+    if (batch.allocations_json) {
+      allocations = typeof batch.allocations_json === 'string'
+        ? JSON.parse(batch.allocations_json)
+        : batch.allocations_json;
+      if (!Array.isArray(allocations)) allocations = [];
+    }
+  } catch (_) { allocations = []; }
   return {
     ...batch,
     ...derived,
+    allocations,
     status,
     status_label: statusLabel(status)
   };
@@ -297,16 +315,49 @@ function createBatch(data, actor) {
   requireRole(actor);
   const db = getDb();
   const stockProd = getProduct(data.stock_product_id);
-  const sellProd = getProduct(data.selling_product_id);
-  if (!data.selling_product_id && !sellProd) throw new Error('Select the selling product connected to this batch');
+  const allocations = Array.isArray(data.allocations)
+    ? data.allocations
+      .map((a) => ({
+        selling_product_id: Number(a.selling_product_id) || null,
+        selling_product_name: a.selling_product_name || getProduct(a.selling_product_id)?.name || null,
+        qty_kg: Number(a.qty_kg != null ? a.qty_kg : a.quantity) || 0,
+        expected_portions: Number(a.expected_portions != null ? a.expected_portions : a.expected_yield) || 0,
+        selling_price: Number(a.selling_price) || 0
+      }))
+      .filter((a) => a.selling_product_id)
+    : [];
+
+  let sellProd = getProduct(data.selling_product_id);
+  if (!sellProd && allocations.length) {
+    sellProd = getProduct(allocations[0].selling_product_id);
+  }
+  // Allow stock-only batch when meals are linked via allocations or recipes
+  if (!data.selling_product_id && !sellProd && !allocations.length && !data.stock_product_id && !stockProd) {
+    throw new Error('Select the stock item purchased, and optionally the meals that use it');
+  }
+  if (!sellProd && stockProd) {
+    // Placeholder selling link = stock itself (consumption uses stock_product_id + recipes)
+    sellProd = stockProd;
+  }
+  if (!sellProd && !data.selling_product_id) {
+    throw new Error('Select at least one selling meal that uses this stock, or pick a selling product');
+  }
+
   const stockName = data.stock_product_name || stockProd?.name || data.stock_name;
   if (!stockName) throw new Error('Enter the stock / product name purchased');
-  const expected = Number(data.expected_yield);
+  const expectedFromAlloc = allocations.reduce((s, a) => s + (Number(a.expected_portions) || 0), 0);
+  const expected = Number(data.expected_yield) > 0
+    ? Number(data.expected_yield)
+    : (expectedFromAlloc > 0 ? expectedFromAlloc : 1);
   if (!(expected > 0)) throw new Error('Expected yield (portions/plates) is required');
   const cost = Number(data.purchase_cost);
   if (!(cost >= 0) || Number.isNaN(cost)) throw new Error('Purchase cost is required');
-  const sellPrice = Number(data.selling_price != null ? data.selling_price : sellProd?.selling_price);
-  if (!(sellPrice >= 0) || Number.isNaN(sellPrice)) throw new Error('Selling price is required');
+  const sellPrice = Number(
+    data.selling_price != null
+      ? data.selling_price
+      : (allocations[0]?.selling_price || sellProd?.selling_price || 0)
+  );
+  if (Number.isNaN(sellPrice) || sellPrice < 0) throw new Error('Selling price is required');
   const purchaseDate = data.purchase_date || todayLocal();
   const batchNumber = data.batch_number || nextBatchNumber(stockName, purchaseDate);
   const expenseId = linkExpense({
@@ -324,41 +375,92 @@ function createBatch(data, actor) {
     } catch (_) { /* */ }
   }
 
-  const r = db.prepare(`
-    INSERT INTO stock_batches (
-      batch_number, stock_product_id, stock_product_name, selling_product_id, selling_product_name,
-      supplier_name, purchase_date, invoice_ref, quantity_purchased, unit, purchase_cost,
-      expected_yield, actual_yield, selling_price, branch_id, branch_name, storage_location,
-      notes, expense_id, status, created_by, created_at, updated_at
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-  `).run(
-    batchNumber,
-    data.stock_product_id || stockProd?.id || null,
-    stockName,
-    data.selling_product_id,
-    data.selling_product_name || sellProd?.name || null,
-    data.supplier_name || null,
-    purchaseDate,
-    data.invoice_ref || null,
-    Number(data.quantity_purchased) || 0,
-    data.unit || stockProd?.unit || stockProd?.stock_unit || 'kg',
-    cost,
-    expected,
-    data.actual_yield != null && data.actual_yield !== '' ? Number(data.actual_yield) : null,
-    sellPrice,
-    data.branch_id || null,
-    branchName,
-    data.storage_location || null,
-    data.notes || null,
-    expenseId,
-    'active',
-    actor?.id || null,
-    nowIso(),
-    nowIso()
-  );
-  const id = r.lastInsertRowid;
+  const sellId = data.selling_product_id || sellProd?.id;
+  const sellName = data.selling_product_name || sellProd?.name || null;
+  const allocJson = allocations.length ? JSON.stringify(allocations) : null;
+
+  let id;
+  try {
+    const r = db.prepare(`
+      INSERT INTO stock_batches (
+        batch_number, stock_product_id, stock_product_name, selling_product_id, selling_product_name,
+        supplier_name, purchase_date, invoice_ref, quantity_purchased, unit, purchase_cost,
+        expected_yield, actual_yield, selling_price, branch_id, branch_name, storage_location,
+        notes, expense_id, status, created_by, created_at, updated_at, allocations_json
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    `).run(
+      batchNumber,
+      data.stock_product_id || stockProd?.id || null,
+      stockName,
+      sellId,
+      sellName,
+      data.supplier_name || null,
+      purchaseDate,
+      data.invoice_ref || null,
+      Number(data.quantity_purchased) || 0,
+      data.unit || stockProd?.unit || stockProd?.stock_unit || 'kg',
+      cost,
+      expected,
+      data.actual_yield != null && data.actual_yield !== '' ? Number(data.actual_yield) : null,
+      sellPrice,
+      data.branch_id || null,
+      branchName,
+      data.storage_location || null,
+      data.notes || null,
+      expenseId,
+      'active',
+      actor?.id || null,
+      nowIso(),
+      nowIso(),
+      allocJson
+    );
+    id = r.lastInsertRowid;
+  } catch (_) {
+    const r = db.prepare(`
+      INSERT INTO stock_batches (
+        batch_number, stock_product_id, stock_product_name, selling_product_id, selling_product_name,
+        supplier_name, purchase_date, invoice_ref, quantity_purchased, unit, purchase_cost,
+        expected_yield, actual_yield, selling_price, branch_id, branch_name, storage_location,
+        notes, expense_id, status, created_by, created_at, updated_at
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    `).run(
+      batchNumber,
+      data.stock_product_id || stockProd?.id || null,
+      stockName,
+      sellId,
+      sellName,
+      data.supplier_name || null,
+      purchaseDate,
+      data.invoice_ref || null,
+      Number(data.quantity_purchased) || 0,
+      data.unit || stockProd?.unit || stockProd?.stock_unit || 'kg',
+      cost,
+      expected,
+      data.actual_yield != null && data.actual_yield !== '' ? Number(data.actual_yield) : null,
+      sellPrice,
+      data.branch_id || null,
+      branchName,
+      data.storage_location || null,
+      data.notes || null,
+      expenseId,
+      'active',
+      actor?.id || null,
+      nowIso(),
+      nowIso()
+    );
+    id = r.lastInsertRowid;
+    if (allocJson) {
+      try { db.prepare('UPDATE stock_batches SET allocations_json = ? WHERE id = ?').run(allocJson, id); } catch (__) { /* */ }
+    }
+  }
   logEvent(id, 'batch_created', {
-    new_value: JSON.stringify({ batch_number: batchNumber, purchase_cost: cost, expected_yield: expected, expense_id: expenseId }),
+    new_value: JSON.stringify({
+      batch_number: batchNumber,
+      purchase_cost: cost,
+      expected_yield: expected,
+      expense_id: expenseId,
+      allocations
+    }),
     user_id: actor?.id,
     user_name: actor?.full_name || actor?.username
   });
@@ -483,7 +585,7 @@ function applySaleToBatch(batchId, portions, revenueAdd, opts = {}) {
 
 /**
  * FIFO consume portions for a selling product from open batches.
- * Continues past expected yield (does not stop at expected).
+ * Also consumes ingredient qty from batches linked by stock_product_id via recipes.
  */
 function consumeSalePortions(sellingProductId, quantity, opts = {}) {
   ensureSchema();
@@ -494,46 +596,127 @@ function consumeSalePortions(sellingProductId, quantity, opts = {}) {
   const order = settings.fifo_enabled !== false
     ? 'ORDER BY purchase_date ASC, id ASC'
     : 'ORDER BY id DESC';
-  const open = db.prepare(`
+
+  const touched = [];
+  let left = qtyTotal;
+  const unitPrice = Number(opts.unit_price);
+
+  const applyToOpen = (openBatches, takeTotal) => {
+    let remain = takeTotal;
+    for (const batch of openBatches) {
+      if (remain <= 0) break;
+      const d = computeDerived(batch);
+      let take;
+      if (d.actual_yield != null && d.actual_yield > 0) {
+        take = Math.min(remain, Math.max(0, d.remaining));
+        if (take <= 0) continue;
+      } else {
+        take = remain;
+      }
+      if (take <= 0) continue;
+      const rev = Number.isFinite(unitPrice) ? money(take * unitPrice) : null;
+      const updated = applySaleToBatch(batch.id, take, rev, opts);
+      if (updated) {
+        touched.push(updated);
+        remain = money(remain - take);
+        if (!(d.actual_yield > 0)) break;
+      }
+    }
+    return money(takeTotal - remain);
+  };
+
+  // 1) Legacy / direct: batches tied to this selling product
+  const openBySell = db.prepare(`
     SELECT * FROM stock_batches
     WHERE selling_product_id = ?
       AND status NOT IN ('finished', 'cancelled')
     ${order}
   `).all(sellingProductId);
+  const consumedDirect = applyToOpen(openBySell, left);
+  left = money(left - consumedDirect);
 
-  let left = qtyTotal;
-  const touched = [];
-  const unitPrice = Number(opts.unit_price);
-  for (const batch of open) {
-    if (left <= 0) break;
-    // Prefer consuming up to "remaining" based on actual yield if set; otherwise take all remaining sales into this batch (can exceed expected)
-    const d = computeDerived(batch);
-    let take;
-    if (d.actual_yield != null && d.actual_yield > 0) {
-      take = Math.min(left, Math.max(0, d.remaining));
-      if (take <= 0) continue;
-    } else {
-      // No actual yield — keep pouring sales into oldest open batch until manually finished
-      // If multiple open batches, still FIFO for "expected capacity" first then overflow to same batch (exceed)
-      take = left;
-      if (settings.fifo_enabled !== false && open.length > 1) {
-        // Fill up to expected+waste capacity first on older batches before spilling to next? Spec says continue on SAME batch past expected.
-        // So one active batch absorbs all; only move to next when batch is Finished.
-        // Therefore: consume entirely into the first (oldest) non-finished batch.
-        take = left;
+  // 2) Recipe-linked: meals that use stock ingredients with open batches
+  try {
+    const inventory = require('./inventory');
+    const recipe = inventory.getProductRecipe(sellingProductId) || [];
+    for (const item of recipe) {
+      const ingId = Number(item.ingredient_product_id);
+      if (!ingId) continue;
+      const waste = 1 + (Number(item.waste_pct) || 0) / 100;
+      let deductQty = Number(item.quantity) * qtyTotal * waste;
+      if (!(deductQty > 0)) continue;
+      // Prefer allocation qty_kg if this meal is listed on the batch; else use recipe qty as portion units
+      const openByStock = db.prepare(`
+        SELECT * FROM stock_batches
+        WHERE stock_product_id = ?
+          AND status NOT IN ('finished', 'cancelled')
+        ${order}
+      `).all(ingId);
+      if (!openByStock.length) continue;
+
+      // Consume in stock units (kg): convert recipe portion into a relative consume against quantity_purchased
+      // We record portions_sold in "portion" terms for yield; for ingredient batches use recipe qty as portion delta.
+      for (const batch of openByStock) {
+        if (deductQty <= 0) break;
+        let takePortions = deductQty;
+        // If allocation specifies kg for this meal, scale: one plate uses (qty_kg / expected_portions) of stock
+        try {
+          const allocs = batch.allocations_json
+            ? (typeof batch.allocations_json === 'string' ? JSON.parse(batch.allocations_json) : batch.allocations_json)
+            : [];
+          const alloc = Array.isArray(allocs)
+            ? allocs.find((a) => Number(a.selling_product_id) === Number(sellingProductId))
+            : null;
+          if (alloc && Number(alloc.qty_kg) > 0 && Number(alloc.expected_portions) > 0) {
+            takePortions = money((Number(alloc.qty_kg) / Number(alloc.expected_portions)) * qtyTotal);
+          } else if (alloc && Number(alloc.qty_kg) > 0) {
+            takePortions = money(Number(alloc.qty_kg) * qtyTotal);
+          }
+        } catch (_) { /* use recipe qty */ }
+
+        const d = computeDerived(batch);
+        let take = takePortions;
+        if (d.actual_yield != null && d.actual_yield > 0) {
+          take = Math.min(take, Math.max(0, d.remaining));
+        }
+        if (take <= 0) continue;
+        const revShare = Number.isFinite(unitPrice) ? money(Math.min(qtyTotal, 1) * unitPrice * (take / Math.max(takePortions, 0.0001))) : null;
+        const updated = applySaleToBatch(batch.id, take, revShare, {
+          ...opts,
+          notes: `Recipe ingredient #${ingId} for product #${sellingProductId}`
+        });
+        if (updated) {
+          touched.push(updated);
+          deductQty = money(deductQty - take);
+        }
+        if (!(d.actual_yield > 0)) break;
       }
     }
-    if (take <= 0) continue;
-    const rev = Number.isFinite(unitPrice) ? money(take * unitPrice) : null;
-    const updated = applySaleToBatch(batch.id, take, rev, opts);
-    if (updated) {
-      touched.push(updated);
-      left = money(left - take);
-      // With no actual_yield, oldest batch takes everything
-      if (!(d.actual_yield > 0)) break;
-    }
+  } catch (e) {
+    console.warn('[stock-batch] recipe consume:', e.message || e);
   }
+
   return { consumed: money(qtyTotal - left), remaining_unassigned: left, batches: touched };
+}
+
+/** Meals/products whose recipes include this stock ingredient */
+function listMealsUsingIngredient(stockProductId) {
+  ensureSchema();
+  if (!stockProductId) return [];
+  try {
+    return getDb().prepare(`
+      SELECT DISTINCT p.id, p.name, p.selling_price, p.unit, p.stock_unit,
+        r.quantity AS recipe_qty, r.unit AS recipe_unit
+      FROM product_recipe_items r
+      JOIN products p ON p.id = r.product_id
+      WHERE r.ingredient_product_id = ?
+        AND COALESCE(p.is_active, 1) = 1
+      ORDER BY p.name
+      LIMIT 200
+    `).all(stockProductId);
+  } catch (_) {
+    return [];
+  }
 }
 
 function recordWaste(batchId, data, actor) {
@@ -782,6 +965,7 @@ module.exports = {
   cancelBatch,
   listEvents,
   consumeSalePortions,
+  listMealsUsingIngredient,
   productYieldAnalysis,
   profitabilityReport,
   OPEN_STATUSES

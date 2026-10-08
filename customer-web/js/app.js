@@ -141,6 +141,24 @@ const OrderApp = {
     this._payPollTimer = setInterval(tick, 2500);
   },
 
+  shopTz() {
+    return this._shopTz || this.settings?.shop_timezone || 'Africa/Johannesburg';
+  },
+
+  shopClockParts(at = new Date()) {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: this.shopTz(), weekday: 'short', hour: '2-digit', minute: '2-digit', hour12: false
+    }).formatToParts(at);
+    const pick = (t) => Number(parts.find((p) => p.type === t)?.value) || 0;
+    const wd = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 }[parts.find((p) => p.type === 'weekday')?.value] ?? at.getDay();
+    return { day: wd, minutes: pick('hour') * 60 + pick('minute') };
+  },
+
+  parseClockMinutes(timeStr) {
+    const [h, m] = String(timeStr || '18:00').split(':').map(Number);
+    return (h || 0) * 60 + (m || 0);
+  },
+
   parseTimeToday(timeStr) {
     const [h, m] = String(timeStr || '18:00').split(':').map(Number);
     const d = new Date();
@@ -166,34 +184,39 @@ const OrderApp = {
     if (oh.force_online === 'open') return true;
     if (oh.force_online === 'closed') return false;
     if (oh.apply_to_online === false || oh.apply_to_online === 0 || oh.apply_to_online === '0') return true;
+    if (typeof this._serverOnlineOpen === 'boolean') return this._serverOnlineOpen;
     const weekly = Array.isArray(oh.weekly) ? oh.weekly : [];
-    const now = new Date();
-    const day = weekly.find((w) => Number(w.day) === now.getDay())
+    const clock = this.shopClockParts();
+    const day = weekly.find((w) => Number(w.day) === clock.day)
       || { open: oh.open_time || '08:00', close: oh.close_time || '18:00', closed: false };
     if (day.closed) return false;
-    const openAt = this.parseTimeToday(day.open || oh.open_time || '08:00');
-    const closeAt = this.parseTimeToday(day.close || oh.close_time || '18:00');
-    if (closeAt.getTime() <= openAt.getTime()) {
-      return now >= openAt || now < closeAt;
+    const openMin = this.parseClockMinutes(day.open || oh.open_time || '08:00');
+    const closeMin = this.parseClockMinutes(day.close || oh.close_time || '18:00');
+    if (closeMin <= openMin) {
+      return clock.minutes >= openMin || clock.minutes < closeMin;
     }
-    return now >= openAt && now < closeAt;
+    return clock.minutes >= openMin && clock.minutes < closeMin;
   },
 
   getNextOpenInfo() {
     const oh = this.getOperatingSettings();
     const weekly = oh.weekly || [];
+    const tz = this.shopTz();
     const now = new Date();
+    const start = this.shopClockParts(now);
     for (let i = 0; i < 8; i++) {
-      const d = new Date(now);
-      d.setDate(d.getDate() + i);
-      const day = weekly.find((w) => Number(w.day) === d.getDay())
-        || { open: oh.open_time || '08:00', close: oh.close_time || '18:00', closed: false, name: d.toLocaleDateString(undefined, { weekday: 'long' }) };
+      const dayIndex = (start.day + i) % 7;
+      const day = weekly.find((w) => Number(w.day) === dayIndex)
+        || { open: oh.open_time || '08:00', close: oh.close_time || '18:00', closed: false };
       if (day.closed) continue;
-      const openAt = this.parseTimeToday(day.open || oh.open_time || '08:00');
-      openAt.setFullYear(d.getFullYear(), d.getMonth(), d.getDate());
-      if (openAt > now) {
-        return { at: openAt, label: day.name || openAt.toLocaleDateString(undefined, { weekday: 'long' }) };
-      }
+      const openMin = this.parseClockMinutes(day.open || oh.open_time || '08:00');
+      if (i === 0 && start.minutes >= openMin) continue;
+      const labelDate = new Date(now.getTime() + i * 86400000);
+      const label = day.name || new Intl.DateTimeFormat(undefined, { timeZone: tz, weekday: 'long' }).format(labelDate);
+      const [ohh, omm] = String(day.open || oh.open_time || '08:00').split(':').map(Number);
+      const at = new Date(labelDate);
+      at.setHours(ohh || 0, omm || 0, 0, 0);
+      if (i > 0 || at > now) return { at, label };
     }
     return null;
   },
@@ -201,11 +224,14 @@ const OrderApp = {
   applyHoursStatus(status) {
     const oh = status?.operating_hours || status;
     if (!oh || typeof oh !== 'object') return;
+    if (typeof status?.online_open === 'boolean') this._serverOnlineOpen = status.online_open;
+    if (status?.shop_timezone) this._shopTz = status.shop_timezone;
     const prevForce = this.settings?.operating_hours?.force_online;
     const prevRev = this.settings?.operating_hours?.hours_revision;
     const wasOpen = this.isShopOpenNow();
     this.settings = {
       ...(this.settings || {}),
+      shop_timezone: status?.shop_timezone || this.settings?.shop_timezone,
       operating_hours: { ...(this.settings?.operating_hours || {}), ...oh }
     };
     const isOpen = this.isShopOpenNow();
@@ -230,7 +256,10 @@ const OrderApp = {
         } catch (__) { /* keep last settings */ }
       }
     };
-    this._hoursWatch = setInterval(tick, 2000);
+    this._hoursWatch = setInterval(() => {
+      if (document.visibilityState === 'hidden') return;
+      tick();
+    }, 15000);
     tick();
     try {
       this._hoursBc = new BroadcastChannel('shop-pos-hours');
@@ -1226,7 +1255,8 @@ const OrderApp = {
       }
       if (this.branch) this.loadCart();
       if (!this.token) {
-        this.view = 'login';
+        if (this.guestViewAllowed?.('home')) this.view = this.branch ? 'home' : 'branches';
+        else this.view = 'login';
       } else if (!this.branch) {
         this.view = 'branches';
       } else {
@@ -1304,10 +1334,10 @@ const OrderApp = {
       this.loadMenu({ force: true, preserveScroll: true });
     });
     this._menuLiveTimer = setInterval(() => {
-      if (!this.branch) return;
+      if (!this.branch || document.visibilityState === 'hidden') return;
       if (!['home', 'menu', 'product'].includes(this.view)) return;
       this.loadMenu({ force: true, preserveScroll: true });
-    }, 4000);
+    }, 30000);
     window.addEventListener('storage', (e) => {
       if (e.key !== 'shop-pos-catalog-ts' || !e.newValue) return;
       if (!this.branch) return;
@@ -1666,7 +1696,7 @@ const OrderApp = {
       const act = btn.dataset.act;
       if (act === 'nav') {
         const next = btn.dataset.view;
-        if (!this.token && !this.isAuthView(next)) {
+        if (!this.token && !this.isAuthView(next) && !this.guestViewAllowed?.(next)) {
           this.view = 'login';
           this.authReturn = next;
           this.render();
@@ -1880,7 +1910,12 @@ const OrderApp = {
       }
       if (act === 'checkout') {
         if (!this.isShopOpenNow()) { this.toast('We are closed for online orders right now', 'error'); this.render(); return; }
-        if (!this.token) { this.view = 'register'; this.authReturn = 'checkout'; this.render(); return; }
+        if (!this.token) {
+          this.view = this.phoneAccessEnabled?.() ? 'phone-entry' : 'register';
+          this.authReturn = 'checkout';
+          this.render();
+          return;
+        }
         // Instant navigation — validate in background so checkout feels immediate
         this.view = 'checkout';
         this.render();
@@ -2397,13 +2432,13 @@ const OrderApp = {
 
   async render() {
     if (!this._stayResolve && !this._deletePending) this.hideAuthModal();
-    if (!this.token && !this.isAuthView() && this.view !== 'branches') {
+    if (!this.token && !this.isAuthView() && this.view !== 'branches' && !this.guestViewAllowed?.()) {
       this.view = 'login';
     }
     try { sessionStorage.setItem('order_view', this.view); } catch (_) { /* ignore */ }
     const app = document.getElementById('app');
     if (this.view === 'branches') {
-      if (!this.token) { this.view = 'login'; return this.render(); }
+      if (!this.token && !this.guestViewAllowed?.()) { this.view = 'login'; return this.render(); }
       const branches = await OrderAPI.getBranches();
       app.innerHTML = this.shell(`<section class="page branch-step">
         <div class="branch-step-icon">📍</div>
@@ -2559,7 +2594,7 @@ const OrderApp = {
       const ls = this.loyaltySettings();
       const maxPts = this.maxRedeemPoints(q.subtotal);
       const ptsUsed = this.checkout.loyalty_points_used || 0;
-      const earnPts = this.previewEarnPoints(q.total);
+      const earnPts = this.previewEarnPoints(Math.max(0, (Number(q.total) || 0) - (Number(q.delivery_fee) || 0)));
       const giftCardsOn = this.settings?.online?.gift_cards_enabled !== false;
       const payMethods = (this.settings?.online?.payment_methods || []).filter((m) => m.enabled !== false).filter((m) => {
         const mf = String(m.fulfillment || 'any').toLowerCase();

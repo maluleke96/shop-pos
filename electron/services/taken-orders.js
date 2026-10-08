@@ -235,6 +235,46 @@ function payTakenOrder(id, data = {}, actor) {
   return getById(id);
 }
 
+function assertAdmin(actor) {
+  const role = String(actor?.role || '').toLowerCase();
+  if (!['owner', 'manager', 'assistant_manager', 'supervisor'].includes(role)) {
+    throw new Error('Only admin can edit or delete taken orders');
+  }
+}
+
+function updateTakenOrder(id, data = {}, actor) {
+  assertAdmin(actor);
+  ensureSchema();
+  const db = getDb();
+  const row = db.prepare('SELECT * FROM taken_orders WHERE id=?').get(id);
+  if (!row) throw new Error('Taken order not found');
+  const name = data.customer_name != null ? String(data.customer_name).trim() : row.customer_name;
+  const phone = data.phone != null ? String(data.phone).trim() : row.phone;
+  const extra = data.contact_extra != null ? String(data.contact_extra).trim() : row.contact_extra;
+  const summary = data.order_summary != null ? String(data.order_summary).trim() : row.order_summary;
+  let amount = row.amount_owed;
+  if (data.amount_owed != null && data.amount_owed !== '') {
+    amount = money(data.amount_owed);
+    if (!(amount > 0)) throw new Error('Amount must be greater than zero');
+  }
+  db.prepare(`
+    UPDATE taken_orders SET customer_name=?, phone=?, contact_extra=?, order_summary=?, amount_owed=?, updated_at=?
+    WHERE id=?
+  `).run(name || row.customer_name, phone, extra, summary, amount, now(), id);
+  return getById(id);
+}
+
+function deleteTakenOrder(id, actor) {
+  assertAdmin(actor);
+  ensureSchema();
+  const db = getDb();
+  const row = db.prepare('SELECT * FROM taken_orders WHERE id=?').get(id);
+  if (!row) throw new Error('Taken order not found');
+  db.prepare('DELETE FROM taken_orders WHERE id=?').run(id);
+  try { ensureUnpaidNotifications(); } catch (_) { /* ignore */ }
+  return { ok: true, id: Number(id) };
+}
+
 /** Keep admin bell aware of outstanding Taken – Pay Later balances. */
 function ensureUnpaidNotifications() {
   ensureSchema();
@@ -273,5 +313,7 @@ module.exports = {
   getAdminSummary,
   getById,
   payTakenOrder,
+  updateTakenOrder,
+  deleteTakenOrder,
   ensureUnpaidNotifications
 };

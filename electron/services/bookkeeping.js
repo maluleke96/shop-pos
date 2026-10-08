@@ -148,6 +148,34 @@ function _syncLedgerLegacy(from, to) {
     });
   });
 
+  run('owner_fundings', () => {
+    try { require('./expense-extras').ensureExpenseExtrasSchema(); } catch (_) { /* */ }
+    db.prepare(`SELECT * FROM owner_fundings WHERE funding_date BETWEEN ? AND ?`).all(...range).forEach(f => {
+      upsertLedger({
+        txn_number: `OWN-${f.id}`, txn_date: f.funding_date, txn_type: 'owner_funding',
+        category: 'Owner Investment', subcategory: f.funding_type === 'cash_injection' ? 'Cash injection' : 'Owner-funded purchase',
+        description: f.description || 'Owner funding', amount: f.amount, direction: 'in',
+        payment_method: f.payment_method || 'cash', account_type: accountTypeForPayment(f.payment_method),
+        reference_type: 'owner_funding', reference_id: f.id, is_auto: 1, created_by_name: f.created_by_name
+      });
+    });
+  });
+
+  run('owner_withdrawals', () => {
+    try { require('./expense-extras').ensureExpenseExtrasSchema(); } catch (_) { /* */ }
+    db.prepare(`SELECT * FROM owner_withdrawals WHERE withdrawal_date BETWEEN ? AND ?`).all(...range).forEach(w => {
+      upsertLedger({
+        txn_number: `WDR-${w.id}`, txn_date: w.withdrawal_date, txn_type: 'owner_withdrawal',
+        category: 'Owner Drawings', subcategory: w.cash_source === 'previous' ? "Previous days' money" : "Today's money",
+        description: `${w.purpose || 'Money withdrawal'} — taken by ${w.taken_by || '?'}, given by ${w.given_by || '?'}, authorised by ${w.authorised_by || '?'}`,
+        amount: w.amount, direction: 'out',
+        payment_method: w.payment_method || 'cash', account_type: accountTypeForPayment(w.payment_method || 'cash'),
+        reference_type: 'owner_withdrawal', reference_id: w.id, is_auto: 1, created_by_name: w.created_by_name,
+        branch: branchLabelForId(w.branch_id)
+      });
+    });
+  });
+
   run('supplier_payments', () => {
     db.prepare(`
       SELECT sp.*, s.name as supplier_name FROM supplier_payments sp JOIN suppliers s ON s.id=sp.supplier_id

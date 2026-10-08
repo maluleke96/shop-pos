@@ -102,6 +102,7 @@ function rewriteSqliteSql(sql) {
   // Shared SQLite → Postgres date/time helpers (order matters: multi-arg / nested before single-arg).
   const shopTz = String(process.env.SHOP_TIMEZONE || 'Africa/Johannesburg').replace(/'/g, "''");
   const shopToday = `(NOW() AT TIME ZONE '${shopTz}')::date`;
+  const coalesceTextArgs = (args) => args.split(',').map((a) => `(${a.trim()})::text`).join(', ');
   const rewriteDates = (input) =>
     input
       // printf('%.2f', expr) → to_char / round text (SQLite-only)
@@ -142,6 +143,19 @@ function rewriteSqliteSql(sql) {
         /date\s*\(\s*'now'\s*,\s*\?\s*\)/gi,
         `(${shopToday} + (?::text)::interval)`
       )
+      // date(COALESCE(a, b), 'localtime') — args cast to text so mixed text/timestamptz columns coalesce
+      .replace(
+        /date\s*\(\s*COALESCE\s*\(([^()]+)\)\s*,\s*'localtime'\s*\)/gi,
+        (_, args) => `((COALESCE(${coalesceTextArgs(args)}))::timestamptz AT TIME ZONE '${shopTz}')::date`
+      )
+      .replace(
+        /strftime\s*\(\s*'%H'\s*,\s*COALESCE\s*\(([^()]+)\)\s*,\s*'localtime'\s*\)/gi,
+        (_, args) => `TO_CHAR((COALESCE(${coalesceTextArgs(args)}))::timestamptz AT TIME ZONE '${shopTz}', 'HH24')`
+      )
+      .replace(
+        /strftime\s*\(\s*'%Y-%m-%d'\s*,\s*COALESCE\s*\(([^()]+)\)\s*,\s*'localtime'\s*\)/gi,
+        (_, args) => `TO_CHAR((COALESCE(${coalesceTextArgs(args)}))::timestamptz AT TIME ZONE '${shopTz}', 'YYYY-MM-DD')`
+      )
       // date(expr, 'localtime')
       .replace(
         /date\s*\(\s*([^,()]+?)\s*,\s*'localtime'\s*\)/gi,
@@ -159,8 +173,10 @@ function rewriteSqliteSql(sql) {
         `(date_trunc('year', ${shopToday}) + INTERVAL '1 year' - INTERVAL '1 day')::date`
       )
       .replace(/date\s*\(\s*'now'\s*,\s*'start of month'\s*\)/gi, `date_trunc('month', ${shopToday})::date`)
-      // datetime('now', …) / datetime('now')
-      .replace(/datetime\s*\(\s*'now'\s*(?:,\s*'[^']*')?\s*\)/gi, 'NOW()')
+      // datetime('now', …) / datetime('now') — any extra SQLite modifiers
+      .replace(/datetime\s*\(\s*'now'\s*(?:,\s*'[^']*')*\s*\)/gi, 'NOW()')
+      // Any leftover date('now', …) before the generic date() cast (that cast turns 'now' into invalid SQL)
+      .replace(/date\s*\(\s*'now'\s*(?:,\s*'[^']*')*\s*\)/gi, shopToday)
       // date('now')
       .replace(/date\s*\(\s*'now'\s*\)/gi, shopToday)
       // strftime('%H', col, 'localtime') before 2-arg forms
@@ -207,6 +223,10 @@ function rewriteSqliteSql(sql) {
       // SQLite scalar MAX(a,b) → Postgres GREATEST (aggregate MAX unchanged)
       .replace(/\bMAX\s*\(\s*([^,)]+)\s*,\s*([^)]+?)\s*\)/gi, 'GREATEST($1, $2)')
       .replace(/\bGLOB\b/gi, 'LIKE')
+      // SQLite 0/1 compared or assigned to Postgres BOOLEAN (avoids boolean = integer)
+      .replace(/\b((?:\w+\.)?(?:is_revoked|is_active|is_rest_day|paye_registered|uif_registered|pension_registered|medical_registered|sdl_registered))\s*=\s*0\b/gi, '$1 = FALSE')
+      .replace(/\b((?:\w+\.)?(?:is_revoked|is_active|is_rest_day|paye_registered|uif_registered|pension_registered|medical_registered|sdl_registered))\s*=\s*1\b/gi, '$1 = TRUE')
+      .replace(/\b((?:\w+\.)?(?:is_revoked|is_active|is_rest_day))\s*=\s*\?/gi, '$1 = ((?)::int <> 0)')
       // SQLite "col IS ?" (null-safe eq) is invalid in Postgres as "col IS $n"
       .replace(/\b([a-zA-Z_][\w.]*)\s+IS\s+\?/gi, '($1 IS NOT DISTINCT FROM ?)')
       .replace(/\b([a-zA-Z_][\w.]*)\s+IS\s+NOT\s+\?/gi, '($1 IS DISTINCT FROM ?)')

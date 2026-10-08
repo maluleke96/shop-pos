@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>Shop Radio</title>
+  <script>
+    window.__SHOP_POS_APP_MODE__ = 'admin';
+    try {
+      sessionStorage.setItem('SHOP_POS_APP_MODE', 'admin');
+      sessionStorage.setItem('shoppos_admin_section', 'radio');
+      localStorage.setItem('SHOP_POS_APP_MODE', 'admin');
+    } catch (e) {}
+  </script>
+</head>
+<body>
+  <p style="font-family:system-ui;padding:24px;text-align:center">Opening Radio…</p>
+  <script>location.replace('/index.html#app=admin&section=radio');</script>
+</body>
+</html>

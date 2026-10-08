@@ -6,7 +6,7 @@ const DriverAPI = {
       this._queue = new PortalOfflineQueue({
         dbName: 'driver-offline-queue',
         namespace: 'driver',
-        isWrite: (m) => /^driver:(accept|reject|release|updateStatus|availability|submitClaim|updateProfile)$/i.test(String(m || ''))
+        isWrite: (m) => /^driver:(accept|reject|release|updateStatus|delayReason|availability|submitClaim|updateProfile)$/i.test(String(m || ''))
       });
       this._queue.bind((method, args) => this._callDirect(method, args));
     }
@@ -68,6 +68,7 @@ const DriverAPI = {
   reject: (id, reason) => DriverAPI.call('driver:reject', [id, reason || '']),
   release: (id, reason) => DriverAPI.call('driver:release', [id, reason || '']),
   updateStatus: (id, status, notes) => DriverAPI.call('driver:updateStatus', [id, status, notes || '']),
+  delayReason: (id, data) => DriverAPI.call('driver:delayReason', [id, data || {}]),
   availability: (a) => DriverAPI.call('driver:availability', [a]),
   register: (d) => DriverAPI.call('delivery:registerDriver', [d]),
   submitClaim: () => DriverAPI.call('driver:submitClaim', []),

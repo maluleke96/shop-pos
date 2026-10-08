@@ -85,7 +85,12 @@
       stampedArgs[0] &&
       typeof stampedArgs[0] === 'object'
     ) {
-      stampedArgs = [{ ...stampedArgs[0], client_request_id: clientRequestId }, ...stampedArgs.slice(1)];
+      const payload = { ...stampedArgs[0], client_request_id: clientRequestId };
+      if (!payload.sale_datetime && !payload.sale_date_time) {
+        payload.sale_datetime = new Date().toISOString();
+      }
+      payload.offline_queued = true;
+      stampedArgs = [payload, ...stampedArgs.slice(1)];
     }
 
     const db = await openDb();

@@ -310,7 +310,11 @@ function saveDeviceAdmin(data, actorName) {
 
 function approvePairingAdmin(code, data, actorName) {
   ensureKiosk();
-  const row = dbGet('SELECT * FROM kiosk_device_pairings WHERE pairing_code = ? AND status = ?', [code, 'pending']);
+  const normalizedCode = String(code || '').trim();
+  const row = dbGet(
+    'SELECT * FROM kiosk_device_pairings WHERE pairing_code = ? AND status = ? ORDER BY id DESC LIMIT 1',
+    [normalizedCode, 'pending']
+  );
   if (!row) throw new Error('Pairing code not found or expired');
   const deviceToken = newToken();
   const meta = parseJson(row.device_meta, {});
@@ -318,7 +322,11 @@ function approvePairingAdmin(code, data, actorName) {
   const r = dbRun(`INSERT INTO kiosk_devices (device_code, name, location, branch_id, status, token_hash, pairing_meta)
     VALUES (?,?,?,?,?,?,?)`,
     [uid('KSK'), name, data.location || null, data.branch_id || null, 'online', hashToken(deviceToken), row.device_meta]);
-  const deviceId = r.lastInsertRowid;
+  let deviceId = r.lastInsertRowid;
+  if (!deviceId) {
+    deviceId = dbGet('SELECT id FROM kiosk_devices ORDER BY id DESC LIMIT 1')?.id;
+  }
+  if (!deviceId) throw new Error('Could not save kiosk device');
   dbRun('UPDATE kiosk_device_pairings SET status = ?, device_id = ?, device_meta = ? WHERE id = ?',
     ['approved', deviceId, JSON.stringify({ ...meta, device_token_once: deviceToken }), row.id]);
   audit({ user_name: actorName, device_id: deviceId, action: 'device_paired_admin', entity_id: deviceId });
@@ -495,6 +503,14 @@ function productAvailable(product, branchId) {
 
 const _catalogCache = new Map();
 const CATALOG_TTL_MS = 20000;
+
+function invalidateKioskCatalogCache(branchId) {
+  if (branchId != null && branchId !== '') {
+    _catalogCache.delete(String(branchId));
+  } else {
+    _catalogCache.clear();
+  }
+}
 
 function kioskPaymentMethodsFromSettings() {
   const store = require('./store');
@@ -998,7 +1014,7 @@ module.exports = {
   requestPairing, pairingStatus, listPendingPairings, listPendingPairingsAdmin, listDevicesAdmin, approvePairingAdmin,
   revokeDeviceAdmin, saveDeviceAdmin,
   approvePairing, rejectPairing, revokeDevice, saveDevice, listDevices, deviceHeartbeat, remoteCommand,
-  getKioskCatalog, getKioskProductImage, validateKioskCart, placeKioskOrder, listKioskOrders,
+  getKioskCatalog, invalidateKioskCatalogCache, getKioskProductImage, validateKioskCart, placeKioskOrder, listKioskOrders,
   getKioskSettings, saveKioskSettings, runKioskTests,
   kioskHealth, listKioskErrors, reportKioskErrors, logKioskError, staleKiosksToNotify, utcMs,
   kioskCustomerLogin, kioskCustomerBenefits, kioskValidateCoupon, kioskCheckGiftCard,

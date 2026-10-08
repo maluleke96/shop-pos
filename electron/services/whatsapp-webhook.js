@@ -212,6 +212,9 @@ function processPayload(payload) {
       });
     });
   });
+  if (statuses) {
+    try { require('./communication-center').applyWhatsAppStatuses(payload); } catch (e) { console.warn('[whatsapp-webhook] cc status:', e.message); }
+  }
   return { statuses, messages };
 }
 

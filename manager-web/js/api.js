@@ -36,6 +36,7 @@ const ManagerAPI = {
   logout: () => ManagerAPI.call('mobile:logout', []),
   profile: () => ManagerAPI.call('mobile:profile', []),
   dashboard: (filters) => ManagerAPI.call('mobile:dashboard', [filters || {}]),
+  slaLive: (filters) => ManagerAPI.call('mobile:slaLive', [filters || {}]),
   orders: (filters) => ManagerAPI.call('mobile:orders', [filters || {}]),
   onlineOrders: (filters) => ManagerAPI.call('mobile:onlineOrders', [filters || {}]),
   order: (id) => ManagerAPI.call('mobile:order', [id]),

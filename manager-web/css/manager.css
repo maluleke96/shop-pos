@@ -159,6 +159,11 @@ body {
 .branch-day-total { border-top: 2px solid var(--border); }
 .branch-day-date { font-weight: 700; margin-bottom: 6px; }
 .branch-day .row { display: flex; justify-content: space-between; gap: 12px; padding: 3px 0; font-size: 14px; }
+.daily-money-box {
+  margin-top: 10px; padding: 10px 12px; border-radius: 10px;
+  background: rgba(99, 102, 241, 0.08); border: 1px solid rgba(99, 102, 241, 0.25);
+}
+.daily-money-box .row { display: flex; justify-content: space-between; gap: 12px; padding: 3px 0; font-size: 14px; }
 .mgr-heads-up {
   position: fixed; top: calc(10px + env(safe-area-inset-top)); left: 12px; right: 12px;
   z-index: 240; background: #128c7e; color: #fff; border-radius: 14px;

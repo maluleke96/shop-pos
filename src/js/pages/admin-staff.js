@@ -219,23 +219,81 @@
               <td>${Utils.escHtml(o.payment_method || '—')}</td>
               <td>${Utils.escHtml(o.staff_name || '—')}</td>
               <td><span class="badge">${Utils.escHtml(o.status || '')}</span></td>
-              <td>${String(o.status).toUpperCase() === 'UNPAID' ? `
-                <button type="button" class="btn btn-sm btn-success adm-taken-pay" data-id="${o.id}">PAY</button>
+              <td style="white-space:nowrap">${String(o.status).toUpperCase() === 'UNPAID' ? `
+                <button type="button" class="btn btn-sm btn-success adm-taken-pay" data-id="${o.id}" data-amount="${o.amount_owed}">PAY</button>
+                <button type="button" class="btn btn-sm btn-ghost adm-taken-edit" data-id="${o.id}">Edit</button>
+                <button type="button" class="btn btn-sm btn-danger adm-taken-del" data-id="${o.id}">Delete</button>
                 <a class="btn btn-sm btn-ghost" href="tel:${Utils.escHtml(String(o.phone || '').replace(/\s/g, ''))}">CALL</a>
                 <button type="button" class="btn btn-sm btn-ghost adm-taken-wa" data-phone="${Utils.escHtml(o.phone || '')}" data-name="${Utils.escHtml(o.customer_name || '')}">WA</button>
-              ` : ''}</td>
+              ` : `<button type="button" class="btn btn-sm btn-danger adm-taken-del" data-id="${o.id}">Delete</button>`}</td>
             </tr>`).join('') || '<tr><td colspan="10" class="muted">No taken orders yet</td></tr>'}
           </tbody>
         </table>
       </div></div>
     </div>`;
     el.querySelectorAll('.adm-taken-pay').forEach((btn) => {
-      btn.addEventListener('click', async () => {
+      btn.addEventListener('click', () => {
+        const id = Number(btn.dataset.id);
+        const amount = Number(btn.dataset.amount) || 0;
+        const currency = this.settings?.currency || 'R';
+        if (window.PaymentUI?.open && amount > 0) {
+          PaymentUI.open({
+            total: amount,
+            currency,
+            settings: this.settings,
+            title: `Collect Taken Order · ${Utils.formatMoney(amount, currency)}`,
+            confirmLabel: 'Confirm PAY',
+            allowMixed: false,
+            allowPartial: false,
+            onConfirm: async ({ payments }) => {
+              const method = payments?.[0]?.type || 'cash';
+              const r = await API.payTakenOrder(id, { payment_method: method }, this.app.user);
+              if (!r || r.success === false) throw new Error(r?.error || 'Payment failed');
+              Utils.toast('Marked paid', 'success');
+              this.renderTakenOrders(el);
+            }
+          });
+          return;
+        }
         const method = prompt('Payment method: cash, card, eft, or mobile', 'cash');
         if (!method) return;
-        const r = await API.payTakenOrder(Number(btn.dataset.id), { payment_method: method.trim().toLowerCase() }, this.app.user);
-        if (!r || r.success === false) return Utils.toast(r?.error || 'Payment failed', 'error');
-        Utils.toast('Marked paid', 'success');
+        API.payTakenOrder(id, { payment_method: method.trim().toLowerCase() }, this.app.user).then((r) => {
+          if (!r || r.success === false) return Utils.toast(r?.error || 'Payment failed', 'error');
+          Utils.toast('Marked paid', 'success');
+          this.renderTakenOrders(el);
+        });
+      });
+    });
+    el.querySelectorAll('.adm-taken-edit').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const o = orders.find((x) => Number(x.id) === Number(btn.dataset.id));
+        if (!o) return;
+        Utils.showModal('Edit taken order', `
+          <div class="field"><label>Customer</label><input id="to-name" value="${Utils.escHtml(o.customer_name || '')}"></div>
+          <div class="field"><label>Phone</label><input id="to-phone" value="${Utils.escHtml(o.phone || '')}"></div>
+          <div class="field"><label>Order</label><input id="to-summary" value="${Utils.escHtml(o.order_summary || '')}"></div>
+          <div class="field"><label>Amount</label><input id="to-amount" type="number" step="0.01" value="${Number(o.amount_owed) || 0}"></div>`,
+          '<button type="button" class="btn btn-primary" id="to-save">Save</button>');
+        document.getElementById('to-save')?.addEventListener('click', async () => {
+          const r = await API.updateTakenOrder(o.id, {
+            customer_name: document.getElementById('to-name')?.value,
+            phone: document.getElementById('to-phone')?.value,
+            order_summary: document.getElementById('to-summary')?.value,
+            amount_owed: document.getElementById('to-amount')?.value
+          }, this.app.user);
+          if (!r || r.success === false) return Utils.toast(r?.error || 'Save failed', 'error');
+          Utils.hideModal();
+          Utils.toast('Order updated', 'success');
+          this.renderTakenOrders(el);
+        });
+      });
+    });
+    el.querySelectorAll('.adm-taken-del').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        if (!confirm('Permanently delete this taken order?')) return;
+        const r = await API.deleteTakenOrder(Number(btn.dataset.id), this.app.user);
+        if (!r || r.success === false) return Utils.toast(r?.error || 'Delete failed', 'error');
+        Utils.toast('Order deleted', 'success');
         this.renderTakenOrders(el);
       });
     });

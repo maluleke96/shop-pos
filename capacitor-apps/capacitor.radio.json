@@ -1,0 +1,6 @@
+{
+  "appId": "com.shoppos.radio",
+  "appName": "Shop Radio",
+  "webDir": "www",
+  "android": { "allowMixedContent": true }
+}

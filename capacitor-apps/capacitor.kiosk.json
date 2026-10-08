@@ -1,0 +1,7 @@
+{
+  "appId": "com.shoppos.kiosk",
+  "appName": "Shop POS Kiosk",
+  "webDir": "www",
+  "server": { "androidScheme": "https" },
+  "android": { "allowMixedContent": false }
+}

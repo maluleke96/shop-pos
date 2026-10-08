@@ -335,6 +335,7 @@ const RecipeProductionApp = {
       ['waste', 'Waste', 'produce'],
       ['profits', 'Profits & Losses', 'reports'],
       ['daily-item-profits', 'Daily Item Profits', 'reports'],
+      ['food-cost', 'Food Cost & Profitability', 'reports'],
       ['promotions', 'Promotions', 'promotions'],
       ['reports', 'Reports', 'reports'],
       ['users', 'Users & Access', 'users'],
@@ -614,7 +615,18 @@ const RecipeProductionApp = {
     });
   },
   _pagesWithoutHtmlCache() {
-    return ['categories', 'products', 'ingredients', 'restock', 'ingredient-groups'];
+    return ['categories', 'products', 'ingredients', 'restock', 'ingredient-groups', 'food-cost'];
+  },
+
+  async pageFoodCost(el) {
+    if (!window.RecipeFoodCostPage?.render) {
+      await Utils.loadScript('js/recipe-production/food-cost.js');
+    }
+    if (!window.RecipeFoodCostPage?.render) {
+      el.innerHTML = '<p class="error-msg">Food Cost & Profitability failed to load. Refresh and try again.</p>';
+      return;
+    }
+    await window.RecipeFoodCostPage.render(el, this);
   },
   async _fetchRestockList(opts = {}) {
     const maxAge = opts.maxAgeMs ?? 45000;
@@ -643,6 +655,7 @@ const RecipeProductionApp = {
       approvals: 'Recipe Approvals', production: 'Production Planning', waste: 'Waste Management',
       profits: 'Profits & Losses',
       'daily-item-profits': 'Daily Item Profits',
+      'food-cost': 'Food Cost & Profitability',
       promotions: 'Promotions', reports: 'Reports', users: 'Users & Access', settings: 'Settings'
     };
     if (title) title.textContent = titles[this.page] || 'Recipe System';
@@ -676,6 +689,7 @@ const RecipeProductionApp = {
         waste: () => this.pageWaste(el),
         profits: () => this.pageProfits(el),
         'daily-item-profits': () => this.pageDailyItemProfits(el),
+        'food-cost': () => this.pageFoodCost(el),
         promotions: () => this.pagePromotions(el),
         reports: () => this.pageReports(el),
         users: () => this.pageUsers(el),

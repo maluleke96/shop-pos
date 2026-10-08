@@ -757,14 +757,24 @@ function syncWebCustomerLoyaltyBalance(customerId, balance) {
   } catch (_) { /* optional table / column */ }
 }
 
+/** Delivery fee never earns points — only what was paid for goods. */
+function loyaltyEarnBase(saleTotal, deliveryFee) {
+  return Math.max(0, (Number(saleTotal) || 0) - (Number(deliveryFee) || 0));
+}
+
+/** Points a loyalty-eligible amount earns under the current loyalty rules. */
+function calcEarnPoints(eligibleAmount) {
+  const settings = getLoyaltySettings();
+  if (!settings.enabled) return 0;
+  const total = Number(eligibleAmount) || 0;
+  if (total < settings.min_sale_total) return 0;
+  return Math.max(0, Math.floor((total / settings.spend_amount) * settings.points_earned));
+}
+
 function earnLoyaltyPoints(customerId, saleTotal, saleId) {
   if (!customerId) return 0;
   const loyaltyPts = require('./loyalty-points');
-  const settings = getLoyaltySettings();
-  if (!settings.enabled) return 0;
-  const total = Number(saleTotal) || 0;
-  if (total < settings.min_sale_total) return 0;
-  const points = Math.floor((total / settings.spend_amount) * settings.points_earned);
+  const points = calcEarnPoints(saleTotal);
   if (points <= 0) return 0;
   const db = getDb();
   db.prepare('UPDATE customers SET loyalty_points = COALESCE(loyalty_points, 0) + ? WHERE id = ?').run(points, customerId);
@@ -908,7 +918,7 @@ function syncMissingLoyaltyPoints(opts = {}) {
   } catch (_) { /* optional */ }
 
   const missing = db.prepare(`
-    SELECT s.id, s.customer_id, s.total
+    SELECT s.id, s.customer_id, s.total, s.delivery_fee
     FROM sales s
     LEFT JOIN loyalty_transactions lt ON lt.sale_id = s.id AND lt.type = 'earn'
     WHERE s.status = 'completed'
@@ -920,7 +930,7 @@ function syncMissingLoyaltyPoints(opts = {}) {
 
   for (const sale of missing) {
     try {
-      const pts = earnLoyaltyPoints(sale.customer_id, sale.total, sale.id);
+      const pts = earnLoyaltyPoints(sale.customer_id, loyaltyEarnBase(sale.total, sale.delivery_fee), sale.id);
       if (pts > 0) synced += 1;
     } catch (_) { /* skip row */ }
   }
@@ -1050,47 +1060,152 @@ function adjustLoyaltyPoints(customerId, pointsDelta, notes, actorId) {
   };
 }
 
+const SALE_EDIT_LOYALTY_NOTE = 'edit_adjust';
+
+/** Points currently credited for a sale: the checkout earn plus every edit adjustment. */
+function saleNetEarnedPoints(saleId) {
+  return Number(getDb().prepare(`
+    SELECT COALESCE(SUM(points), 0) AS v FROM loyalty_transactions
+    WHERE sale_id = ? AND (type = 'earn' OR (type = 'adjust' AND notes = ?))`).get(saleId, SALE_EDIT_LOYALTY_NOTE)?.v) || 0;
+}
+
+/** The customer who actually holds this sale's points (the sale's customer can be changed later by an edit). */
+function saleLoyaltyCustomerId(saleId, fallbackCustomerId) {
+  const row = getDb().prepare(`
+    SELECT customer_id FROM loyalty_transactions
+    WHERE sale_id = ? AND (type = 'earn' OR (type = 'adjust' AND notes = ?)) AND customer_id IS NOT NULL
+    ORDER BY id ASC LIMIT 1`).get(saleId, SALE_EDIT_LOYALTY_NOTE);
+  return row?.customer_id || fallbackCustomerId || null;
+}
+
+/**
+ * After a sale edit that changed the loyalty-eligible amount (total − delivery fee), move the sale's
+ * points to what the final amount earns. Never takes a balance below zero: points the customer has
+ * already spent are reported as a shortfall instead.
+ */
+function recalcSaleLoyaltyAfterEdit(saleId, { actorId = null, actorName = null, reason = '', eligibleBefore = null } = {}) {
+  const db = getDb();
+  const loyaltyPts = require('./loyalty-points');
+  const sale = db.prepare('SELECT id, customer_id, total, delivery_fee, status, receipt_number FROM sales WHERE id = ?').get(saleId);
+  if (!sale) return null;
+  if (['void', 'voided'].includes(String(sale.status || '').toLowerCase())) return null;
+  const customerId = saleLoyaltyCustomerId(saleId, sale.customer_id);
+  if (!customerId) return null;
+
+  const eligibleAfter = loyaltyEarnBase(sale.total, sale.delivery_fee);
+  const originalPoints = Math.max(0, saleNetEarnedPoints(saleId));
+  const newPoints = calcEarnPoints(eligibleAfter);
+  const adjustment = newPoints - originalPoints;
+  const balanceBefore = Math.max(0, Math.floor(Number(db.prepare('SELECT loyalty_points FROM customers WHERE id = ?').get(customerId)?.loyalty_points) || 0));
+
+  let applied = adjustment;
+  if (adjustment < 0) applied = -Math.min(balanceBefore, Math.abs(adjustment));
+  const shortfall = adjustment < 0 ? Math.abs(adjustment) - Math.abs(applied) : 0;
+
+  if (applied !== 0) {
+    db.prepare('UPDATE customers SET loyalty_points = ? WHERE id = ?').run(balanceBefore + applied, customerId);
+    const txn = db.prepare(`INSERT INTO loyalty_transactions (customer_id, points, type, sale_id, notes)
+      VALUES (?, ?, 'adjust', ?, ?)`).run(customerId, applied, saleId, SALE_EDIT_LOYALTY_NOTE);
+    try {
+      if (applied > 0) loyaltyPts.addPointLot(customerId, applied, txn.lastInsertRowid);
+      else loyaltyPts.consumeLotsFifo(customerId, Math.abs(applied));
+    } catch (_) { /* expiry lots optional */ }
+  }
+  const balanceAfter = balanceBefore + applied;
+  if (applied !== 0) syncWebCustomerLoyaltyBalance(customerId, balanceAfter);
+
+  let message;
+  if (adjustment === 0) message = `Loyalty unchanged — ${newPoints} pts still match the new eligible amount`;
+  else if (shortfall > 0) {
+    message = `Loyalty: sale now earns ${newPoints} pts (was ${originalPoints}). Removed ${Math.abs(applied)} pts; `
+      + `${shortfall} pts could not be removed because the customer already used them (balance is now ${balanceAfter}).`;
+  } else message = `Loyalty: ${originalPoints} → ${newPoints} pts (${adjustment > 0 ? '+' : ''}${adjustment}). Customer balance ${balanceBefore} → ${balanceAfter}.`;
+
+  const record = {
+    sale_id: saleId,
+    receipt_number: sale.receipt_number || null,
+    customer_id: customerId,
+    eligible_before: eligibleBefore != null ? Number(eligibleBefore) : null,
+    eligible_after: eligibleAfter,
+    original_points: originalPoints,
+    new_points: newPoints,
+    adjustment,
+    applied,
+    shortfall,
+    balance_before: balanceBefore,
+    balance_after: balanceAfter,
+    reason: String(reason || '').trim() || null,
+    edited_by: actorName || null,
+    edited_by_user_id: actorId || null,
+    at: new Date().toISOString(),
+    message
+  };
+  try {
+    db.prepare(`INSERT INTO audit_log (user_id, username, action, entity_type, entity_id, details) VALUES (?,?,?,?,?,?)`)
+      .run(actorId, actorName, 'loyalty_edit_adjust', 'sale', saleId, JSON.stringify(record));
+  } catch (_) { /* audit table optional in very old DBs */ }
+  return record;
+}
+
+/**
+ * Take back points earned on a sale (and optionally give back points redeemed on it), pro-rata.
+ * Idempotent: earlier 'void_reversal' rows for the sale are subtracted first.
+ */
+function reverseSaleLoyalty(saleId, ratioIn = 1, { restoreRedeemed = true } = {}) {
+  const db = getDb();
+  const sale = db.prepare('SELECT id, customer_id FROM sales WHERE id = ?').get(saleId);
+  const customerId = saleLoyaltyCustomerId(saleId, sale?.customer_id);
+  const ratio = Math.min(1, Math.max(0, Number(ratioIn) || 0));
+  if (!customerId || ratio <= 0) return { revoked: 0, restored: 0 };
+  const loyaltyPts = require('./loyalty-points');
+  const earned = Math.max(0, saleNetEarnedPoints(saleId));
+  const redeemed = Number(db.prepare(`
+    SELECT COALESCE(SUM(ABS(points)), 0) as v FROM loyalty_transactions
+    WHERE sale_id = ? AND type = 'redeem'`).get(saleId)?.v) || 0;
+  const earnRevoked = Number(db.prepare(`
+    SELECT COALESCE(SUM(ABS(points)), 0) as v FROM loyalty_transactions
+    WHERE sale_id = ? AND type = 'adjust' AND notes = 'void_reversal' AND points < 0`).get(saleId)?.v) || 0;
+  const redeemRestored = Number(db.prepare(`
+    SELECT COALESCE(SUM(points), 0) as v FROM loyalty_transactions
+    WHERE sale_id = ? AND type = 'adjust' AND notes = 'void_reversal' AND points > 0`).get(saleId)?.v) || 0;
+
+  const earnDelta = Math.max(0, Math.floor(earned * ratio) - earnRevoked);
+  const redeemDelta = restoreRedeemed ? Math.max(0, Math.floor(redeemed * ratio) - redeemRestored) : 0;
+
+  if (earnDelta > 0) {
+    const cur = Math.floor(Number(db.prepare('SELECT loyalty_points FROM customers WHERE id = ?').get(customerId)?.loyalty_points) || 0);
+    db.prepare('UPDATE customers SET loyalty_points = ? WHERE id = ?').run(Math.max(0, cur - earnDelta), customerId);
+    db.prepare(`
+      INSERT INTO loyalty_transactions (customer_id, points, type, sale_id, notes)
+      VALUES (?, ?, 'adjust', ?, 'void_reversal')`).run(customerId, -earnDelta, saleId);
+    try { loyaltyPts.consumeLotsFifo(customerId, earnDelta); } catch (_) { /* optional */ }
+  }
+  if (redeemDelta > 0) {
+    db.prepare(`
+      UPDATE customers SET loyalty_points = COALESCE(loyalty_points, 0) + ? WHERE id = ?`).run(redeemDelta, customerId);
+    const txn = db.prepare(`
+      INSERT INTO loyalty_transactions (customer_id, points, type, sale_id, notes)
+      VALUES (?, ?, 'adjust', ?, 'void_reversal')`).run(customerId, redeemDelta, saleId);
+    try { loyaltyPts.addPointLot(customerId, redeemDelta, txn.lastInsertRowid); } catch (_) { /* optional */ }
+  }
+  if (earnDelta > 0 || redeemDelta > 0) {
+    const bal = db.prepare('SELECT loyalty_points FROM customers WHERE id = ?').get(customerId);
+    syncWebCustomerLoyaltyBalance(customerId, bal?.loyalty_points);
+  }
+  return { revoked: earnDelta, restored: redeemDelta };
+}
+
 /** Reverse loyalty points, gift card balance, and on-account charges after void/refund. */
-function reverseSaleBenefits(saleId, actorId, refundRatio = 1) {
+function reverseSaleBenefits(saleId, actorId, refundRatio = 1, loyaltyRatio = refundRatio) {
   const db = getDb();
   const sale = db.prepare('SELECT * FROM sales WHERE id = ?').get(saleId);
   if (!sale) return;
   const ratio = Math.min(1, Math.max(0, Number(refundRatio) || 0));
   if (ratio <= 0) return;
 
+  reverseSaleLoyalty(saleId, loyaltyRatio);
+
   const customerId = sale.customer_id;
-  if (customerId) {
-    const earned = Number(db.prepare(`
-      SELECT COALESCE(SUM(points), 0) as v FROM loyalty_transactions
-      WHERE sale_id = ? AND type = 'earn'`).get(saleId)?.v) || 0;
-    const redeemed = Number(db.prepare(`
-      SELECT COALESCE(SUM(ABS(points)), 0) as v FROM loyalty_transactions
-      WHERE sale_id = ? AND type = 'redeem'`).get(saleId)?.v) || 0;
-    const earnRevoked = Number(db.prepare(`
-      SELECT COALESCE(SUM(ABS(points)), 0) as v FROM loyalty_transactions
-      WHERE sale_id = ? AND type = 'adjust' AND notes = 'void_reversal' AND points < 0`).get(saleId)?.v) || 0;
-    const redeemRestored = Number(db.prepare(`
-      SELECT COALESCE(SUM(points), 0) as v FROM loyalty_transactions
-      WHERE sale_id = ? AND type = 'adjust' AND notes = 'void_reversal' AND points > 0`).get(saleId)?.v) || 0;
-
-    const earnDelta = Math.max(0, Math.floor(earned * ratio) - earnRevoked);
-    const redeemDelta = Math.max(0, Math.floor(redeemed * ratio) - redeemRestored);
-
-    if (earnDelta > 0) {
-      db.prepare(`
-        UPDATE customers SET loyalty_points = MAX(0, COALESCE(loyalty_points, 0) - ?) WHERE id = ?`).run(earnDelta, customerId);
-      db.prepare(`
-        INSERT INTO loyalty_transactions (customer_id, points, type, sale_id, notes)
-        VALUES (?, ?, 'adjust', ?, 'void_reversal')`).run(customerId, -earnDelta, saleId);
-    }
-    if (redeemDelta > 0) {
-      db.prepare(`
-        UPDATE customers SET loyalty_points = COALESCE(loyalty_points, 0) + ? WHERE id = ?`).run(redeemDelta, customerId);
-      db.prepare(`
-        INSERT INTO loyalty_transactions (customer_id, points, type, sale_id, notes)
-        VALUES (?, ?, 'adjust', ?, 'void_reversal')`).run(customerId, redeemDelta, saleId);
-    }
-  }
 
   const gcRedeems = db.prepare(`
     SELECT * FROM gift_card_transactions WHERE sale_id = ? AND type = 'redeem'`).all(saleId);
@@ -1336,15 +1451,30 @@ function recordWaste(data, adjustStockFn, actorId) {
     damageKind = 'ingredient';
   }
 
-  const r = db.prepare(`
-    INSERT INTO waste_records (product_id, quantity, reason, employee_id, branch_id, notes, cost_value,
-      status, photo_path_1, photo_path_2, damage_kind, property_name)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-  `).run(
-    productId, qty, reason, data.employee_id || actorId, getBranchId(),
-    data.notes || null, cost, 'pending', null, null, damageKind, propertyName
-  );
-  const wasteId = r.lastInsertRowid;
+  const unit = data.unit ? String(data.unit).trim() : null;
+  let r;
+  try {
+    r = db.prepare(`
+      INSERT INTO waste_records (product_id, quantity, unit, reason, employee_id, branch_id, notes, cost_value,
+        status, photo_path_1, photo_path_2, damage_kind, property_name)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+    `).run(
+      productId, qty, unit, reason, data.employee_id || actorId, data.branch_id || getBranchId(),
+      data.notes || null, cost, 'pending', null, null, damageKind, propertyName
+    );
+  } catch (_) {
+    r = db.prepare(`
+      INSERT INTO waste_records (product_id, quantity, reason, employee_id, branch_id, notes, cost_value,
+        status, photo_path_1, photo_path_2, damage_kind, property_name)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+    `).run(
+      productId, qty, reason, data.employee_id || actorId, data.branch_id || getBranchId(),
+      data.notes || null, cost, 'pending', null, null, damageKind, propertyName
+    );
+  }
+  const wasteId = Number(r.lastInsertRowid)
+    || Number(db.prepare('SELECT id FROM waste_records ORDER BY id DESC LIMIT 1').get()?.id)
+    || 0;
   let photoPath = null;
   try { photoPath = saveWastePhoto(photos[0], wasteId); }
   catch (e) {
@@ -1930,10 +2060,11 @@ function getKitchenOrders(status) {
   for (const o of orders) {
     o.items = byOrder[o.id] || [];
   }
+  try { require('./order-sla').attachToKitchenOrders(orders); } catch (_) { /* timers optional */ }
   return orders;
 }
 
-function updateKitchenOrderStatus(id, status) {
+function updateKitchenOrderStatus(id, status, actor = null, meta = null) {
   // Schema: pending|preparing|ready|collection|completed|cancelled
   let st = String(status || 'pending');
   if (st === 'done') st = 'completed';
@@ -1944,7 +2075,52 @@ function updateKitchenOrderStatus(id, status) {
     const online = require('./online-ordering');
     online.syncOnlineOrderFromKitchenStatus(id, st);
   } catch (_) { /* optional */ }
+  try { require('./order-sla').onKitchenStatus(id, st, actor); } catch (err) { console.warn('[sla] kitchen status:', err.message); }
+  if (meta && (meta.reason || meta.note || meta.bulk)) {
+    try {
+      const order = getDb().prepare('SELECT order_number FROM kitchen_orders WHERE id = ?').get(id);
+      require('./audit').log({
+        user_id: actor?.id || null,
+        username: actor?.username || actor?.full_name || null,
+        action: meta.action || 'kds_clear',
+        entity_type: 'kitchen_order',
+        entity_id: id,
+        details: JSON.stringify({
+          status: st,
+          order_number: order?.order_number || null,
+          reason: meta.reason || null,
+          note: meta.note || null,
+          bulk: !!meta.bulk,
+          skipped: !!meta.skipped
+        })
+      });
+    } catch (_) { /* */ }
+  }
   return { id, status: st };
+}
+
+function bulkUpdateKitchenOrderStatus(ids, status, actor = null, meta = null) {
+  const list = (Array.isArray(ids) ? ids : []).map((x) => Number(x)).filter((x) => x > 0);
+  const out = [];
+  for (const id of list) {
+    out.push(updateKitchenOrderStatus(id, status, actor, { ...(meta || {}), bulk: list.length > 1 }));
+  }
+  return { updated: out.length, results: out };
+}
+
+function clearAllActiveKitchenOrders(actor = null, meta = null) {
+  const rows = getDb().prepare(
+    `SELECT id FROM kitchen_orders WHERE status NOT IN ('completed','cancelled','done') ORDER BY id`
+  ).all();
+  const ids = rows.map((r) => r.id);
+  if (!ids.length) return { updated: 0, results: [] };
+  return bulkUpdateKitchenOrderStatus(ids, 'completed', actor, {
+    ...(meta || {}),
+    action: 'kds_clear',
+    reason: meta?.reason || 'admin_reset',
+    note: meta?.note || 'Clear all active kitchen orders',
+    admin_reset: true
+  });
 }
 
 function createKitchenOrder(data, actorId) {
@@ -1963,6 +2139,9 @@ function createKitchenOrder(data, actorId) {
     db.prepare('INSERT INTO kitchen_order_items (kitchen_order_id, product_name, quantity, modifiers, notes) VALUES (?,?,?,?,?)')
       .run(r.lastInsertRowid, item.product_name, item.quantity, item.modifiers || null, item.notes || null);
   }
+  try {
+    require('./order-sla').onKitchenCreated(r.lastInsertRowid, data.sale_id || null, data.station || 'kitchen', actorId, orderNumber);
+  } catch (err) { console.warn('[sla] kitchen create:', err.message); }
   return { id: r.lastInsertRowid, orderNumber };
 }
 
@@ -2266,7 +2445,8 @@ module.exports = {
   getGiftCards, createGiftCard, updateGiftCard, deleteGiftCard, redeemGiftCard, checkGiftCardBalance,
   approveGiftCard, rejectGiftCard, getGiftCardSettings, saveGiftCardSettings,
   giftCardEffectiveStatus, giftCardIsExpired, giftCardExpiresAtMs,
-  earnLoyaltyPoints, redeemLoyaltyPoints, reverseSaleBenefits, getLoyaltyHistory, syncMissingLoyaltyPoints, restorePrematureExpirations, reconcileAllCustomerLoyaltyBalances, getLoyaltySettings, calcLoyaltyRedemption, adjustLoyaltyPoints,
+  earnLoyaltyPoints, loyaltyEarnBase, calcEarnPoints, recalcSaleLoyaltyAfterEdit, saleNetEarnedPoints,
+  redeemLoyaltyPoints, reverseSaleBenefits, reverseSaleLoyalty, getLoyaltyHistory, syncMissingLoyaltyPoints, restorePrematureExpirations, reconcileAllCustomerLoyaltyBalances, getLoyaltySettings, calcLoyaltyRedemption, adjustLoyaltyPoints,
   getCustomerPointsSummary: (...args) => require('./loyalty-points').getCustomerPointsSummary(...args),
   listLoyaltyReminders: () => require('./loyalty-points').listCustomersNeedingReminder(),
   listRestorableExpiredPoints: (opts) => require('./loyalty-points').listRestorableExpiredPoints(opts),
@@ -2284,7 +2464,7 @@ module.exports = {
   createCashUp, hasCashUpForShift, getCashUp, getCashUpByShift, getCashUps, getCashUpSummary, buildCashUpPdf, approveCashUp, updateCashUp, deleteCashUp,
   getAutomationRules, saveAutomationRule, deleteAutomationRule, evaluateAutomation,
   getCustomFields, saveCustomField, deleteCustomField, getCustomFieldValues, saveCustomFieldValues,
-  getTables, saveTable, releaseRestaurantTable, getKitchenOrders, updateKitchenOrderStatus, createKitchenOrder,
+  getTables, saveTable, releaseRestaurantTable, getKitchenOrders, updateKitchenOrderStatus, bulkUpdateKitchenOrderStatus, clearAllActiveKitchenOrders, createKitchenOrder,
   getHourlySalesReport, getCategorySalesReport, getBrandSalesReport, getPaymentMethodReport,
   getEmployeePerformanceReport, getDiscountReport, getVoidReport, getStockMovementReport, getProfitDashboard,
   getOrderTypeReport, deleteTable,

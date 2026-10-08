@@ -1,5 +1,5 @@
 window.__STUDIO_CONFIG__ = {
-  rpcUrl: "",
+  rpcUrl: "/rpc",
   apiBase: "",
   studioPath: "/studio/"
 };

@@ -987,7 +987,10 @@ window.AdminDeliveryPage = {
     <tbody>${(this.branchFees || []).length ? this.branchFees.map((b) => {
       const places = b.places || [];
       const placesHtml = places.length
-        ? places.map((p) => `<div style="font-size:12px;margin:2px 0"><strong>${this.esc(p.name)}</strong> · fee ${this.money(p.delivery_fee)}${p.free_delivery_above > 0 ? ` · free above ${this.money(p.free_delivery_above)}` : ''}${p.min_order > 0 ? ` · min ${this.money(p.min_order)}` : ''}</div>`).join('')
+        ? places.map((p) => {
+          const where = [p.available_pos !== false ? 'POS' : null, p.available_online !== false ? 'Online' : null].filter(Boolean).join(' + ') || 'Hidden';
+          return `<div style="font-size:12px;margin:2px 0"><strong>${this.esc(p.name)}</strong> · fee ${this.money(p.delivery_fee)}${p.free_delivery_above > 0 ? ` · free above ${this.money(p.free_delivery_above)}` : ''}${p.min_order > 0 ? ` · min ${this.money(p.min_order)}` : ''} · <span class="tag">${where}</span></div>`;
+        }).join('')
         : `<div class="muted" style="font-size:12px">Flat fee ${this.money(b.delivery_fee)} (no places yet)</div>`;
       return `<tr>
       <td>${this.esc(b.branch_name || b.branch_id)}</td>
@@ -1033,7 +1036,7 @@ window.AdminDeliveryPage = {
     const branchForm = body.querySelector('#del-branch-fee-form');
     const placesList = body.querySelector('#del-places-list');
     const placeRowHtml = (p = {}) => `
-      <div class="del-place-row" style="border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:10px;background:var(--surface,#fff)">
+      <div class="del-place-row" data-place-id="${this.esc(p.id || '')}" style="border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:10px;background:var(--surface,#fff)">
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
           <div class="field" style="grid-column:1/-1">
             <label>Place name *</label>
@@ -1050,6 +1053,10 @@ window.AdminDeliveryPage = {
           <div class="field" style="grid-column:1/-1">
             <label>Minimum order (R)</label>
             <input name="place_min" type="number" min="0" step="0.01" inputmode="decimal" value="${p.min_order ?? 0}">
+          </div>
+          <div class="field" style="grid-column:1/-1;display:flex;gap:18px;flex-wrap:wrap">
+            <label style="display:flex;align-items:center;gap:6px;margin:0"><input name="place_pos" type="checkbox" ${p.available_pos === false ? '' : 'checked'}> Show on POS</label>
+            <label style="display:flex;align-items:center;gap:6px;margin:0"><input name="place_online" type="checkbox" ${p.available_online === false ? '' : 'checked'}> Show on Online ordering</label>
           </div>
         </div>
         <button type="button" class="btn btn-ghost btn-sm del-place-remove" style="margin-top:8px">Remove place</button>
@@ -1134,9 +1141,13 @@ window.AdminDeliveryPage = {
         name: row.querySelector('[name=place_name]')?.value.trim() || '',
         delivery_fee: parseFloat(row.querySelector('[name=place_fee]')?.value) || 0,
         free_delivery_above: parseFloat(row.querySelector('[name=place_free]')?.value) || 0,
-        min_order: parseFloat(row.querySelector('[name=place_min]')?.value) || 0
+        min_order: parseFloat(row.querySelector('[name=place_min]')?.value) || 0,
+        available_pos: !!row.querySelector('[name=place_pos]')?.checked,
+        available_online: !!row.querySelector('[name=place_online]')?.checked
       })).filter((p) => p.name);
       if (!places.length) return Utils.toast('Add at least one delivery place name', 'error');
+      const hidden = places.filter((p) => !p.available_pos && !p.available_online).map((p) => p.name);
+      if (hidden.length && !confirm(`${hidden.join(', ')} is not shown on POS or Online. Save anyway?`)) return;
       const payload = {
         places,
         delivery_fee: places[0].delivery_fee,

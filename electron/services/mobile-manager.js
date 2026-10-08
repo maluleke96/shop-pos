@@ -119,8 +119,8 @@ function resolveSession(token) {
   const row = dbGet(`SELECT s.*, u.*, s.id AS session_id, u.id AS user_id
     FROM mobile_sessions s
     JOIN mobile_app_users u ON u.id = s.user_id
-    WHERE s.token_hash = ? AND s.expires_at > ? AND u.is_active = 1`, [hash, nowIso()]);
-  if (!row) throw new Error('Session expired or access revoked');
+    WHERE s.token_hash = ? AND s.expires_at > ?`, [hash, nowIso()]);
+  if (!row || !isActiveFlag(row)) throw new Error('Session expired or access revoked');
   const device = row.device_id ? dbGet('SELECT * FROM mobile_devices WHERE id = ? AND status = ?', [row.device_id, 'active']) : null;
   if (row.device_id && !device) throw new Error('This device has been deactivated');
   return { user: row, device, token };
@@ -223,11 +223,20 @@ function formatSaleOrder(sale, branchName, cashierName) {
     customer_phone: customer?.phone || sale.customer_phone || null,
     customer_email: customer?.email || sale.customer_email || null,
     customer_code: customer?.id ? `C${customer.id}` : (sale.customer_id ? `C${sale.customer_id}` : null),
-    time: sale.created_at,
+    time: sale.sale_datetime || sale.created_at,
+    is_backdated: Number(sale.is_backdated) ? 1 : 0,
+    sale_datetime: sale.sale_datetime || null,
+    entered_at: sale.created_at,
     status: sale.status || 'completed',
+    void_reason: sale.void_reason || null,
+    edited_at: sale.edited_at || null,
+    edited_by: sale.edited_by_name || null,
+    edit_count: Number(sale.edit_count) || 0,
     order_type: sale.order_type,
     order_source: sale.order_source || 'POS',
     delivery_address: sale.delivery_address || null,
+    delivery_place: sale.delivery_place || null,
+    delivery_fee: Number(sale.delivery_fee) || 0,
     notes: sale.notes || null,
     subtotal: Number(sale.subtotal) || 0,
     discount: Number(sale.discount) || 0,
@@ -341,7 +350,9 @@ function issueSessionForUser(user, deviceInfo = {}) {
   if (!device) {
     const r = dbRun(`INSERT INTO mobile_devices (user_id, device_uid, device_name, platform, status, last_active_at)
       VALUES (?,?,?,?, 'active', ?)`, [user.id, deviceUid, deviceName, platform, nowIso()]);
-    device = dbGet('SELECT * FROM mobile_devices WHERE id = ?', [r.lastInsertRowid]);
+    device = (r?.lastInsertRowid && dbGet('SELECT * FROM mobile_devices WHERE id = ?', [r.lastInsertRowid]))
+      || dbGet('SELECT * FROM mobile_devices WHERE user_id = ? AND device_uid = ? ORDER BY id DESC LIMIT 1', [user.id, deviceUid]);
+    if (!device) throw new Error('Could not register this device — please try again');
   } else {
     dbRun('UPDATE mobile_devices SET device_name = ?, platform = ?, last_active_at = ? WHERE id = ?',
       [deviceName, platform, nowIso(), device.id]);
@@ -383,14 +394,17 @@ function ensureMobileUserForActor(actor) {
     const allBranches = ['owner', 'manager'].includes(actor.role) ? 1 : 0;
     const r = dbRun(`INSERT INTO mobile_app_users (linked_user_id, username, password_hash, full_name, role, all_branches, must_change_password, is_active)
       VALUES (?,?,?,?,?,?,0,1)`, [actor.id, actor.username, hash, actor.full_name || actor.username, role, allBranches]);
-    const uid = r.lastInsertRowid;
+    const uid = r?.lastInsertRowid
+      || dbGet('SELECT id FROM mobile_app_users WHERE linked_user_id = ? ORDER BY id DESC LIMIT 1', [actor.id])?.id
+      || dbGet('SELECT id FROM mobile_app_users WHERE lower(username) = lower(?) ORDER BY id DESC LIMIT 1', [actor.username])?.id;
+    if (!uid) throw new Error('Could not create Business Manager access — please try again');
     if (!allBranches && actor.branch_id) {
       dbRun('INSERT INTO mobile_branch_access (user_id, branch_id) VALUES (?,?)', [uid, actor.branch_id]);
     }
     dbRun('INSERT INTO mobile_notification_prefs (user_id, prefs_json) VALUES (?,?)', [uid, JSON.stringify(DEFAULT_PREFS)]);
     user = dbGet('SELECT * FROM mobile_app_users WHERE id = ?', [uid]);
   }
-  if (!user.is_active) throw new Error('Your Business Manager access is disabled');
+  if (!isActiveFlag(user)) throw new Error('Your Business Manager access is disabled — ask the owner to re-enable it in Admin');
   if (!user.linked_user_id) dbRun('UPDATE mobile_app_users SET linked_user_id = ? WHERE id = ?', [actor.id, user.id]);
   if (['owner', 'manager'].includes(actor.role) && !user.all_branches) {
     dbRun('UPDATE mobile_app_users SET all_branches = 1 WHERE id = ?', [user.id]);
@@ -415,16 +429,41 @@ function bootstrapFromAdmin(actor, deviceInfo = {}) {
   });
 }
 
+function isActiveFlag(row) {
+  if (!row) return false;
+  const v = row.is_active;
+  return !(v === false || v === 0 || v === '0' || v === 'f' || v === 'false' || v === 'n');
+}
+
+function passwordMatches(pass, hash) {
+  if (!hash) return false;
+  try {
+    if (bcrypt.compareSync(pass, hash)) return true;
+    // Phone keyboards often append a space after autocomplete
+    const trimmed = pass.trim();
+    return trimmed !== pass && bcrypt.compareSync(trimmed, hash);
+  } catch (_) {
+    return false;
+  }
+}
+
 function login(username, password, deviceInfo = {}) {
   ensureSchema();
   const id = String(username || '').trim();
   const pass = String(password || '');
-  let user = dbGet('SELECT * FROM mobile_app_users WHERE lower(username) = lower(?) AND is_active = 1', [id]);
-  if (user && bcrypt.compareSync(pass, user.password_hash)) {
+  if (!id || !pass) throw new Error('Enter your username and password');
+  let user = dbGet('SELECT * FROM mobile_app_users WHERE lower(username) = lower(?) ORDER BY id DESC LIMIT 1', [id]);
+  if (user && isActiveFlag(user) && passwordMatches(pass, user.password_hash)) {
     return issueSessionForUser(user, deviceInfo);
   }
-  const posUser = dbGet('SELECT * FROM users WHERE lower(username) = lower(?) AND is_active = 1', [id]);
-  if (posUser && bcrypt.compareSync(pass, posUser.password_hash)) {
+  // Same rules as Admin/POS sign-in: owners are never frozen, NULL is_active counts as active
+  const posUser = dbGet('SELECT * FROM users WHERE username = ?', [id])
+    || dbGet('SELECT * FROM users WHERE lower(username) = lower(?)', [id]);
+  const posActive = posUser && (String(posUser.role || '') === 'owner' || isActiveFlag(posUser));
+  if (posUser && !posActive && passwordMatches(pass, posUser.password_hash)) {
+    throw new Error('Account deactivated — contact the administrator');
+  }
+  if (posUser && posActive && passwordMatches(pass, posUser.password_hash)) {
     if (!['owner', 'manager', 'assistant_manager', 'supervisor'].includes(posUser.role)) {
       throw new Error('Business Manager requires owner or manager access');
     }
@@ -467,6 +506,19 @@ function getProfile(token) {
   };
 }
 
+function getSlaLive(token, filters = {}) {
+  const { user } = resolveSession(token);
+  const perms = effectivePermissions(user);
+  if (!perms.view_orders && !perms.view_sales) throw new Error('Permission denied');
+  const f = { ...(filters || {}) };
+  if (f.branch_id) assertBranchAccess(user, f.branch_id);
+  else {
+    const ids = allowedBranchIds(user);
+    if (ids.length === 1) f.branch_id = ids[0];
+  }
+  return require('./order-sla').liveBoard(f);
+}
+
 function getDashboard(token, filters = {}) {
   const { user } = resolveSession(token);
   const perms = effectivePermissions(user);
@@ -474,14 +526,14 @@ function getDashboard(token, filters = {}) {
   const range = dateRange(filters);
   const bc = branchFilterSql(user, filters, 's');
   const obc = onlineBranchFilterSql(user, filters, 'o');
-  const saleDf = createdDateFilter('s.created_at', range);
+  const saleDf = createdDateFilter('COALESCE(s.sale_datetime, s.created_at)', range);
   const onlineDf = createdDateFilter('o.created_at', range);
   const posStats = dbGet(`SELECT COUNT(*) AS orders, COALESCE(SUM(total),0) AS sales
-    FROM sales s WHERE s.status = 'completed' AND ${saleDf.sql}
+    FROM sales s WHERE s.status IN ('completed','partial_return') AND ${saleDf.sql}
     AND COALESCE(s.order_type,'') != 'online' AND COALESCE(s.order_source,'') NOT IN ('ONLINE','WEB')${bc.sql}`,
     [...saleDf.params, ...bc.params]) || { orders: 0, sales: 0 };
   const onlineAcceptedStats = dbGet(`SELECT COUNT(*) AS orders, COALESCE(SUM(total),0) AS sales
-    FROM sales s WHERE s.status = 'completed' AND ${saleDf.sql}
+    FROM sales s WHERE s.status IN ('completed','partial_return') AND ${saleDf.sql}
     AND (COALESCE(s.order_type,'') = 'online' OR COALESCE(s.order_source,'') IN ('ONLINE','WEB'))${bc.sql}`,
     [...saleDf.params, ...bc.params]) || { orders: 0, sales: 0 };
   const onlinePendingStats = dbGet(`SELECT COUNT(*) AS orders, COALESCE(SUM(total),0) AS sales
@@ -493,18 +545,30 @@ function getDashboard(token, filters = {}) {
   const onlineAcceptedOrders = Number(onlineAcceptedStats.orders) || 0;
   const onlinePendingOrders = Number(onlinePendingStats.orders) || 0;
   const onlineOrders = onlineAcceptedOrders + onlinePendingOrders;
-  const orders = posOrders + onlineOrders;
+  // Web orders not yet accepted on a till are not sales yet — POS and Admin don't count them either
+  const orders = posOrders + onlineAcceptedOrders;
   const posSales = Number(posStats.sales) || 0;
   const onlineAcceptedSales = Number(onlineAcceptedStats.sales) || 0;
   const onlinePendingSales = Number(onlinePendingStats.sales) || 0;
-  const sales = posSales + onlineAcceptedSales + onlinePendingSales;
+  let refundsTotal = 0;
+  try {
+    const refundDf = createdDateFilter('r.created_at', range);
+    refundsTotal = Number(dbGet(`SELECT COALESCE(SUM(r.total_refund),0) AS t FROM returns r
+      JOIN sales s ON s.id = r.sale_id
+      WHERE r.status IN ('completed','reopened') AND ${refundDf.sql}${bc.sql}`,
+      [...refundDf.params, ...bc.params])?.t) || 0;
+  } catch (_) { refundsTotal = 0; }
+  const sales = Math.round((posSales + onlineAcceptedSales - refundsTotal) * 100) / 100;
   const onlineAllInRange = dbGet(`SELECT COUNT(*) AS orders FROM online_orders_local o
     WHERE ${onlineDf.sql}
     AND o.status NOT IN ('cancelled','rejected')${obc.sql}`,
     [...onlineDf.params, ...obc.params])?.orders || 0;
-  const recent = dbAll(`SELECT s.id, s.order_number, s.receipt_number, s.total, s.created_at, s.branch_id, s.order_source
-    FROM sales s WHERE s.status = 'completed' AND ${saleDf.sql}${bc.sql}
-    ORDER BY s.id DESC LIMIT 8`, [...saleDf.params, ...bc.params]);
+  const voidedStats = dbGet(`SELECT COUNT(*) AS orders, COALESCE(SUM(total),0) AS sales
+    FROM sales s WHERE s.status = 'voided' AND ${saleDf.sql}${bc.sql}`,
+    [...saleDf.params, ...bc.params]) || { orders: 0, sales: 0 };
+  const recent = dbAll(`SELECT s.id, s.order_number, s.receipt_number, s.total, s.created_at, s.sale_datetime, s.is_backdated, s.branch_id, s.order_source, s.status
+    FROM sales s WHERE ${saleDf.sql}${bc.sql}
+    ORDER BY COALESCE(s.sale_datetime, s.created_at) DESC LIMIT 8`, [...saleDf.params, ...bc.params]);
   const recentOnline = dbAll(`SELECT o.id, o.order_number, o.total, o.created_at, o.branch_id, o.status, o.order_source
     FROM online_orders_local o
     WHERE ${onlineDf.sql} AND o.status IN ('pending','accepted')
@@ -512,8 +576,11 @@ function getDashboard(token, filters = {}) {
     ORDER BY o.id DESC LIMIT 5`, [...onlineDf.params, ...obc.params]);
   const mergedRecent = [
     ...recent.map((r) => ({
-      id: r.id, number: r.order_number || r.receipt_number, total: Number(r.total), time: r.created_at,
-      branch_id: r.branch_id, order_source: r.order_source || 'POS'
+      id: r.id, number: r.order_number || r.receipt_number, total: Number(r.total),
+      time: r.sale_datetime || r.created_at,
+      is_backdated: Number(r.is_backdated) ? 1 : 0,
+      branch_id: r.branch_id, order_source: r.order_source || 'POS',
+      status: r.status || 'completed'
     })),
     ...recentOnline.map((o) => ({
       id: `online:${o.id}`, number: o.order_number, total: Number(o.total), time: o.created_at,
@@ -539,11 +606,16 @@ function getDashboard(token, filters = {}) {
     return out;
   };
   const rangeDays = eachDate(dayFrom, dayTo);
+  let dailyMoneyByBranch = null;
+  try {
+    const dmAll = require('./expense-extras').dailyMoneyReport({ from: dayFrom, to: dayTo, include_branch_days: true });
+    dailyMoneyByBranch = new Map((dmAll.by_branch || []).map((b) => [Number(b.branch_id), b]));
+  } catch (_) { dailyMoneyByBranch = null; }
   const branchRows = allowedBranchIds(user).map((bid) => {
     const b = dbGet('SELECT name FROM branches WHERE id = ?', [bid]);
-    const branchDf = createdDateFilter('created_at', range);
+    const branchDf = createdDateFilter('COALESCE(sale_datetime, created_at)', range);
     const st = dbGet(`SELECT COUNT(*) AS orders, COALESCE(SUM(total),0) AS sales FROM sales
-      WHERE branch_id = ? AND status = 'completed' AND ${branchDf.sql}`,
+      WHERE branch_id = ? AND status IN ('completed','partial_return') AND ${branchDf.sql}`,
       [bid, ...branchDf.params]) || { orders: 0, sales: 0 };
     const exp = dbGet(`SELECT COALESCE(SUM(amount),0) AS s FROM expenses
       WHERE branch_id = ? AND date(expense_date) >= date(?) AND date(expense_date) <= date(?)`,
@@ -551,9 +623,9 @@ function getDashboard(token, filters = {}) {
     let saleDays = [];
     let expDays = [];
     try {
-      saleDays = dbAll(`SELECT date(created_at) AS day, COUNT(*) AS orders, COALESCE(SUM(total),0) AS money_in
-        FROM sales WHERE branch_id = ? AND status = 'completed' AND ${branchDf.sql}
-        GROUP BY date(created_at)`, [bid, ...branchDf.params]) || [];
+      saleDays = dbAll(`SELECT date(COALESCE(sale_datetime, created_at), 'localtime') AS day, COUNT(*) AS orders, COALESCE(SUM(total),0) AS money_in
+        FROM sales WHERE branch_id = ? AND status IN ('completed','partial_return') AND ${branchDf.sql}
+        GROUP BY date(COALESCE(sale_datetime, created_at), 'localtime')`, [bid, ...branchDf.params]) || [];
     } catch (_) { saleDays = []; }
     try {
       expDays = dbAll(`SELECT date(expense_date) AS day, COALESCE(SUM(amount),0) AS money_out
@@ -588,6 +660,22 @@ function getDashboard(token, filters = {}) {
     });
     const moneyIn = Number(st.sales) || 0;
     const moneyOut = Number(exp.s) || 0;
+    let dailyMoney = null;
+    try {
+      const dm = dailyMoneyByBranch?.get(Number(bid));
+      if (!dm) throw new Error('no daily money');
+      dailyMoney = dm.totals;
+      const dmByDay = Object.fromEntries((dm.days || []).map((x) => [x.date, x]));
+      for (const day of days) {
+        const x = dmByDay[day.date];
+        if (x) {
+          day.daily_money = {
+            money_in: x.money_in, expenses_today: x.expenses_today, withdrawals_today: x.withdrawals_today,
+            out_today: x.out_today, net_today: x.net_today, from_previous: Math.round((x.expenses_previous + x.withdrawals_previous) * 100) / 100
+          };
+        }
+      }
+    } catch (_) { dailyMoney = null; }
     return {
       id: bid,
       name: b?.name || `Branch ${bid}`,
@@ -597,6 +685,14 @@ function getDashboard(token, filters = {}) {
       money_out: moneyOut,
       expenses: moneyOut,
       profit: Math.round((moneyIn - moneyOut) * 100) / 100,
+      daily_money: dailyMoney ? {
+        money_in: dailyMoney.money_in,
+        expenses_today: dailyMoney.expenses_today,
+        withdrawals_today: dailyMoney.withdrawals_today,
+        out_today: dailyMoney.out_today,
+        net_today: dailyMoney.net_today,
+        from_previous: Math.round((dailyMoney.expenses_previous + dailyMoney.withdrawals_previous) * 100) / 100
+      } : null,
       days
     };
   });
@@ -658,8 +754,12 @@ function getDashboard(token, filters = {}) {
     online_orders_accepted: onlineAcceptedOrders,
     online_orders_pending: onlinePendingOrders,
     online_sales: onlineAcceptedSales + onlinePendingSales,
+    online_pending_sales: onlinePendingSales,
     online_orders_total: Number(onlineAllInRange) || 0,
     sales,
+    refunds: Math.round(refundsTotal * 100) / 100,
+    voided_orders: Number(voidedStats.orders) || 0,
+    voided_sales: Number(voidedStats.sales) || 0,
     expenses: expensesTotal,
     profit: Math.round(profitEstimate * 100) / 100,
     profit_margin: profitMargin,
@@ -684,17 +784,20 @@ function listOrders(token, filters = {}) {
   const range = dateRange(filters);
   const bc = branchFilterSql(user, filters, 's');
   const obc = onlineBranchFilterSql(user, filters, 'o');
-  const saleDf = createdDateFilter('s.created_at', range);
+  const saleDf = createdDateFilter('COALESCE(s.sale_datetime, s.created_at)', range);
   const onlineDf = createdDateFilter('o.created_at', range);
   const limit = Math.min(Number(filters.limit) || 50, 100);
   const offset = Math.max(Number(filters.offset) || 0, 0);
+  const voidedOnly = String(filters.status || '').toLowerCase() === 'voided';
+  const statusSql = voidedOnly ? " AND LOWER(COALESCE(s.status, '')) IN ('voided', 'void')" : '';
   const rows = dbAll(`SELECT s.*, b.name AS branch_name, u.full_name AS cashier_name
     FROM sales s
     LEFT JOIN branches b ON b.id = s.branch_id
     LEFT JOIN users u ON u.id = s.user_id
-    WHERE ${saleDf.sql}${bc.sql}
+    WHERE ${saleDf.sql}${bc.sql}${statusSql}
     ORDER BY s.id DESC LIMIT ? OFFSET ?`,
-    [...saleDf.params, ...bc.params, limit, offset]);
+    [...saleDf.params, ...bc.params, voidedOnly ? Math.min(Number(filters.limit) || 200, 500) : limit, offset]);
+  if (voidedOnly) return rows.map((r) => formatSaleOrder(r, r.branch_name, r.cashier_name));
   const onlineRows = dbAll(`SELECT o.*, b.name AS branch_name FROM online_orders_local o
     LEFT JOIN branches b ON b.id = o.branch_id
     WHERE ${onlineDf.sql} AND (o.sale_id IS NULL OR o.sale_id = 0)${obc.sql}
@@ -760,7 +863,11 @@ function getOrder(token, orderId) {
     WHERE s.id = ? OR s.order_number = ? OR s.receipt_number = ?`, [orderId, orderId, orderId]);
   if (sale) {
     assertBranchAccess(user, sale.branch_id);
-    return formatSaleOrder(sale, sale.branch_name, sale.cashier_name);
+    const out = formatSaleOrder(sale, sale.branch_name, sale.cashier_name);
+    if (sale.edited_at) {
+      try { out.edit_history = require('./audit').getSaleEditHistory(sale.id); } catch (_) { out.edit_history = []; }
+    }
+    return out;
   }
   const onlineId = Number(orderId);
   if (Number.isFinite(onlineId) && onlineId > 0) {
@@ -795,7 +902,7 @@ function getStaffActivity(token, filters = {}) {
   if (!effectivePermissions(user).view_staff_activity) throw new Error('Permission denied');
   const range = dateRange(filters);
   const bc = branchClause(user, 's');
-  const saleDf = createdDateFilter('s.created_at', range);
+  const saleDf = createdDateFilter('COALESCE(s.sale_datetime, s.created_at)', range);
   return dbAll(`SELECT u.full_name AS name, COUNT(s.id) AS orders, COALESCE(SUM(s.total),0) AS sales
     FROM sales s JOIN users u ON u.id = s.user_id
     WHERE s.status = 'completed' AND ${saleDf.sql}${bc.sql}
@@ -1053,7 +1160,9 @@ function saveMobileUser(data = {}) {
   const hash = bcrypt.hashSync(String(data.password), 10);
   const r = dbRun(`INSERT INTO mobile_app_users (username, password_hash, full_name, role, permissions_json, all_branches, must_change_password)
     VALUES (?,?,?,?,?,?,1)`, [username, hash, fullName, role, JSON.stringify(perms), allBranches]);
-  const uid = r.lastInsertRowid;
+  const uid = r?.lastInsertRowid
+    || dbGet('SELECT id FROM mobile_app_users WHERE lower(username) = ? ORDER BY id DESC LIMIT 1', [username])?.id;
+  if (!uid) throw new Error('Could not create user — please try again');
   if (!allBranches) for (const bid of branchIds) dbRun('INSERT INTO mobile_branch_access (user_id, branch_id) VALUES (?,?)', [uid, bid]);
   dbRun('INSERT INTO mobile_notification_prefs (user_id, prefs_json) VALUES (?,?)', [uid, JSON.stringify(DEFAULT_PREFS)]);
   return getMobileUser(uid);
@@ -1103,7 +1212,7 @@ function pollNotifications(token, sinceId = 0) {
 
 module.exports = {
   login, logout, resolveSession, getProfile, bootstrapFromAdmin, ensureMobileUserForActor,
-  getDashboard, listOrders, listOnlineOrders, getOrder, searchOrders,
+  getDashboard, getSlaLive, listOrders, listOnlineOrders, getOrder, searchOrders,
   getStaffActivity, getPosStatus, listAlerts, markNotificationsRead,
   getNotificationPrefs, saveNotificationPrefs, registerPushToken,
   recordPosHeartbeat, notifyNewSale, notifyOnlineOrder, pollNotifications,

@@ -28,7 +28,7 @@
           API.stockBatchDashboard(this.filters),
           API.stockBatchList({ ...this.filters, limit: 200 }),
           API.stockBatchSettings(),
-          API.getProducts({}).catch(() => ({ data: [] })),
+          API.getProducts({ omit_images: true }).catch(() => ({ data: [] })),
           (API.getBranches ? API.getBranches() : Promise.resolve({ data: [] })).catch(() => ({ data: [] }))
         ]);
         if (dashRes.success === false) throw new Error(dashRes.error || 'Failed to load dashboard');

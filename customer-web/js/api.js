@@ -44,6 +44,10 @@ const OrderAPI = {
   sendPasswordReset: (data) => OrderAPI.call('web:sendPasswordReset', [data || {}]),
   resetPassword: (data) => OrderAPI.call('web:resetPassword', [data || {}]),
   account: (token) => OrderAPI.call('web:account', [token]),
+  phoneAccessStart: (phone) => OrderAPI.call('web:phoneAccessStart', [{ phone }]),
+  phoneAccessVerify: (phone, code) => OrderAPI.call('web:phoneAccessVerify', [{ phone, code }]),
+  phoneAccessCreateProfile: (phone, name) => OrderAPI.call('web:phoneAccessCreateProfile', [{ phone, name }]),
+  logout: (token) => OrderAPI.call('web:logout', [token]),
   validateCart: (branchId, cart) => OrderAPI.call('web:validateCart', [branchId, cart]),
   validateCoupon: (code, branchId, cart, customerId) => OrderAPI.call('web:validateCoupon', [code, branchId, cart, customerId]),
   initiateCardPayment: (branchId, amount, token, method) => OrderAPI.call('web:initiateCardPayment', [branchId, amount, token, method || 'card']),
@@ -61,7 +65,22 @@ const OrderAPI = {
   submitPublicJob: (token, data) => OrderAPI.call('jobs:submitPublicApplication', [token, data]),
   submitIssue: (data, token) => OrderAPI.call('web:submitIssue', [data, token]),
   listMyIssues: (token) => OrderAPI.call('web:listMyIssues', [token]),
-  trackEvents: (payload) => OrderAPI.call('web:trackEvents', [payload || {}])
+  trackEvents: (payload) => OrderAPI.call('web:trackEvents', [payload || {}]),
+
+  registerAppDevice: (token, data) => OrderAPI.call('web:registerAppDevice', [token, data || {}]),
+  unregisterAppDevice: (token, data) => OrderAPI.call('web:unregisterAppDevice', [token, data || {}]),
+  getAppNotifyPrefs: (token) => OrderAPI.call('web:getAppNotifyPrefs', [token]),
+  saveAppNotifyPrefs: (token, prefs) => OrderAPI.call('web:saveAppNotifyPrefs', [token, prefs || {}]),
+  getAppInbox: (token, limit) => OrderAPI.call('web:getAppInbox', [token, limit || 50]),
+  getAppUnreadCount: (token) => OrderAPI.call('web:getAppUnreadCount', [token]),
+  markAppInboxRead: (token, id) => OrderAPI.call('web:markAppInboxRead', [token, id]),
+  markAppInboxClicked: (token, id) => OrderAPI.call('web:markAppInboxClicked', [token, id]),
+  listAppPromotions: (branchId, placement) => OrderAPI.call('web:listAppPromotions', [branchId, placement || null]),
+  listPublicAppReviews: (limit) => OrderAPI.call('web:listPublicAppReviews', [limit || 10]),
+  submitAppReview: (token, data) => OrderAPI.call('web:submitAppReview', [token, data || {}]),
+  listMyAppReviews: (token) => OrderAPI.call('web:listMyAppReviews', [token]),
+  reportAppReview: (token, id, reason) => OrderAPI.call('web:reportAppReview', [token, id, reason]),
+  getAppOverallRating: () => OrderAPI.call('web:getAppOverallRating', [])
 };
 
 window.OrderAPI = OrderAPI;

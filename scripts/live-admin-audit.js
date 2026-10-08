@@ -68,7 +68,8 @@ async function checkAsset(path, mustContain = []) {
   record(health.ok ? pass('health', { handlers: health.handlers }) : fail('health', { error: health.error }));
 
   const assets = [
-    ['js/pages/admin.js', ['AdminPage', 'renderOverviewQuickPanel']],
+    ['js/pages/admin.js', ['AdminPage', 'renderOverviewQuickPanel', 'order-sla']],
+    ['js/pages/admin-order-sla.js', ['AdminOrderSlaPage', 'Live Control']],
     ['js/pages/admin-audit.js', ['renderBusinessDashboard', 'dashboardRes']],
     ['js/pages/admin-pro.js', ['AdminPage', 'renderAutomation']],
     ['js/pages/admin-staff.js', ['AdminPage']],

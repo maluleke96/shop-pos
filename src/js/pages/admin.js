@@ -74,10 +74,13 @@ const AdminPage = {
     { id: 'backup', label: '💾 Backup & Restore', icon: 'backup' },
     { id: 'opscompliance', label: '📋 Operations & Compliance', icon: 'opscompliance' },
     { id: 'manager-ops', label: 'Manager Operations', icon: 'opscompliance' },
+    { id: 'order-sla', label: '⏱️ Order SLA & Live Control', icon: 'opscompliance' },
     { id: 'combos', label: '🎁 Combos & Promos', icon: 'combos' },
     { id: 'menu-builder', label: '📋 Menu Builder', icon: 'menu' },
     { id: 'promo-video-builder', label: '🎬 Promo Video Builder', icon: 'signage' },
     { id: 'communication-center', label: '📣 Communication Center', icon: 'signage' },
+    { id: 'marketing-center', label: '📈 Marketing', icon: 'analytics' },
+    { id: 'financial-intelligence', label: '💰 Financial Intelligence', icon: 'analytics' },
     { id: 'radio', label: '📻 Radio', icon: 'signage' },
     { id: 'recipe', label: '🍳 Recipe & Production', icon: 'recipe' },
     { id: 'staffhr', label: '👷 Staff & HR', icon: 'staffhr' },
@@ -87,6 +90,7 @@ const AdminPage = {
     { id: 'staffportal', label: '👷 Staff Portal', icon: 'staffportal' },
     { id: 'onaccount', label: '📒 On Account', icon: 'onaccount' },
     { id: 'taken-orders', label: '🥡 Taken / Unpaid Orders', icon: 'onaccount' },
+    { id: 'backdated-orders', label: '⏱ Backdated Orders', icon: 'sales' },
     { id: 'hrcontracts', label: '📄 Contracts & Probation', icon: 'hrcontracts' },
     { id: 'recruitment', label: '💼 Recruitment', icon: 'recruitment' },
     { id: 'delivery-dept', label: '🚚 Deliveries', icon: 'delivery' },
@@ -109,7 +113,7 @@ const AdminPage = {
       label: 'Overview & Monitoring',
       icon: '📊',
       accent: '#2563eb',
-      items: ['overview', 'analytics', 'sales-targets', 'dailyclose', 'alerts', 'activity', 'exceptions']
+      items: ['overview', 'order-sla', 'analytics', 'sales-targets', 'dailyclose', 'alerts', 'activity', 'exceptions']
     },
     {
       id: 'sales-pos',
@@ -119,7 +123,7 @@ const AdminPage = {
       items: [
         'salesmgmt', 'pos-menu', 'saleexplorer', 'soldproducts', 'returnsmgmt', 'quotes', 'discounts',
         'discount-report', 'printer', 'payments', 'receipt', 'cashiers', 'shifts', 'operating',
-        'cashdrawer', 'onaccount', 'taken-orders'
+        'cashdrawer', 'onaccount', 'taken-orders', 'backdated-orders'
       ]
     },
     {
@@ -151,6 +155,20 @@ const AdminPage = {
       items: ['online-orders', 'digital-signage', 'radio']
     },
     {
+      id: 'marketing',
+      label: 'Marketing',
+      icon: '📈',
+      accent: '#e11d48',
+      items: ['marketing-center']
+    },
+    {
+      id: 'financial-intelligence',
+      label: 'Financial Intelligence',
+      icon: '💰',
+      accent: '#059669',
+      items: ['financial-intelligence']
+    },
+    {
       id: 'comm-marketing',
       label: 'Communication & Marketing',
       icon: '📣',
@@ -162,7 +180,7 @@ const AdminPage = {
       label: 'Restaurant & Operations',
       icon: '🍽️',
       accent: '#d97706',
-      items: ['manager-ops', 'opscompliance', 'recipe', 'delivery-dept']
+      items: ['order-sla', 'manager-ops', 'opscompliance', 'recipe', 'delivery-dept']
     },
     {
       id: 'staff-hr',
@@ -235,6 +253,9 @@ const AdminPage = {
     // Expand group containing current section
     (this.adminNavGroups || []).forEach((g) => {
       if ((g.items || []).includes(this.section)) this._setAdminGroupOpen(g.id, true);
+      if (g.id === 'restaurant-ops' && Utils.canAccessAdminSection(this.app.user, 'order-sla')) {
+        this._setAdminGroupOpen(g.id, true);
+      }
     });
     for (const g of (this.adminNavGroups || [])) {
       const kids = (g.items || []).map((id) => byId[id]).filter(Boolean);
@@ -617,9 +638,9 @@ const AdminPage = {
     if (this.section === 'deliveries') this.section = 'delivery-dept';
     const lazySections = new Set([
       'hrcontracts', 'recruitment', 'employee-of-month', 'staffhr', 'hr-workspace', 'hr-approvals', 'staffportal', 'payroll',
-      'opscompliance', 'manager-ops', 'combos', 'recipe', 'quotes', 'menu-builder', 'promo-video-builder', 'radio', 'communication-center',
+      'opscompliance', 'manager-ops', 'combos', 'recipe', 'quotes', 'menu-builder', 'promo-video-builder', 'radio', 'communication-center', 'marketing-center', 'financial-intelligence', 'order-sla',
       'salesmgmt', 'saleexplorer', 'soldproducts', 'returnsmgmt', 'activity',
-      'exceptions', 'alerts', 'dailyclose', 'discount-report', 'delivery-dept', 'referral-dept', 'taken-orders'
+      'exceptions', 'alerts', 'dailyclose', 'discount-report', 'delivery-dept', 'referral-dept', 'taken-orders', 'backdated-orders'
     ]);
     if (lazySections.has(this.section)) {
       this._prefetchAdmin();
@@ -633,9 +654,9 @@ const AdminPage = {
       if (!el.querySelector('h2, h3')) {
         el.innerHTML = `<div class="admin-section"><h3>${label}</h3><p class="muted">Opening…</p></div>`;
       }
-      if (getPage()) return renderFn();
+      if (getPage()) return await Promise.resolve(renderFn());
       await this._ensureAdminScripts(getPage, this.section);
-      if (getPage()) return renderFn();
+      if (getPage()) return await Promise.resolve(renderFn());
       el.innerHTML = `<div class="admin-section"><h3>${label}</h3><p class="muted">${label} is ready after a refresh if this stays empty.</p>
         <button type="button" class="btn btn-primary" id="admin-retry-mod">Retry</button></div>`;
       el.querySelector('#admin-retry-mod')?.addEventListener('click', async () => {
@@ -766,13 +787,29 @@ const AdminPage = {
             </tbody></table></div>`;
             box.querySelectorAll('[data-approve-code]').forEach((btn) => {
               btn.addEventListener('click', async () => {
-                const code = btn.dataset.approveCode;
-                const name = prompt('Name this screen (e.g. Front TV)', `Screen ${code}`) || `Screen ${code}`;
-                const res = await API.signageApprovePairingAdmin(code, { name }, this.app.user);
-                if (res?.success === false) return Utils.toast(res.error || 'Approve failed', 'error');
-                Utils.toast('TV paired — it should start playing shortly', 'success');
-                paintPending();
-                paintSummary();
+                const code = String(btn.dataset.approveCode || '').trim();
+                if (!code) return;
+                const defaultName = `Screen ${code}`;
+                Utils.showModal('Approve TV', `
+                  <div class="field"><label>Screen name</label>
+                  <input id="sgn-tv-name" value="${Utils.escHtml(defaultName)}" style="width:100%"></div>`,
+                  '<button type="button" class="btn btn-primary" id="sgn-tv-go">Approve this TV</button>');
+                document.getElementById('sgn-tv-go')?.addEventListener('click', async () => {
+                  const name = document.getElementById('sgn-tv-name')?.value?.trim() || defaultName;
+                  const go = document.getElementById('sgn-tv-go');
+                  if (go) go.disabled = true;
+                  try {
+                    const res = await API.signageApprovePairingAdmin(code, { name }, this.app.user);
+                    if (res?.success === false) throw new Error(res.error || 'Approve failed');
+                    Utils.hideModal();
+                    Utils.toast('TV paired — it should start playing shortly', 'success');
+                    paintPending();
+                    paintSummary();
+                  } catch (err) {
+                    Utils.toast(err.message || 'Approve failed', 'error');
+                    if (go) go.disabled = false;
+                  }
+                });
               });
             });
           } catch (err) {
@@ -877,6 +914,14 @@ const AdminPage = {
         () => typeof this.renderTakenOrders === 'function',
         () => this.renderTakenOrders(el),
         'Taken / Unpaid Orders'
+      ),
+      'backdated-orders': () => tryModule(
+        () => typeof this.renderBackdatedOrders === 'function' || !!window.BackdatedOrdersPage,
+        () => {
+          if (typeof this.renderBackdatedOrders === 'function') return this.renderBackdatedOrders(el);
+          return window.BackdatedOrdersPage.render(el, this.app || window.App);
+        },
+        'Backdated Orders'
       ),
       combos: async () => {
         await this._ensureAdminScripts(() => window.AdminCombosPage);
@@ -997,8 +1042,13 @@ const AdminPage = {
             link.dataset.ccCss = '1';
             document.head.appendChild(link);
           }
-          if (typeof Utils?.reloadScript === 'function') await Utils.reloadScript('js/pages/admin-communication-center.js');
-          else if (!window.AdminCommunicationCenterPage) await load('js/pages/admin-communication-center.js');
+          if (typeof Utils?.reloadScript === 'function') {
+            await Utils.reloadScript('js/pages/admin-communication-center.js');
+            await Utils.reloadScript('js/pages/admin-app-channel.js');
+          } else {
+            if (!window.AdminCommunicationCenterPage) await load('js/pages/admin-communication-center.js');
+            await load('js/pages/admin-app-channel.js');
+          }
           if (window.AdminCommunicationCenterPage?.render) {
             return window.AdminCommunicationCenterPage.render(el, this.app);
           }
@@ -1007,6 +1057,54 @@ const AdminPage = {
         }
         el.innerHTML = `<div class="admin-section"><h3>📣 Communication Center</h3>
           <p class="muted">Could not open Communication Center. Hard refresh (Ctrl+Shift+R) and try again.</p></div>`;
+      },
+      'marketing-center': async () => {
+        try {
+          if (typeof Utils?.reloadScript === 'function') {
+            await Utils.reloadScript('js/pages/admin-marketing-center.js');
+          } else if (!window.AdminMarketingCenterPage && typeof Utils?.loadScript === 'function') {
+            await Utils.loadScript('js/pages/admin-marketing-center.js');
+          }
+          if (window.AdminMarketingCenterPage?.render) {
+            return window.AdminMarketingCenterPage.render(el, this);
+          }
+        } catch (err) {
+          console.error('Marketing Center failed', err);
+        }
+        el.innerHTML = `<div class="admin-section"><h3>📈 Marketing</h3>
+          <p class="muted">Could not open Marketing Center. Hard refresh (Ctrl+Shift+R) and try again.</p></div>`;
+      },
+      'order-sla': async () => {
+        try {
+          if (typeof Utils?.reloadScript === 'function') {
+            await Utils.reloadScript('js/pages/admin-order-sla.js');
+          } else if (!window.AdminOrderSlaPage && typeof Utils?.loadScript === 'function') {
+            await Utils.loadScript('js/pages/admin-order-sla.js');
+          }
+          if (window.AdminOrderSlaPage?.render) {
+            return window.AdminOrderSlaPage.render(el, this);
+          }
+        } catch (err) {
+          console.error('Order SLA failed', err);
+        }
+        el.innerHTML = `<div class="admin-section"><h3>⏱️ Order SLA & Live Control</h3>
+          <p class="muted">Could not open Order SLA. Hard refresh (Ctrl+Shift+R) and try again.</p></div>`;
+      },
+      'financial-intelligence': async () => {
+        try {
+          if (typeof Utils?.reloadScript === 'function') {
+            await Utils.reloadScript('js/pages/admin-financial-intelligence.js');
+          } else if (!window.AdminFinancialIntelligencePage && typeof Utils?.loadScript === 'function') {
+            await Utils.loadScript('js/pages/admin-financial-intelligence.js');
+          }
+          if (window.AdminFinancialIntelligencePage?.render) {
+            return window.AdminFinancialIntelligencePage.render(el, this);
+          }
+        } catch (err) {
+          console.error('Financial Intelligence failed', err);
+        }
+        el.innerHTML = `<div class="admin-section"><h3>💰 Financial Intelligence</h3>
+          <p class="muted">Could not open Financial Intelligence. Hard refresh (Ctrl+Shift+R) and try again.</p></div>`;
       },
       opscompliance: () => tryModule(
         () => typeof this.renderOpsCompliance === 'function',
@@ -1093,6 +1191,7 @@ const AdminPage = {
       <div class="stats-grid" style="margin-top:20px">
         <div class="stat-card primary"><div class="label">Today's Sales</div><div class="value">${Utils.formatMoney(todaySalesAmt, currency)}</div><small>${d.today?.orders ?? todayStats.todayCount ?? 0} orders</small></div>
         <div class="stat-card ${targetMet ? 'success' : ''}"><div class="label">Today's Sales Target</div><div class="value">${dailyTarget > 0 ? `${targetPct}%` : '—'}</div><small>${dailyTarget > 0 ? `${Utils.formatMoney(todaySalesAmt, currency)} / ${Utils.formatMoney(dailyTarget, currency)}${targetMet ? ' · Met' : ''}` : 'Set under Sales Targets'}</small></div>
+        ${d.voided ? `<div class="stat-card danger"><div class="label">Voided Today</div><div class="value">${Number(d.voided.orders) || 0}</div><small>${Utils.formatMoney(d.voided.sales || 0, currency)} not counted in sales</small></div>` : ''}
         <div class="stat-card success"><div class="label">Gross Profit Today</div><div class="value">${Utils.formatMoney(d.today?.grossProfit ?? todayStats.profit ?? 0, currency)}</div></div>
         <div class="stat-card"><div class="label">This Month</div><div class="value">${Utils.formatMoney(d.month?.sales ?? 0, currency)}</div></div>
         <div class="stat-card warning"><div class="label">Low Stock</div><div class="value">${d.lowStock?.length ?? todayStats.lowStockCount ?? 0}</div></div>
@@ -1107,6 +1206,7 @@ const AdminPage = {
         <p class="muted">Monitor sales, orders, and POS status on your phone or here in Admin — no extra login when you open it from Admin.</p>
         <div class="admin-quick-actions" style="margin-top:12px">
           <button type="button" class="btn btn-primary" id="admin-open-business-manager">Open Business Manager</button>
+          <button type="button" class="btn btn-primary" id="admin-open-order-sla">Order SLA &amp; Live Control</button>
           <button type="button" class="btn btn-ghost" id="admin-manage-mobile-users">Manage mobile users</button>
           <button type="button" class="btn btn-ghost" id="admin-open-accounting-overview">Accounting &amp; Bookkeeping</button>
         </div>
@@ -1254,6 +1354,20 @@ const AdminPage = {
     });
     el.querySelector('#admin-open-business-manager')?.addEventListener('click', () => {
       this.app?.openBusinessManager?.({ embed: true });
+    });
+    const slaBtn = el.querySelector('#admin-open-order-sla');
+    if (slaBtn && !Utils.canAccessAdminSection(this.app?.user, 'order-sla')) slaBtn.remove();
+    el.querySelector('#admin-open-order-sla')?.addEventListener('click', () => {
+      if (!Utils.canAccessAdminSection(this.app?.user, 'order-sla')) {
+        Utils.toast('Order SLA is not included in your package', 'error');
+        return;
+      }
+      this.section = 'order-sla';
+      this._setAdminGroupOpen('restaurant-ops', true);
+      this._setAdminGroupOpen('overview-monitoring', true);
+      document.querySelectorAll('.admin-nav-btn').forEach((b) =>
+        b.classList.toggle('active', b.dataset.section === 'order-sla'));
+      this.renderSection(adminContent());
     });
     el.querySelector('#admin-manage-mobile-users')?.addEventListener('click', () => {
       this.section = 'mobile-app';
@@ -3038,7 +3152,9 @@ const AdminPage = {
             ${prodProgressActive
               ? `<p style="margin:0">Qty <strong>${prodSoldQty}</strong> / ${prodTargetQty}
                    · Value <strong>${Utils.formatMoney(prodSoldVal, currency)}</strong> / ${Utils.formatMoney(prodTargetVal, currency)}</p>`
-              : `<p class="muted" style="margin:0">Not active — enable Product targets below.</p>`}
+              : (productTargets.length && productMeta.expires_at && String(productMeta.expires_at).slice(0, 10) < today)
+                ? `<p style="margin:0;color:var(--danger,#dc2626)"><strong>Expired on ${Utils.escHtml(String(productMeta.expires_at).slice(0, 10))}</strong> — ${productTargets.length} product target(s) are hidden on POS. Clear or extend the expiry date below and Save.</p>`
+                : `<p class="muted" style="margin:0">Not active — enable Product targets below.</p>`}
           </div>
         </div>
       </div></div>
@@ -3077,6 +3193,9 @@ const AdminPage = {
         <div class="field" style="max-width:280px;margin-bottom:12px">
           <label style="font-size:12px">Expires until (optional)</label>
           <input type="date" id="st-prod-exp" value="${productMeta.expires_at ? String(productMeta.expires_at).slice(0, 10) : ''}" min="${today}">
+          ${productMeta.expires_at && String(productMeta.expires_at).slice(0, 10) < today
+            ? `<small style="color:var(--danger,#dc2626)">Expired — POS no longer shows these product targets. Pick a new date or clear it, then Save.</small>`
+            : ''}
         </div>
         <div class="form-grid" style="align-items:end;margin-bottom:10px;position:relative">
           <div class="field" style="flex:2;position:relative">
@@ -4686,9 +4805,12 @@ const AdminPage = {
         <div class="field"><label>Earn: spend amount (${currency})</label>
           <input type="number" id="loy-spend" step="0.01" min="0.01" value="${spend}"></div>
         <div class="field"><label>Points earned per spend block</label>
-          <input type="number" id="loy-earned" step="1" min="1" value="${earned}"></div>
+          <input type="number" id="loy-earned" step="0.01" min="0.01" value="${earned}"></div>
         <div class="field"><label>Point value when redeeming (${currency})</label>
           <input type="number" id="loy-value" step="0.01" min="0.01" value="${pointValue}"></div>
+        <div class="field"><label>Reward percentage (% of each sale given back)</label>
+          <input type="number" id="loy-pct" step="0.01" min="0.01" max="100" value="${Math.round((Number(earned) * Number(pointValue) / (Number(spend) || 10)) * 10000) / 100}">
+          <small class="muted">Type a % and the spend/points above update automatically.</small></div>
         <div class="field"><label>Minimum sale total (${currency})</label>
           <input type="number" id="loy-min" step="0.01" min="0" value="${minSale}"></div>
         <div class="field full" style="margin-top:8px;padding-top:12px;border-top:1px solid var(--border)">
@@ -4728,12 +4850,15 @@ const AdminPage = {
 
     const updatePreview = () => {
       const s = parseFloat(document.getElementById('loy-spend').value) || 10;
-      const p = parseInt(document.getElementById('loy-earned').value) || 1;
+      const p = parseFloat(document.getElementById('loy-earned').value) || 1;
       const pv = parseFloat(document.getElementById('loy-value').value) || 1;
+      const pctEl = document.getElementById('loy-pct');
+      const pct = Math.round((p * pv / s) * 10000) / 100;
+      if (pctEl && document.activeElement !== pctEl) pctEl.value = pct;
       const exampleTotal = 100;
       const pts = Math.floor((exampleTotal / s) * p);
       document.getElementById('loy-preview').textContent =
-        `${currency}${exampleTotal} sale → earn ${pts} pts · 100 pts redeem = ${Utils.formatMoney(100 * pv, currency)}`;
+        `${pct}% back · ${currency}${exampleTotal} sale → earn ${pts} pts (worth ${Utils.formatMoney(pts * pv, currency)}) · 100 pts redeem = ${Utils.formatMoney(100 * pv, currency)}`;
       const ev = parseInt(document.getElementById('loy-expiry-value').value, 10) || 30;
       const eu = document.getElementById('loy-expiry-unit').value;
       const unitLabel = ev === 1 ? eu.slice(0, -1) : eu;
@@ -4745,6 +4870,14 @@ const AdminPage = {
     ['loy-spend', 'loy-earned', 'loy-value', 'loy-expiry-value', 'loy-expiry-unit', 'loy-expiry-enabled'].forEach(id => {
       document.getElementById(id)?.addEventListener('input', updatePreview);
       document.getElementById(id)?.addEventListener('change', updatePreview);
+    });
+    document.getElementById('loy-pct')?.addEventListener('input', () => {
+      const pct = parseFloat(document.getElementById('loy-pct').value);
+      if (!(pct > 0)) return;
+      const pv = parseFloat(document.getElementById('loy-value').value) || 1;
+      document.getElementById('loy-spend').value = 100;
+      document.getElementById('loy-earned').value = Math.round((pct / pv) * 10000) / 10000;
+      updatePreview();
     });
     updatePreview();
 
@@ -4777,7 +4910,7 @@ const AdminPage = {
       const data = {
         enabled: document.getElementById('loy-enabled').checked,
         spend_amount: parseFloat(document.getElementById('loy-spend').value) || 10,
-        points_earned: parseInt(document.getElementById('loy-earned').value) || 1,
+        points_earned: parseFloat(document.getElementById('loy-earned').value) || 1,
         point_value: parseFloat(document.getElementById('loy-value').value) || 1,
         min_sale_total: parseFloat(document.getElementById('loy-min').value) || 0,
         expiry_enabled: document.getElementById('loy-expiry-enabled').checked,
@@ -5195,7 +5328,7 @@ const AdminPage = {
     });
 
     document.getElementById('export-products').addEventListener('click', async () => {
-      const res = await API.getProducts();
+      const res = await API.getProducts({ omit_images: true });
       const products = res.data || [];
       Export.toExcel('products.xlsx', [{ name: 'Products', data: products.map(p => ({
         Name: p.name, Category: p.category_name, Price: p.selling_price, Cost: p.buying_price,
@@ -5246,14 +5379,26 @@ const AdminPage = {
 
   renderPosPaymentMethods(el) {
     const pm = this.settings.payment_settings || {};
-    const enabled = pm.enabled_methods || Utils.paymentTypes;
+    const posEnabled = (pm.enabled_methods_pos?.length ? pm.enabled_methods_pos : pm.enabled_methods) || Utils.paymentTypes;
+    const kioskEnabled = pm.enabled_methods_kiosk?.length ? pm.enabled_methods_kiosk : posEnabled;
+    const onlineEnabled = pm.enabled_methods_online?.length ? pm.enabled_methods_online : posEnabled;
     const custom = pm.custom_methods || [];
-    el.innerHTML = `<div class="card"><div class="card-body">
-        <p class="muted" style="margin-top:0">Enable payment types available at POS checkout. Online “Pay Online” is configured under <strong>Payment Gateways</strong>.</p>
-        <div class="form-grid">
-          ${Utils.paymentTypes.map(t => `<div class="field"><label>
-            <input type="checkbox" class="pm-enable" data-type="${t}" ${enabled.includes(t) ? 'checked' : ''}>
+    const channelBlock = (title, hint, cls, enabledList) => `
+        <h4 style="margin:16px 0 8px">${title}</h4>
+        <p class="muted" style="margin:0 0 10px;font-size:13px">${hint}</p>
+        <div class="form-grid">${Utils.paymentTypes.map((t) => `<div class="field"><label>
+            <input type="checkbox" class="${cls}" data-type="${t}" ${enabledList.includes(t) ? 'checked' : ''}>
             ${Utils.paymentLabels[t]}</label></div>`).join('')}
+        ${custom.map((m) => `<div class="field"><label>
+            <input type="checkbox" class="${cls}" data-type="${Utils.escHtml(m.id)}" ${enabledList.includes(m.id) ? 'checked' : ''}>
+            ${Utils.escHtml(m.label || m.id)} (custom)</label></div>`).join('')}
+        </div>`;
+    el.innerHTML = `<div class="card"><div class="card-body">
+        <p class="muted" style="margin-top:0">Choose which payment types appear on <strong>POS</strong>, <strong>Kiosk / Drive-Thru</strong>, and <strong>Online checkout</strong> separately. Gateway capture for “Pay Online” is under <strong>Payment Gateways</strong>.</p>
+        ${channelBlock('POS till', 'Shown when completing a sale on the till.', 'pm-enable-pos', posEnabled)}
+        ${channelBlock('Kiosk &amp; Drive-Thru', 'Self-service and lane checkout only — account/on credit is hidden on kiosk.', 'pm-enable-kiosk', kioskEnabled)}
+        ${channelBlock('Online ordering', 'Customer web/app checkout options.', 'pm-enable-online', onlineEnabled)}
+        <div class="form-grid" style="margin-top:12px">
           <div class="field full"><label><input type="checkbox" id="pm-mixed" ${pm.allow_mixed !== false ? 'checked' : ''}> Allow mixed payments (Card + Cash + EFT, etc.)</label></div>
           <div class="field full"><label><input type="checkbox" id="pm-giftcard" ${pm.giftcard_enabled !== false ? 'checked' : ''}> Enable Gift Card payments</label></div>
           <div class="field full"><label><input type="checkbox" id="pm-account" ${pm.account_enabled !== false ? 'checked' : ''}> Enable On Account (requires customer)</label></div>
@@ -5287,15 +5432,23 @@ const AdminPage = {
     el.querySelectorAll('.cpm-remove').forEach(b => b.addEventListener('click', () => b.closest('.custom-pm-row')?.remove()));
 
     document.getElementById('save-payments').addEventListener('click', async () => {
-      const enabled_methods = [...document.querySelectorAll('.pm-enable:checked')].map(cb => cb.dataset.type);
-      if (!enabled_methods.length) return Utils.toast('Enable at least one payment method', 'error');
+      const pick = (cls) => [...document.querySelectorAll(`.${cls}:checked`)].map((cb) => cb.dataset.type);
+      const enabled_methods_pos = pick('pm-enable-pos');
+      const enabled_methods_kiosk = pick('pm-enable-kiosk');
+      const enabled_methods_online = pick('pm-enable-online');
+      if (!enabled_methods_pos.length) return Utils.toast('Enable at least one POS payment method', 'error');
+      if (!enabled_methods_kiosk.length) return Utils.toast('Enable at least one kiosk payment method', 'error');
+      if (!enabled_methods_online.length) return Utils.toast('Enable at least one online payment method', 'error');
       const custom_methods = [...document.querySelectorAll('.custom-pm-row')].map(row => ({
         id: row.querySelector('.cpm-id')?.value.trim().toLowerCase().replace(/\s+/g, '_'),
         label: row.querySelector('.cpm-label')?.value.trim(),
         enabled: row.querySelector('.cpm-enabled')?.checked !== false
       })).filter(m => m.id && m.label);
       const data = {
-        enabled_methods: [...enabled_methods, ...custom_methods.map(m => m.id)],
+        enabled_methods: enabled_methods_pos,
+        enabled_methods_pos,
+        enabled_methods_kiosk,
+        enabled_methods_online,
         custom_methods,
         allow_mixed: document.getElementById('pm-mixed').checked,
         giftcard_enabled: document.getElementById('pm-giftcard').checked,
@@ -6173,6 +6326,9 @@ const AdminPage = {
       combos: ['combo', 'meal deal', 'promo meal'],
       'menu-builder': ['menu', 'menu builder', 'flyer menu', 'print menu', 'restaurant menu', 'generate menu', 'pdf menu'],
       'promo-video-builder': ['video', 'promo video', 'reels', 'tiktok', 'whatsapp status video', 'menu video', 'generate video'],
+      'order-sla': ['sla', 'timer', 'order timer', 'live control', 'bottleneck', 'kiosk health', 'delay', 'overdue', 'incident', 'escalation'],
+      'marketing-center': ['marketing', 'campaign', 'promotion', 'win back', 'segment', 'decision center', 'cross-sell', 'budget', 'roi', 'ai marketing'],
+      'financial-intelligence': ['financial', 'finance', 'profit', 'allocation', 'break-even', 'break even', 'salary', 'afford', 'monthly performance', 'annual', 'product profitability', 'ai advisor', 'financial report'],
       'communication-center': ['communication', 'whatsapp', 'sms', 'email', 'notification', 'campaign', 'automation', 'share', 'publish', 'messaging', 'broadcast'],
       radio: ['radio', 'live', 'studio', 'broadcast', 'dj', 'on air'],
       recipe: ['recipe', 'ingredient', 'production', 'kitchen recipe', 'bom', 'meal'],
@@ -6445,6 +6601,7 @@ const AdminPage = {
     return `<div class="page-toolbar" style="gap:8px;flex-wrap:wrap;align-items:center;margin:12px 0">
       ${tab('orders', 'Orders')}
       ${tab('customers', 'Customers')}
+      ${tab('app-access', '📱 Customer App Access')}
       ${tab('visitors', 'Website Visitor Analysis')}
       ${tab('rejected', 'Rejected')}
     </div>`;
@@ -6466,6 +6623,12 @@ const AdminPage = {
         try { await window.App?.ensurePageScripts?.('admin'); } catch (_) { /* */ }
       }
       if (typeof this.renderOnlineCustomers === 'function') return this.renderOnlineCustomers(el);
+    }
+    if (ooTab === 'app-access') {
+      if (typeof this.renderCustomerAppAccess !== 'function') {
+        try { await window.App?.ensureAdminSectionScripts?.('online-orders'); } catch (_) { /* */ }
+      }
+      if (typeof this.renderCustomerAppAccess === 'function') return this.renderCustomerAppAccess(el);
     }
     const [ordersRes, analyticsRes, settingsRes, rejectedRes] = await Promise.all([
       API.webAdminOrders?.({ from, to }, this.app?.user) || API.getOnlineOrdersLocal?.(''),

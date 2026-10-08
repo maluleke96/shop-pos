@@ -169,7 +169,9 @@ window.AdminPromoVideoBuilderPage = {
     this.ensureCss();
     this.settings = this.app?.settings || this.settings || {};
     this.loadLocalLibraries();
+    this.adminPage = adminPage && typeof adminPage.renderSection === 'function' ? adminPage : null;
     this.consumeMenuHandoff();
+    this.consumeMarketingHandoff();
     this.productsLoading = !this.products.length;
     this.paint();
     this.bootstrap();
@@ -191,6 +193,57 @@ window.AdminPromoVideoBuilderPage = {
   },
   saveMusic() {
     try { localStorage.setItem(this.MUSIC_KEY, JSON.stringify(this.musicLibrary.slice(0, 20))); } catch (_) { /* */ }
+  },
+
+  MKT_HANDOFF_KEY: 'shoppos_marketing_handoff',
+
+  consumeMarketingHandoff() {
+    this.marketingHandoff = null;
+    try {
+      const raw = sessionStorage.getItem(this.MKT_HANDOFF_KEY);
+      if (!raw) return;
+      const d = JSON.parse(raw);
+      if (!d || d.from !== 'marketing-center' || (d.section && d.section !== 'promo-video-builder')) return;
+      sessionStorage.removeItem(this.MKT_HANDOFF_KEY);
+      if (Date.now() - Number(d.at || 0) > 15 * 60 * 1000) return;
+      this.marketingHandoff = d;
+      this.mode = 'create';
+      const ids = (d.products || []).map(Number).filter(Boolean);
+      if (ids.length) {
+        this.sourceTab = 'products';
+        this.selectedIds = new Set(ids);
+      }
+      if (d.title) this.draft.title = String(d.title).slice(0, 80);
+    } catch (_) { /* */ }
+  },
+
+  marketingBannerHtml() {
+    const d = this.marketingHandoff;
+    if (!d) return '';
+    const names = Array.isArray(d.names) ? d.names : [];
+    return `<div class="pvb-mkt-banner" style="margin:6px 0 10px;padding:8px 12px;border-radius:8px;background:#fff1f2;border:1px solid #fecdd3;color:#9f1239;font-size:.85rem;display:flex;justify-content:space-between;align-items:center;gap:8px">
+      <span>📈 Opened from Marketing Center${d.title ? `: ${this.esc(d.title)}` : ''}${names.length ? ` — pre-selected ${this.esc(names.join(', '))}` : ''}. Prices come from your product list.</span>
+      <span style="white-space:nowrap"><a href="#" data-mkt-back style="color:inherit;font-weight:600">← Back to Marketing</a> · <a href="#" data-mkt-dismiss style="color:inherit">Dismiss</a></span>
+    </div>`;
+  },
+
+  bindMarketingBanner() {
+    const root = this.el;
+    if (!root || !this.marketingHandoff) return;
+    const back = root.querySelector('[data-mkt-back]');
+    const dismiss = root.querySelector('[data-mkt-dismiss]');
+    if (back) {
+      back.onclick = (e) => {
+        e.preventDefault();
+        this.marketingHandoff = null;
+        const a = this.adminPage;
+        if (!a || typeof a.renderSection !== 'function') return;
+        a.section = 'marketing-center';
+        document.querySelectorAll('.admin-nav-btn').forEach((b) => b.classList.toggle('active', b.dataset.section === 'marketing-center'));
+        a.renderSection(document.getElementById('admin-content'));
+      };
+    }
+    if (dismiss) dismiss.onclick = (e) => { e.preventDefault(); this.marketingHandoff = null; root.querySelector('.pvb-mkt-banner')?.remove(); };
   },
 
   consumeMenuHandoff() {
@@ -719,10 +772,12 @@ window.AdminPromoVideoBuilderPage = {
           <button type="button" class="btn btn-primary" id="pvb-new">${this.mode === 'create' ? 'My Videos' : 'Create New Video'}</button>
         </div>
       </div>
+      ${this.marketingBannerHtml()}
       ${this.mode === 'create' ? this.stepsHtml() + this.createWorkspaceHtml(fmt, shop) : ''}
       ${this.libraryHtml()}
     </div>`;
     this.bind();
+    this.bindMarketingBanner();
     if (this.mode === 'create') {
       this.buildScenes();
       requestAnimationFrame(() => this.drawPreviewFrame(this.previewTime || 0));
@@ -882,6 +937,16 @@ window.AdminPromoVideoBuilderPage = {
           </div>
         </div>
         <div class="pvb-field">
+          <label>End screen sizes</label>
+          <div class="pvb-scale-grid">
+            <label>WhatsApp text <input type="range" id="pvb-outro-contact" min="70" max="180" value="${Math.round((this.draft.outroContactScale || 1) * 100)}"><span id="pvb-outro-contact-val">${Math.round((this.draft.outroContactScale || 1) * 100)}%</span></label>
+            <label>Branch / shop <input type="range" id="pvb-outro-branch" min="70" max="180" value="${Math.round((this.draft.outroBranchScale || 1) * 100)}"><span id="pvb-outro-branch-val">${Math.round((this.draft.outroBranchScale || 1) * 100)}%</span></label>
+            <label>Delivery line <input type="range" id="pvb-outro-delivery" min="70" max="180" value="${Math.round((this.draft.outroDeliveryScale || 1) * 100)}"><span id="pvb-outro-delivery-val">${Math.round((this.draft.outroDeliveryScale || 1) * 100)}%</span></label>
+            <label>Order online <input type="range" id="pvb-outro-order" min="70" max="180" value="${Math.round((this.draft.outroOrderScale || 1) * 100)}"><span id="pvb-outro-order-val">${Math.round((this.draft.outroOrderScale || 1) * 100)}%</span></label>
+            <label>QR code size <input type="range" id="pvb-outro-qr" min="60" max="160" value="${Math.round((this.draft.outroQrScale || 1) * 100)}"><span id="pvb-outro-qr-val">${Math.round((this.draft.outroQrScale || 1) * 100)}%</span></label>
+          </div>
+        </div>
+        <div class="pvb-field">
           <label>Branding</label>
           ${this.toggle('pvb-logo', 'Use Shop Logo', this.draft.includeLogo)}
           ${this.toggle('pvb-prices', 'Show Prices', this.draft.showPrices)}
@@ -944,6 +1009,7 @@ window.AdminPromoVideoBuilderPage = {
             <button type="button" class="btn btn-ghost" id="pvb-download" ${this.generatedBlob ? '' : 'disabled'}>Download Video</button>
             <button type="button" class="btn btn-ghost" id="pvb-save" ${this.generatedBlob ? '' : 'disabled'}>Save to Library</button>
             <button type="button" class="btn btn-ghost" id="pvb-share" ${this.generatedBlob ? '' : 'disabled'}>Share WhatsApp</button>
+            <button type="button" class="btn btn-primary" id="pvb-cc-share" ${this.generatedBlob ? '' : 'disabled'}>📤 Share / Publish</button>
             <button type="button" class="btn btn-primary" id="pvb-cc-share" ${this.generatedBlob ? '' : 'disabled'}>📤 Share / Publish</button>
           </div>
 
@@ -1103,6 +1169,37 @@ window.AdminPromoVideoBuilderPage = {
           <button type="button" class="btn btn-ghost btn-sm" data-dl-thumb="${this.esc(th.id)}">Download</button>
         </div>
       </div>`).join('')}</div>`;
+  },
+
+  audioTracksHtml() {
+    const tracks = this.audioTracks || [];
+    if (!tracks.length) {
+      return `<div class="pvb-audio-empty">No audio yet. Upload music and/or voice, or record a voice-over.</div>`;
+    }
+    return tracks.map((tr) => {
+      const kind = tr.kind === 'voice' ? 'Voice' : 'Music';
+      const dur = Number(tr.fileDuration) || 0;
+      const cutEnd = tr.cutEnd != null ? Number(tr.cutEnd) : (dur || 30);
+      return `<div class="pvb-audio-card" data-audio-id="${this.esc(tr.id)}">
+        <div class="pvb-audio-card-top">
+          <strong>${kind}: ${this.esc(tr.name || 'Track')}</strong>
+          <label class="pvb-audio-on"><input type="checkbox" data-audio-on="${this.esc(tr.id)}" ${tr.enabled !== false ? 'checked' : ''}> On</label>
+        </div>
+        <div class="pvb-audio-row">
+          <button type="button" class="btn btn-ghost btn-sm" data-audio-preview="${this.esc(tr.id)}">▶ Listen</button>
+          <button type="button" class="btn btn-ghost btn-sm" data-audio-stop-prev="${this.esc(tr.id)}">⏹</button>
+          ${tr.kind === 'voice' ? `<button type="button" class="btn btn-ghost btn-sm" data-audio-save="${this.esc(tr.id)}">Save voice</button>` : ''}
+          <button type="button" class="btn btn-ghost btn-sm" data-audio-del="${this.esc(tr.id)}">Remove</button>
+        </div>
+        <label>Volume <input type="range" min="0" max="100" value="${Math.round((tr.volume ?? 0.7) * 100)}" data-audio-vol="${this.esc(tr.id)}"></label>
+        <div class="pvb-audio-trim">
+          <label>Cut from <input type="number" min="0" step="0.1" value="${Number(tr.cutStart) || 0}" data-audio-cut-start="${this.esc(tr.id)}"></label>
+          <label>to <input type="number" min="0.1" step="0.1" value="${cutEnd}" data-audio-cut-end="${this.esc(tr.id)}"></label>
+          <label>Play at video <input type="number" min="0" step="0.1" value="${Number(tr.playAt) || 0}" data-audio-play-at="${this.esc(tr.id)}"> s</label>
+        </div>
+        <small class="pvb-sub">${dur ? `File length ~${dur.toFixed(1)}s` : 'Loading length…'}</small>
+      </div>`;
+    }).join('');
   },
 
   audioTracksHtml() {
@@ -1346,6 +1443,7 @@ window.AdminPromoVideoBuilderPage = {
     document.getElementById('pvb-download')?.addEventListener('click', () => this.downloadGenerated());
     document.getElementById('pvb-save')?.addEventListener('click', () => this.saveToLibrary());
     document.getElementById('pvb-share')?.addEventListener('click', () => this.shareWhatsApp());
+    document.getElementById('pvb-cc-share')?.addEventListener('click', () => this.sharePublishCC());
     document.getElementById('pvb-cc-share')?.addEventListener('click', () => this.sharePublishCC());
     document.getElementById('pvb-voice-test')?.addEventListener('click', () => {
       this.readDraftFromDom();
@@ -2647,6 +2745,7 @@ window.AdminPromoVideoBuilderPage = {
       poster: this._lastPoster || '',
       thumbnail: this._lastPoster || '',
       selectedThumbnailId: this.selectedThumbnailId || null,
+      selectedThumbnailId: this.selectedThumbnailId || null,
       promoCaption: this.draft.promoCaption || '',
       branchId: this.branchId,
       dataUrl,
@@ -2666,6 +2765,32 @@ window.AdminPromoVideoBuilderPage = {
     this.toast('Saved to My Videos', 'success');
     this.libraryTab = 'videos';
     this.paint();
+  },
+
+  async sharePublishCC() {
+    if (!this.generatedBlob) return this.toast('Generate a video first', 'error');
+    const shop = this.shopBlock();
+    const title = this.draft.title || 'Promo video';
+    const body = `${shop.shopName} — ${title}\n${shop.phone ? 'WhatsApp: ' + shop.phone : ''}`;
+    let mediaUrl = null;
+    try {
+      mediaUrl = URL.createObjectURL(this.generatedBlob);
+    } catch (_) { /* */ }
+    if (!window.CCSharePublish?.open) {
+      try {
+        if (typeof Utils?.loadScript === 'function') await Utils.loadScript('js/pages/admin-communication-center.js');
+      } catch (_) { /* */ }
+    }
+    if (!window.CCSharePublish?.open) {
+      return this.toast('Open Admin → Communication Center once, then retry Share / Publish', 'error');
+    }
+    window.CCSharePublish.open({
+      title,
+      body,
+      mediaUrl,
+      sourceModule: 'promo-video-builder',
+      app: this.app || window.App
+    });
   },
 
   async sharePublishCC() {

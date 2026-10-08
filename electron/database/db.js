@@ -25,22 +25,30 @@ function withDbFileLock(fn) {
   if (!dbPath) return fn();
   const lockPath = `${dbPath}.lock`;
   const started = Date.now();
+  let fnFailures = 0;
   while (true) {
+    let fd;
     try {
-      const fd = fs.openSync(lockPath, 'wx');
-      try {
-        return fn();
-      } finally {
-        try { fs.closeSync(fd); } catch (_) { /* ignore */ }
-        try { fs.unlinkSync(lockPath); } catch (_) { /* ignore */ }
-      }
+      fd = fs.openSync(lockPath, 'wx');
     } catch (err) {
+      if (err && err.code !== 'EEXIST' && Date.now() - started > 8000) throw err;
       if (Date.now() - started > 8000) {
         try { fs.unlinkSync(lockPath); } catch (_) { /* stale */ }
         continue;
       }
       sleepSync(40);
+      continue;
     }
+    try {
+      return fn();
+    } catch (err) {
+      fnFailures += 1;
+      if (fnFailures >= 5) throw err;
+    } finally {
+      try { fs.closeSync(fd); } catch (_) { /* ignore */ }
+      try { fs.unlinkSync(lockPath); } catch (_) { /* ignore */ }
+    }
+    sleepSync(100);
   }
 }
 
@@ -161,7 +169,8 @@ class Statement {
     try {
       const sanitized = params.map(p => (p === undefined ? null : p));
       this.database.run(this.sql, sanitized);
-      if (!inTransaction) persist();
+      const changes = this.database.getRowsModified();
+      // Read the rowid before persist(): exporting the sql.js database resets last_insert_rowid().
       let lastInsertRowid = 0;
       try {
         const stmt = rawDb.prepare('SELECT last_insert_rowid() AS id');
@@ -174,7 +183,8 @@ class Statement {
         const result = rawDb.exec('SELECT last_insert_rowid() AS id');
         lastInsertRowid = result.length ? Number(result[0].values[0][0]) || 0 : 0;
       }
-      return { lastInsertRowid, changes: rawDb.getRowsModified() };
+      if (!inTransaction) persist();
+      return { lastInsertRowid, changes };
     } catch (err) {
       throw new Error(err.message || 'Database error');
     }

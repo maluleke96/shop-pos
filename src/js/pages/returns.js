@@ -207,7 +207,7 @@ const ReturnsPage = {
       if (e.target.value === 'exchange') {
         const sel = document.getElementById('ret-new-product');
         if (sel.options.length <= 1) {
-          const res = await API.getProducts();
+          const res = await API.getProducts({ omit_images: true });
           (res.data || []).forEach(p => {
             const opt = document.createElement('option');
             opt.value = p.id; opt.textContent = `${p.name} (${Utils.formatMoney(p.selling_price, this.app.settings?.currency)})`;

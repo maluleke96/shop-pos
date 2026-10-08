@@ -134,7 +134,7 @@ const QuotesPage = {
   },
 
   async showQuoteForm() {
-    const [custRes, prodRes] = await Promise.all([API.getCustomers(), API.getProducts()]);
+    const [custRes, prodRes] = await Promise.all([API.getCustomers(), API.getProducts({ omit_images: true })]);
     const customers = custRes.data || [];
     const products = prodRes.data || [];
     Utils.showModal('New Quotation', `

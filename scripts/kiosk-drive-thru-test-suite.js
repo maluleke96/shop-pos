@@ -2,7 +2,7 @@
 /** Kiosk + Drive-Thru automated + E2E tests */
 const http = require('http');
 const https = require('https');
-const BASE = process.env.TEST_URL || 'https://chisafood.up.railway.app';
+const BASE = process.env.TEST_URL || process.env.SHOP_POS_LAB_URL || 'https://shoppos-lab-production.up.railway.app';
 const ADMIN_USER = process.env.ADMIN_USER || 'chisa96';
 const ADMIN_PASS = process.env.ADMIN_PASS || '123456';
 const results = [];
@@ -236,6 +236,55 @@ async function runDriveThruE2E() {
   }
 }
 
+async function runOpsDisplayE2E() {
+  try {
+    await rpc('auth:login', [ADMIN_USER, ADMIN_PASS, null]);
+    const pair = await rpc('opsDisplay:requestPairing', ['cds', { e2e: true }]);
+    const approved = await rpc('opsDisplay:adminApprovePairing', [pair.pairing_code, { name: 'E2E CDS', branch_id: null }]);
+    const tok = approved.device_token;
+    if (!tok) throw new Error('No display device token');
+    const orders = await rpc('opsDisplay:orders', [tok, 'pending,preparing,ready,collection']);
+    add('ops_cds_pair', 'Customer display pairing', 'PASS', `device=${approved.device_id}`);
+    add('ops_cds_orders', 'Customer display orders RPC', Array.isArray(orders) ? 'PASS' : 'FAIL', `rows=${(orders || []).length}`);
+    try {
+      await rpc('kitchen:get', ['pending']);
+      add('ops_kitchen_auth', 'Kitchen get requires auth', 'FAIL', 'Unauthenticated read allowed');
+    } catch (e) {
+      add('ops_kitchen_auth', 'Kitchen get requires auth', /auth|session|denied|required/i.test(e.message) ? 'PASS' : 'WARNING', e.message);
+    }
+  } catch (e) {
+    add('ops_cds_pair', 'Customer display pairing', 'FAIL', e.message);
+    add('ops_cds_orders', 'Customer display orders RPC', 'FAIL', e.message);
+  }
+}
+
+async function runExpenseLineTotalTest() {
+  try {
+    const { normalizeLineItems } = require('../lib/expense-line-items');
+    const rows = normalizeLineItems([{ name: 'Fish', quantity: 10, unit: 'each', price: 52 }]);
+    const row = rows[0];
+    if (!row || Math.abs(row.amount - 52) > 0.01) throw new Error(`amount=${row?.amount} expected 52`);
+    if (Math.abs(row.unit_price - 5.2) > 0.01) throw new Error(`unit_price=${row?.unit_price} expected 5.2`);
+    add('expense_line_total', 'Expense line total (not qty×unit input)', 'PASS', '10 fish @ R52 line → R5.20 each derived');
+  } catch (e) {
+    add('expense_line_total', 'Expense line total (not qty×unit input)', 'FAIL', e.message);
+  }
+}
+
+async function runPaymentMethodsTest() {
+  try {
+    await rpc('auth:login', [ADMIN_USER, ADMIN_PASS, null]);
+    const pairing = await rpc('kiosk:requestPairing', [{ e2e: true }]);
+    const approved = await rpc('kiosk:adminApprovePairing', [pairing.pairing_code, { name: 'PayMethods E2E' }]);
+    const deviceToken = approved.device_token;
+    const catalog = await rpc('kiosk:catalog', [deviceToken]);
+    const methods = catalog?.settings?.payment_methods || [];
+    add('kiosk_pay_methods', 'Kiosk uses admin payment methods', methods.length ? 'PASS' : 'WARNING', methods.join(', ') || 'none');
+  } catch (e) {
+    add('kiosk_pay_methods', 'Kiosk uses admin payment methods', 'FAIL', e.message);
+  }
+}
+
 async function runRegression() {
   try {
     const h = await getHealth();
@@ -299,9 +348,14 @@ async function run() {
 
   console.log('\n── E2E Order Tests ──');
   sessionToken = null;
+  await runExpenseLineTotalTest();
   await runKioskE2E();
   sessionToken = null;
   await runDriveThruE2E();
+  sessionToken = null;
+  await runPaymentMethodsTest();
+  sessionToken = null;
+  await runOpsDisplayE2E();
   sessionToken = null;
   await runRegression();
 

@@ -99,6 +99,17 @@ const ManagerApp = {
   },
 
   money(n) { return `R${(Number(n) || 0).toFixed(2)}`; },
+  dailyMoneyRowsHtml(dm) {
+    if (!dm) return '';
+    return `<div class="daily-money-box">
+      <div class="branch-day-date">Today's money</div>
+      <div class="row"><span>Money in</span><span>${this.money(dm.money_in)}</span></div>
+      <div class="row"><span>Expenses from today's money</span><span>${this.money(dm.expenses_today)}</span></div>
+      <div class="row"><span>Withdrawals from today's money</span><span>${this.money(dm.withdrawals_today)}</span></div>
+      <div class="row" style="font-weight:800"><span>Net today's money</span><span>${this.money(dm.net_today)}</span></div>
+      ${Number(dm.from_previous) ? `<div class="row"><span>Paid from previous money</span><span>${this.money(dm.from_previous)}</span></div>` : ''}
+    </div>`;
+  },
   esc(s) { const d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; },
   normalizePhone(phone) {
     const d = String(phone || '').replace(/\D/g, '');
@@ -457,16 +468,27 @@ const ManagerApp = {
     try {
       const filters = this.branchFilters();
       const branchOnly = this.branchFilter && this.branchFilter !== 'all' ? { branch_id: this.branchFilter } : {};
-      const [dash, alerts, pos, pendingLive] = await Promise.all([
+      const [dashR, alertsR, posR, pendingR, slaR] = await Promise.allSettled([
         ManagerAPI.dashboard(filters),
         ManagerAPI.alerts({ ...filters, limit: 50 }),
         ManagerAPI.posStatus(),
-        ManagerAPI.pendingOnline(branchOnly).catch(() => [])
+        ManagerAPI.pendingOnline(branchOnly),
+        ManagerAPI.slaLive(branchOnly)
       ]);
-      this.dashboard = dash;
+      const authFail = [dashR, alertsR, posR].find((r) => r.status === 'rejected'
+        && /session|revoked|not authenticated/i.test(r.reason?.message || ''));
+      if (authFail) throw authFail.reason;
+      if (dashR.status === 'fulfilled') {
+        this.dashboard = dashR.value;
+        this._loadError = '';
+      } else {
+        this._loadError = dashR.reason?.message || 'Could not load figures';
+      }
+      const alerts = alertsR.status === 'fulfilled' ? (alertsR.value || []) : (this.alerts || []);
       this.alerts = alerts;
-      this.posStatus = pos;
-      this._pendingOnlineOrders = pendingLive || [];
+      if (posR.status === 'fulfilled') this.posStatus = posR.value;
+      this._pendingOnlineOrders = pendingR.status === 'fulfilled' ? (pendingR.value || []) : [];
+      this.slaLive = slaR.status === 'fulfilled' ? slaR.value : null;
       this.lastUpdated = new Date();
       if (alerts.length) this.lastAlertId = Math.max(this.lastAlertId, ...alerts.map((a) => a.id));
       if (this.tab === 'orders') await this.loadOrders();
@@ -505,7 +527,10 @@ const ManagerApp = {
         this.token = '';
         this.view = 'login';
         if (!silent) this.render();
+        return;
       }
+      this._loadError = err.message || 'Could not load data';
+      if (!silent && this.view === 'main') this.render();
     }
   },
 
@@ -659,6 +684,141 @@ const ManagerApp = {
     document.getElementById('mgr-order-popup')?.classList.add('hidden');
   },
 
+  isVoided(o) {
+    return ['void', 'voided'].includes(String(o?.status || '').toLowerCase());
+  },
+
+  statusTagHtml(o) {
+    const tags = [];
+    if (this.isVoided(o)) tags.push('<small style="color:#fff;background:#b91c1c;border-radius:6px;padding:1px 6px;font-weight:700">VOIDED</small>');
+    else if (o?.status && !['completed', 'pending', 'accepted'].includes(String(o.status).toLowerCase())) {
+      tags.push(`<small style="color:#b45309;font-weight:700">${this.esc(o.status)}</small>`);
+    }
+    if (o?.edited_at) tags.push(`<small style="color:#1d4ed8;font-weight:700" title="Edited${o.edited_by ? ` by ${this.esc(o.edited_by)}` : ''}">Edited</small>`);
+    return tags.length ? ` ${tags.join(' ')}` : '';
+  },
+
+  loadErrorHtml() {
+    if (!this._loadError) return '';
+    return `<div role="alert" style="margin:0 0 12px;padding:10px 12px;border-radius:10px;background:#fef2f2;border:1px solid #fecaca;color:#991b1b">
+      Could not load the latest figures: ${this.esc(this._loadError)}
+      <button type="button" class="btn-sm btn-ghost" data-act="refresh" style="margin-left:8px">Try again</button></div>`;
+  },
+
+  slaLiveSummaryHtml() {
+    const s = this.slaLive;
+    if (!s || s.enabled === false) return '';
+    const c = s.counts || {};
+    const top = (s.stations || [])[0];
+    const late = (c.overdue || 0) + (c.critical || 0);
+    if (!(c.active > 0) && !top) return '';
+    return `<div class="list-card" style="margin-bottom:12px"><h3>⏱ Live order control</h3>
+      <div class="stat-grid" style="margin-bottom:8px">
+        <div class="stat-card"><div class="label">Active</div><div class="value">${c.active ?? 0}</div></div>
+        <div class="stat-card"><div class="label">🟢 On time</div><div class="value">${c.on_time ?? 0}</div></div>
+        <div class="stat-card"><div class="label">🟡 Warning</div><div class="value">${c.warning ?? 0}</div></div>
+        <div class="stat-card"><div class="label">🔴 Late</div><div class="value">${late}</div></div>
+      </div>
+      ${top ? `<p class="meta" style="margin:0">Busiest: ${this.esc(String(top.station || 'kitchen').replace(/_/g, ' '))} (${top.active})</p>` : ''}
+      <p class="meta" style="margin:6px 0 0">Full control in Admin → Order SLA & Live Control</p></div>`;
+  },
+
+  voidedPeriodLabel() {
+    const names = { today: 'Today', yesterday: 'Yesterday', week: 'This week', month: 'This month', custom: 'Custom range' };
+    const name = names[this.period] || this.dashboard?.period || 'Selected period';
+    const from = this.period === 'custom' ? this.customFrom : this.dashboard?.period_from;
+    const to = this.period === 'custom' ? this.customTo : this.dashboard?.period_to;
+    const range = from && to ? (from === to ? from : `${from} → ${to}`) : '';
+    const branch = this.branchFilter && this.branchFilter !== 'all'
+      ? (this.user?.branches || []).find((b) => String(b.id) === String(this.branchFilter))?.name
+      : '';
+    return [name, range, branch].filter(Boolean).join(' · ');
+  },
+
+  async showVoidedPopup() {
+    this._voidedOrders = null;
+    this._voidedError = null;
+    this._voidedSearch = '';
+    this.renderVoidedPopup();
+    try {
+      this._voidedOrders = await ManagerAPI.orders({ ...this.branchFilters(), status: 'voided', limit: 500 });
+      this._voidedOrders = (this._voidedOrders || []).filter((o) => this.isVoided(o));
+    } catch (err) {
+      this._voidedOrders = [];
+      this._voidedError = err.message || 'Could not load voided orders';
+    }
+    this.renderVoidedPopup();
+  },
+
+  voidedRowsHtml() {
+    if (this._voidedOrders == null) return '<div class="empty">Loading voided orders…</div>';
+    if (this._voidedError) return `<div class="empty" style="color:#b91c1c">${this.esc(this._voidedError)}</div>`;
+    const q = String(this._voidedSearch || '').trim().toLowerCase();
+    const list = this._voidedOrders.filter((o) => {
+      if (!q) return true;
+      const hay = [o.order_number, o.receipt_number, o.customer_name, o.customer_phone, o.cashier, o.void_reason,
+        o.branch_name, o.order_type, String(o.total), ...(o.items || []).map((i) => i.product_name || i.name)]
+        .filter(Boolean).join(' ').toLowerCase();
+      return hay.includes(q);
+    });
+    if (!list.length) return `<div class="empty">${q ? 'No voided orders match your search' : 'No voided orders for this period'}</div>`;
+    const sum = list.reduce((a, o) => a + (Number(o.total) || 0), 0);
+    return `<p class="meta" style="margin:0 0 6px">${list.length} order${list.length === 1 ? '' : 's'} · ${this.money(sum)}</p>
+      ${list.map((o) => `<button type="button" class="list-item" data-vact="open" data-id="${this.esc(o.id)}"
+        style="display:flex;justify-content:space-between;gap:8px;width:100%;text-align:left;background:none;border:0;border-bottom:1px solid var(--border);padding:10px 2px;color:inherit;cursor:pointer">
+        <div style="min-width:0">
+          <strong>${this.esc(o.order_number || o.receipt_number || `#${o.id}`)}</strong>
+          <div class="meta">${this.esc(new Date(o.time).toLocaleString())}${o.cashier ? ` · ${this.esc(o.cashier)}` : ''}</div>
+          ${o.customer_name ? `<div class="meta">${this.esc(o.customer_name)}</div>` : ''}
+          ${o.void_reason ? `<div class="meta" style="color:#b91c1c">Reason: ${this.esc(o.void_reason)}</div>` : ''}
+        </div>
+        <strong style="text-decoration:line-through;color:#b91c1c;white-space:nowrap">${this.money(o.total)}</strong>
+      </button>`).join('')}`;
+  },
+
+  renderVoidedPopup() {
+    let root = document.getElementById('mgr-voided-popup');
+    if (!root) {
+      root = document.createElement('div');
+      root.id = 'mgr-voided-popup';
+      root.className = 'mgr-order-popup';
+      document.body.appendChild(root);
+    }
+    root.innerHTML = `<div class="mgr-popup-card" role="dialog" style="max-height:85vh;display:flex;flex-direction:column">
+      <div class="mgr-popup-head">
+        <strong>🚫 Voided orders</strong>
+        <button type="button" class="btn-sm btn-ghost" data-vact="close" aria-label="Close">✕</button>
+      </div>
+      <p class="meta" style="margin:0 0 8px">📅 ${this.esc(this.voidedPeriodLabel())}</p>
+      <input type="search" id="voided-search" placeholder="Search receipt, customer, cashier, reason, product…"
+        value="${this.esc(this._voidedSearch || '')}"
+        style="width:100%;padding:9px;border-radius:8px;border:1px solid var(--border);background:var(--bg);color:var(--text);margin-bottom:8px">
+      <div id="voided-rows" style="overflow-y:auto;flex:1">${this.voidedRowsHtml()}</div>
+    </div>`;
+    root.classList.remove('hidden');
+    const search = root.querySelector('#voided-search');
+    search.oninput = () => {
+      this._voidedSearch = search.value;
+      root.querySelector('#voided-rows').innerHTML = this.voidedRowsHtml();
+    };
+    root.onclick = async (e) => {
+      if (e.target === root) { this.closeVoidedPopup(); return; }
+      const btn = e.target.closest('[data-vact]');
+      if (!btn) return;
+      if (btn.dataset.vact === 'close') { this.closeVoidedPopup(); return; }
+      if (btn.dataset.vact === 'open') {
+        this.closeVoidedPopup();
+        this._returnToVoided = true;
+        await this.openOrder(btn.dataset.id);
+      }
+    };
+  },
+
+  closeVoidedPopup() {
+    this._voidedError = null;
+    document.getElementById('mgr-voided-popup')?.classList.add('hidden');
+  },
+
   async loadOrders() {
     this.orders = await ManagerAPI.orders({ ...this.branchFilters(), limit: 50 });
   },
@@ -745,29 +905,53 @@ const ManagerApp = {
         return;
       }
       if (act === 'login') {
+        e.preventDefault?.();
+        if (btn.disabled) return;
+        const errEl = document.getElementById('login-error');
+        const showErr = (msg) => {
+          if (errEl) { errEl.textContent = msg; errEl.style.display = ''; }
+          this.toast(msg, 'error');
+        };
+        if (errEl) errEl.style.display = 'none';
+        const username = document.getElementById('login-user')?.value.trim() || '';
+        const password = document.getElementById('login-pass')?.value || '';
+        if (!username || !password) { showErr('Enter your username and password'); return; }
         btn.disabled = true;
+        const label = btn.textContent;
+        btn.textContent = 'Signing in…';
+        let r;
         try {
-          const r = await ManagerAPI.login(
-            document.getElementById('login-user').value.trim(),
-            document.getElementById('login-pass').value,
-            this.deviceInfo()
-          );
-          this.token = r.token;
-          sessionStorage.setItem('manager_token', this.token);
-          this.user = r.user;
-          this.initNotify();
-          this.view = 'main';
-          try { await window.PanelNotify?.requestPermission?.(); } catch (_) { /* Android WebView may lack Notification API */ }
+          r = await ManagerAPI.login(username, password, this.deviceInfo());
+        } catch (err) {
+          btn.disabled = false;
+          btn.textContent = label;
+          showErr(err.message || 'Could not sign in');
+          return;
+        }
+        if (!r?.token) {
+          btn.disabled = false;
+          btn.textContent = label;
+          showErr('Sign-in failed — no session returned. Please try again.');
+          return;
+        }
+        this.token = r.token;
+        sessionStorage.setItem('manager_token', this.token);
+        this.user = r.user;
+        this.view = 'main';
+        try { this.initNotify(); } catch (_) { /* optional */ }
+        this.render();
+        this.toast('Welcome back!', 'success');
+        try { window.PanelExitGuard?.bind?.(() => { this.token=''; sessionStorage.removeItem('manager_token'); this.user=null; this.view='login'; window.PanelExitGuard?.unbind?.(); this.render(); }); } catch (_) {}
+        try { this._saveState?.(); } catch (_) { /* */ }
+        Promise.resolve(window.PanelNotify?.requestPermission?.()).catch(() => {});
+        (async () => {
           try {
             const p = await ManagerAPI.profile();
             this.shop = p.shop || null;
             this.prefs = p.prefs || p.notification_prefs || this.prefs;
           } catch (_) { /* optional */ }
-          await this.refresh();
-          this.toast('Welcome back!', 'success');
-          try { window.PanelExitGuard?.bind?.(() => { this.token=''; sessionStorage.removeItem('manager_token'); this.user=null; this.view='login'; window.PanelExitGuard?.unbind?.(); this.render(); }); } catch (_) {}
-        } catch (err) { this.toast(err.message, 'error'); }
-        finally { btn.disabled = false; }
+          try { await this.refresh(); } catch (err) { this.toast(err.message || 'Could not load dashboard', 'error'); }
+        })();
         return;
       }
       if (act === 'logout') {
@@ -784,8 +968,14 @@ const ManagerApp = {
         this.render();
         return;
       }
+      if (act === 'refresh') { await this.refresh(); return; }
+      if (act === 'voided-list') { await this.showVoidedPopup(); return; }
       if (act === 'order') { await this.openOrder(btn.dataset.id); return; }
-      if (act === 'back') { this.view = 'main'; this.orderDetail = null; this.render(); return; }
+      if (act === 'back') {
+        this.view = 'main'; this.orderDetail = null; this.render();
+        if (this._returnToVoided) { this._returnToVoided = false; this.renderVoidedPopup(); }
+        return;
+      }
       if (act === 'period') { this.period = btn.dataset.period; await this.refresh(); return; }
       if (act === 'apply-custom') {
         this.customFrom = document.getElementById('custom-from')?.value || '';
@@ -873,17 +1063,23 @@ const ManagerApp = {
   render() {
     const app = document.getElementById('app');
     if (this.view === 'login') {
-      app.innerHTML = `<div class="auth-page"><form class="auth-card" onsubmit="return false">
+      app.innerHTML = `<div class="auth-page"><form class="auth-card" id="mgr-login-form" novalidate>
         <div data-shop-logo class="login-logo"></div>
         <h1 data-shop-name>Business Manager</h1>
         <p class="sub login-shop-meta" id="login-shop-meta"></p>
         <p class="sub" style="color:var(--muted);margin:0 0 16px">Sign in with the same username and password you use for Admin or POS.</p>
         <label>Username<input id="login-user" autocomplete="username" required></label>
         <label>Password<input type="password" id="login-pass" autocomplete="current-password" required></label>
-        <button type="button" class="btn-primary" data-act="login">Sign in</button>
+        <p id="login-error" role="alert" style="display:none;color:#b91c1c;font-weight:600;margin:0 0 10px"></p>
+        <button type="submit" class="btn-primary" data-act="login">Sign in</button>
       </form></div>`;
       this.loadLoginBranding();
       this.bind();
+      document.getElementById('mgr-login-form')?.addEventListener('submit', (e) => {
+        e.preventDefault();
+        document.querySelector('#mgr-login-form [data-act="login"]')?.click();
+      });
+      document.getElementById('login-user')?.focus();
       return;
     }
     if (this.view === 'order' && this.orderDetail) {
@@ -898,7 +1094,16 @@ const ManagerApp = {
           <div class="row"><span>Branch</span><span>${this.esc(o.branch_name)}</span></div>
           <div class="row"><span>Time</span><span>${this.esc(String(o.time).slice(0, 16))}</span></div>
           <div class="row"><span>Cashier</span><span>${this.esc(o.cashier || o.accepted_by || '—')}</span></div>
-          <div class="row"><span>Status</span><span>${this.esc(o.status)}</span></div>
+          <div class="row"><span>Status</span><span>${this.statusTagHtml(o) || this.esc(o.status)}</span></div>
+          ${this.isVoided(o) && o.void_reason ? `<div class="row"><span>Void reason</span><span>${this.esc(o.void_reason)}</span></div>` : ''}
+          ${o.edited_at ? `<div class="row"><span>Edited</span><span>${this.esc(new Date(o.edited_at).toLocaleString('en-ZA', { dateStyle: 'short', timeStyle: 'short' }))}${o.edited_by ? ` by ${this.esc(o.edited_by)}` : ''}</span></div>` : ''}
+          ${(o.edit_history || []).length ? `<div style="margin:6px 0 10px;padding:8px 10px;border-radius:8px;background:rgba(59,130,246,0.1);border:1px solid rgba(59,130,246,0.35);font-size:13px">
+            <strong style="color:#3b82f6">✎ What was edited</strong>
+            ${o.edit_history.map((h) => `<div style="margin-top:6px">
+              <div class="meta">${this.esc(String(h.at || '').slice(0, 16).replace('T', ' '))} · ${this.esc(h.by || 'Unknown')}${h.reason ? ` · “${this.esc(h.reason)}”` : ''}</div>
+              ${(h.changes || []).length ? h.changes.map((c) => `<div>${this.esc(c)}</div>`).join('') : `<div>${this.esc((h.changed || []).join(', ') || 'Details updated')}</div>`}
+            </div>`).join('')}
+          </div>` : ''}
           ${o.order_source ? `<div class="row"><span>Source</span><span>${this.esc(o.order_source)}${o.is_online_pending ? ' (web — not on POS yet)' : ''}</span></div>` : ''}
           ${hasCustomer ? `<div class="customer-card">
             <div class="row" style="align-items:flex-start"><span>Customer</span>
@@ -931,6 +1136,7 @@ const ManagerApp = {
         <div class="sub">${this.esc(this.periodSubtitle(d))}</div>
       </div><div class="mgr-main">
         ${this.periodToolbarHtml()}
+        ${this.loadErrorHtml()}
         <div class="stat-grid">
           <div class="stat-card"><div class="label">Orders</div><div class="value">${d.orders ?? 0}</div></div>
           <div class="stat-card"><div class="label">Sales</div><div class="value">${this.money(d.sales)}</div></div>
@@ -941,16 +1147,21 @@ const ManagerApp = {
           <div class="stat-card"><div class="label">Online orders</div><div class="value">${d.online_orders ?? 0}</div><small>${d.online_orders_pending ?? 0} pending · ${d.online_orders_accepted ?? 0} accepted</small></div>
         </div>
         <div class="stat-grid">
+          <div class="stat-card" data-act="voided-list" role="button" tabindex="0" style="cursor:pointer;border:1px solid #fecaca"><div class="label">Voided ›</div><div class="value" style="color:#b91c1c">${d.voided_orders ?? 0}</div><small>${this.money(d.voided_sales)} not counted in sales · tap to view</small></div>
           <div class="stat-card"><div class="label">Alerts</div><div class="value">${d.alerts_count ?? 0}</div></div>
+        </div>
+        <div class="stat-grid">
           <div class="stat-card"><div class="label">POS tills online</div><div class="value">${d.tills_online ?? d.branches_online ?? 0}/${d.tills_registered ?? d.branches_total ?? 0}</div><small>${(d.tills_registered ?? 0) > 0 ? `${d.tills_registered} registered till(s)` : `${d.branches_total_count ?? d.branches_total ?? 0} branch(es)`}</small></div>
         </div>
+        ${this.slaLiveSummaryHtml()}
         ${this._pendingOnlineOrders?.length ? `<p class="meta" style="margin:0 0 8px;color:var(--warn)">${this._pendingOnlineOrders.length} online order(s) waiting for POS acceptance</p>` : ''}
         <div class="list-card"><h3>Recent orders</h3>
           ${(d.recent_orders || []).map((o) =>
             `<div class="list-row" data-act="order" data-id="${o.id}">
-              <div><strong>#${this.esc(o.number)}</strong>${o.order_source && o.order_source !== 'POS' ? ` <small>(${this.esc(o.order_source)})</small>` : ''}
-              <div class="meta">${this.esc(String(o.time).slice(0, 10))} ${this.esc(String(o.time).slice(11, 16))}${o.status ? ` · ${this.esc(o.status)}` : ''}</div></div>
-              <strong>${this.money(o.total)}</strong></div>`).join('') || '<div class="empty">No orders for this period</div>'}
+              <div><strong>#${this.esc(o.number)}</strong>${o.order_source && o.order_source !== 'POS' ? ` <small>(${this.esc(o.order_source)})</small>` : ''}${Number(o.is_backdated) ? ' <small class="tag-warn">Backdated</small>' : ''}
+              ${this.statusTagHtml(o)}
+              <div class="meta">${this.esc(String(o.time).slice(0, 10))} ${this.esc(String(o.time).slice(11, 16))}</div></div>
+              <strong style="${this.isVoided(o) ? 'text-decoration:line-through;color:#b91c1c' : ''}">${this.money(o.total)}</strong></div>`).join('') || '<div class="empty">No orders for this period</div>'}
         </div>
         ${this.lastUpdated ? `<div class="updated">Last updated: ${this.lastUpdated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · stats reset at midnight</div>` : ''}
       </div>`);
@@ -968,13 +1179,15 @@ const ManagerApp = {
             `<div class="list-row" data-act="order" data-id="${o.id}">
               <div style="min-width:0;flex:1"><strong>#${this.esc(o.order_number || o.receipt_number)}</strong>
                 ${o.order_source && String(o.order_source).toUpperCase() !== 'POS' ? `<small> (${this.esc(o.order_source)})</small>` : ''}
-                <div class="meta">${this.esc(o.branch_name)} · ${this.esc(String(o.time).slice(11, 16))} · ${this.esc(o.payment)} · ${this.esc(o.status || '')}</div>
+                ${Number(o.is_backdated) ? ' <small style="color:#b45309;font-weight:700">Backdated</small>' : ''}
+                ${this.statusTagHtml(o)}
+                <div class="meta">${this.esc(o.branch_name)} · ${this.esc(String(o.time).slice(0, 10))} ${this.esc(String(o.time).slice(11, 16))} · ${this.esc(o.payment)}</div>
                 ${o.customer_name ? `<div class="meta">${this.esc(o.customer_name)}${o.customer_phone ? ` · ${this.esc(o.customer_phone)}` : ''}</div>` : ''}
               </div>
               <div style="display:flex;align-items:center;gap:8px">
                 ${this.contactActionsHtml(o.customer_phone, o.customer_email)}
-                <strong>${this.money(o.total)}</strong>
-              </div></div>`).join('') || '<div class="empty">No orders for this period</div>'}
+                <strong style="${this.isVoided(o) ? 'text-decoration:line-through;color:#b91c1c' : ''}">${this.money(o.total)}</strong>
+              </div></div>`).join('') || `<div class="empty">${this._loadError ? this.esc(this._loadError) : 'No orders for this period'}</div>`}
           </div></div>`);
         this.bind();
       };
@@ -1049,8 +1262,12 @@ const ManagerApp = {
         acc.money_in += Number(b.money_in ?? b.sales) || 0;
         acc.money_out += Number(b.money_out ?? b.expenses) || 0;
         acc.orders += Number(b.orders) || 0;
+        if (b.daily_money) {
+          acc.dm = acc.dm || { money_in: 0, expenses_today: 0, withdrawals_today: 0, out_today: 0, net_today: 0, from_previous: 0 };
+          Object.keys(acc.dm).forEach((k) => { acc.dm[k] += Number(b.daily_money[k]) || 0; });
+        }
         return acc;
-      }, { money_in: 0, money_out: 0, orders: 0 });
+      }, { money_in: 0, money_out: 0, orders: 0, dm: null });
       totals.profit = Math.round((totals.money_in - totals.money_out) * 100) / 100;
       app.innerHTML = this.shell(`<div class="mgr-header"><h1>Branches</h1>
         <div class="sub">${this.esc(rangeLabel)} · live money in, money out and profit</div></div><div class="mgr-main">
@@ -1069,6 +1286,7 @@ const ManagerApp = {
                 <div class="row"><span>Money in</span><span>${this.money(day.money_in)}</span></div>
                 <div class="row"><span>Money out / expenses</span><span>${this.money(day.money_out)}</span></div>
                 <div class="row"><span>Profit</span><span>${this.money(day.profit)}</span></div>
+                ${this.dailyMoneyRowsHtml(day.daily_money)}
                 <div class="meta">${day.orders || 0} orders</div>
               </div>`).join('') : ''}
             <div class="branch-day branch-day-total">
@@ -1076,6 +1294,7 @@ const ManagerApp = {
               <div class="row"><span>Money in</span><span>${this.money(b.money_in ?? b.sales)}</span></div>
               <div class="row"><span>Money out / expenses</span><span>${this.money(b.money_out ?? b.expenses)}</span></div>
               <div class="row" style="font-weight:800"><span>Profit</span><span>${this.money(b.profit)}</span></div>
+              ${this.dailyMoneyRowsHtml(b.daily_money)}
               <div class="meta">${b.orders || 0} orders</div>
             </div>
           </div>`;
@@ -1085,6 +1304,7 @@ const ManagerApp = {
           <div class="row" style="margin-top:8px"><span>Total money in</span><span>${this.money(totals.money_in)}</span></div>
           <div class="row"><span>Total money out</span><span>${this.money(totals.money_out)}</span></div>
           <div class="row" style="font-weight:800"><span>Final profit</span><span>${this.money(totals.profit)}</span></div>
+          ${this.dailyMoneyRowsHtml(totals.dm)}
           <div class="meta">${totals.orders} orders</div>
         </div>` : ''}
       </div>`);

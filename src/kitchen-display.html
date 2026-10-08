@@ -33,18 +33,32 @@
     .btn-ready { background: #22c55e; color: #111; }
     .btn-done { background: #475569; color: #fff; margin-left: auto; }
     .empty { grid-column: 1 / -1; text-align: center; padding: 80px 20px; color: #64748b; font-size: 18px; }
+    .pair-card { max-width: 420px; margin: 40px auto; text-align: center; padding: 28px; background: #1e293b; border-radius: 14px; }
+    .pair-code { font-size: 36px; letter-spacing: 6px; font-weight: 800; margin: 12px 0; }
+    #orders.hidden { display: none !important; }
+    .kds-toolbar { padding: 10px 20px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; background: #1e293b; border-bottom: 1px solid #334155; }
+    .kds-toolbar.hidden { display: none !important; }
+    .kds-toolbar .btn { background: #475569; color: #fff; }
+    .kds-toolbar .btn-primary { background: #2563eb; }
+    .kds-sel { width: 18px; height: 18px; margin-right: 6px; vertical-align: middle; }
   </style>
 </head>
 <body>
+  <div id="kds-pair"></div>
   <header>
-    <h1>🍳 Kitchen Display</h1>
+    <div>
+      <h1>🍳 Kitchen Display</h1>
+      <div id="kds-user" class="order-meta" style="margin-top:4px">Not signed in</div>
+    </div>
     <div class="clock" id="kds-clock"></div>
   </header>
+  <div id="kds-toolbar" class="kds-toolbar hidden"></div>
   <div id="orders"><div class="empty">Waiting for orders…</div></div>
   <script src="js/env.js"></script>
   <script src="js/supabase-bootstrap.js"></script>
   <script src="js/api.js"></script>
   <script src="js/utils.js"></script>
+  <script src="js/ops-display-client.js"></script>
   <script src="js/display-auth.js"></script>
   <script src="js/kitchen-display-app.js"></script>
 </body>

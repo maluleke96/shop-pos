@@ -1392,6 +1392,41 @@
       "default_status": "enabled_in_full_product",
       "sellable_addon": true,
       "related_apis": [
+        "sla:*",
+        "mobile:slaLive"
+      ],
+      "related_jobs": [
+        "order SLA escalation scanner"
+      ],
+      "database_tables": [
+        "order_sla",
+        "order_sla_events",
+        "order_sla_incidents",
+        "order_sla_settings"
+      ],
+      "dependencies": [
+        "app.admin",
+        "app.pos",
+        "core.sync_notify"
+      ],
+      "admin_menu": "order-sla",
+      "appears_in": [
+        "Admin order-sla",
+        "KDS timers",
+        "POS kiosk tab",
+        "Manager live summary",
+        "Communication Center order.sla_*"
+      ],
+      "notes": "Master order timers, live control board, incidents. Disabling never deletes order_sla_* history.",
+      "id": "mod.order_sla",
+      "kind": "major",
+      "name": "Order SLA & Live Control",
+      "description": "End-to-end order SLA timers, live ops board, kiosk health, performance incidents, and escalation hooks."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
         "automation:*"
       ],
       "related_jobs": [
@@ -2536,6 +2571,27 @@
       "kind": "admin_submodule",
       "name": "Manager Operations",
       "description": "Daily tasks, checklists, reports, evidence."
+    },
+    {
+      "default_status": "enabled_in_full_product",
+      "sellable_addon": true,
+      "related_apis": [
+        "Admin UI section order-sla"
+      ],
+      "related_jobs": [],
+      "database_tables": [],
+      "dependencies": [
+        "mod.order_sla"
+      ],
+      "admin_menu": "order-sla",
+      "appears_in": [
+        "Admin Panel sidebar"
+      ],
+      "notes": "Candidate to hide/show via package.",
+      "id": "admin.order-sla",
+      "kind": "admin_submodule",
+      "name": "Order SLA & Live Control",
+      "description": "Live order board, SLA settings, reports, kiosk health, incidents."
     },
     {
       "default_status": "enabled_in_full_product",

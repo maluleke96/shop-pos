@@ -173,6 +173,7 @@ const RPC_NAMESPACE_MODULES = {
   jobs: ['mod.careers'],
   mgrHr: ['app.mgr_hr'],
   recipe: ['app.recipe'],
+  rfc: ['app.recipe'],
   waste: ['app.recipe'],
   delivery: ['app.delivery'],
   driver: ['app.driver'],
@@ -182,6 +183,8 @@ const RPC_NAMESPACE_MODULES = {
   tables: ['mod.restaurant'],
   signage: ['mod.signage'],
   kiosk: ['mod.kiosk'],
+  driveThru: ['mod.drive_thru'],
+  opsDisplay: ['mod.kds', 'mod.customer_display'],
   radio: ['mod.radio'],
   meeting: ['mod.meeting'],
   investor: ['mod.investor'],
@@ -190,6 +193,8 @@ const RPC_NAMESPACE_MODULES = {
   mobile: ['app.manager'],
   whatsapp: ['mod.communication'],
   cc: ['mod.communication'],
+  mkt: ['app.admin'],
+  fin: ['app.admin'],
   donations: ['mod.donations'],
   automation: ['mod.automation'],
   customfields: ['core.settings'],
@@ -197,6 +202,7 @@ const RPC_NAMESPACE_MODULES = {
   ops: ['mod.ops_compliance'],
   mo: ['mod.manager_operations'],
   managerOps: ['mod.manager_operations'],
+  sla: ['mod.order_sla', 'mod.ops_compliance', 'mod.kiosk', 'mod.restaurant', 'mod.online'],
   entitlements: [], // shop entitlement snapshot — always allowed
   platform: [], // platform control itself
   saas: [] // platform→customer sync (authenticated by secret inside handler)
@@ -404,6 +410,13 @@ function computeEffectiveEntitlements(key = shopKey()) {
   if (expanded.has('app.admin') || enabled.has('app.admin')) {
     if (map['mod.manager_operations']) expanded.add('mod.manager_operations');
     if (map['admin.manager-ops']) expanded.add('admin.manager-ops');
+    if (map['mod.order_sla']) expanded.add('mod.order_sla');
+    if (map['admin.order-sla']) expanded.add('admin.order-sla');
+  }
+  // Restaurant ops shops: Order SLA ships with kiosk / kitchen / online when any is on
+  if (enabled.has('mod.kiosk') || enabled.has('mod.kds') || enabled.has('mod.online') || enabled.has('mod.restaurant')) {
+    if (map['mod.order_sla']) expanded.add('mod.order_sla');
+    if (map['admin.order-sla']) expanded.add('admin.order-sla');
   }
   for (const id of expanded) enabled.add(id);
 
@@ -468,13 +481,17 @@ function buildResult(key, enabledSet, shared, meta) {
     ['permissions', 'cashiers', 'branches', 'device', 'printer', 'receipt', 'payments',
       'security', 'backup', 'database', 'system-health', 'developer', 'formats', 'tax',
       'operating', 'shifts', 'customize', 'approvals', 'importexport', 'customfields', 'overview',
-      'manager-ops'
+      'manager-ops', 'order-sla'
     ].forEach((s) => {
       if (admin_sections[s] == null) admin_sections[s] = true;
     });
   }
   if (modules['mod.manager_operations'] || modules['admin.manager-ops']) {
     admin_sections['manager-ops'] = true;
+  }
+  if (modules['mod.order_sla'] || modules['admin.order-sla']
+    || modules['mod.ops_compliance'] || modules['mod.kiosk'] || modules['mod.kds']) {
+    admin_sections['order-sla'] = true;
   }
 
   const payload = {
@@ -667,7 +684,10 @@ function isAdminSectionAllowed(sectionId) {
     'business-manager': 'app.manager',
     'mobile-app': 'app.manager',
     'manager-ops': 'mod.manager_operations',
-    opscompliance: 'mod.ops_compliance'
+    opscompliance: 'mod.ops_compliance',
+    'order-sla': 'mod.order_sla',
+    'marketing-center': 'app.admin',
+    'financial-intelligence': 'app.admin'
   };
   if (infer[sectionId]) return isModuleEnabled(infer[sectionId]);
   // Default when enforcement on and section unknown: allow only if app.admin

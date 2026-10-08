@@ -80,7 +80,8 @@ const Receipt = {
       <div class="center bold">${title}</div>
       ${sale.order_number ? `<div class="center bold" style="font-size:18px;margin:6px 0">ORDER ${sale.order_number}</div>` : ''}
       <div><strong>Receipt:</strong> ${sale.receipt_number}</div>
-      <div><strong>Date:</strong> ${Utils.formatDateTime(sale.created_at || new Date().toISOString())}</div>
+      <div><strong>Date:</strong> ${Utils.formatDateTime(sale.sale_datetime || sale.created_at || new Date().toISOString())}${Number(sale.is_backdated) ? ' <em>(backdated)</em>' : ''}</div>
+      ${Number(sale.is_backdated) && sale.created_at ? `<div class="meta">Entered: ${Utils.formatDateTime(sale.created_at)}</div>` : ''}
       ${(ps.print_cashier !== false) ? `<div><strong>Cashier:</strong> ${sale.cashier_name || '—'}</div>` : ''}
       ${sale.order_type ? `<div><strong>Order:</strong> ${{ delivery: 'Delivery', takeaway: 'Takeaway', sit_in: 'Sit-in', online: 'Online Order' }[sale.order_type] || sale.order_type}</div>` : ''}
       ${sale.table_name ? `<div><strong>Table:</strong> ${sale.table_name}</div>` : ''}

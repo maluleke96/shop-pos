@@ -1,19 +1,39 @@
 /**
  * Expense smart features: budgets, recurring, owner funding, OCR parse helpers.
  */
-const { getDb } = require('../database/db');
+const { getDb, isPgMode } = require('../database/db');
+
+let _schemaDb = null;
+let _altersDb = null;
+
+function expenseAltersNeeded(db) {
+  if (_altersDb !== db) return true;
+  // Postgres: ALTER takes an exclusive table lock, so only once per process.
+  if (isPgMode()) return false;
+  // Local SQLite: a table rebuild migration can drop the added columns mid-session.
+  try {
+    return !db.prepare('PRAGMA table_info(expenses)').all().some((c) => c.name === 'cash_source');
+  } catch (_) {
+    return true;
+  }
+}
 
 function ensureExpenseExtrasSchema() {
   const db = getDb();
-  const alters = [
-    'ALTER TABLE expenses ADD COLUMN vendor_name TEXT',
-    'ALTER TABLE expenses ADD COLUMN purchase_order_id INTEGER',
-    'ALTER TABLE expenses ADD COLUMN funding_source TEXT DEFAULT \'business\'',
-    'ALTER TABLE expenses ADD COLUMN receipt_ocr_text TEXT'
-  ];
-  for (const sql of alters) {
-    try { db.prepare(sql).run(); } catch (_) { /* exists */ }
+  if (expenseAltersNeeded(db)) {
+    const alters = [
+      'ALTER TABLE expenses ADD COLUMN vendor_name TEXT',
+      'ALTER TABLE expenses ADD COLUMN purchase_order_id INTEGER',
+      'ALTER TABLE expenses ADD COLUMN funding_source TEXT DEFAULT \'business\'',
+      'ALTER TABLE expenses ADD COLUMN receipt_ocr_text TEXT',
+      'ALTER TABLE expenses ADD COLUMN cash_source TEXT'
+    ];
+    for (const sql of alters) {
+      try { db.prepare(sql).run(); } catch (_) { /* exists */ }
+    }
+    _altersDb = db;
   }
+  if (_schemaDb && _schemaDb === db) return;
   db.prepare(`CREATE TABLE IF NOT EXISTS expense_budgets (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     category TEXT NOT NULL,
@@ -56,6 +76,409 @@ function ensureExpenseExtrasSchema() {
     created_at TEXT DEFAULT (datetime('now')),
     notes TEXT
   )`).run();
+  db.prepare(`CREATE TABLE IF NOT EXISTS owner_withdrawals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    withdrawal_date TEXT NOT NULL,
+    amount REAL NOT NULL,
+    purpose TEXT,
+    taken_by TEXT,
+    given_by TEXT,
+    authorised_by TEXT,
+    cash_source TEXT DEFAULT 'today',
+    payment_method TEXT DEFAULT 'cash',
+    branch_id INTEGER,
+    notes TEXT,
+    client_request_id TEXT,
+    created_by INTEGER,
+    created_by_name TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+  )`).run();
+  db.prepare(`CREATE TABLE IF NOT EXISTS expense_app_requests (
+    client_request_id TEXT PRIMARY KEY,
+    method TEXT,
+    user_id INTEGER,
+    result_json TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+  )`).run();
+  _schemaDb = db;
+}
+
+function normCashSource(v) {
+  return String(v || 'today').toLowerCase() === 'previous' ? 'previous' : 'today';
+}
+
+function round2(n) {
+  return Math.round((Number(n) || 0) * 100) / 100;
+}
+
+/** Replays the stored result when an offline-queued mobile write is retried. */
+function idempotent(clientRequestId, method, userId, fn) {
+  const key = String(clientRequestId || '').trim().slice(0, 80);
+  if (!key) return fn();
+  ensureExpenseExtrasSchema();
+  const db = getDb();
+  const prev = db.prepare('SELECT result_json FROM expense_app_requests WHERE client_request_id = ?').get(key);
+  if (prev) {
+    try { return { ...JSON.parse(prev.result_json || '{}'), __replayed: true }; } catch (_) { return { __replayed: true }; }
+  }
+  const result = fn();
+  try {
+    db.prepare('INSERT INTO expense_app_requests (client_request_id, method, user_id, result_json) VALUES (?,?,?,?)')
+      .run(key, method, userId || null, JSON.stringify(result == null ? {} : result).slice(0, 20000));
+  } catch (_) { /* duplicate race */ }
+  return result;
+}
+
+function recordWithdrawal(data, actor) {
+  ensureExpenseExtrasSchema();
+  const amount = round2(data.amount);
+  if (!(amount > 0)) throw new Error('Withdrawal amount must be greater than zero');
+  const purpose = String(data.purpose || '').trim();
+  if (!purpose) throw new Error('Purpose is required');
+  const taken_by = String(data.taken_by || '').trim();
+  const given_by = String(data.given_by || '').trim();
+  const authorised_by = String(data.authorised_by || '').trim();
+  if (!taken_by) throw new Error('Who took the money is required');
+  if (!given_by) throw new Error('Who gave the money is required');
+  if (!authorised_by) throw new Error('Who authorised it is required');
+  const withdrawal_date = String(data.withdrawal_date || todayStr()).slice(0, 10);
+  const cash_source = normCashSource(data.cash_source);
+  const payment_method = ['cash', 'eft', 'card', 'bank'].includes(String(data.payment_method || '').toLowerCase())
+    ? String(data.payment_method).toLowerCase() : 'cash';
+  const branch_id = data.branch_id != null && data.branch_id !== '' && data.branch_id !== 'all'
+    ? Number(data.branch_id) : (actor?.branch_id != null ? Number(actor.branch_id) : null);
+  const db = getDb();
+  const r = db.prepare(`INSERT INTO owner_withdrawals
+    (withdrawal_date, amount, purpose, taken_by, given_by, authorised_by, cash_source, payment_method, branch_id, notes,
+     client_request_id, created_by, created_by_name)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    withdrawal_date, amount, purpose.slice(0, 300), taken_by.slice(0, 120), given_by.slice(0, 120), authorised_by.slice(0, 120),
+    cash_source, payment_method, branch_id, data.notes ? String(data.notes).slice(0, 1000) : null,
+    data.client_request_id || null, actor?.id || null, actor?.full_name || actor?.username || null
+  );
+  const newId = Number(r?.lastInsertRowid) || 0;
+  const row = (newId && db.prepare('SELECT * FROM owner_withdrawals WHERE id = ?').get(newId))
+    || db.prepare('SELECT * FROM owner_withdrawals ORDER BY id DESC LIMIT 1').get();
+  try {
+    db.prepare('INSERT INTO audit_log (user_id, username, action, entity_type, entity_id, details) VALUES (?,?,?,?,?,?)')
+      .run(actor?.id || null, actor?.full_name || actor?.username || null, 'money_withdrawal', 'owner_withdrawal', row?.id || null,
+        JSON.stringify({ amount, purpose, taken_by, given_by, authorised_by, cash_source }));
+  } catch (_) { /* */ }
+  try {
+    if (row && !require('./accounting-central').isLocalInstallerProcess()) {
+      require('./accounting-platform').postFromOwnerWithdrawal(row);
+    }
+  } catch (err) {
+    console.warn('[acc] postFromOwnerWithdrawal:', err.message || err);
+  }
+  return row;
+}
+
+function listWithdrawals(filters = {}) {
+  ensureExpenseExtrasSchema();
+  let sql = 'SELECT * FROM owner_withdrawals WHERE 1=1';
+  const params = [];
+  if (filters.from) { sql += ' AND withdrawal_date >= ?'; params.push(filters.from); }
+  if (filters.to) { sql += ' AND withdrawal_date <= ?'; params.push(filters.to); }
+  if (filters.branch_id != null && filters.branch_id !== '' && filters.branch_id !== 'all') {
+    sql += ' AND branch_id = ?';
+    params.push(Number(filters.branch_id));
+  }
+  sql += ' ORDER BY withdrawal_date DESC, id DESC LIMIT ?';
+  params.push(Math.min(Number(filters.limit) || 200, 1000));
+  return getDb().prepare(sql).all(...params);
+}
+
+const NON_MONEY_TENDERS = new Set(['giftcard', 'gift_card', 'loyalty', 'points', 'store_credit', 'account', 'credit', 'voucher']);
+
+function dateList(from, to) {
+  const out = [];
+  const d = new Date(`${from}T12:00:00`);
+  const end = new Date(`${to}T12:00:00`);
+  while (d <= end && out.length < 370) {
+    out.push(d.toLocaleDateString('en-CA'));
+    d.setDate(d.getDate() + 1);
+  }
+  return out;
+}
+
+/**
+ * Daily money: takings per day (sale payments), what was paid out of today's takings
+ * (expenses + withdrawals marked "today"), what came from previous days' money, and the net.
+ */
+function dailyMoneyReport(filters = {}) {
+  ensureExpenseExtrasSchema();
+  const db = getDb();
+  const today = todayStr();
+  let from = String(filters.from || filters.date || today).slice(0, 10);
+  let to = String(filters.to || filters.date || from).slice(0, 10);
+  if (to < from) [from, to] = [to, from];
+  const branchId = filters.branch_id != null && filters.branch_id !== '' && filters.branch_id !== 'all'
+    ? Number(filters.branch_id) : null;
+
+  const dateKeys = dateList(from, to);
+  const emptyDay = (d) => ({
+    date: d, money_in: 0, cash_in: 0, card_in: 0, eft_in: 0, other_in: 0, sale_count: 0,
+    expenses_today: 0, expenses_previous: 0, expenses_owner: 0,
+    withdrawals_today: 0, withdrawals_previous: 0, owner_cash_in: 0,
+    out_today: 0, net_today: 0
+  });
+  const days = new Map(dateKeys.map((d) => [d, emptyDay(d)]));
+  // Per-branch breakdown is built from the same rows — one pass, no per-branch re-query.
+  const wantBranches = branchId == null && (filters.include_branches !== false || filters.include_branch_days);
+  const branchDays = new Map();
+  const targets = (d, bid) => {
+    const key = String(d || '').slice(0, 10);
+    const row = days.get(key);
+    if (!row) return [];
+    if (!wantBranches || bid == null || bid === '') return [row];
+    const b = Number(bid);
+    if (!branchDays.has(b)) branchDays.set(b, new Map(dateKeys.map((x) => [x, emptyDay(x)])));
+    return [row, branchDays.get(b).get(key)];
+  };
+
+  const salesBranch = branchId != null ? ' AND s.branch_id = ?' : '';
+  const salesParams = branchId != null ? [from, to, branchId] : [from, to];
+  const paySql = (dateExpr) => `
+    SELECT date(${dateExpr}) AS d, s.branch_id AS bid, LOWER(COALESCE(sp.payment_type, 'cash')) AS method, COALESCE(SUM(sp.amount), 0) AS total
+    FROM sale_payments sp JOIN sales s ON sp.sale_id = s.id
+    WHERE date(${dateExpr}) >= date(?) AND date(${dateExpr}) <= date(?)
+      AND s.status IN ('completed', 'partial_return')${salesBranch}
+    GROUP BY date(${dateExpr}), s.branch_id, LOWER(COALESCE(sp.payment_type, 'cash'))`;
+  let payRows = [];
+  try { payRows = db.prepare(paySql('COALESCE(s.sale_datetime, s.created_at)')).all(...salesParams); } catch (_) {
+    try { payRows = db.prepare(paySql('s.created_at')).all(...salesParams); } catch (_2) { payRows = []; }
+  }
+  for (const r of payRows) {
+    const amt = Number(r.total) || 0;
+    const m = String(r.method || '');
+    if (NON_MONEY_TENDERS.has(m)) continue;
+    for (const row of targets(r.d, r.bid)) {
+      row.money_in += amt;
+      if (m === 'cash') row.cash_in += amt;
+      else if (m === 'card' || m.includes('card') || m === 'yoco' || m === 'speedpoint') row.card_in += amt;
+      else if (m === 'eft' || m.includes('transfer') || m === 'bank') row.eft_in += amt;
+      else row.other_in += amt;
+    }
+  }
+  const countSql = (dateExpr) => `
+    SELECT date(${dateExpr}) AS d, s.branch_id AS bid, COUNT(*) AS c FROM sales s
+    WHERE date(${dateExpr}) >= date(?) AND date(${dateExpr}) <= date(?)
+      AND s.status IN ('completed', 'partial_return')${salesBranch}
+    GROUP BY date(${dateExpr}), s.branch_id`;
+  try {
+    let rows;
+    try { rows = db.prepare(countSql('COALESCE(s.sale_datetime, s.created_at)')).all(...salesParams); } catch (_) {
+      rows = db.prepare(countSql('s.created_at')).all(...salesParams);
+    }
+    for (const r of rows) {
+      for (const row of targets(r.d, r.bid)) row.sale_count += Number(r.c) || 0;
+    }
+  } catch (_) { /* */ }
+
+  let expSql = `SELECT * FROM expenses WHERE expense_date >= ? AND expense_date <= ?`;
+  const expParams = [from, to];
+  if (branchId != null) { expSql += ' AND branch_id = ?'; expParams.push(branchId); }
+  let expRows = [];
+  try { expRows = db.prepare(expSql).all(...expParams); } catch (_) { expRows = []; }
+  for (const e of expRows) {
+    if (String(e.approval_status || '').toLowerCase() === 'rejected') continue;
+    const amt = Number(e.amount) || 0;
+    for (const row of targets(e.expense_date, e.branch_id)) {
+      if (String(e.funding_source || '').toLowerCase() === 'owner') row.expenses_owner += amt;
+      else if (normCashSource(e.cash_source) === 'previous') row.expenses_previous += amt;
+      else row.expenses_today += amt;
+    }
+  }
+
+  const withdrawalRows = listWithdrawals({ from, to, branch_id: branchId, limit: 1000 });
+  for (const w of withdrawalRows) {
+    const amt = Number(w.amount) || 0;
+    for (const row of targets(w.withdrawal_date, w.branch_id)) {
+      if (normCashSource(w.cash_source) === 'previous') row.withdrawals_previous += amt;
+      else row.withdrawals_today += amt;
+    }
+  }
+
+  if (branchId == null) {
+    for (const f of listOwnerFundings({ from, to, limit: 1000 })) {
+      if (f.funding_type !== 'cash_injection') continue;
+      const row = days.get(String(f.funding_date || '').slice(0, 10));
+      if (row) row.owner_cash_in += Number(f.amount) || 0;
+    }
+  }
+
+  const keys = ['money_in', 'cash_in', 'card_in', 'eft_in', 'other_in', 'expenses_today', 'expenses_previous', 'expenses_owner',
+    'withdrawals_today', 'withdrawals_previous', 'owner_cash_in', 'out_today', 'net_today'];
+  const finish = (dayMap) => {
+    const totals = { sale_count: 0 };
+    keys.forEach((k) => { totals[k] = 0; });
+    const list = [...dayMap.values()].map((r) => {
+      r.out_today = r.expenses_today + r.withdrawals_today;
+      r.net_today = r.money_in - r.out_today;
+      keys.forEach((k) => { r[k] = round2(r[k]); totals[k] += r[k]; });
+      totals.sale_count += r.sale_count;
+      return r;
+    });
+    keys.forEach((k) => { totals[k] = round2(totals[k]); });
+    return { days: list, totals };
+  };
+  const { days: rows, totals } = finish(days);
+
+  let branch = null;
+  if (branchId != null) {
+    try { branch = db.prepare('SELECT * FROM branches WHERE id = ?').get(branchId) || null; } catch (_) { branch = null; }
+  }
+  let by_branch = [];
+  if (wantBranches) {
+    let branches = [];
+    try { branches = db.prepare('SELECT id, name FROM branches ORDER BY id').all(); } catch (_) { branches = []; }
+    if (branches.length > 1 || filters.include_branch_days) {
+      by_branch = branches.map((b) => {
+        const bd = branchDays.get(Number(b.id)) || new Map(dateKeys.map((x) => [x, emptyDay(x)]));
+        const done = finish(bd);
+        const out = { branch_id: b.id, branch_name: b.name, totals: done.totals };
+        if (filters.include_branch_days) out.days = done.days;
+        return out;
+      });
+    }
+  }
+  const withdrawals = withdrawalRows.slice(0, 500);
+  return { from, to, branch_id: branchId, branch, days: rows, totals, by_branch, withdrawals };
+}
+
+function dailyMoneyPdf(filters = {}, meta = {}) {
+  const { jsPDF } = require('jspdf');
+  require('jspdf-autotable');
+  const { pdfBytes } = require('./pdf-bytes');
+  const report = dailyMoneyReport(filters);
+  let s = {};
+  try {
+    const st = require('./store');
+    s = (st.getSettingsParsed && st.getSettingsParsed()) || st.getSettings() || {};
+    if (typeof s === 'string') s = JSON.parse(s);
+  } catch (_) { s = {}; }
+  const cur = s.currency || 'R';
+  const money = (n) => `${cur}${(Number(n) || 0).toFixed(2)}`;
+  const doc = new jsPDF();
+  let y = 14;
+  let textX = 14;
+  try {
+    const { getShopLogo } = require('../../lib/product-images');
+    const file = getShopLogo();
+    const buf = file.buffer || (file.path ? require('fs').readFileSync(file.path) : null);
+    const fmt = /png/i.test(file.mime || '') ? 'PNG' : (/jpe?g/i.test(file.mime || '') ? 'JPEG' : null);
+    if (buf && fmt) {
+      doc.addImage(`data:${file.mime};base64,${Buffer.from(buf).toString('base64')}`, fmt, 14, y - 2, 22, 22);
+      textX = 40;
+    }
+  } catch (_) { /* no logo */ }
+  doc.setFontSize(17);
+  doc.setFont(undefined, 'bold');
+  doc.text(String(s.shop_name || 'Shop POS'), textX, y + 4);
+  doc.setFont(undefined, 'normal');
+  doc.setFontSize(9);
+  let hy = y + 10;
+  const b = report.branch;
+  const lines = b
+    ? [`Branch: ${b.name || `#${b.id}`}`, b.address || s.address, (b.phone || s.phone) ? `Tel: ${b.phone || s.phone}` : '']
+    : ['All stores / branches', s.address, s.phone ? `Tel: ${s.phone}` : ''];
+  if (s.vat_number) lines.push(`VAT: ${s.vat_number}`);
+  lines.filter(Boolean).forEach((l) => { doc.text(String(l), textX, hy); hy += 4.5; });
+  y = Math.max(hy, y + 24) + 2;
+  doc.setDrawColor(200);
+  doc.line(14, y, 196, y);
+  y += 8;
+  doc.setFontSize(14);
+  doc.setFont(undefined, 'bold');
+  doc.text('Daily Money Report', 14, y);
+  doc.setFont(undefined, 'normal');
+  doc.setFontSize(9);
+  y += 6;
+  doc.text(`Period: ${report.from === report.to ? report.from : `${report.from} to ${report.to}`}`, 14, y);
+  y += 4.5;
+  doc.text(`Generated: ${new Date().toLocaleString('en-ZA')}${meta.by ? ` by ${meta.by}` : ''}`, 14, y);
+  y += 5;
+
+  const t = report.totals;
+  doc.autoTable({
+    startY: y,
+    head: [['Summary', 'Amount']],
+    body: [
+      ['Money in (sales takings)', money(t.money_in)],
+      ['   Cash', money(t.cash_in)],
+      ['   Card', money(t.card_in)],
+      ['   EFT / transfer', money(t.eft_in)],
+      ['   Other', money(t.other_in)],
+      ["Expenses paid from today's money", money(t.expenses_today)],
+      ["Withdrawals from today's money", money(t.withdrawals_today)],
+      ["NET of today's money", money(t.net_today)],
+      ["Expenses paid from previous days' money", money(t.expenses_previous)],
+      ["Withdrawals from previous days' money", money(t.withdrawals_previous)],
+      ['Owner-funded expenses (owner pocket)', money(t.expenses_owner)],
+      ['Owner cash put into business', money(t.owner_cash_in)]
+    ],
+    styles: { fontSize: 9 },
+    headStyles: { fillColor: [49, 46, 129] },
+    columnStyles: { 1: { halign: 'right' } },
+    didParseCell: (d) => {
+      if (d.section === 'body' && d.row.index === 7) { d.cell.styles.fontStyle = 'bold'; d.cell.styles.fillColor = [224, 231, 255]; }
+    }
+  });
+  y = doc.lastAutoTable.finalY + 6;
+
+  if (report.days.length > 1) {
+    doc.autoTable({
+      startY: y,
+      head: [['Date', 'Sales', 'Money in', 'Expenses (today)', 'Withdrawals (today)', 'Net today', 'From previous']],
+      body: report.days.map((d) => [d.date, d.sale_count, money(d.money_in), money(d.expenses_today), money(d.withdrawals_today),
+        money(d.net_today), money(d.expenses_previous + d.withdrawals_previous)]),
+      styles: { fontSize: 8 },
+      headStyles: { fillColor: [49, 46, 129] },
+      columnStyles: { 2: { halign: 'right' }, 3: { halign: 'right' }, 4: { halign: 'right' }, 5: { halign: 'right' }, 6: { halign: 'right' } }
+    });
+    y = doc.lastAutoTable.finalY + 6;
+  }
+
+  if (report.by_branch && report.by_branch.length) {
+    doc.autoTable({
+      startY: y,
+      head: [['Branch', 'Money in', 'Out (today)', 'Net today', 'From previous']],
+      body: report.by_branch.map((r) => [r.branch_name, money(r.totals.money_in), money(r.totals.out_today), money(r.totals.net_today),
+        money(r.totals.expenses_previous + r.totals.withdrawals_previous)]),
+      styles: { fontSize: 8 },
+      headStyles: { fillColor: [49, 46, 129] },
+      columnStyles: { 1: { halign: 'right' }, 2: { halign: 'right' }, 3: { halign: 'right' }, 4: { halign: 'right' } }
+    });
+    y = doc.lastAutoTable.finalY + 6;
+  }
+
+  if (report.withdrawals && report.withdrawals.length) {
+    doc.autoTable({
+      startY: y,
+      head: [['Date', 'Amount', 'Purpose', 'Taken by', 'Given by', 'Authorised by', 'Money']],
+      body: report.withdrawals.map((w) => [w.withdrawal_date, money(w.amount), w.purpose || '', w.taken_by || '', w.given_by || '',
+        w.authorised_by || '', w.cash_source === 'previous' ? 'Previous' : 'Today']),
+      styles: { fontSize: 8 },
+      headStyles: { fillColor: [153, 27, 27] },
+      columnStyles: { 1: { halign: 'right' } }
+    });
+  }
+
+  const pages = doc.internal.getNumberOfPages();
+  for (let i = 1; i <= pages; i++) {
+    doc.setPage(i);
+    doc.setFontSize(8);
+    doc.setTextColor(128);
+    doc.text(`${s.shop_name || 'Shop POS'} — Daily Money Report — Page ${i} of ${pages}`, 14, 290);
+  }
+  const bytes = pdfBytes(doc);
+  const tag = report.from === report.to ? report.from : `${report.from}_to_${report.to}`;
+  return {
+    filename: `daily-money-${tag}${b ? `-${String(b.name || b.id).replace(/[^a-z0-9]+/gi, '-').toLowerCase()}` : '-all'}.pdf`,
+    base64: Buffer.from(bytes).toString('base64'),
+    report
+  };
 }
 
 function monthKey(d = new Date()) {
@@ -234,7 +657,16 @@ function recordOwnerFunding(data, actor) {
       .run(actor?.id || null, actor?.full_name || actor?.username || null, 'owner_funding', 'owner_funding', r.lastInsertRowid,
         JSON.stringify({ amount, funding_type, description }));
   } catch (_) { /* */ }
-  return getDb().prepare('SELECT * FROM owner_fundings WHERE id = ?').get(r.lastInsertRowid);
+  const row = getDb().prepare('SELECT * FROM owner_fundings WHERE id = ?').get(r.lastInsertRowid)
+    || getDb().prepare('SELECT * FROM owner_fundings ORDER BY id DESC LIMIT 1').get();
+  try {
+    if (!require('./accounting-central').isLocalInstallerProcess()) {
+      require('./accounting-platform').postFromOwnerFunding(row);
+    }
+  } catch (err) {
+    console.warn('[acc] postFromOwnerFunding:', err.message || err);
+  }
+  return row;
 }
 
 function listOwnerFundings(filters = {}) {
@@ -246,6 +678,46 @@ function listOwnerFundings(filters = {}) {
   sql += ' ORDER BY funding_date DESC, id DESC LIMIT ?';
   params.push(Math.min(Number(filters.limit) || 200, 1000));
   return getDb().prepare(sql).all(...params);
+}
+
+function expenseItemSummary(filters = {}) {
+  ensureExpenseExtrasSchema();
+  const li = require('../../lib/expense-line-items');
+  let sql = 'SELECT * FROM expenses WHERE 1=1';
+  const params = [];
+  if (filters.from) { sql += ' AND expense_date >= ?'; params.push(filters.from); }
+  if (filters.to) { sql += ' AND expense_date <= ?'; params.push(filters.to); }
+  if (filters.category) { sql += ' AND category = ?'; params.push(filters.category); }
+  const groups = new Map();
+  const add = (name, category, qty, total, expenseId, date) => {
+    const label = String(name || '').trim() || 'Unnamed';
+    const key = label.toLowerCase();
+    if (!groups.has(key)) {
+      groups.set(key, { item: label, category: category || '', purchases: 0, quantity: 0, total: 0, last_date: null, _ids: new Set() });
+    }
+    const g = groups.get(key);
+    if (!g._ids.has(expenseId)) { g._ids.add(expenseId); g.purchases += 1; }
+    g.quantity += Number(qty) || 0;
+    g.total += Number(total) || 0;
+    if (date && (!g.last_date || date > g.last_date)) g.last_date = date;
+  };
+  for (const e of getDb().prepare(sql).all(...params)) {
+    let items = [];
+    try { items = li.normalizeLineItems(JSON.parse(e.line_items_json || '[]')); } catch (_) { items = []; }
+    if (items.length) {
+      items.forEach((r) => add(r.name, e.category, r.quantity, r.amount, e.id, e.expense_date));
+    } else {
+      add(e.description || e.category, e.category, 1, e.amount, e.id, e.expense_date);
+    }
+  }
+  const rows = [...groups.values()].map(({ _ids, ...g }) => ({
+    ...g,
+    quantity: Math.round(g.quantity * 1000) / 1000,
+    total: Math.round(g.total * 100) / 100
+  })).sort((a, b) => b.total - a.total);
+  const grand = rows.reduce((a, r) => ({ purchases: a.purchases + r.purchases, total: a.total + r.total }), { purchases: 0, total: 0 });
+  grand.total = Math.round(grand.total * 100) / 100;
+  return { items: rows, grand_total: grand, from: filters.from || null, to: filters.to || null };
 }
 
 function budgetStatus(month_key) {
@@ -286,6 +758,13 @@ module.exports = {
   postDueRecurring,
   recordOwnerFunding,
   listOwnerFundings,
+  expenseItemSummary,
+  recordWithdrawal,
+  listWithdrawals,
+  dailyMoneyReport,
+  dailyMoneyPdf,
+  idempotent,
+  normCashSource,
   budgetStatus,
   monthKey
 };

@@ -86,7 +86,11 @@ function listPendingPairingsAdmin() {
 
 function approvePairingAdmin(code, data = {}, actor) {
   ensureOpsDisplay();
-  const row = dbGet("SELECT * FROM ops_display_pairings WHERE pairing_code = ? AND status = 'pending'", [String(code || '').trim()]);
+  const normalizedCode = String(code || '').trim();
+  const row = dbGet(
+    "SELECT * FROM ops_display_pairings WHERE pairing_code = ? AND status = 'pending' ORDER BY id DESC LIMIT 1",
+    [normalizedCode]
+  );
   if (!row) throw new Error('Pairing code not found or already used');
   if (Date.parse(row.expires_at) < Date.now()) throw new Error('Pairing code expired');
   const name = String(data.name || '').trim() || (row.device_type === 'cds' ? 'Customer Display' : 'Kitchen Display');
@@ -99,7 +103,11 @@ function approvePairingAdmin(code, data = {}, actor) {
     [deviceCode, row.device_type, name, branchId, hashToken(token), 'online', row.device_meta || '{}',
       JSON.stringify(data.config || {})]
   );
-  const deviceId = ins.lastInsertRowid || dbGet('SELECT id FROM ops_display_devices WHERE device_code = ?', [deviceCode])?.id;
+  let deviceId = ins.lastInsertRowid;
+  if (!deviceId) {
+    deviceId = dbGet('SELECT id FROM ops_display_devices WHERE device_code = ?', [deviceCode])?.id;
+  }
+  if (!deviceId) throw new Error('Could not save display device');
   try {
     dbRun(`CREATE TABLE IF NOT EXISTS ops_display_token_cache (
       device_id INTEGER PRIMARY KEY,

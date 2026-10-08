@@ -5,8 +5,12 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
 .pair-box { margin: auto; text-align: center; padding: 40px; }
 .pair-code { font-size: 72px; letter-spacing: 12px; font-weight: bold; color: #38bdf8; margin: 20px 0; }
 .muted { color: #94a3b8; }
-.kiosk-header { display: flex; justify-content: space-between; align-items: center; padding: 16px 24px; background: #1e293b; }
-.kiosk-header h1 { font-size: 28px; }
+.kiosk-header { display: flex; justify-content: space-between; align-items: center; padding: 16px 24px; background: #1e293b; gap: 12px; flex-wrap: wrap; }
+.kiosk-header h1 { font-size: 28px; flex: 1; min-width: 160px; }
+.kiosk-header-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; max-width: 55%; }
+.kiosk-header-btn { padding: 8px 14px !important; font-size: 15px !important; white-space: nowrap; }
+.kiosk-device-name { font-size: 13px; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kiosk-status-pill { padding: 6px 12px; border-radius: 999px; font: 600 12px system-ui; color: #fff; background: #334155; pointer-events: none; white-space: nowrap; }
 .kiosk-body { flex: 1; display: grid; grid-template-columns: 280px 1fr; overflow: hidden; }
 .cat-list { background: #1e293b; overflow-y: auto; padding: 12px; }
 .cat-btn { display: block; width: 100%; text-align: left; padding: 16px; margin-bottom: 8px; border: none; border-radius: 12px; background: #334155; color: #fff; font-size: 18px; cursor: pointer; }
@@ -42,5 +46,10 @@ html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui
 .idle-overlay h1 { font-size: 48px; }
 .confirm-screen { text-align: center; padding: 60px 40px; }
 .confirm-screen .order-num { font-size: 80px; color: #38bdf8; font-weight: bold; margin: 24px 0; }
-.pay-btn { display: block; width: 100%; padding: 20px; margin: 10px 0; font-size: 22px; border: none; border-radius: 12px; cursor: pointer; background: #334155; color: #fff; }
-.pay-btn.selected { background: #2563eb; }
+.pay-methods-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; margin-bottom: 16px; max-height: 42vh; overflow-y: auto; padding-right: 4px; }
+.pay-btn { display: block; width: 100%; padding: 16px 12px; font-size: 17px; line-height: 1.25; border: none; border-radius: 12px; cursor: pointer; background: #334155; color: #fff; min-height: 56px; }
+.pay-btn.selected { background: #2563eb; box-shadow: 0 0 0 2px #93c5fd; }
+.kiosk-checkout-body { flex: 1; padding: 24px 32px 32px; max-width: 560px; margin: 0 auto; width: 100%; overflow-y: auto; }
+.kiosk-checkout-confirm { width: 100%; padding: 20px; margin-top: 16px; font-size: 22px; border: none; border-radius: 12px; cursor: pointer; }
+.kiosk-customer-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 10px 24px; background: #172554; border-bottom: 1px solid #334155; font-size: 15px; }
+.kiosk-customer-bar .kiosk-pts { margin-left: auto; background: #2563eb; color: #fff; padding: 4px 12px; border-radius: 999px; font-weight: 700; font-size: 13px; }

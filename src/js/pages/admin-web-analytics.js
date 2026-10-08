@@ -5,6 +5,7 @@ Object.assign(window.AdminPage || (window.AdminPage = {}), {
     return `<div class="page-toolbar" style="gap:8px;flex-wrap:wrap;align-items:center;margin:12px 0">
       ${tab('orders', 'Orders')}
       ${tab('customers', 'Customers')}
+      ${tab('app-access', '📱 Customer App Access')}
       ${tab('visitors', 'Website Visitor Analysis')}
       ${tab('rejected', 'Rejected')}
     </div>`;

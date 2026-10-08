@@ -167,6 +167,10 @@ function getEmployeeByCode(code) {
 }
 
 function assertEmployeeLinkedUserActive(employeeRow) {
+  const status = String(employeeRow?.status || '').trim();
+  if (status && status !== 'Active') {
+    throw new Error(`Staff member is ${status.toLowerCase()} — access is blocked. Contact the administrator.`);
+  }
   const uid = employeeRow?.user_id;
   if (!uid) return;
   const u = getDb().prepare('SELECT id, role, is_active FROM users WHERE id = ?').get(uid);
@@ -358,6 +362,7 @@ function saveEmployee(data, actorId) {
       data.notes || null, data.user_id || null, data.id
     );
     const saved = getEmployee(data.id);
+    syncLinkedUserFromEmployee(saved);
     return { ...saved, _link_warnings: linkCheck.warnings };
   }
   const code = data.employee_code?.trim() || nextEmployeeCode();
@@ -389,6 +394,22 @@ function saveEmployee(data, actorId) {
   );
   const saved = getEmployee(r.lastInsertRowid);
   return { ...saved, _link_warnings: linkCheck.warnings, _generated_pin: !data.id && pin ? pin : undefined };
+}
+
+function syncLinkedUserFromEmployee(emp) {
+  if (!emp?.user_id) return;
+  const blocked = String(emp.status || '').trim() !== 'Active';
+  try {
+    getDb().prepare('UPDATE users SET is_active = ?, updated_at = datetime(\'now\') WHERE id = ? AND role != ?')
+      .run(blocked ? 0 : 1, emp.user_id, 'owner');
+    if (blocked) {
+      try { require('./studio-app-platform').revokeUserSessions(emp.user_id); } catch (_) { /* */ }
+      try { require('./radio-platform').revokeUserSessions(emp.user_id); } catch (_) { /* */ }
+      try { require('./expense-app-platform').revokeUserSessions(emp.user_id); } catch (_) { /* */ }
+    }
+  } catch (err) {
+    console.warn('[staff] sync linked user:', err.message || err);
+  }
 }
 
 function deleteEmployee(id, actorId, actorName) {
