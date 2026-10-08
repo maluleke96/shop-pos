@@ -3204,7 +3204,7 @@ function completeSale(saleData, actorId, actorName, actorRole) {
   }
   try {
     const delivery = require('./delivery-platform');
-    const saleRow = getSale(result.saleId);
+    const saleRow = getSale(result.saleId, { skipEditHistory: true });
     if (saleRow) delivery.upsertFromSale(saleRow);
   } catch (_) { /* optional */ }
   try {
@@ -3224,7 +3224,7 @@ function completeSale(saleData, actorId, actorName, actorRole) {
   } catch (err) {
     console.warn('[sla] sale:', err.message);
   }
-  const saleRow = getSale(result.saleId);
+  const saleRow = getSale(result.saleId, { skipEditHistory: true });
   return {
     ...result,
     sale: saleRow,
@@ -3241,7 +3241,18 @@ function completeSale(saleData, actorId, actorName, actorRole) {
   };
 }
 
-function getSale(id) {
+function attachSaleEditHistory(sale, saleId) {
+  if (!sale) return sale;
+  if (sale.edit_history) return sale;
+  sale.edit_history = [];
+  try {
+    const fn = require('./audit').getSaleEditHistory;
+    if (typeof fn === 'function') sale.edit_history = fn(saleId);
+  } catch (_) { /* optional — never block sales / receipts */ }
+  return sale;
+}
+
+function getSale(id, opts = {}) {
   const sale = getDb().prepare(`
     SELECT s.*, u.full_name as cashier_name, c.name as customer_name, c.phone as customer_phone
     FROM sales s
@@ -3263,7 +3274,7 @@ function getSale(id) {
   sale.gift_card_amount = sale.payments
     .filter(p => p.payment_type === 'giftcard')
     .reduce((s, p) => s + Number(p.amount), 0);
-  sale.edit_history = auditSvc.getSaleEditHistory(id);
+  if (!opts.skipEditHistory) attachSaleEditHistory(sale, id);
   return sale;
 }
 
