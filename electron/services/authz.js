@@ -58,6 +58,14 @@ function assertEmployeeActor(actor, employeeId) {
   const targetId = employeeId != null ? Number(employeeId) : Number(actor?.employee_id);
   const empSess = session.getEmployeeSession();
   if (empSess?.employee_id != null && targetId === Number(empSess.employee_id)) {
+    try {
+      const staff = require('./staff');
+      const row = getDb().prepare('SELECT id, user_id FROM employees WHERE id = ?').get(empSess.employee_id);
+      if (row) staff.assertEmployeeLinkedUserActive(row);
+    } catch (err) {
+      session.clearEmployeeSession?.();
+      throw err;
+    }
     return {
       id: empSess.user_id || null,
       employee_id: empSess.employee_id,
@@ -87,13 +95,13 @@ function requireRole(actor, roles, message) {
 }
 
 const ROLE_DEFAULTS = {
-  owner: { sell: true, void_sales: true, refunds: true, discounts: true, change_prices: true, view_reports: true, manage_stock: true, system_settings: true, customers: true, suppliers: true, gift_cards: true, cash_up: true, products: true, reports: true, operations: true, kitchen: true, quotes: true, layby: true, delete_sales: true, bookkeeping: true, staff_portal: true, delivery: true },
-  manager: { sell: true, void_sales: true, refunds: true, discounts: true, change_prices: true, view_reports: true, manage_stock: true, customers: true, suppliers: true, gift_cards: true, cash_up: true, products: true, reports: true, operations: true, kitchen: true, quotes: true, layby: true, owner_salary: true, bookkeeping: true, delivery: true, expense_capture: true },
-  supervisor: { sell: true, void_sales: true, refunds: true, discounts: true, cash_up: true, operations: true, kitchen: true, gift_cards: true, layby: true, quotes: true, delivery: true },
-  assistant_manager: { sell: true, void_sales: true, refunds: true, discounts: true, cash_up: true, operations: true, kitchen: true, gift_cards: true, layby: true, quotes: true, view_reports: true, customers: true, products: true, delivery: true },
+  owner: { sell: true, void_sales: true, refunds: true, discounts: true, change_prices: true, view_reports: true, manage_stock: true, system_settings: true, customers: true, suppliers: true, gift_cards: true, cash_up: true, products: true, reports: true, operations: true, kitchen: true, quotes: true, layby: true, delete_sales: true, bookkeeping: true, staff_portal: true, delivery: true, request_backdated_order: true, authorize_backdated_order: true, view_backdated_orders: true, correct_backdated_order: true, void_backdated_order: true },
+  manager: { sell: true, void_sales: true, refunds: true, discounts: true, change_prices: true, view_reports: true, manage_stock: true, customers: true, suppliers: true, gift_cards: true, cash_up: true, products: true, reports: true, operations: true, kitchen: true, quotes: true, layby: true, owner_salary: true, bookkeeping: true, delivery: true, expense_capture: true, ops_devices: true, ops_device_use: true, request_backdated_order: true, authorize_backdated_order: true, view_backdated_orders: true, correct_backdated_order: true, void_backdated_order: true, mkt_view: true, mkt_campaign_create: true, mkt_campaign_edit: true, mkt_promotions: true, mkt_analytics: true, mkt_ai: true, fin_view: true, fin_reports: true, fin_ai: true },
+  supervisor: { sell: true, void_sales: true, refunds: true, discounts: true, cash_up: true, operations: true, kitchen: true, gift_cards: true, layby: true, quotes: true, delivery: true, request_backdated_order: true },
+  assistant_manager: { sell: true, void_sales: true, refunds: true, discounts: true, cash_up: true, operations: true, kitchen: true, gift_cards: true, layby: true, quotes: true, view_reports: true, customers: true, products: true, delivery: true, request_backdated_order: true, authorize_backdated_order: true, view_backdated_orders: true },
   delivery_manager: { sell: false, delivery: true, view_reports: true, manage_stock: false },
   referral_agent: { sell: false, view_reports: false, manage_stock: false },
-  cashier: { sell: true, refunds: false, owner_salary: false, owner_salary_only: false, delivery: true }
+  cashier: { sell: true, refunds: false, owner_salary: false, owner_salary_only: false, delivery: true, request_backdated_order: true }
 };
 
 function parsePermissions(user) {

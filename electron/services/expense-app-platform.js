@@ -51,9 +51,24 @@ function ensureSchema() {
   }
 }
 
+function userAccountIsActive(user) {
+  if (!user) return false;
+  if (String(user.role || '') === 'owner') return true;
+  const v = user.is_active;
+  if (v === false || v === 0 || v === '0' || v === 'f' || v === 'false' || v === 'n') return false;
+  return true;
+}
+
 function userCanCaptureExpenses(user) {
-  if (!user || user.is_active === false || user.is_active === 0) return false;
+  if (!user || !userAccountIsActive(user)) return false;
   return hasUserPermission(user, PERM);
+}
+
+function revokeUserSessions(userId) {
+  ensureSchema();
+  try {
+    dbRun('DELETE FROM expense_app_sessions WHERE user_id = ?', [Number(userId)]);
+  } catch (_) { /* ignore */ }
 }
 
 function resolveSession(token) {
@@ -66,6 +81,10 @@ function resolveSession(token) {
     WHERE s.token_hash = ? AND s.expires_at > ?
   `, [hashToken(token), nowIso()]);
   if (!row) throw new Error('Session expired — please sign in again');
+  if (!userAccountIsActive(row)) {
+    dbRun('DELETE FROM expense_app_sessions WHERE id = ?', [row.session_id]);
+    throw new Error('Account deactivated — system access is frozen. Contact the administrator.');
+  }
   if (!userCanCaptureExpenses(row)) {
     dbRun('DELETE FROM expense_app_sessions WHERE id = ?', [row.session_id]);
     throw new Error('Your account is not allowed to capture expenses. Ask your administrator.');
@@ -524,6 +543,7 @@ function expenseStockBatchMealsUsing(token, stockProductId) {
 
 module.exports = {
   ensureSchema,
+  revokeUserSessions,
   expenseLogin,
   expenseLogout,
   expenseGrantAccess,

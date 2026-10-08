@@ -166,10 +166,24 @@ function getEmployeeByCode(code) {
   return getDb().prepare('SELECT * FROM employees WHERE lower(employee_code) = lower(?)').get(c);
 }
 
+function assertEmployeeLinkedUserActive(employeeRow) {
+  const uid = employeeRow?.user_id;
+  if (!uid) return;
+  const u = getDb().prepare('SELECT id, role, is_active FROM users WHERE id = ?').get(uid);
+  if (!u) return;
+  if (String(u.role || '') === 'owner') return;
+  const v = u.is_active;
+  const inactive = v === false || v === 0 || v === '0' || v === 'f' || v === 'false' || v === 'n';
+  if (inactive) {
+    throw new Error('Linked shop login is deactivated — staff portal access is frozen. Contact the administrator.');
+  }
+}
+
 function verifyEmployeePin(employeeId, pin) {
-  const emp = getDb().prepare('SELECT id, pin, status, full_name, employee_code FROM employees WHERE id = ?').get(employeeId);
+  const emp = getDb().prepare('SELECT id, pin, status, full_name, employee_code, user_id FROM employees WHERE id = ?').get(employeeId);
   if (!emp) throw new Error('Employee not found');
   if (emp.status !== 'Active') throw new Error('Employee account is not active');
+  assertEmployeeLinkedUserActive(emp);
   if (!emp.pin) throw new Error('No PIN set for this employee');
   const check = verifyPinWithUpgrade(emp.pin, pin);
   if (!check.ok) throw new Error('Incorrect PIN');
@@ -955,9 +969,8 @@ function isLeaveRangeBlocked(startDate, endDate, blackouts) {
 }
 
 function countLeaveRequestsForMonth(employeeId, yearMonth, excludeSick = true, excludeId = null) {
-  // PG-safe month match (also covered by strftime rewriter)
   let sql = `SELECT COUNT(*) as c FROM employee_leave WHERE employee_id = ?
-    AND status IN ('pending', 'approved') AND to_char(start_date::timestamp, 'YYYY-MM') = ?`;
+    AND status IN ('pending', 'approved') AND substr(CAST(start_date AS TEXT), 1, 7) = ?`;
   const params = [employeeId, yearMonth];
   if (excludeSick) sql += " AND leave_type NOT LIKE '%sick%'";
   if (excludeId) { sql += ' AND id != ?'; params.push(excludeId); }
@@ -966,7 +979,7 @@ function countLeaveRequestsForMonth(employeeId, yearMonth, excludeSick = true, e
 
 function countLeaveRequestsForYear(employeeId, year, excludeSick = true, excludeId = null) {
   let sql = `SELECT COUNT(*) as c FROM employee_leave WHERE employee_id = ?
-    AND status IN ('pending', 'approved') AND to_char(start_date::timestamp, 'YYYY') = ?`;
+    AND status IN ('pending', 'approved') AND substr(CAST(start_date AS TEXT), 1, 4) = ?`;
   const params = [employeeId, String(year)];
   if (excludeSick) sql += " AND leave_type NOT LIKE '%sick%'";
   if (excludeId) { sql += ' AND id != ?'; params.push(excludeId); }
@@ -2169,7 +2182,7 @@ function validateOnAccount(customerId, amount, accountSettings) {
 
 module.exports = {
   nextEmployeeCode, calcNetSalary, getEmployees, getEmployee, getEmployeeByCode, getEmployeeByUserId,
-  verifyEmployeePin, verifyEmployeeCodePin, adminOpenEmployeePortal, validateEmployeeLinks, saveEmployee, deleteEmployee,
+  verifyEmployeePin, verifyEmployeeCodePin, assertEmployeeLinkedUserActive, adminOpenEmployeePortal, validateEmployeeLinks, saveEmployee, deleteEmployee,
   getTodayAttendance, clockAction, clockActionVerified, getAttendance, updateAttendance,
   deleteAttendance, createManualAttendance, addAttendancePenalty, getAttendancePenalties, cancelAttendancePenalty,
   getMissedClockOutInbox, resolveMissedClockOut, previewPayroll,

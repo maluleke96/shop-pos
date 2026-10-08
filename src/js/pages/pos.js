@@ -3470,9 +3470,7 @@ const POSPage = {
     document.getElementById('pos-backdated')?.addEventListener('click', () => this.startBackdatedOrder());
     const bdBtn = document.getElementById('pos-backdated');
     if (bdBtn) {
-      const canReq = Utils.hasPermission(this.app.user, 'request_backdated_order')
-        || Utils.hasPermission(this.app.user, 'authorize_backdated_order');
-      bdBtn.style.display = canReq ? '' : 'none';
+      bdBtn.style.display = Utils.canRequestBackdatedOrder(this.app.user) ? '' : 'none';
     }
     document.getElementById('pos-refund')?.addEventListener('click', () => {
       const receipt = this.lastSale?.receipt_number || '';
@@ -4715,8 +4713,7 @@ const POSPage = {
   },
 
   startBackdatedOrder() {
-    if (!Utils.hasPermission(this.app.user, 'request_backdated_order')
-      && !Utils.hasPermission(this.app.user, 'authorize_backdated_order')) {
+    if (!Utils.canRequestBackdatedOrder(this.app.user)) {
       return Utils.toast('You do not have permission to request a backdated order', 'error');
     }
     const today = new Date().toLocaleDateString('en-CA');

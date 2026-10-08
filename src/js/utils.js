@@ -567,7 +567,7 @@ const Utils = {
     'menu-builder', 'promo-video-builder', 'radio', 'communication-center', 'marketing-center', 'financial-intelligence', 'order-sla',
     'quotes', 'approvals', 'recipe', 'tax', 'tax-hub', 'cashiers', 'branches',
     'mobile-app', 'business-manager', 'business-modules', 'digital-signage', 'online-orders', 'hr-workspace', 'hr-approvals', 'accounting-workspace',
-    'delivery-dept', 'referral-dept', 'loyalty', 'discounts', 'payments', 'inventory', 'shifts', 'operating', 'cashdrawer', 'customize', 'onaccount', 'taken-orders',
+    'delivery-dept', 'referral-dept', 'loyalty', 'discounts', 'payments', 'inventory', 'shifts', 'operating',     'cashdrawer', 'customize', 'onaccount', 'taken-orders', 'backdated-orders',
     'printer', 'receipt', 'security', 'permissions', 'sales-targets', 'top-customers',
     'salesmgmt', 'pos-menu', 'saleexplorer', 'soldproducts', 'returnsmgmt', 'activity', 'exceptions', 'alerts', 'dailyclose', 'discount-report'
   ]),
@@ -655,6 +655,31 @@ const Utils = {
     }
     if (perms && Object.prototype.hasOwnProperty.call(perms, key)) return !!perms[key];
     return !!(Utils.roleDefaults[user.role] || {})[key];
+  },
+
+  /** Match server backdated-orders.js — role defaults even when permissions JSON omits keys. */
+  canRequestBackdatedOrder(user) {
+    if (!user) return false;
+    if (user.role === 'owner') return true;
+    if (Utils.hasPermission(user, 'request_backdated_order') || Utils.hasPermission(user, 'authorize_backdated_order')) {
+      return true;
+    }
+    return ['cashier', 'supervisor', 'manager', 'assistant_manager'].includes(String(user.role || ''));
+  },
+
+  canViewBackdatedOrdersAdmin(user) {
+    if (!user) return false;
+    if (user.role === 'owner') return true;
+    if (Utils.hasPermission(user, 'view_backdated_orders')) return true;
+    return ['manager', 'assistant_manager', 'supervisor'].includes(String(user.role || ''));
+  },
+
+  userAccountIsActive(user) {
+    if (!user) return false;
+    if (String(user.role || '') === 'owner') return true;
+    const v = user.is_active;
+    if (v === false || v === 0 || v === '0' || v === 'f' || v === 'false' || v === 'n') return false;
+    return true;
   },
 
   getCashoutWhatsAppPhone(settings) {
