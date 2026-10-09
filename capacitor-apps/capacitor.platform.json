@@ -1,0 +1,6 @@
+{
+  "appId": "com.shoppos.platform",
+  "appName": "Platform Control",
+  "webDir": "www",
+  "android": { "allowMixedContent": true }
+}

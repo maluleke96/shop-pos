@@ -163,14 +163,13 @@ const DriveThruApp = {
       <div>${this.order ? `Order #${this.order.id} · ${this.order.status}` : 'No active order'}</div></div>
       <div class="dt-layout">
         <div class="panel"><h3>Menu</h3>
-          ${(this.catalog?.categories || []).map((c) => `<button class="product-btn ${c.id === this.categoryId ? 'style="outline:2px solid #22c55e"' : ''}" data-cat="${c.id}">${this.esc(c.name)}</button>`).join('')}
-          <hr style="margin:12px 0;border-color:#334155">
-          ${this.products().map((p) => {
+          <div class="dt-cats">${(this.catalog?.categories || []).map((c) => `<button type="button" class="dt-cat ${c.id === this.categoryId ? 'active' : ''}" data-cat="${c.id}">${this.esc(c.name)}</button>`).join('')}</div>
+          <div class="dt-menu-grid">${this.products().map((p) => {
             const img = this.productImageUrl(p);
-            return `<button class="product-btn dt-product-btn" data-pid="${p.id}" ${p.available ? '' : 'disabled'}>
-              ${img ? `<img class="dt-product-thumb" src="${this.esc(img)}" alt="">` : ''}
-              <span>${this.esc(p.name)} <small>${this.money(p.selling_price)}</small></span></button>`;
-          }).join('')}</div>
+            return `<button type="button" class="product-btn dt-product-btn" data-pid="${p.id}" ${p.available ? '' : 'disabled'}>
+              ${img ? `<img class="dt-product-thumb" src="${this.esc(img)}" alt="" loading="eager" decoding="async">` : '<span class="dt-product-thumb"></span>'}
+              <span class="dt-product-name">${this.esc(p.name)} <small>${this.money(p.selling_price)}</small></span></button>`;
+          }).join('')}</div></div>
         <div class="panel"><h3>Current Order</h3>
           ${items.map((it, i) => `<div class="order-line"><span>${it.quantity}× ${this.esc(it.product_name)}</span><span>${this.money(it.total || it.unit_price * it.quantity)}</span></div>`).join('') || '<p class="muted">Start order or add items</p>'}
           <p style="font-size:20px;margin-top:12px"><strong>Total: ${this.money(Math.max(0, total - this.voucherDiscount))}</strong></p>

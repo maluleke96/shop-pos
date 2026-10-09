@@ -155,6 +155,14 @@ const apps = [
     artifact: 'ShopPOS-MarketingCenter',
     folder: 'Marketing-Center',
     livePath: '/marketing-center-app.html'
+  },
+  {
+    mode: 'platform',
+    name: 'Platform Control',
+    appId: 'com.shoppos.platform',
+    artifact: 'ShopPOS-PlatformControl',
+    folder: 'Platform-Control',
+    livePath: '/platform/'
   }
 ];
 
@@ -197,7 +205,9 @@ function safeCopy(src, dest) {
   }
 }
 
+const only = String(process.env.SHOP_POS_WIN_ONLY || '').split(',').map((s) => s.trim()).filter(Boolean);
 for (const a of apps) {
+  if (only.length && !only.includes(a.mode)) continue;
   console.log(`\n=== Building ${a.name} (${a.mode}) — local-first ===`);
   const bake = path.join(root, 'electron', `cloud-shell-config-${a.mode}.js`);
   if (a.livePath) {
@@ -295,6 +305,10 @@ Folders:
   Accounting\\         — Business accounting login only
   Online-Ordering\\    — Customer ordering app (opens your /order/ site)
   Manager\\             — Business Manager monitoring app
+  Marketing-Center\\   — Marketing Center (Admin login, opens Marketing)
+  Communication-Center\\ — Communication Center
+  Radio\\              — Shop Radio
+  Referral-Commission\\ — Referral & Commission
 
 In each folder:
   *-Setup.exe     — Full installer (recommended)

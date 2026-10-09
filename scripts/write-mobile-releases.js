@@ -29,7 +29,8 @@ const apps = [
   { id: 'com.shoppos.admin', apk: 'ShopPOS-Admin.apk', label: 'Shop POS Admin' },
   { id: 'com.shoppos.communication', apk: 'ShopPOS-CommunicationCenter.apk', label: 'Communication Center' },
   { id: 'com.shoppos.radio', apk: 'ShopPOS-Radio.apk', label: 'Shop Radio' },
-  { id: 'com.shoppos.marketing', apk: 'ShopPOS-MarketingCenter.apk', label: 'Marketing Center' }
+  { id: 'com.shoppos.marketing', apk: 'ShopPOS-MarketingCenter.apk', label: 'Marketing Center' },
+  { id: 'com.shoppos.platform', apk: 'ShopPOS-PlatformControl.apk', label: 'Platform Control' }
 ];
 
 const manifest = {};

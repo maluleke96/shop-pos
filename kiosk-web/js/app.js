@@ -283,11 +283,30 @@ const KioskApp = {
     </div>`;
   },
 
-  productMediaHtml(p, cls = 'product-img') {
+  preloadImages(products) {
+    const urls = [];
+    (products || []).forEach((p) => {
+      const src = this.productImageUrl(p);
+      if (src && !this._preloaded?.[src]) urls.push(src);
+    });
+    if (!urls.length) return;
+    this._preloaded = this._preloaded || {};
+    urls.slice(0, 40).forEach((src, i) => {
+      this._preloaded[src] = 1;
+      const img = new Image();
+      img.decoding = 'async';
+      try { if (i < 12) img.fetchPriority = 'high'; } catch (_) { /* */ }
+      img.src = src;
+    });
+  },
+
+  productMediaHtml(p, cls = 'product-img', eager = false) {
     const src = this.productImageUrl(p);
     const fallback = '<div class="product-img-fallback" aria-hidden="true"><span>No photo</span></div>';
     if (!src) return fallback;
-    return `<img class="${cls}" src="${this.esc(src)}" alt="" loading="lazy" decoding="async" onerror="this.classList.add('img-fail')">` + fallback;
+    const loading = eager ? 'eager' : 'lazy';
+    const priority = eager ? 'high' : 'auto';
+    return `<img class="${cls}" src="${this.esc(src)}" alt="" loading="${loading}" fetchpriority="${priority}" decoding="async" onerror="this.classList.add('img-fail')">` + fallback;
   },
 
   async init() {
@@ -409,6 +428,7 @@ const KioskApp = {
     }
     this.idleSec = this.catalog.settings?.idle_timeout_sec || 120;
     if (!this.categoryId && this.catalog.categories?.length) this.categoryId = this.catalog.categories[0].id;
+    this.preloadImages(this.catalog.products || []);
   },
 
   showApp() {
@@ -450,16 +470,16 @@ const KioskApp = {
       ${this.headerActionsHtml('')}</div>
       <div class="kiosk-body"><div class="cat-list">${(this.catalog?.categories || []).map((c) =>
         `<button class="cat-btn ${c.id === this.categoryId ? 'active' : ''}" data-cat="${c.id}">${this.esc(c.name)}</button>`).join('')}</div>
-      <div class="product-grid">${this.products().map((p) =>
+      <div class="product-grid">${this.products().map((p, i) =>
         `<div class="product-card ${p.available ? '' : 'unavailable'}" data-pid="${p.id}">
-          <div class="product-card-media">${this.productMediaHtml(p)}</div>
+          <div class="product-card-media">${this.productMediaHtml(p, 'product-img', i < 12)}</div>
           <h3>${this.esc(p.name)}</h3>${p.available ? '' : '<span class="badge-oos">Out of stock</span>'}
           <div class="price">${this.money(p.selling_price)}</div></div>`).join('')}</div></div>
       <div class="cart-bar"><span>${this.cart.length} items · <strong>${this.money(this.cartTotal())}</strong></span>
       <button class="btn-primary" ${this.cart.length ? '' : 'disabled'} data-act="cart">View Cart</button></div>`;
     app.onclick = (e) => {
       const cat = e.target.closest('[data-cat]');
-      if (cat) { this.categoryId = Number(cat.dataset.cat); this.render(); return; }
+      if (cat) { this.categoryId = Number(cat.dataset.cat); this.preloadImages(this.products()); this.render(); return; }
       const card = e.target.closest('[data-pid]');
       if (card) { this.openProduct(Number(card.dataset.pid)); return; }
       if (e.target.closest('[data-act="cart"]')) { this.view = 'cart'; this.render(); }
@@ -513,7 +533,7 @@ const KioskApp = {
     const modal = document.createElement('div');
     modal.className = 'modal';
     modal.innerHTML = `<div class="modal-inner">
-      <div class="modal-media">${this.productMediaHtml(p, 'modal-product-img')}</div>
+      <div class="modal-media">${this.productMediaHtml(p, 'modal-product-img', true)}</div>
       <h2>${this.esc(p.name)}</h2><p class="price">${this.money(p.selling_price)}</p>
       ${mods.length ? `<div class="mod-group">${mods.map((m, i) =>
         `<label class="mod-opt" data-mod="${i}"><input type="checkbox" style="margin-right:8px">${this.esc(m.name)} ${m.extra_price ? `(+${this.money(m.extra_price)})` : ''}</label>`).join('')}</div>` : ''}

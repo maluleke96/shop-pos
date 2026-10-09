@@ -6,7 +6,7 @@ const SignageApp = {
   toast(m, t) { const e = document.createElement('div'); e.className = `toast ${t === 'error' ? 'error' : ''}`; e.textContent = m; document.getElementById('toast-root').appendChild(e); setTimeout(() => e.remove(), 3500); },
 
   tabs() {
-    return ['dashboard', 'screens', 'media', 'playlists', 'menus', 'music', 'schedules', 'groups', 'publish', 'emergency', 'announce', 'audit', 'tests'];
+    return ['dashboard', 'screens', 'media', 'playlists', 'menus', 'music', 'vacancies', 'schedules', 'groups', 'publish', 'emergency', 'announce', 'audit', 'tests'];
   },
 
   async init() {
@@ -76,7 +76,7 @@ const SignageApp = {
     if (!body) return;
     const fn = {
       dashboard: 'tabDashboard', screens: 'tabScreens', media: 'tabMedia', playlists: 'tabPlaylists',
-      menus: 'tabMenus', music: 'tabMusic', schedules: 'tabSchedules', groups: 'tabGroups',
+      menus: 'tabMenus', music: 'tabMusic', vacancies: 'tabVacancies', schedules: 'tabSchedules', groups: 'tabGroups',
       publish: 'tabPublish', emergency: 'tabEmergency', announce: 'tabAnnounce', audit: 'tabAudit', tests: 'tabTests'
     }[this.tab];
     if (fn && this[fn]) this[fn](body);
@@ -117,7 +117,16 @@ const SignageApp = {
       <input type="file" id="sg-file" accept="image/*,video/*,audio/*" multiple>
       <select id="sg-cat"><option value="general">General</option><option value="food">Food</option><option value="promo">Promotion</option><option value="music">Music</option></select>
       <input type="search" id="sg-media-q" placeholder="Search…">
-      <h2 style="margin-top:16px">Library</h2><div id="sg-media-list" class="media-grid muted">Loading…</div></div>`;
+      <div id="sg-edit-box" class="hidden" style="margin-top:12px">
+        <h3>Edit item</h3>
+        <input id="sg-edit-id" type="hidden">
+        <label>Title<input id="sg-edit-title"></label>
+        <label>Category<select id="sg-edit-cat"><option value="general">General</option><option value="food">Food</option><option value="promo">Promotion</option><option value="music">Music</option></select></label>
+        <button class="btn" data-act="save-media-edit" type="button">Save changes</button>
+      </div>
+      <h2 style="margin-top:16px">Library</h2>
+      <p class="muted">Sample slides and music start with “Sample”. Open one, change the title, or delete it.</p>
+      <div id="sg-media-list" class="media-grid muted">Loading…</div></div>`;
     this.loadMediaList();
     document.getElementById('sg-file')?.addEventListener('change', (e) => this.uploadFiles(e.target.files));
     document.getElementById('sg-media-q')?.addEventListener('input', () => this.loadMediaList());
@@ -134,6 +143,7 @@ const SignageApp = {
       <div class="media-title">${this.esc(m.title)}</div>
       <div class="media-actions">
         ${m.media_type === 'video' ? `<button class="btn secondary" data-act="thumb" data-id="${m.id}">Thumb</button>` : ''}
+        <button class="btn secondary" data-act="edit-media" data-id="${m.id}" data-title="${this.esc(m.title)}" data-cat="${this.esc(m.category || 'general')}">Edit</button>
         <button class="btn secondary" data-act="del-media" data-id="${m.id}">Delete</button></div></div>`).join('') || 'No media yet';
     list.querySelectorAll('[draggable]').forEach((el) => {
       el.addEventListener('dragstart', (e) => { e.dataTransfer.setData('media-id', el.dataset.mediaId); });
@@ -160,7 +170,9 @@ const SignageApp = {
       body.innerHTML = `<div class="portal-card"><button class="btn" data-act="new-playlist">New playlist</button>
         <ul class="pl-list">${pls.map((p) => `<li><span>${this.esc(p.name)} (v${p.version})</span>
           <button class="btn secondary" data-act="edit-pl" data-id="${p.id}">Edit</button>
-          <button class="btn secondary" data-act="preview-pl" data-id="${p.id}">Preview</button></li>`).join('') || '<li class="muted">No playlists</li>'}</ul></div>`;
+          <button class="btn secondary" data-act="preview-pl" data-id="${p.id}">Preview</button>
+          <button class="btn secondary" data-act="del-pl" data-id="${p.id}">Delete</button></li>`).join('') || '<li class="muted">No playlists</li>'}</ul>
+        <p class="muted">Preview “Sample — Floor display” to see the welcome, special, and vacancy slides.</p></div>`;
       return;
     }
     const pl = this._editPlaylist;
@@ -242,7 +254,9 @@ const SignageApp = {
       <p class="muted">Music plays independently from visual playlists on each screen.</p>
       <button class="btn" data-act="new-music-pl">New music playlist</button>
       <ul>${apls.map((a) => `<li>${this.esc(a.name)} (${(a.items || []).length} tracks)
-        <button class="btn secondary" data-act="edit-music" data-id="${a.id}">Edit</button></li>`).join('') || '<li class="muted">No music playlists</li>'}</ul>
+        <button class="btn secondary" data-act="edit-music" data-id="${a.id}">Edit</button>
+        <button class="btn secondary" data-act="del-music" data-id="${a.id}">Delete</button></li>`).join('') || '<li class="muted">No music playlists</li>'}</ul>
+      <p class="muted">“Sample — Shop music” is a short tune you can replace. Upload your own track under Media, category Music, then add it here.</p>
       ${this._editMusic ? `<h3>Edit: ${this.esc(this._editMusic.name)}</h3>
         <label>Name<input id="music-name" value="${this.esc(this._editMusic.name)}"></label>
         <div class="drop-zone" id="music-tracks">${(this._editMusic.items || []).map((it, i) =>
@@ -324,14 +338,50 @@ const SignageApp = {
       <button class="btn secondary" data-act="emergency-cancel">Cancel all emergencies</button></div>`;
   },
 
-  tabAnnounce(body) {
+  async tabVacancies(body) {
+    body.innerHTML = '<p class="muted">Loading vacancies…</p>';
+    const board = await SignageAPI.vacancyBoard().catch(() => ({ jobs: [], slides: [] }));
+    const jobs = board.jobs || [];
+    const slides = board.slides || [];
+    body.innerHTML = `<div class="portal-card"><h2>Vacancies</h2>
+      <p class="muted">Open jobs from Recruitment, plus signage vacancy notes you can edit or delete.</p>
+      <h3>On the screens</h3>
+      ${slides.map((s) => `<div class="screen-card"><strong>${this.esc(s.title)}</strong>
+        <p>${this.esc(s.text_content || '')}</p>
+        <button class="btn secondary" data-act="edit-ann" data-id="${s.id}" data-title="${this.esc(s.title)}" data-text="${this.esc(s.text_content || '')}">Edit</button>
+        <button class="btn secondary" data-act="del-ann" data-id="${s.id}">Delete</button>
+      </div>`).join('') || '<p class="muted">No vacancy slides yet.</p>'}
+      <h3 style="margin-top:16px">New vacancy note</h3>
+      <label>Title<input id="vac-title" value="Vacancy"></label>
+      <textarea id="vac-text" placeholder="Role, what you need, and how to apply."></textarea>
+      <button class="btn" data-act="save-vacancy">Save vacancy</button>
+      <h3 style="margin-top:16px">Live job posts</h3>
+      ${jobs.map((j) => `<div class="screen-card"><strong>${this.esc(j.title)}</strong>
+        <p>${this.esc(j.description || '')}</p>
+        <p class="muted">${this.esc(j.salary_text || '')}${j.closes_at ? ` · closes ${this.esc(j.closes_at)}` : ''}</p>
+      </div>`).join('') || '<p class="muted">No open job posts. Create one in Admin → Recruitment. The apply link stays on that job.</p>'}
+      </div>`;
+  },
+
+  async tabAnnounce(body) {
+    const rows = await SignageAPI.listAnnouncements().catch(() => []);
     body.innerHTML = `<div class="portal-card"><h2>Voice Announcement Centre</h2>
-      <textarea id="ann-text" placeholder="Today's special is half chicken and chips for R90."></textarea>
+      <input id="ann-id" type="hidden" value="">
+      <label>Title<input id="ann-title" value="Announcement"></label>
+      <textarea id="ann-text" placeholder="Today's special is half chicken and chips."></textarea>
       <label>Target<select id="ann-target"><option value="all">All screens</option></select></label>
       <button class="btn" data-act="ai-voice">Generate AI voice</button>
       <button class="btn secondary" data-act="save-ann">Save</button>
       <button class="btn warn" data-act="play-ann">PLAY NOW</button>
-      <p class="muted">Music ducks automatically and resumes same track/position on player.</p></div>`;
+      <p class="muted">Music ducks automatically and resumes the same track on the player. Saved notes are below — edit or delete them.</p>
+      <h3 style="margin-top:16px">Saved</h3>
+      ${(rows || []).map((a) => `<div class="screen-card"><strong>${this.esc(a.title)}</strong>
+        <p>${this.esc(a.text_content || '')}</p>
+        <button class="btn secondary" data-act="edit-ann" data-id="${a.id}" data-title="${this.esc(a.title)}" data-text="${this.esc(a.text_content || '')}">Edit</button>
+        <button class="btn secondary" data-act="play-saved-ann" data-id="${a.id}">Play</button>
+        <button class="btn secondary" data-act="del-ann" data-id="${a.id}">Delete</button>
+      </div>`).join('') || '<p class="muted">None yet</p>'}
+      </div>`;
   },
 
   async tabAudit(body) {
@@ -495,7 +545,69 @@ const SignageApp = {
           const id = act === 'sync-menu-id' ? Number(btn.dataset.id) : menus[0]?.id;
           if (!id) return this.toast('Create menu first', 'error');
           await SignageAPI.syncMenuFromProducts(id); this.toast('Synced');
-        } else if (act === 'del-media') { if (confirm('Delete?')) { await SignageAPI.deleteMedia(Number(btn.dataset.id)); this.loadMediaList(); } }
+        } else if (act === 'edit-media') {
+          const box = document.getElementById('sg-edit-box');
+          if (box) box.classList.remove('hidden');
+          const idEl = document.getElementById('sg-edit-id');
+          const titleEl = document.getElementById('sg-edit-title');
+          const catEl = document.getElementById('sg-edit-cat');
+          if (idEl) idEl.value = btn.dataset.id || '';
+          if (titleEl) titleEl.value = btn.dataset.title || '';
+          if (catEl) catEl.value = btn.dataset.cat || 'general';
+        } else if (act === 'save-media-edit') {
+          await SignageAPI.updateMedia({
+            id: Number(document.getElementById('sg-edit-id')?.value),
+            title: document.getElementById('sg-edit-title')?.value,
+            category: document.getElementById('sg-edit-cat')?.value
+          });
+          this.toast('Saved', 'success');
+          this.loadMediaList();
+        } else if (act === 'del-media') { if (confirm('Delete this item?')) { await SignageAPI.deleteMedia(Number(btn.dataset.id)); this.loadMediaList(); } }
+        else if (act === 'del-pl') {
+          if (!confirm('Delete this playlist?')) return;
+          await SignageAPI.deletePlaylist(Number(btn.dataset.id));
+          this.toast('Playlist deleted');
+          await this.refresh();
+          this.render();
+        } else if (act === 'del-music') {
+          if (!confirm('Delete this music playlist?')) return;
+          await SignageAPI.deleteAudioPlaylist(Number(btn.dataset.id));
+          this.toast('Music playlist deleted');
+          this.renderTab();
+        } else if (act === 'edit-ann') {
+          let hid = document.getElementById('ann-id') || document.getElementById('vac-id');
+          if (!hid && document.getElementById('vac-title')) {
+            hid = document.createElement('input');
+            hid.type = 'hidden';
+            hid.id = 'vac-id';
+            document.getElementById('vac-title').parentElement?.prepend(hid);
+          }
+          const titleEl = document.getElementById('ann-title') || document.getElementById('vac-title');
+          const textEl = document.getElementById('ann-text') || document.getElementById('vac-text');
+          if (hid) hid.value = btn.dataset.id || '';
+          if (titleEl) titleEl.value = btn.dataset.title || '';
+          if (textEl) textEl.value = btn.dataset.text || '';
+          titleEl?.scrollIntoView?.({ block: 'center' });
+        } else if (act === 'del-ann') {
+          if (!confirm('Delete this?')) return;
+          await SignageAPI.deleteAnnouncement(Number(btn.dataset.id));
+          this.toast('Deleted');
+          this.renderTab();
+        } else if (act === 'save-vacancy') {
+          const id = Number(document.getElementById('vac-id')?.value) || undefined;
+          await SignageAPI.saveAnnouncement({
+            id,
+            title: document.getElementById('vac-title')?.value || 'Vacancy',
+            text_content: document.getElementById('vac-text')?.value,
+            schedule: { kind: 'vacancy' },
+            target_type: 'all'
+          });
+          this.toast('Vacancy saved', 'success');
+          this.renderTab();
+        } else if (act === 'play-saved-ann') {
+          await SignageAPI.playNowAnnouncement(Number(btn.dataset.id));
+          this.toast('Announcement sent');
+        }
         else if (act === 'thumb') { const r = await SignageAPI.tryThumbnail(Number(btn.dataset.id)); this.toast(r.message || (r.success ? 'Done' : 'Failed'), r.success ? 'success' : 'error'); }
         else if (act === 'ai-voice') {
           const text = document.getElementById('ann-text')?.value; if (!text) return;
@@ -503,8 +615,14 @@ const SignageApp = {
           if (r.status === 'NOT_IMPLEMENTED') this.toast(r.message, 'error');
           else { this._lastAudioMediaId = r.media_id; this.toast('AI voice ready'); }
         } else if (act === 'save-ann') {
-          const r = await SignageAPI.saveAnnouncement({ title: 'Announcement', text_content: document.getElementById('ann-text')?.value, audio_media_id: this._lastAudioMediaId, target_type: 'all' });
-          this._lastAnnId = r.id; this.toast('Saved');
+          const r = await SignageAPI.saveAnnouncement({
+            id: Number(document.getElementById('ann-id')?.value) || undefined,
+            title: document.getElementById('ann-title')?.value || 'Announcement',
+            text_content: document.getElementById('ann-text')?.value,
+            audio_media_id: this._lastAudioMediaId,
+            target_type: 'all'
+          });
+          this._lastAnnId = r.id; this.toast('Saved'); this.renderTab();
         } else if (act === 'play-ann' && this._lastAnnId) {
           await SignageAPI.playNowAnnouncement(this._lastAnnId);
           this.toast('Announcement sent');

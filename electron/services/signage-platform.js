@@ -54,6 +54,9 @@ function ensureSignage() {
       console.log('[signage] Default admin created: signage / signage123');
     }
   } catch (_) { /* */ }
+  try { seedStarterPack(); } catch (err) {
+    console.warn('[signage] starter pack:', err.message || err);
+  }
 }
 
 function getDb() { return require('../database/db').getDb(); }
@@ -345,6 +348,17 @@ function guessMediaType(mimeOrName) {
   return 'image';
 }
 
+function updateMedia(data, token) {
+  requirePerm(token, 'upload');
+  const id = Number(data?.id);
+  const title = String(data?.title || '').trim();
+  if (!id || !title) throw new Error('Title required');
+  dbRun('UPDATE signage_media SET title = ?, category = ?, updated_at = ? WHERE id = ? AND is_active = 1',
+    [title, data.category || 'general', nowIso(), id]);
+  audit({ action: 'media_updated', entity_type: 'media', entity_id: id, details: { title } });
+  return dbGet('SELECT * FROM signage_media WHERE id = ?', [id]);
+}
+
 function deleteMedia(id, token) {
   const user = requirePerm(token, 'upload');
   dbRun('UPDATE signage_media SET is_active = 0, updated_at = ? WHERE id = ?', [nowIso(), id]);
@@ -399,6 +413,16 @@ function savePlaylist(data, token) {
   });
   audit({ user_id: user.id, user_name: user.full_name || user.username, action: 'playlist_saved', entity_type: 'playlist', entity_id: playlistId });
   return getPlaylist(playlistId);
+}
+
+function deletePlaylist(id, token) {
+  requirePerm(token, 'playlist');
+  const pid = Number(id);
+  if (!pid) throw new Error('Playlist required');
+  dbRun('DELETE FROM signage_playlist_items WHERE playlist_id = ?', [pid]);
+  dbRun('DELETE FROM signage_playlists WHERE id = ?', [pid]);
+  audit({ action: 'playlist_deleted', entity_type: 'playlist', entity_id: pid });
+  return { success: true };
 }
 
 function listPlaylists(token) {
@@ -481,6 +505,16 @@ function saveAudioPlaylist(data, token) {
     dbRun('INSERT INTO signage_audio_items (audio_playlist_id, media_id, sort_order) VALUES (?,?,?)', [id, mediaId, idx]);
   });
   return { id, name };
+}
+
+function deleteAudioPlaylist(id, token) {
+  requirePerm(token, 'playlist');
+  const pid = Number(id);
+  if (!pid) throw new Error('Music playlist required');
+  dbRun('DELETE FROM signage_audio_items WHERE audio_playlist_id = ?', [pid]);
+  dbRun('DELETE FROM signage_audio_playlists WHERE id = ?', [pid]);
+  audit({ action: 'music_playlist_deleted', entity_type: 'audio_playlist', entity_id: pid });
+  return { success: true };
 }
 
 function listAudioPlaylists(token) {
@@ -990,9 +1024,45 @@ async function generateAiVoice(text, token) {
   return { success: true, media_id: r.lastInsertRowid };
 }
 
+function listAnnouncements(token) {
+  resolvePortal(token);
+  return dbAll(`SELECT id, title, text_content, priority, schedule_json, is_active, created_at, last_played_at
+    FROM signage_announcements WHERE COALESCE(is_active, 1) = 1 ORDER BY id DESC LIMIT 100`);
+}
+
+function deleteAnnouncement(id, token) {
+  requirePerm(token, 'announce');
+  const aid = Number(id);
+  if (!aid) throw new Error('Announcement required');
+  dbRun('UPDATE signage_announcements SET is_active = 0 WHERE id = ?', [aid]);
+  audit({ action: 'announcement_deleted', entity_type: 'announcement', entity_id: aid });
+  return { success: true };
+}
+
+function listVacancyBoard(token) {
+  resolvePortal(token);
+  let jobs = [];
+  try {
+    jobs = dbAll(`SELECT id, title, description, salary_text, closes_at, status, apply_token
+      FROM job_postings WHERE status = 'active' ORDER BY id DESC LIMIT 30`) || [];
+  } catch (_) { jobs = []; }
+  const slides = dbAll(`SELECT id, title, text_content, priority, created_at
+    FROM signage_announcements
+    WHERE COALESCE(is_active, 1) = 1
+      AND (schedule_json LIKE '%vacancy%' OR title LIKE 'Vacancy%' OR title LIKE 'Sample vacancy%')
+    ORDER BY id DESC`) || [];
+  return { jobs, slides };
+}
+
 function saveAnnouncement(data, token) {
   const user = requirePerm(token, 'announce');
   const title = String(data.title || 'Announcement').trim();
+  if (data.id) {
+    dbRun(`UPDATE signage_announcements SET title = ?, text_content = ?, priority = ?, schedule_json = ?, is_active = 1 WHERE id = ?`,
+      [title, data.text_content || null, data.priority || 'normal',
+        JSON.stringify(data.schedule || parseJson(data.schedule_json, {})), Number(data.id)]);
+    return dbGet('SELECT * FROM signage_announcements WHERE id = ?', [data.id]);
+  }
   let audioMediaId = data.audio_media_id;
   if (data.audio_data && !audioMediaId) {
     const saved = saveFileBase64('audio', data.filename || 'voice.webm', data.audio_data);
@@ -1096,6 +1166,155 @@ function adminPublishSlideshow(actor, data = {}) {
   return publishToScreens({ name: title, playlist_id: playlist.id, target_type: 'all' }, token);
 }
 
+function slideSvg(title, lines) {
+  const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const rest = (lines || []).map((line, i) =>
+    `<text x="90" y="${520 + i * 70}" font-size="40" fill="#e0f2fe" font-family="Segoe UI, Arial, sans-serif">${esc(line)}</text>`
+  ).join('');
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080">
+  <rect width="1920" height="1080" fill="#0c4a6e"/>
+  <rect x="70" y="280" width="1780" height="8" fill="#38bdf8"/>
+  <text x="90" y="420" font-size="84" fill="#ffffff" font-family="Segoe UI, Arial, sans-serif">${esc(title)}</text>
+  ${rest}
+</svg>`;
+}
+
+function wavSampleBuffer() {
+  const sampleRate = 22050;
+  const seconds = 8;
+  const n = sampleRate * seconds;
+  const data = Buffer.alloc(n * 2);
+  const notes = [262, 330, 392, 523];
+  for (let i = 0; i < n; i++) {
+    const t = i / sampleRate;
+    const note = notes[Math.floor(t) % notes.length];
+    const beat = t % 1;
+    const env = Math.min(1, beat * 10) * Math.min(1, (1 - beat) * 5);
+    const sample = Math.sin(2 * Math.PI * note * t) * 0.2 * env;
+    data.writeInt16LE(Math.max(-32767, Math.min(32767, Math.round(sample * 32767))), i * 2);
+  }
+  const header = Buffer.alloc(44);
+  header.write('RIFF', 0);
+  header.writeUInt32LE(36 + data.length, 4);
+  header.write('WAVE', 8);
+  header.write('fmt ', 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(1, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(sampleRate * 2, 28);
+  header.writeUInt16LE(2, 32);
+  header.writeUInt16LE(16, 34);
+  header.write('data', 36);
+  header.writeUInt32LE(data.length, 40);
+  return Buffer.concat([header, data]);
+}
+
+function saveRawFile(subdir, filename, buf, mime) {
+  const safe = String(filename || 'file').replace(/[^a-zA-Z0-9._-]/g, '_');
+  const rel = `signage/${subdir}/${Date.now()}_${safe}`;
+  const full = path.join(assetsDir(), '..', rel);
+  fs.mkdirSync(path.dirname(full), { recursive: true });
+  fs.writeFileSync(full, buf);
+  return { rel, mime, size: buf.length };
+}
+
+function rowId(result, sql, params) {
+  if (result && result.lastInsertRowid) return result.lastInsertRowid;
+  return dbGet(sql, params)?.id;
+}
+
+/** One-time sample slides, music, and a vacancy. Safe to delete or edit in the Signage Centre. */
+function seedStarterPack() {
+  const row = dbGet('SELECT settings_json FROM signage_settings WHERE id = 1');
+  let extra = {};
+  try { extra = JSON.parse(row?.settings_json || '{}') || {}; } catch (_) { extra = {}; }
+  if (extra.starter_pack === 'v1') return;
+
+  const slides = [
+    {
+      title: 'Sample — Welcome',
+      file: 'welcome.svg',
+      category: 'promo',
+      heading: 'Welcome',
+      lines: ['Order at the counter, the kiosk, or drive-thru.', 'You can edit or delete this slide.']
+    },
+    {
+      title: 'Sample — Todays special',
+      file: 'special.svg',
+      category: 'food',
+      heading: 'Todays special',
+      lines: ['Ask the team for the plate of the day.', 'Change this text by replacing the slide in Media.']
+    },
+    {
+      title: 'Sample — Vacancy',
+      file: 'vacancy.svg',
+      category: 'promo',
+      heading: 'Vacancy',
+      lines: ['Cashier, kitchen, and driver.', 'Apply from Admin, Recruitment. Edit or delete this anytime.']
+    }
+  ];
+  const mediaIds = [];
+  for (const slide of slides) {
+    const saved = saveRawFile('media', slide.file, Buffer.from(slideSvg(slide.heading, slide.lines), 'utf8'), 'image/svg+xml');
+    const r = dbRun(`INSERT INTO signage_media (media_type, category, title, file_path, mime_type, file_size, uploaded_by_name)
+      VALUES ('image',?,?,?,?,?,?)`,
+      [slide.category, slide.title, saved.rel, saved.mime, saved.size, 'Sample pack']);
+    const id = rowId(r, 'SELECT id FROM signage_media WHERE title = ? ORDER BY id DESC LIMIT 1', [slide.title]);
+    if (id) mediaIds.push(id);
+  }
+
+  const audioSaved = saveRawFile('audio', 'shop-music-sample.wav', wavSampleBuffer(), 'audio/wav');
+  const ar = dbRun(`INSERT INTO signage_media (media_type, category, title, file_path, mime_type, file_size, uploaded_by_name)
+    VALUES ('audio','music',?,?,?,?,?)`,
+    ['Sample — Shop music', audioSaved.rel, audioSaved.mime, audioSaved.size, 'Sample pack']);
+  const audioId = rowId(ar, 'SELECT id FROM signage_media WHERE title = ? ORDER BY id DESC LIMIT 1', ['Sample — Shop music']);
+
+  const pr = dbRun('INSERT INTO signage_playlists (name, description, loop_enabled, shuffle) VALUES (?,?,1,0)',
+    ['Sample — Floor display', 'Welcome, special, and vacancy. Preview it, or publish it to the TVs. Edit or delete any item.']);
+  const playlistId = rowId(pr, 'SELECT id FROM signage_playlists WHERE name = ? ORDER BY id DESC LIMIT 1', ['Sample — Floor display']);
+  if (playlistId) {
+    mediaIds.forEach((id, idx) => {
+      dbRun(`INSERT INTO signage_playlist_items (playlist_id, item_type, media_id, duration_seconds, transition, sort_order)
+        VALUES (?,?,?,?,?,?)`, [playlistId, 'media', id, 10, 'fade', idx]);
+    });
+  }
+
+  let musicId = null;
+  if (audioId) {
+    const mr = dbRun('INSERT INTO signage_audio_playlists (name, shuffle, repeat_mode) VALUES (?,?,?)',
+      ['Sample — Shop music', 0, 'all']);
+    musicId = rowId(mr, 'SELECT id FROM signage_audio_playlists WHERE name = ? ORDER BY id DESC LIMIT 1', ['Sample — Shop music']);
+    if (musicId) dbRun('INSERT INTO signage_audio_items (audio_playlist_id, media_id, sort_order) VALUES (?,?,?)', [musicId, audioId, 0]);
+  }
+
+  if (playlistId) {
+    try {
+      dbRun(`UPDATE signage_devices SET current_playlist_id = COALESCE(current_playlist_id, ?),
+        current_audio_playlist_id = COALESCE(current_audio_playlist_id, ?), updated_at = ?
+        WHERE is_revoked = 0`, [playlistId, musicId || null, nowIso()]);
+    } catch (_) { /* screens can still be published from the centre */ }
+  }
+
+  dbRun(`INSERT INTO signage_announcements (title, text_content, schedule_type, schedule_json, target_type, priority)
+    VALUES (?,?,?,?,?,?)`, [
+    'Sample vacancy — Cashier, kitchen, driver',
+    'We are hiring. Roles: cashier, kitchen, and driver. Ask at the counter, or use the apply link from Admin, Recruitment. Edit or delete this vacancy in Vacancies or Announce.',
+    'once', JSON.stringify({ kind: 'vacancy' }), 'all', 'normal'
+  ]);
+  dbRun(`INSERT INTO signage_announcements (title, text_content, schedule_type, schedule_json, target_type, priority)
+    VALUES (?,?,?,?,?,?)`, [
+    'Sample — Welcome announcement',
+    'Welcome. Order at the counter, the kiosk, or the drive-thru. Edit or delete this announcement.',
+    'once', '{}', 'all', 'normal'
+  ]);
+
+  extra.starter_pack = 'v1';
+  dbRun('UPDATE signage_settings SET settings_json = ?, updated_at = ? WHERE id = 1', [JSON.stringify(extra), nowIso()]);
+  console.log('[signage] Sample slides, music, and vacancy are ready to edit or delete.');
+}
+
 function signageSummary() {
   ensureSignage();
   detectStaleDevices();
@@ -1109,12 +1328,12 @@ module.exports = {
   ensureSignage, signageLogin, signageLoginAsAdmin, signageLogout, signageDashboard, signageSummary, adminPublishSlideshow,
   requestPairing, pairingStatus, listPendingPairings, listPendingPairingsAdmin,
   approvePairing, approvePairingAdmin, approvePairingCore, rejectPairing, revokeDevice,
-  listDevices, saveDevice, listMedia, uploadMedia, deleteMedia, getMediaFile,
-  listPlaylists, getPlaylist, savePlaylist, listMenus, getMenu, saveMenu, syncMenuFromProducts,
-  saveAudioPlaylist, listAudioPlaylists, saveScreenGroup, listScreenGroups, publishToScreens, getPublicationStatus,
+  listDevices, saveDevice, listMedia, uploadMedia, updateMedia, deleteMedia, getMediaFile,
+  listPlaylists, getPlaylist, savePlaylist, deletePlaylist, listMenus, getMenu, saveMenu, syncMenuFromProducts,
+  saveAudioPlaylist, listAudioPlaylists, deleteAudioPlaylist, saveScreenGroup, listScreenGroups, publishToScreens, getPublicationStatus,
   listSchedules, saveSchedule, deleteSchedule, detectScheduleConflicts,
   publishEmergency, cancelEmergency, previewPlaylist, getDeviceDiagnostics, listAuditLogs,
   deviceHeartbeat, getDeviceCommands, ackCommand, reportSync, buildPlayerManifest, resolveDeviceIdFromToken,
-  generateAiVoice, saveAnnouncement, playNowAnnouncement, remoteCommand, tryGenerateThumbnail, runSignageTests,
+  generateAiVoice, listAnnouncements, saveAnnouncement, deleteAnnouncement, listVacancyBoard, playNowAnnouncement, remoteCommand, tryGenerateThumbnail, runSignageTests,
   saveSignageUser, listSignageUsers, getSignageSettings, saveSignageSettings, mediaPublicPath
 };
