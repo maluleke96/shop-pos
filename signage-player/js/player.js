@@ -334,7 +334,10 @@ const Player = {
     this.playing = true;
     const items = this.manifest?.playlist?.items || [];
     if (!items.length) {
-      document.getElementById('stage').innerHTML = '<p style="padding:40px;color:#aaa">No playlist assigned</p>';
+      SignageRenderer.renderCard(document.getElementById('stage'), 'Waiting for slides', [
+        'Approve this TV in Admin → Digital Signage, then publish a playlist.',
+        'Sample slides are Welcome, Todays special, and Vacancy.'
+      ]);
       return;
     }
     if (this.itemIndex >= items.length) this.itemIndex = 0;

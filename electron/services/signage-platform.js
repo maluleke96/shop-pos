@@ -370,7 +370,7 @@ function getMediaFile(mediaId, authToken, isDevice = false) {
   ensureSignage();
   if (isDevice) resolveDevice(authToken);
   else resolvePortal(authToken);
-  const m = dbGet('SELECT * FROM signage_media WHERE id = ? AND is_active = 1', [mediaId]);
+  const m = restoreMediaFile(dbGet('SELECT * FROM signage_media WHERE id = ? AND is_active = 1', [mediaId]));
   if (!m?.file_path) throw new Error('Media not found');
   const full = path.join(assetsDir(), '..', m.file_path);
   if (!fs.existsSync(full)) throw new Error('Media file missing on server');
@@ -861,10 +861,14 @@ function buildPlaylistManifest(playlistId, audioPlaylistId, deviceToken, orienta
     if (it.item_type === 'menu' && it.menu_id) {
       return { item_type: 'menu', duration_seconds: it.duration_seconds, transition: it.transition, menu: getMenu(it.menu_id) };
     }
+    const row = it.media_id ? dbGet('SELECT * FROM signage_media WHERE id = ?', [it.media_id]) : null;
+    const mapped = mapMedia(row);
     return {
       item_type: 'media', duration_seconds: it.duration_seconds, transition: it.transition,
       use_video_audio: !!it.use_video_audio, video_volume: it.video_volume,
-      media: mapMedia(dbGet('SELECT * FROM signage_media WHERE id = ?', [it.media_id]))
+      media: mapped,
+      title: mapped?.title || it.media_title || 'Shop slide',
+      caption: mapped ? '' : 'This slide is not linked to a picture. Replace it in Digital Signage, then publish again.'
     };
   });
   return {
@@ -1225,36 +1229,107 @@ function rowId(result, sql, params) {
   return dbGet(sql, params)?.id;
 }
 
+const SAMPLE_SLIDES = [
+  {
+    title: 'Sample — Welcome',
+    file: 'welcome.svg',
+    category: 'promo',
+    heading: 'Welcome',
+    lines: ['Order at the counter, the kiosk, or drive-thru.', 'You can edit or delete this slide.']
+  },
+  {
+    title: 'Sample — Todays special',
+    file: 'special.svg',
+    category: 'food',
+    heading: 'Todays special',
+    lines: ['Ask the team for the plate of the day.', 'Change this text by replacing the slide in Media.']
+  },
+  {
+    title: 'Sample — Vacancy',
+    file: 'vacancy.svg',
+    category: 'promo',
+    heading: 'Vacancy',
+    lines: ['Cashier, kitchen, and driver.', 'Apply from Admin, Recruitment. Edit or delete this anytime.']
+  }
+];
+
+function sampleSlideByTitle(title) {
+  return SAMPLE_SLIDES.find((s) => s.title === title) || null;
+}
+
+/** Rewrite a sample file when a redeploy wiped the disk. Leaves real uploads alone. */
+function restoreMediaFile(row) {
+  if (!row) return row;
+  const full = row.file_path ? path.join(assetsDir(), '..', row.file_path) : '';
+  if (full && fs.existsSync(full)) return row;
+  const slide = sampleSlideByTitle(row.title);
+  let saved = null;
+  if (slide) {
+    saved = saveRawFile('media', slide.file, Buffer.from(slideSvg(slide.heading, slide.lines), 'utf8'), 'image/svg+xml');
+  } else if (row.title === 'Sample — Shop music') {
+    saved = saveRawFile('audio', 'shop-music-sample.wav', wavSampleBuffer(), 'audio/wav');
+  }
+  if (!saved) return row;
+  dbRun('UPDATE signage_media SET file_path = ?, mime_type = ?, file_size = ? WHERE id = ?',
+    [saved.rel, saved.mime, saved.size, row.id]);
+  row.file_path = saved.rel;
+  row.mime_type = saved.mime;
+  row.file_size = saved.size;
+  return row;
+}
+
+function playlistHasPicture(playlistId) {
+  if (!playlistId) return false;
+  const items = dbAll(`SELECT pi.item_type, pi.menu_id, m.id AS mid
+    FROM signage_playlist_items pi
+    LEFT JOIN signage_media m ON m.id = pi.media_id
+    WHERE pi.playlist_id = ?`, [playlistId]);
+  return items.some((it) => (it.item_type === 'menu' && it.menu_id) || it.mid);
+}
+
+let _sampleRepaired = false;
+
+function repairSamplePack() {
+  if (_sampleRepaired) return;
+  const rows = dbAll("SELECT * FROM signage_media WHERE title LIKE 'Sample — %'");
+  for (const row of rows) {
+    try { restoreMediaFile(row); } catch (_) { /* next request retries */ }
+  }
+  const playlist = dbGet("SELECT id FROM signage_playlists WHERE name = ? ORDER BY id DESC LIMIT 1", ['Sample — Floor display']);
+  if (!playlist?.id) return;
+  const linked = dbAll(`SELECT pi.id, m.id AS mid
+    FROM signage_playlist_items pi
+    LEFT JOIN signage_media m ON m.id = pi.media_id
+    WHERE pi.playlist_id = ?`, [playlist.id]);
+  const broken = !linked.length || linked.some((it) => !it.mid);
+  if (broken) {
+    dbRun('DELETE FROM signage_playlist_items WHERE playlist_id = ?', [playlist.id]);
+    SAMPLE_SLIDES.forEach((slide, idx) => {
+      const media = dbGet('SELECT id FROM signage_media WHERE title = ? ORDER BY id DESC LIMIT 1', [slide.title]);
+      if (!media?.id) return;
+      dbRun(`INSERT INTO signage_playlist_items (playlist_id, item_type, media_id, duration_seconds, transition, sort_order)
+        VALUES (?,?,?,?,?,?)`, [playlist.id, 'media', media.id, 10, 'fade', idx]);
+    });
+  }
+  const devices = dbAll('SELECT id, current_playlist_id FROM signage_devices WHERE is_revoked = 0');
+  for (const dev of devices) {
+    if (playlistHasPicture(dev.current_playlist_id)) continue;
+    dbRun('UPDATE signage_devices SET current_playlist_id = ?, updated_at = ? WHERE id = ?', [playlist.id, nowIso(), dev.id]);
+  }
+  _sampleRepaired = true;
+}
+
 /** One-time sample slides, music, and a vacancy. Safe to delete or edit in the Signage Centre. */
 function seedStarterPack() {
   const row = dbGet('SELECT settings_json FROM signage_settings WHERE id = 1');
   let extra = {};
   try { extra = JSON.parse(row?.settings_json || '{}') || {}; } catch (_) { extra = {}; }
-  if (extra.starter_pack === 'v1') return;
+  if (extra.starter_pack === 'v1') {
+    try { repairSamplePack(); } catch (err) { console.warn('[signage] sample repair:', err.message); }
+    return;
+  }
 
-  const slides = [
-    {
-      title: 'Sample — Welcome',
-      file: 'welcome.svg',
-      category: 'promo',
-      heading: 'Welcome',
-      lines: ['Order at the counter, the kiosk, or drive-thru.', 'You can edit or delete this slide.']
-    },
-    {
-      title: 'Sample — Todays special',
-      file: 'special.svg',
-      category: 'food',
-      heading: 'Todays special',
-      lines: ['Ask the team for the plate of the day.', 'Change this text by replacing the slide in Media.']
-    },
-    {
-      title: 'Sample — Vacancy',
-      file: 'vacancy.svg',
-      category: 'promo',
-      heading: 'Vacancy',
-      lines: ['Cashier, kitchen, and driver.', 'Apply from Admin, Recruitment. Edit or delete this anytime.']
-    }
-  ];
+  const slides = SAMPLE_SLIDES;
   const mediaIds = [];
   for (const slide of slides) {
     const saved = saveRawFile('media', slide.file, Buffer.from(slideSvg(slide.heading, slide.lines), 'utf8'), 'image/svg+xml');

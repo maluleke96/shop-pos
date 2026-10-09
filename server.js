@@ -647,8 +647,12 @@ function denyIfNotEntitled(res, urlPath) {
 
 function servePortalWeb(req, res, baseDir, mount) {
   let urlPath = (req.url || '/').split('?')[0];
-  if (urlPath === mount) urlPath = '/';
-  else if (urlPath.startsWith(mount + '/')) urlPath = urlPath.slice(mount.length);
+  if (urlPath === mount) {
+    const q = (req.url || '').includes('?') ? req.url.slice(req.url.indexOf('?')) : '';
+    res.writeHead(302, { Location: `${mount}/${q}`, ...corsHeaders() });
+    return res.end();
+  }
+  if (urlPath.startsWith(mount + '/')) urlPath = urlPath.slice(mount.length);
   if (urlPath === '/') urlPath = '/index.html';
   const filePath = safeJoin(baseDir, urlPath);
   if (!filePath) {

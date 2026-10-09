@@ -24,22 +24,30 @@ const DriveThruApp = {
         this.startHeartbeat();
         return;
       } catch (_) {
-        localStorage.removeItem('dt_station_token');
         localStorage.removeItem('dt_portal_token');
       }
     }
-    if (station) {
-      this.showLogin();
-      return;
+    if (localStorage.getItem('dt_station_token')) {
+      try {
+        await this.loadCatalog();
+        this.showApp();
+        this.startHeartbeat();
+        return;
+      } catch (_) {
+        localStorage.removeItem('dt_station_token');
+      }
     }
     this.showPairing();
   },
 
   showLogin() {
     document.getElementById('station-setup')?.classList.add('hidden');
+    document.getElementById('app')?.classList.add('hidden');
     document.getElementById('login-screen')?.classList.remove('hidden');
     const btn = document.getElementById('dt-login-btn');
     if (btn) btn.onclick = () => this.login();
+    const pair = document.getElementById('dt-show-pair');
+    if (pair) pair.onclick = () => this.showPairing();
   },
 
   showPairing() {
@@ -64,10 +72,18 @@ const DriveThruApp = {
           if (st.status === 'approved' && st.station_token) {
             clearInterval(this._pairTimer);
             localStorage.setItem('dt_station_token', st.station_token);
-            if (localStorage.getItem('dt_portal_token')) {
-              await this.connectStation(st.station_token);
-            } else {
+            if (msgEl) msgEl.textContent = 'Paired. Opening the station…';
+            try {
+              if (localStorage.getItem('dt_portal_token')) await DriveThruAPI.stationLogin();
+              await this.loadCatalog();
+              document.getElementById('station-setup')?.classList.add('hidden');
+              document.getElementById('login-screen')?.classList.add('hidden');
+              this.showApp();
+              this.startHeartbeat();
+            } catch (err) {
               this.showLogin();
+              const loginErr = document.getElementById('login-err');
+              if (loginErr) loginErr.textContent = err.message || 'Station paired. Sign in with your Admin password to open the lane.';
             }
           } else if (st.status === 'expired' || st.status === 'rejected') {
             clearInterval(this._pairTimer);
@@ -134,7 +150,9 @@ const DriveThruApp = {
   },
 
   showApp() {
-    document.getElementById('app').classList.remove('hidden');
+    document.getElementById('station-setup')?.classList.add('hidden');
+    document.getElementById('login-screen')?.classList.add('hidden');
+    document.getElementById('app')?.classList.remove('hidden');
     this.render();
   },
 
@@ -158,9 +176,10 @@ const DriveThruApp = {
         .finally(() => { DriveThruAudio._devicesLoading = false; });
     }
 
+    const signedIn = !!localStorage.getItem('dt_portal_token');
     app.innerHTML = `<div class="dt-header">
-      <div><strong>${this.esc(this.catalog?.station?.name || 'Drive-Thru')}</strong> · ${this.esc(this.user?.full_name || '')}</div>
-      <div>${this.order ? `Order #${this.order.id} · ${this.order.status}` : 'No active order'}</div></div>
+      <div><strong>${this.esc(this.catalog?.station?.name || 'Drive-Thru')}</strong> · ${this.esc(this.user?.full_name || (signedIn ? '' : 'Not signed in'))}</div>
+      <div>${signedIn ? '' : '<button type="button" data-act="staff-login" style="padding:8px 12px;border:none;border-radius:8px;background:#334155;color:#fff;cursor:pointer">Sign in</button> '}${this.order ? `Order #${this.order.id} · ${this.order.status}` : 'No active order'}</div></div>
       <div class="dt-layout">
         <div class="panel"><h3>Menu</h3>
           <div class="dt-cats">${(this.catalog?.categories || []).map((c) => `<button type="button" class="dt-cat ${c.id === this.categoryId ? 'active' : ''}" data-cat="${c.id}">${this.esc(c.name)}</button>`).join('')}</div>
@@ -231,7 +250,17 @@ const DriveThruApp = {
         if (e.target.closest('[data-cat]')) { this.categoryId = Number(e.target.closest('[data-cat]').dataset.cat); this.render(); return; }
         if (e.target.closest('[data-pid]')) { await this.addProduct(Number(e.target.closest('[data-pid]').dataset.pid)); return; }
         const act = e.target.closest('[data-act]')?.dataset.act;
-        if (act === 'start') { this.order = await DriveThruAPI.startOrder(); this.render(); }
+        if (act === 'staff-login') { this.showLogin(); return; }
+        if (act === 'start') {
+          if (!localStorage.getItem('dt_portal_token')) {
+            this.showLogin();
+            const loginErr = document.getElementById('login-err');
+            if (loginErr) loginErr.textContent = 'Sign in with your Admin password to open a vehicle.';
+            return;
+          }
+          this.order = await DriveThruAPI.startOrder();
+          this.render();
+        }
         if (act === 'confirm') {
           await this.saveOrder();
           this.order = await DriveThruAPI.confirmOrder(this.order.id);

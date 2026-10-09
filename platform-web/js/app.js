@@ -600,6 +600,7 @@ const PlatformApp = {
         <div style="margin:12px 0"><label>Username</label><input id="pf-user" autocomplete="username" value="platform"></div>
         <div style="margin:12px 0"><label>Password</label><input id="pf-pass" type="password" autocomplete="current-password"></div>
         <button class="btn" data-act="login">Sign in</button>
+        <p class="muted" style="margin-top:14px;line-height:1.45">Lab sign-in: username <strong>platform</strong><br>password <strong>platform-lab-change-me</strong></p>
         <p class="err" id="pf-err"></p>
       </div></div>`;
       this.bind();
