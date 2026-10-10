@@ -271,7 +271,7 @@ function registerIpc() {
     return store.permanentlyDeleteUser(id, confirmUsername, actor.id, actor.username);
   }));
   ipcMain.handle('auth:staffCommand', wrapSync((payload, actor) => {
-    store.requireActor(actor, ['owner', 'manager']);
+    store.requireActor(actor, ['owner', 'manager', 'supervisor', 'assistant_manager']);
     return require('./services/staff-identity').command(actor, payload || {});
   }));
   ipcMain.handle('auth:verifySession', wrapSync((userId) => store.verifyUserSession(userId)));

@@ -154,7 +154,12 @@ function loadUser(userId) {
 }
 
 function loadActor(actorId) {
-  const actor = db().prepare('SELECT id, username, full_name, role, password_hash, is_active, access_status FROM users WHERE id = ?').get(Number(actorId));
+  let actor = null;
+  try {
+    actor = db().prepare('SELECT id, username, full_name, role, password_hash, is_active, access_status FROM users WHERE id = ?').get(Number(actorId));
+  } catch (_) {
+    actor = db().prepare('SELECT id, username, full_name, role, password_hash, is_active FROM users WHERE id = ?').get(Number(actorId));
+  }
   if (!actor) throw new Error('Admin session not found');
   return actor;
 }
@@ -246,9 +251,15 @@ function invalidateLogin(userId) {
   try { db().prepare('UPDATE users SET password_hash = ?, pin = NULL WHERE id = ?').run(dead, userId); } catch (_) { /* */ }
 }
 
+function emptyCounts() {
+  const counts = {};
+  for (const src of COUNT_SOURCES) counts[src.key] = 0;
+  return counts;
+}
+
 function historyCounts(userId) {
   ensureStaffIdentity();
-  const counts = {};
+  const counts = emptyCounts();
   for (const src of COUNT_SOURCES) {
     try {
       const where = src.where ? ` AND ${src.where}` : '';
@@ -259,6 +270,59 @@ function historyCounts(userId) {
     }
   }
   return counts;
+}
+
+function batchHistory(userIds) {
+  const wanted = new Set(userIds.map((id) => Number(id)));
+  const byUser = {};
+  for (const id of wanted) byUser[id] = emptyCounts();
+  for (const src of COUNT_SOURCES) {
+    try {
+      const where = src.where ? ` WHERE ${src.where}` : '';
+      const rows = db().prepare(`SELECT ${src.column} AS uid, COUNT(*) AS c FROM ${src.table}${where} GROUP BY ${src.column}`).all();
+      for (const row of rows) {
+        const id = Number(row.uid);
+        if (!byUser[id]) continue;
+        byUser[id][src.key] = Number(row.c) || 0;
+      }
+    } catch (_) { /* table may not exist on this shop */ }
+  }
+  return byUser;
+}
+
+function latestTransfersMap() {
+  const map = {};
+  try {
+    const rows = db().prepare('SELECT * FROM staff_ownership_transfers ORDER BY id DESC').all();
+    for (const row of rows) {
+      const id = Number(row.from_user_id);
+      if (!map[id]) map[id] = row;
+    }
+  } catch (_) { /* archive table is created on first use */ }
+  return map;
+}
+
+function lastLogins() {
+  const map = {};
+  try {
+    const rows = db().prepare('SELECT user_id, MAX(event_at) AS last_login FROM user_login_events GROUP BY user_id').all();
+    for (const row of rows) map[Number(row.user_id)] = row.last_login || null;
+  } catch (_) { /* login history is optional */ }
+  return map;
+}
+
+function shapeTransfer(transfer) {
+  if (!transfer) return null;
+  let counts = {};
+  try { counts = JSON.parse(transfer.counts_json || '{}'); } catch (_) { counts = {}; }
+  return {
+    mode: transfer.mode,
+    to_name: transfer.to_name_snapshot,
+    by_name: transfer.transferred_by_name,
+    at: transfer.transferred_at,
+    reason: transfer.reason,
+    counts
+  };
 }
 
 function latestTransfer(userId) {
@@ -288,25 +352,23 @@ function decorateRecord(record, userIdField = 'user_id') {
   return record;
 }
 
-function publicUser(row) {
+function publicUser(row, extras) {
   if (!row) return null;
   const { password_hash, pin, ...safe } = row;
   let modules = [];
   try { modules = JSON.parse(safe.modules_json || '[]'); } catch (_) { modules = []; }
-  const transfer = latestTransfer(safe.id);
+  if (!Array.isArray(modules)) modules = [];
+  const transferRow = extras && Object.prototype.hasOwnProperty.call(extras, 'transfer')
+    ? extras.transfer
+    : latestTransfer(safe.id);
+  const history = extras?.history ? { ...emptyCounts(), ...extras.history } : historyCounts(safe.id);
   return {
     ...safe,
     modules,
     has_pin: !!(row.pin),
-    history: historyCounts(safe.id),
-    transfer: transfer ? {
-      mode: transfer.mode,
-      to_name: transfer.to_name_snapshot,
-      by_name: transfer.transferred_by_name,
-      at: transfer.transferred_at,
-      reason: transfer.reason,
-      counts: (() => { try { return JSON.parse(transfer.counts_json || '{}'); } catch (_) { return {}; } })()
-    } : null
+    last_login: extras?.last_login || null,
+    history,
+    transfer: shapeTransfer(transferRow)
   };
 }
 
@@ -320,7 +382,14 @@ function listStaff() {
   } catch (_) {
     rows = db().prepare('SELECT * FROM users ORDER BY full_name').all();
   }
-  return rows.map(publicUser);
+  const histories = batchHistory(rows.map((row) => row.id));
+  const transfers = latestTransfersMap();
+  const logins = lastLogins();
+  return rows.map((row) => publicUser(row, {
+    history: histories[Number(row.id)] || emptyCounts(),
+    transfer: transfers[Number(row.id)] || null,
+    last_login: logins[Number(row.id)] || null
+  }));
 }
 
 function mainAdmin() {
@@ -506,11 +575,14 @@ function command(actor, payload = {}) {
   const action = String(payload.action || '');
   const actorId = actor?.id;
   const actorName = actor?.username;
-  if (action === 'board') {
-    if (!['owner', 'manager'].includes(actor?.role)) throw new Error('You do not have permission for this action');
-    return board();
+  let role = actor?.role;
+  try { role = loadActor(actorId).role || role; } catch (_) { /* use the session role */ }
+  if (action === 'board' || action === 'profile') {
+    if (!['owner', 'manager', 'supervisor', 'assistant_manager'].includes(role)) {
+      throw new Error('You do not have permission for this action');
+    }
+    return action === 'board' ? board() : profile(payload.userId);
   }
-  if (action === 'profile') return profile(payload.userId);
   if (action === 'block') {
     return setStatus({ userId: payload.userId, status: 'BLOCKED', reason: payload.reason, actorId, actorName });
   }

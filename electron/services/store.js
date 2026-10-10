@@ -806,9 +806,9 @@ function createUser(data, actorId, actorName) {
     const identity = require('./staff-identity');
     const code = identity.assignStaffCode(newId);
     const modules = Array.isArray(data.modules) ? data.modules : [];
-    if (modules.length || data.pos_terminal) {
-      getDb().prepare('UPDATE users SET modules_json = ?, pos_terminal = ?, access_status = ? WHERE id = ?')
-        .run(JSON.stringify(modules), data.pos_terminal || null, 'ACTIVE', newId);
+    if (data.modules !== undefined || data.pos_terminal !== undefined || modules.length) {
+      getDb().prepare("UPDATE users SET modules_json = ?, pos_terminal = ?, access_status = COALESCE(NULLIF(access_status, ''), 'ACTIVE') WHERE id = ?")
+        .run(JSON.stringify(modules), data.pos_terminal || null, newId);
     }
     audit(actorId, actorName, 'create_user', 'user', newId, { username: data.username, role: data.role, branch_id: branchId, staff_code: code });
   } catch (_) {
@@ -819,6 +819,7 @@ function createUser(data, actorId, actorName) {
 
 function updateUser(id, data, actorId, actorName) {
   const actor = requireActor({ id: actorId }, ['owner', 'manager']);
+  try { require('./staff-identity').ensureStaffIdentity(); } catch (_) { /* identity columns are optional until migration */ }
   const userId = Number(id);
   const existing = getDb().prepare('SELECT id, role, is_active, branch_id FROM users WHERE id = ?').get(userId);
   if (!existing) throw new Error('User not found');
@@ -871,6 +872,23 @@ function updateUser(id, data, actorId, actorName) {
       if (owners < 1) throw new Error('Cannot deactivate the last active owner');
     }
     fields.push('is_active = ?'); values.push(data.is_active ? 1 : 0);
+    try {
+      const st = getDb().prepare('SELECT access_status FROM users WHERE id = ?').get(userId);
+      const cur = String(st?.access_status || '').toUpperCase();
+      if (!['BLOCKED', 'DELETED', 'TERMINATED'].includes(cur)) {
+        fields.push('access_status = ?');
+        values.push(data.is_active ? 'ACTIVE' : 'INACTIVE');
+      }
+    } catch (_) { /* status column arrives with the staff migration */ }
+  }
+  if (data.pos_terminal !== undefined) {
+    fields.push('pos_terminal = ?');
+    values.push(data.pos_terminal ? String(data.pos_terminal).trim() : null);
+  }
+  if (data.modules !== undefined) {
+    const modules = Array.isArray(data.modules) ? data.modules : [];
+    fields.push('modules_json = ?');
+    values.push(JSON.stringify(modules));
   }
   if (data.password) {
     if (data.password.length < 6) throw new Error('Password must be at least 6 characters');

@@ -5785,6 +5785,11 @@ const AdminPage = {
     const active = activeRes.data || branches.find((b) => b.is_active) || branches[0] || { id: 1, name: 'Main Branch', code: 'MAIN' };
     const viewRes = await API.getViewBranch?.() || {};
     const view = viewRes.data || {};
+    let branchStaff = [];
+    try {
+      const staffRes = await API.staffCommand?.({ action: 'board' }, this.app?.user);
+      if (staffRes?.success) branchStaff = staffRes.data?.users || [];
+    } catch (_) { branchStaff = []; }
     const currency = this.settings?.currency || 'R';
     const role = this.app?.user?.role;
     const canManage = ['owner', 'manager'].includes(role);
@@ -5796,7 +5801,8 @@ const AdminPage = {
 
     el.innerHTML = `<div class="admin-section"><h3>Branches &amp; Tills</h3>
       <p class="muted">Create branches, register POS tills, connect this computer, and manage tax per branch.
-        Assign manager, supervisor and cashiers in <strong>Users</strong>.</p>
+        Manager, supervisor and cashiers are the same staff profiles used by Block, Archive and Transfer.</p>
+      <p><button type="button" class="btn btn-ghost btn-sm" id="br-open-staff">Open staff profiles</button></p>
       <div class="card" style="margin-bottom:12px"><div class="card-body">
         <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center">
           <div><span class="muted">This till sells as:</span> <strong>${Utils.escHtml(active.name || '—')}</strong> <span class="tag tag-ok">Active branch</span></div>
@@ -5845,6 +5851,10 @@ const AdminPage = {
           const sup = b.supervisor?.full_name || '— none —';
           const cashiers = b.cashier_count != null ? b.cashier_count : (b.staff?.cashiers?.length || 0);
           const tills = tillsByBranch[b.id] || [];
+          const people = branchStaff.filter((u) => Number(u.branch_id) === Number(b.id));
+          const peopleLine = people.length
+            ? people.map((u) => `${Utils.escHtml(u.full_name)} (${Utils.escHtml(String(u.access_status || 'ACTIVE'))})`).join(', ')
+            : 'No staff assigned yet';
           return `<div style="padding:12px 0;border-bottom:1px solid var(--border)">
             <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between">
               <div>
@@ -5858,9 +5868,11 @@ const AdminPage = {
                 </div>
                 ${b.address ? `<div class="muted" style="font-size:12px">${Utils.escHtml(b.address)}${b.phone ? ' · ' + Utils.escHtml(b.phone) : ''}</div>` : ''}
                 ${tills.length ? `<div class="muted" style="font-size:12px;margin-top:6px">${tills.length} till(s) registered — see <strong>All tills</strong> table above</div>` : `<div class="muted" style="font-size:12px;margin-top:6px">No tills yet</div>`}
+                <div class="muted" style="font-size:12px;margin-top:6px">Staff: ${peopleLine}</div>
               </div>
               <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">
                 <button type="button" class="btn btn-sm btn-primary br-activate" data-id="${b.id}">Connect till</button>
+                <button type="button" class="btn btn-sm btn-ghost br-staff" data-id="${b.id}" data-name="${Utils.escHtml(b.name)}">Assign staff</button>
                 ${canManage ? `<button type="button" class="btn btn-sm btn-ghost br-view" data-id="${b.id}">View data</button>
                 <button type="button" class="btn btn-sm btn-ghost br-edit" data-id="${b.id}">Edit</button>` : ''}
                 ${canDeleteBranch ? `<button type="button" class="btn btn-sm btn-danger br-delete" data-id="${b.id}">Delete</button>` : ''}
@@ -5876,7 +5888,7 @@ const AdminPage = {
           <div class="field"><label>Phone</label><input id="br-phone"></div>
         </div>
         <button type="button" class="btn btn-primary" id="br-add" style="margin-top:8px">Create Branch</button>
-        <p class="muted" style="margin-top:8px;font-size:12px">After creating a branch: assign 1 manager + 1 supervisor + cashiers in <strong>Users</strong> (select that branch). Assign products to the branch on the Products page. Connect each till with <em>Connect till</em>.</p>` : ''}
+        <p class="muted" style="margin-top:8px;font-size:12px">After creating a branch: use <em>Assign staff</em> for 1 manager, 1 supervisor and cashiers. Assign products to the branch on the Products page. Connect each till with <em>Connect till</em>.</p>` : ''}
       </div></div>
       <div class="card" style="margin-top:16px"><div class="card-body">
         <h4>Recipe file transfer</h4>
@@ -5907,6 +5919,20 @@ const AdminPage = {
       this.section = 'online-orders';
       document.querySelectorAll('.admin-nav-btn').forEach((b) => b.classList.toggle('active', b.dataset.section === 'online-orders'));
       this.renderSection(document.getElementById('admin-content'));
+    });
+    const openStaff = (branchId, branchName) => {
+      if (window.UsersPage) {
+        window.UsersPage.branchFilter = branchId || 0;
+        window.UsersPage.branchFilterName = branchName || '';
+        window.UsersPage.view = 'active';
+      }
+      this.section = 'permissions';
+      document.querySelectorAll('.admin-nav-btn').forEach((b) => b.classList.toggle('active', b.dataset.section === 'permissions'));
+      this.renderSection(document.getElementById('admin-content'));
+    };
+    document.getElementById('br-open-staff')?.addEventListener('click', () => openStaff(0, ''));
+    el.querySelectorAll('.br-staff').forEach((btn) => {
+      btn.addEventListener('click', () => openStaff(Number(btn.dataset.id), btn.dataset.name || ''));
     });
 
     const thisBranchSel = document.getElementById('br-this-branch');

@@ -207,7 +207,7 @@ function buildHandlers(store) {
     return s.permanentlyDeleteUser(id, confirm, a.id, a.username);
   }));
   add('auth:staffCommand', wrapSync((payload, a) => {
-    s.requireActor(a, ['owner', 'manager']);
+    s.requireActor(a, ['owner', 'manager', 'supervisor', 'assistant_manager']);
     return require('../electron/services/staff-identity').command(a, payload || {});
   }));
   add('auth:verifySession', wrapSync(userId => s.verifyUserSession(userId)));

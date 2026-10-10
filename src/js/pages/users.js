@@ -72,6 +72,32 @@ const RADIO_PERM_KEYS = [
   'radio_broadcast', 'radio_social', 'radio_schedule', 'radio_promotions', 'radio_analytics', 'radio_settings'
 ];
 const GENERAL_PERM_KEYS = USER_PERM_KEYS.filter((k) => !STUDIO_PERM_KEYS.includes(k) && !RADIO_PERM_KEYS.includes(k));
+const STAFF_MODULES = [
+  ['pos', 'POS'],
+  ['admin', 'Admin'],
+  ['kitchen', 'Kitchen'],
+  ['drive_thru', 'Drive-Thru'],
+  ['kiosk', 'Kiosk'],
+  ['customer_display', 'Customer display'],
+  ['delivery', 'Delivery'],
+  ['expenses', 'Expenses'],
+  ['marketing', 'Marketing'],
+  ['radio', 'Radio'],
+  ['recipe', 'Recipe'],
+  ['staff_portal', 'Staff portal'],
+  ['signage', 'Digital signage'],
+  ['hr', 'Staff & HR']
+];
+
+function whenText(value) {
+  if (!value) return '—';
+  try { return Utils.formatDateTime(value); } catch (_) { return String(value); }
+}
+
+function histText(u) {
+  const hist = u.history || {};
+  return Object.entries(hist).filter(([, n]) => Number(n) > 0).map(([k, n]) => `${n} ${String(k).replace(/_/g, ' ')}`).join(', ') || 'No records yet';
+}
 
 function staffStatus(u) {
   const s = String(u.access_status || (u.is_active ? 'ACTIVE' : 'INACTIVE')).toUpperCase();
@@ -87,14 +113,29 @@ function staffModules(u) {
   return Array.isArray(mods) && mods.length ? mods.join(', ') : '—';
 }
 
-function renderUserTableRows(users, app) {
+function staffActions(u, app) {
   const owner = app.user?.role === 'owner';
-  return users.map((u) => {
-    const self = u.id === app.user.id;
-    const status = String(u.access_status || (u.is_active ? 'ACTIVE' : 'INACTIVE')).toUpperCase();
-    const hist = u.history || {};
-    const histText = Object.entries(hist).filter(([, n]) => Number(n) > 0).map(([k, n]) => `${n} ${k.replace(/_/g, ' ')}`).join(', ') || 'No records yet';
-    return `<tr>
+  const canDeactivate = owner || app.user?.role === 'manager';
+  const self = u.id === app.user.id;
+  const status = String(u.access_status || (u.is_active ? 'ACTIVE' : 'INACTIVE')).toUpperCase();
+  return `<td class="actions" style="white-space:normal;min-width:220px">
+    <button class="btn btn-sm btn-ghost" data-act="view" data-id="${u.id}">View</button>
+    ${status !== 'DELETED' ? `<button class="btn btn-sm btn-ghost" data-act="edit" data-id="${u.id}">Edit</button>` : ''}
+    ${status !== 'DELETED' ? `<button class="btn btn-sm btn-ghost" data-act="permissions" data-id="${u.id}">Permissions</button>` : ''}
+    ${owner && !self && status === 'ACTIVE' ? `<button class="btn btn-sm btn-warning" data-act="block" data-id="${u.id}">Block</button>` : ''}
+    ${owner && !self && status === 'BLOCKED' ? `<button class="btn btn-sm btn-primary" data-act="unblock" data-id="${u.id}">Unblock</button>` : ''}
+    ${canDeactivate && !self && status === 'ACTIVE' ? `<button class="btn btn-sm btn-warning" data-act="deactivate" data-id="${u.id}">Deactivate</button>` : ''}
+    ${owner && !self && !['DELETED', 'TERMINATED'].includes(status) ? `<button class="btn btn-sm btn-ghost" data-act="terminate" data-id="${u.id}">Terminate</button>` : ''}
+    ${owner && !self && (status === 'INACTIVE' || status === 'TERMINATED') ? `<button class="btn btn-sm btn-primary" data-act="unblock" data-id="${u.id}">Restore</button>` : ''}
+    ${owner && !self && status !== 'DELETED' ? `<button class="btn btn-sm btn-danger" data-act="delete" data-id="${u.id}">Delete</button>` : ''}
+    <button class="btn btn-sm btn-ghost" data-act="history" data-id="${u.id}">View History</button>
+    ${owner ? `<button class="btn btn-sm btn-ghost" data-act="transfer" data-id="${u.id}">Transfer Records</button>` : ''}
+    ${owner && !self ? `<button class="btn btn-sm btn-ghost" data-act="logout" data-id="${u.id}">Force Logout</button>` : ''}
+  </td>`;
+}
+
+function renderUserTableRows(users, app) {
+  return users.map((u) => `<tr>
       <td>${Utils.escHtml(u.full_name)}</td>
       <td>${Utils.escHtml(u.staff_code || '—')}</td>
       <td>${Utils.roleTag(u.role)}</td>
@@ -102,20 +143,35 @@ function renderUserTableRows(users, app) {
       <td>${staffStatus(u)}</td>
       <td>${Utils.escHtml(staffModules(u))}</td>
       <td>${Utils.escHtml(u.pos_terminal || '—')}</td>
-      <td class="muted">${Utils.escHtml(histText)}</td>
-      <td class="actions" style="white-space:normal;min-width:220px">
-        <button class="btn btn-sm btn-ghost" data-act="view" data-id="${u.id}">View</button>
-        ${status !== 'DELETED' ? `<button class="btn btn-sm btn-ghost" data-act="edit" data-id="${u.id}">Edit</button>` : ''}
-        ${owner && !self && status === 'ACTIVE' ? `<button class="btn btn-sm btn-warning" data-act="block" data-id="${u.id}">Block</button>` : ''}
-        ${owner && !self && status === 'BLOCKED' ? `<button class="btn btn-sm btn-primary" data-act="unblock" data-id="${u.id}">Unblock</button>` : ''}
-        ${!self && status === 'ACTIVE' ? `<button class="btn btn-sm btn-warning" data-act="deactivate" data-id="${u.id}">Deactivate</button>` : ''}
-        ${owner && !self && (status === 'INACTIVE' || status === 'TERMINATED') ? `<button class="btn btn-sm btn-primary" data-act="unblock" data-id="${u.id}">Restore</button>` : ''}
-        ${owner && !self && status !== 'DELETED' ? `<button class="btn btn-sm btn-danger" data-act="delete" data-id="${u.id}">Delete</button>` : ''}
-        <button class="btn btn-sm btn-ghost" data-act="history" data-id="${u.id}">View History</button>
-        ${owner ? `<button class="btn btn-sm btn-ghost" data-act="transfer" data-id="${u.id}">Transfer Records</button>` : ''}
-        ${owner && !self ? `<button class="btn btn-sm btn-ghost" data-act="logout" data-id="${u.id}">Force Logout</button>` : ''}
-      </td></tr>`;
-  }).join('');
+      <td class="muted">${Utils.escHtml(whenText(u.last_login))}</td>
+      <td class="muted">${Utils.escHtml(histText(u))}</td>
+      ${staffActions(u, app)}</tr>`).join('');
+}
+
+function renderBlockedRows(users, app) {
+  return users.map((u) => `<tr>
+      <td>${Utils.escHtml(u.full_name)}</td>
+      <td>${Utils.escHtml(u.staff_code || '—')}</td>
+      <td>${Utils.roleTag(u.role)}</td>
+      <td>${Utils.escHtml(u.branch_name || '—')}</td>
+      <td>${Utils.escHtml(whenText(u.blocked_at))}</td>
+      <td>${Utils.escHtml(u.blocked_by_name || '—')}</td>
+      <td>${Utils.escHtml(u.block_reason || '—')}</td>
+      <td class="muted">${Utils.escHtml(whenText(u.last_login))}</td>
+      ${staffActions(u, app)}</tr>`).join('');
+}
+
+function renderArchiveRows(users, app) {
+  return users.map((u) => `<tr>
+      <td>${Utils.escHtml(u.full_name)}</td>
+      <td>${Utils.escHtml(u.staff_code || '—')}</td>
+      <td>${Utils.roleTag(u.role)}</td>
+      <td>${Utils.escHtml(u.branch_name || '—')}</td>
+      <td>${Utils.escHtml(u.deleted_by_name || '—')}</td>
+      <td>${Utils.escHtml(whenText(u.deleted_at))}</td>
+      <td>${Utils.escHtml(u.delete_reason || '—')}</td>
+      <td>${u.transfer?.mode === 'transfer' ? Utils.escHtml(u.transfer.to_name || 'Main Admin') : 'Original employee'}</td>
+      ${staffActions(u, app)}</tr>`).join('');
 }
 
 const UsersPage = {
@@ -131,27 +187,36 @@ const UsersPage = {
     }
     const board = res.data || {};
     this.users = board.users || [];
+    const branchId = this.branchFilter ? Number(this.branchFilter) : 0;
+    const inBranch = (u) => !branchId || Number(u.branch_id) === branchId;
+    const branchName = this.branchFilterName || this.users.find((u) => Number(u.branch_id) === branchId)?.branch_name || '';
     const tabs = [
       ['active', 'Active'],
-      ['blocked', 'Blocked users'],
-      ['archive', 'Deleted staff archive'],
-      ['transferred', 'Transferred records']
+      ['blocked', `Blocked users (${(board.blocked || []).filter(inBranch).length})`],
+      ['archive', `Deleted staff archive (${(board.archived || []).filter(inBranch).length})`],
+      ['transferred', `Transferred records (${(board.transfers || []).length})`]
     ];
     const tabBtn = tabs.map(([id, label]) =>
       `<button class="btn btn-sm ${view === id ? 'btn-primary' : 'btn-ghost'}" data-view="${id}">${label}</button>`
     ).join(' ');
-    const head = `<tr><th>Employee</th><th>Staff ID</th><th>Role</th><th>Branch</th><th>Status</th><th>Modules</th><th>POS</th><th>Historical records</th><th>Actions</th></tr>`;
+    const head = `<tr><th>Employee</th><th>Staff ID</th><th>Role</th><th>Branch</th><th>Status</th><th>Modules</th><th>POS</th><th>Last login</th><th>Historical records</th><th>Actions</th></tr>`;
     let body = '';
     if (view === 'blocked') {
-      body = `<h4>Blocked users</h4><div class="card"><div class="table-wrap"><table><thead>${head}</thead><tbody>
-        ${renderUserTableRows(board.blocked || [], app) || '<tr><td colspan="9" class="muted">No blocked users</td></tr>'}
-      </tbody></table></div></div>`;
+      const rows = (board.blocked || []).filter(inBranch);
+      body = `<h4>Blocked users</h4>
+        <p class="muted">A blocked person is signed out of POS and every module. The message they see is ACCOUNT BLOCKED BY ADMIN. Their sales and other history stay on the original record.</p>
+        <div class="card"><div class="table-wrap"><table>
+          <thead><tr><th>Employee</th><th>Staff ID</th><th>Role</th><th>Branch</th><th>Blocked date</th><th>Blocked by</th><th>Reason</th><th>Last login</th><th>Actions</th></tr></thead>
+          <tbody>${renderBlockedRows(rows, app) || '<tr><td colspan="9" class="muted">No blocked users</td></tr>'}</tbody>
+        </table></div></div>`;
     } else if (view === 'archive') {
+      const rows = (board.archived || []).filter(inBranch);
       body = `<h4>Deleted staff archive</h4>
-        <p class="muted">These people cannot sign in. Their sales, expenses and other history stay on the original record.</p>
-        <div class="card"><div class="table-wrap"><table><thead>${head}</thead><tbody>
-        ${renderUserTableRows(board.archived || [], app) || '<tr><td colspan="9" class="muted">No deleted staff</td></tr>'}
-      </tbody></table></div></div>`;
+        <p class="muted">These people cannot sign in. Deleting a profile does not delete sales, expenses, stock or audit history.</p>
+        <div class="card"><div class="table-wrap"><table>
+          <thead><tr><th>Employee</th><th>Staff ID</th><th>Original role</th><th>Original branch</th><th>Deleted by</th><th>Deleted date</th><th>Reason</th><th>Current owner</th><th>Actions</th></tr></thead>
+          <tbody>${renderArchiveRows(rows, app) || '<tr><td colspan="9" class="muted">No deleted staff</td></tr>'}</tbody>
+        </table></div></div>`;
     } else if (view === 'transferred') {
       const rows = (board.transfers || []).map((t) => {
         let counts = {};
@@ -161,32 +226,68 @@ const UsersPage = {
           <td>${Utils.escHtml(t.from_name_snapshot || '')} — ${Utils.escHtml(t.from_staff_code || '')}</td>
           <td>${Utils.escHtml(t.to_name_snapshot || 'Main Admin')}</td>
           <td>${Utils.escHtml(t.transferred_at ? Utils.formatDateTime(t.transferred_at) : '—')}</td>
+          <td>${Utils.escHtml(t.transferred_by_name || '—')}</td>
           <td>${Utils.escHtml(t.reason || '—')}</td>
-          <td>${Utils.escHtml(t.mode || '')}</td>
+          <td>${Utils.escHtml(t.mode === 'transfer' ? 'Transferred to Main Admin' : 'Preserved with original employee')}</td>
           <td>${Utils.escHtml(summary)}</td>
           <td><button class="btn btn-sm btn-ghost" data-act="history" data-id="${t.from_user_id}">View History</button></td>
         </tr>`;
       }).join('');
       body = `<h4>Transferred records</h4>
-        <p class="muted">Ownership can move to the Main Admin. The original employee stays on the record.</p>
+        <p class="muted">Current ownership can sit with the Main Admin. Originally performed by stays the employee who did the work. Sales are not rewritten.</p>
         <div class="card"><div class="table-wrap"><table>
-          <thead><tr><th>From</th><th>Current owner</th><th>When</th><th>Reason</th><th>Mode</th><th>Records</th><th></th></tr></thead>
-          <tbody>${rows || '<tr><td colspan="7" class="muted">No transfers yet</td></tr>'}</tbody>
+          <thead><tr><th>Originally performed by</th><th>Current owner</th><th>When</th><th>Transferred by</th><th>Reason</th><th>Mode</th><th>Records</th><th></th></tr></thead>
+          <tbody>${rows || '<tr><td colspan="8" class="muted">No transfers yet</td></tr>'}</tbody>
         </table></div></div>`;
     } else {
-      const active = this.users.filter((u) => String(u.access_status || 'ACTIVE').toUpperCase() === 'ACTIVE');
+      const active = this.users.filter((u) => String(u.access_status || 'ACTIVE').toUpperCase() === 'ACTIVE' && inBranch(u));
+      const resting = this.users.filter((u) => ['INACTIVE', 'TERMINATED'].includes(String(u.access_status || '').toUpperCase()) && inBranch(u));
       body = `<h4>Staff profiles</h4>
-        <p class="muted">One profile per person. Only the Main Admin creates logins. Blocking removes access to every module. Deleting a profile does not delete sales or other history.</p>
+        <p class="muted">One profile per person, used by POS and every module. Only the Main Admin creates logins. Blocking removes access everywhere. Deleting a profile does not delete sales or other history.</p>
         <div class="card"><div class="table-wrap"><table><thead>${head}</thead><tbody>
-          ${renderUserTableRows(active, app) || '<tr><td colspan="9" class="muted">No active staff</td></tr>'}
+          ${renderUserTableRows(active, app) || '<tr><td colspan="10" class="muted">No active staff</td></tr>'}
+        </tbody></table></div></div>
+        <h4 style="margin-top:16px">Inactive and terminated</h4>
+        <div class="card"><div class="table-wrap"><table><thead>${head}</thead><tbody>
+          ${renderUserTableRows(resting, app) || '<tr><td colspan="10" class="muted">No inactive or terminated staff</td></tr>'}
         </tbody></table></div></div>`;
     }
+    const purge = app.user?.role === 'owner' ? `<div class="card" style="margin-top:16px"><div class="card-body">
+      <h4 style="margin-top:0">Permanently remove one historical record</h4>
+      <p class="error-msg">This action permanently removes historical business data and cannot be undone. It does not delete a staff profile, and it does not run when you block or archive someone.</p>
+      <div class="form-grid">
+        <div class="field"><label>Record type</label>
+          <select id="purge-table">
+            <option value="sales">Sale</option>
+            <option value="returns">Refund</option>
+            <option value="expenses">Expense</option>
+            <option value="stock_movements">Stock movement</option>
+            <option value="waste_records">Wastage</option>
+            <option value="purchase_orders">Purchase order</option>
+          </select></div>
+        <div class="field"><label>Record ID</label><input id="purge-id" inputmode="numeric" placeholder="Numeric id"></div>
+        <div class="field"><label>Reason</label><input id="purge-reason" placeholder="Why this record must be removed"></div>
+        <div class="field"><label>Main Admin password</label><input type="password" id="purge-password" autocomplete="current-password"></div>
+      </div>
+      <button type="button" class="btn btn-danger" id="purge-record" style="margin-top:8px">Permanently remove this record</button>
+    </div></div>` : '';
+    const branchNote = branchId
+      ? `<p class="muted">Showing staff for <strong>${Utils.escHtml(branchName || 'this branch')}</strong>. <button type="button" class="btn btn-sm btn-ghost" id="staff-all-branches">Show every branch</button></p>`
+      : '';
     el.innerHTML = `<div class="page-toolbar"><h3>Staff</h3>
       ${app.user?.role === 'owner' ? '<button class="btn btn-primary" id="add-user">+ Create staff profile</button>' : ''}
       </div>
+      ${branchNote}
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin:0 0 12px">${tabBtn}</div>
-      ${body}`;
+      ${body}
+      ${purge}`;
     document.getElementById('add-user')?.addEventListener('click', () => this.showForm(null, () => this.render(el, app)));
+    document.getElementById('staff-all-branches')?.addEventListener('click', () => {
+      this.branchFilter = 0;
+      this.branchFilterName = '';
+      this.render(el, app);
+    });
+    document.getElementById('purge-record')?.addEventListener('click', () => this.purgeRecord(() => this.render(el, app)));
     el.querySelectorAll('[data-view]').forEach((b) => b.addEventListener('click', () => {
       this.view = b.dataset.view;
       this.render(el, app);
@@ -199,9 +300,10 @@ const UsersPage = {
 
   async onStaffAction(act, user, onDone) {
     if (!user?.id) return;
-    if (act === 'edit') return this.showForm(this.users.find((u) => u.id == user.id) || user, onDone);
+    if (act === 'edit' || act === 'permissions') return this.showForm(this.users.find((u) => u.id == user.id) || user, onDone);
     if (act === 'view' || act === 'history') return this.showHistory(user);
     if (act === 'block') return this.blockUser(user, onDone);
+    if (act === 'terminate') return this.terminateUser(user, onDone);
     if (act === 'unblock') return this.runCommand({ action: 'unblock', userId: user.id, reason: 'Restored by Main Admin' }, 'Access restored', onDone);
     if (act === 'deactivate') return this.deactivateUser(user, onDone);
     if (act === 'delete') return this.archiveUser(user, onDone);
@@ -214,6 +316,25 @@ const UsersPage = {
     if (!r.success) return Utils.toast(r.error || 'Could not update staff', 'error');
     Utils.toast(okText, 'success');
     if (onDone) onDone();
+  },
+
+  async terminateUser(user, onDone) {
+    const reason = prompt(`Terminate ${user.full_name}? They will be signed out. Historical records stay.\n\nReason`);
+    if (!reason || !reason.trim()) return Utils.toast('A reason is required', 'error');
+    return this.runCommand({ action: 'terminate', userId: user.id, reason: reason.trim() }, 'Staff terminated. History kept.', onDone);
+  },
+
+  async purgeRecord(onDone) {
+    const table = document.getElementById('purge-table')?.value;
+    const recordId = Number(document.getElementById('purge-id')?.value);
+    const reason = document.getElementById('purge-reason')?.value.trim();
+    const password = document.getElementById('purge-password')?.value;
+    if (!recordId) return Utils.toast('Enter the record id', 'error');
+    if (!reason) return Utils.toast('A reason is required', 'error');
+    if (!password) return Utils.toast('Enter the Main Admin password', 'error');
+    const ok = confirm('This action permanently removes historical business data and cannot be undone.');
+    if (!ok) return;
+    return this.runCommand({ action: 'purge', table, recordId, reason, password }, 'Historical record removed', onDone);
   },
 
   async blockUser(user, onDone) {
@@ -259,6 +380,7 @@ const UsersPage = {
     Utils.showModal(`${p.full_name || 'Staff'} — ${p.staff_code || ''}`, `
       <p><strong>Status:</strong> ${Utils.escHtml(p.access_status || '')}</p>
       <p><strong>Role:</strong> ${Utils.escHtml(p.role || '')} · <strong>Branch:</strong> ${Utils.escHtml(p.branch_name || '—')} · <strong>POS:</strong> ${Utils.escHtml(p.pos_terminal || '—')}</p>
+      <p><strong>Modules:</strong> ${Utils.escHtml(staffModules(p))} · <strong>Last login:</strong> ${Utils.escHtml(whenText(p.last_login))}</p>
       ${p.deleted_at ? `<p><strong>Deleted by:</strong> ${Utils.escHtml(p.deleted_by_name || '')} · ${Utils.escHtml(p.deleted_at)}<br>${Utils.escHtml(p.delete_reason || '')}</p>` : ''}
       ${p.blocked_at ? `<p><strong>Blocked by:</strong> ${Utils.escHtml(p.blocked_by_name || '')} · ${Utils.escHtml(p.block_reason || '')}</p>` : ''}
       ${transfer ? `<p><strong>Current owner:</strong> ${Utils.escHtml(transfer.to_name || '')}<br><strong>Originally performed by:</strong> ${Utils.escHtml(p.full_name || '')}<br>Transferred by ${Utils.escHtml(transfer.by_name || '')} · ${Utils.escHtml(transfer.at || '')}<br>${Utils.escHtml(transfer.reason || '')}</p>` : ''}
@@ -274,6 +396,7 @@ const UsersPage = {
     if (user?.permissions) {
       try { perms = JSON.parse(user.permissions); } catch { perms = {}; }
     }
+    const selectedModules = new Set(Array.isArray(user?.modules) ? user.modules : []);
     const showPerms = !user || ['assistant_manager', 'manager', 'cashier', 'supervisor'].includes(user.role);
     const canGrantRecipe = app.user?.role === 'owner';
     const editingOwner = user?.role === 'owner';
@@ -305,9 +428,16 @@ const UsersPage = {
         <div class="field"><label>Branch ${['manager', 'supervisor', 'cashier', 'assistant_manager', 'delivery_manager'].includes(user?.role) || !user ? '*' : ''}</label>
           <select id="uf-branch">
             <option value="">— ${user?.role === 'delivery_manager' || (!user) ? 'All branches / shared' : 'Select branch'} —</option>
-            ${branches.map(b => `<option value="${b.id}" ${user?.branch_id == b.id ? 'selected' : ''}>${b.name}</option>`).join('')}
+            ${branches.map(b => `<option value="${b.id}" ${(user?.branch_id == b.id || (!user && Number(this.branchFilter) === Number(b.id))) ? 'selected' : ''}>${b.name}</option>`).join('')}
           </select>
-          <small class="muted">1 manager + 1 supervisor per branch. Many cashiers allowed.</small>
+          <small class="muted">1 manager + 1 supervisor per branch. Many cashiers allowed. The same branch list is used by Admin → Branches.</small>
+        </div>
+        <div class="field"><label>POS terminal</label>
+          <input id="uf-pos" value="${Utils.escHtml(user?.pos_terminal || '')}" placeholder="e.g. Front Counter 1"></div>
+        <div class="field full"><label>Modules</label>
+          <div style="display:flex;flex-wrap:wrap;gap:8px 14px;margin-top:4px">
+            ${STAFF_MODULES.map(([id, label]) => `<label style="font-size:13px"><input type="checkbox" class="uf-mod" value="${id}" ${selectedModules.has(id) ? 'checked' : ''}> ${label}</label>`).join('')}
+          </div>
         </div>
         ${user ? `<div class="field full"><label><input type="checkbox" id="uf-active" ${user.is_active ? 'checked' : ''}> Active — can sign in</label></div>
         ${user.has_pin ? '<div class="field full"><label><input type="checkbox" id="uf-clear-pin"> Clear PIN</label></div>' : ''}` : ''}
@@ -367,7 +497,9 @@ const UsersPage = {
         full_name: document.getElementById('uf-name').value.trim(),
         username: document.getElementById('uf-username').value.trim(),
         role: document.getElementById('uf-role').value,
-        branch_id: parseInt(document.getElementById('uf-branch').value, 10) || null
+        branch_id: parseInt(document.getElementById('uf-branch').value, 10) || null,
+        pos_terminal: document.getElementById('uf-pos')?.value.trim() || '',
+        modules: [...document.querySelectorAll('.uf-mod:checked')].map((c) => c.value)
       };
       const password = document.getElementById('uf-password').value;
       const pin = document.getElementById('uf-pin').value;
