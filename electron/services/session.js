@@ -22,7 +22,8 @@ function setUserSession(user) {
     full_name: user.full_name,
     role: user.role,
     branch_id: user.branch_id ?? null,
-    permissions: user.permissions ?? null
+    permissions: user.permissions ?? null,
+    session_epoch: Number(user.session_epoch) || 0
   };
   const b = bucket();
   if (b) {

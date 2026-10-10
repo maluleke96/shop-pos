@@ -2590,6 +2590,10 @@ const AdminPage = {
   },
 
   async renderPermissions(el) {
+    if (window.UsersPage?.render) {
+      await window.UsersPage.render(el, this.app);
+      return;
+    }
     const usersRes = await API.getUsers(this.app.user);
     if (!usersRes.success) {
       el.innerHTML = `<div class="admin-section"><p class="error-msg">${Utils.escHtml(usersRes.error || 'Could not load users')}</p></div>`;

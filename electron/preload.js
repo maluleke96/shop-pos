@@ -21,7 +21,7 @@ contextBridge.exposeInMainWorld('__SHOP_POS_USE_SUPABASE__', isLocalInstaller ? 
 
 const channels = [
   'app:quit',
-  'auth:login', 'auth:logout', 'auth:getUsers', 'auth:createUser', 'auth:updateUser', 'auth:deleteUser', 'auth:permanentlyDeleteUser', 'auth:verifySession', 'auth:session',
+  'auth:login', 'auth:logout', 'auth:getUsers', 'auth:createUser', 'auth:updateUser', 'auth:deleteUser', 'auth:permanentlyDeleteUser', 'auth:staffCommand', 'auth:verifySession', 'auth:session',
   'auth:hasRecovery', 'auth:getRecoveryStatus', 'auth:recoverVerify', 'auth:recoverReset', 'auth:seedInstallerAccount', 'auth:setRecoverySecret', 'auth:factoryReset',
   'auth:clearOperationalData', 'auth:listClearDataCategories',
   'auth:verifyBookkeepingPassword', 'auth:setBookkeepingPassword',

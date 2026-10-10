@@ -253,7 +253,7 @@ function registerIpc() {
     return store.getUsers();
   }));
   ipcMain.handle('auth:createUser', wrapSync((data, actor) => {
-    store.requireActor(actor, ['owner', 'manager']);
+    store.requireActor(actor, ['owner']);
     return store.createUser(data, actor.id, actor.username);
   }));
   ipcMain.handle('auth:updateUser', wrapSync((id, data, actor) => {
@@ -267,9 +267,12 @@ function registerIpc() {
     return true;
   }));
   ipcMain.handle('auth:permanentlyDeleteUser', wrapSync((id, confirmUsername, actor) => {
+    store.requireActor(actor, ['owner']);
+    return store.permanentlyDeleteUser(id, confirmUsername, actor.id, actor.username);
+  }));
+  ipcMain.handle('auth:staffCommand', wrapSync((payload, actor) => {
     store.requireActor(actor, ['owner', 'manager']);
-    store.permanentlyDeleteUser(id, confirmUsername, actor.id, actor.username);
-    return true;
+    return require('./services/staff-identity').command(actor, payload || {});
   }));
   ipcMain.handle('auth:verifySession', wrapSync((userId) => store.verifyUserSession(userId)));
   ipcMain.handle('auth:session', wrapSync(() => {

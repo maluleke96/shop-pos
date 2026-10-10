@@ -73,74 +73,197 @@ const RADIO_PERM_KEYS = [
 ];
 const GENERAL_PERM_KEYS = USER_PERM_KEYS.filter((k) => !STUDIO_PERM_KEYS.includes(k) && !RADIO_PERM_KEYS.includes(k));
 
-function renderUserTableRows(users, app, onAction) {
-  return users.map(u => `<tr>
-    <td>${u.full_name}</td><td>${u.username}</td>
-    <td>${Utils.roleTag(u.role)}</td>
-    <td>${u.is_active ? '<span class="tag tag-ok">Active</span>' : '<span class="tag tag-out">Inactive</span>'}</td>
-    <td class="actions" style="white-space:nowrap">
-      <button class="btn btn-sm btn-ghost edit-user" data-id="${u.id}">Edit</button>
-      ${u.id !== app.user.id && u.is_active ? `<button class="btn btn-sm btn-warning del-user" data-id="${u.id}">Deactivate</button>` : ''}
-      ${u.id !== app.user.id && !u.is_active ? `<button class="btn btn-sm btn-primary restore-user" data-id="${u.id}">Restore</button>` : ''}
-      ${u.id !== app.user.id ? `<button class="btn btn-sm btn-danger purge-user" data-id="${u.id}">Delete</button>` : ''}
-    </td></tr>`).join('');
+function staffStatus(u) {
+  const s = String(u.access_status || (u.is_active ? 'ACTIVE' : 'INACTIVE')).toUpperCase();
+  const cls = s === 'ACTIVE' ? 'tag-ok' : (s === 'BLOCKED' || s === 'DELETED' || s === 'TERMINATED' ? 'tag-out' : 'tag');
+  return `<span class="tag ${cls}">${Utils.escHtml(s)}</span>`;
+}
+
+function staffModules(u) {
+  let mods = u.modules;
+  if (!mods) {
+    try { mods = JSON.parse(u.modules_json || '[]'); } catch (_) { mods = []; }
+  }
+  return Array.isArray(mods) && mods.length ? mods.join(', ') : '—';
+}
+
+function renderUserTableRows(users, app) {
+  const owner = app.user?.role === 'owner';
+  return users.map((u) => {
+    const self = u.id === app.user.id;
+    const status = String(u.access_status || (u.is_active ? 'ACTIVE' : 'INACTIVE')).toUpperCase();
+    const hist = u.history || {};
+    const histText = Object.entries(hist).filter(([, n]) => Number(n) > 0).map(([k, n]) => `${n} ${k.replace(/_/g, ' ')}`).join(', ') || 'No records yet';
+    return `<tr>
+      <td>${Utils.escHtml(u.full_name)}</td>
+      <td>${Utils.escHtml(u.staff_code || '—')}</td>
+      <td>${Utils.roleTag(u.role)}</td>
+      <td>${Utils.escHtml(u.branch_name || '—')}</td>
+      <td>${staffStatus(u)}</td>
+      <td>${Utils.escHtml(staffModules(u))}</td>
+      <td>${Utils.escHtml(u.pos_terminal || '—')}</td>
+      <td class="muted">${Utils.escHtml(histText)}</td>
+      <td class="actions" style="white-space:normal;min-width:220px">
+        <button class="btn btn-sm btn-ghost" data-act="view" data-id="${u.id}">View</button>
+        ${status !== 'DELETED' ? `<button class="btn btn-sm btn-ghost" data-act="edit" data-id="${u.id}">Edit</button>` : ''}
+        ${owner && !self && status === 'ACTIVE' ? `<button class="btn btn-sm btn-warning" data-act="block" data-id="${u.id}">Block</button>` : ''}
+        ${owner && !self && status === 'BLOCKED' ? `<button class="btn btn-sm btn-primary" data-act="unblock" data-id="${u.id}">Unblock</button>` : ''}
+        ${!self && status === 'ACTIVE' ? `<button class="btn btn-sm btn-warning" data-act="deactivate" data-id="${u.id}">Deactivate</button>` : ''}
+        ${owner && !self && (status === 'INACTIVE' || status === 'TERMINATED') ? `<button class="btn btn-sm btn-primary" data-act="unblock" data-id="${u.id}">Restore</button>` : ''}
+        ${owner && !self && status !== 'DELETED' ? `<button class="btn btn-sm btn-danger" data-act="delete" data-id="${u.id}">Delete</button>` : ''}
+        <button class="btn btn-sm btn-ghost" data-act="history" data-id="${u.id}">View History</button>
+        ${owner ? `<button class="btn btn-sm btn-ghost" data-act="transfer" data-id="${u.id}">Transfer Records</button>` : ''}
+        ${owner && !self ? `<button class="btn btn-sm btn-ghost" data-act="logout" data-id="${u.id}">Force Logout</button>` : ''}
+      </td></tr>`;
+  }).join('');
 }
 
 const UsersPage = {
   async render(el, app) {
     this.app = app;
-    el.innerHTML = `
-      <div class="page-toolbar"><h3>User Management</h3><button class="btn btn-primary" id="add-user">+ Add User</button></div>
-      <p class="muted" style="margin:-8px 0 12px">Owner and manager can edit users, deactivate access, or delete a user. You cannot delete your own login.</p>
-      <div class="card"><div class="table-wrap"><table>
-        <thead><tr><th>Name</th><th>Username</th><th>Role</th><th>Status</th><th></th></tr></thead>
-        <tbody id="users-tbody"><tr><td colspan="5" class="muted">Loading users…</td></tr></tbody>
-      </table></div></div>`;
-    document.getElementById('add-user')?.addEventListener('click', () => this.showForm(null, () => this.render(el, app)));
-    if (this.users?.length) {
-      const active = this.users.filter((u) => u.is_active);
-      const inactive = this.users.filter((u) => !u.is_active);
-      const tbody = document.getElementById('users-tbody');
-      if (tbody) tbody.innerHTML = renderUserTableRows(active, app) || '<tr><td colspan="5" class="muted">No active users</td></tr>';
-    }
-    const res = await API.getUsers(app.user);
+    this._el = el;
+    const view = this.view || 'active';
+    el.innerHTML = `<div class="page-toolbar"><h3>Staff</h3></div><p class="muted">Loading staff profiles…</p>`;
+    const res = await API.staffCommand({ action: 'board' }, app.user);
     if (!res.success) {
-      document.getElementById('users-tbody').innerHTML = `<tr><td colspan="5" class="error-msg">${Utils.escHtml(res.error || 'Failed to load users')}</td></tr>`;
+      el.innerHTML = `<div class="page-toolbar"><h3>Staff</h3></div><p class="error-msg">${Utils.escHtml(res.error || 'Could not load staff')}</p>`;
       return;
     }
-    this.users = res.data || [];
-    const active = this.users.filter(u => u.is_active);
-    const inactive = this.users.filter(u => !u.is_active);
-
-    el.innerHTML = `
-      <div class="page-toolbar"><h3>User Management</h3><button class="btn btn-primary" id="add-user">+ Add User</button></div>
-      <p class="muted" style="margin:-8px 0 12px">Owner and manager can edit users, deactivate access, or delete a user. You cannot delete your own login.</p>
-      <h4 style="margin:16px 0 8px">Active Users</h4>
-      <div class="card"><div class="table-wrap"><table>
-        <thead><tr><th>Name</th><th>Username</th><th>Role</th><th>Status</th><th></th></tr></thead>
-        <tbody>${renderUserTableRows(active, app) || '<tr><td colspan="5" class="muted">No active users</td></tr>'}</tbody>
-      </table></div></div>
-      <h4 style="margin:20px 0 8px">Inactive Users</h4>
-      <div class="card"><div class="table-wrap"><table>
-        <thead><tr><th>Name</th><th>Username</th><th>Role</th><th>Status</th><th></th></tr></thead>
-        <tbody>${renderUserTableRows(inactive, app) || '<tr><td colspan="5" class="muted">No inactive users</td></tr>'}</tbody>
-      </table></div></div>`;
-
-    document.getElementById('add-user').addEventListener('click', () =>
-      this.showForm(null, () => this.render(el, app)));
-    el.querySelectorAll('.edit-user').forEach(b => b.addEventListener('click', () =>
-      this.showForm(this.users.find(u => u.id == b.dataset.id), () => this.render(el, app))));
-    el.querySelectorAll('.del-user').forEach(b => b.addEventListener('click', () =>
-      this.deactivateUser(this.users.find(u => u.id == b.dataset.id), () => this.render(el, app))));
-    el.querySelectorAll('.purge-user').forEach(b => b.addEventListener('click', () =>
-      this.permanentlyDeleteUser(this.users.find(u => u.id == b.dataset.id), () => this.render(el, app))));
-    el.querySelectorAll('.restore-user').forEach(b => b.addEventListener('click', async () => {
-      const id = parseInt(b.dataset.id, 10);
-      const r = await API.updateUser(id, { is_active: true }, app.user);
-      if (!r.success) return Utils.toast(r.error || 'Could not restore user', 'error');
-      Utils.toast('User restored', 'success');
+    const board = res.data || {};
+    this.users = board.users || [];
+    const tabs = [
+      ['active', 'Active'],
+      ['blocked', 'Blocked users'],
+      ['archive', 'Deleted staff archive'],
+      ['transferred', 'Transferred records']
+    ];
+    const tabBtn = tabs.map(([id, label]) =>
+      `<button class="btn btn-sm ${view === id ? 'btn-primary' : 'btn-ghost'}" data-view="${id}">${label}</button>`
+    ).join(' ');
+    const head = `<tr><th>Employee</th><th>Staff ID</th><th>Role</th><th>Branch</th><th>Status</th><th>Modules</th><th>POS</th><th>Historical records</th><th>Actions</th></tr>`;
+    let body = '';
+    if (view === 'blocked') {
+      body = `<h4>Blocked users</h4><div class="card"><div class="table-wrap"><table><thead>${head}</thead><tbody>
+        ${renderUserTableRows(board.blocked || [], app) || '<tr><td colspan="9" class="muted">No blocked users</td></tr>'}
+      </tbody></table></div></div>`;
+    } else if (view === 'archive') {
+      body = `<h4>Deleted staff archive</h4>
+        <p class="muted">These people cannot sign in. Their sales, expenses and other history stay on the original record.</p>
+        <div class="card"><div class="table-wrap"><table><thead>${head}</thead><tbody>
+        ${renderUserTableRows(board.archived || [], app) || '<tr><td colspan="9" class="muted">No deleted staff</td></tr>'}
+      </tbody></table></div></div>`;
+    } else if (view === 'transferred') {
+      const rows = (board.transfers || []).map((t) => {
+        let counts = {};
+        try { counts = JSON.parse(t.counts_json || '{}'); } catch (_) { counts = {}; }
+        const summary = Object.entries(counts).filter(([, n]) => Number(n) > 0).map(([k, n]) => `${n} ${k.replace(/_/g, ' ')}`).join(', ') || 'None';
+        return `<tr>
+          <td>${Utils.escHtml(t.from_name_snapshot || '')} — ${Utils.escHtml(t.from_staff_code || '')}</td>
+          <td>${Utils.escHtml(t.to_name_snapshot || 'Main Admin')}</td>
+          <td>${Utils.escHtml(t.transferred_at ? Utils.formatDateTime(t.transferred_at) : '—')}</td>
+          <td>${Utils.escHtml(t.reason || '—')}</td>
+          <td>${Utils.escHtml(t.mode || '')}</td>
+          <td>${Utils.escHtml(summary)}</td>
+          <td><button class="btn btn-sm btn-ghost" data-act="history" data-id="${t.from_user_id}">View History</button></td>
+        </tr>`;
+      }).join('');
+      body = `<h4>Transferred records</h4>
+        <p class="muted">Ownership can move to the Main Admin. The original employee stays on the record.</p>
+        <div class="card"><div class="table-wrap"><table>
+          <thead><tr><th>From</th><th>Current owner</th><th>When</th><th>Reason</th><th>Mode</th><th>Records</th><th></th></tr></thead>
+          <tbody>${rows || '<tr><td colspan="7" class="muted">No transfers yet</td></tr>'}</tbody>
+        </table></div></div>`;
+    } else {
+      const active = this.users.filter((u) => String(u.access_status || 'ACTIVE').toUpperCase() === 'ACTIVE');
+      body = `<h4>Staff profiles</h4>
+        <p class="muted">One profile per person. Only the Main Admin creates logins. Blocking removes access to every module. Deleting a profile does not delete sales or other history.</p>
+        <div class="card"><div class="table-wrap"><table><thead>${head}</thead><tbody>
+          ${renderUserTableRows(active, app) || '<tr><td colspan="9" class="muted">No active staff</td></tr>'}
+        </tbody></table></div></div>`;
+    }
+    el.innerHTML = `<div class="page-toolbar"><h3>Staff</h3>
+      ${app.user?.role === 'owner' ? '<button class="btn btn-primary" id="add-user">+ Create staff profile</button>' : ''}
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin:0 0 12px">${tabBtn}</div>
+      ${body}`;
+    document.getElementById('add-user')?.addEventListener('click', () => this.showForm(null, () => this.render(el, app)));
+    el.querySelectorAll('[data-view]').forEach((b) => b.addEventListener('click', () => {
+      this.view = b.dataset.view;
       this.render(el, app);
     }));
+    el.querySelectorAll('[data-act]').forEach((b) => b.addEventListener('click', () => {
+      const user = this.users.find((u) => u.id == b.dataset.id) || { id: Number(b.dataset.id) };
+      this.onStaffAction(b.dataset.act, user, () => this.render(el, app));
+    }));
+  },
+
+  async onStaffAction(act, user, onDone) {
+    if (!user?.id) return;
+    if (act === 'edit') return this.showForm(this.users.find((u) => u.id == user.id) || user, onDone);
+    if (act === 'view' || act === 'history') return this.showHistory(user);
+    if (act === 'block') return this.blockUser(user, onDone);
+    if (act === 'unblock') return this.runCommand({ action: 'unblock', userId: user.id, reason: 'Restored by Main Admin' }, 'Access restored', onDone);
+    if (act === 'deactivate') return this.deactivateUser(user, onDone);
+    if (act === 'delete') return this.archiveUser(user, onDone);
+    if (act === 'transfer') return this.transferUser(user, onDone);
+    if (act === 'logout') return this.runCommand({ action: 'logout', userId: user.id }, 'Signed out on every device', onDone);
+  },
+
+  async runCommand(payload, okText, onDone) {
+    const r = await API.staffCommand(payload, this.app.user);
+    if (!r.success) return Utils.toast(r.error || 'Could not update staff', 'error');
+    Utils.toast(okText, 'success');
+    if (onDone) onDone();
+  },
+
+  async blockUser(user, onDone) {
+    const ok = confirm('Blocking this user will immediately revoke access to all modules, branches and POS terminals. Their historical business records will remain preserved.');
+    if (!ok) return;
+    const reason = prompt('Reason for blocking (optional)') || '';
+    return this.runCommand({ action: 'block', userId: user.id, reason }, 'ACCOUNT BLOCKED BY ADMIN', onDone);
+  },
+
+  async archiveUser(user, onDone) {
+    const modePick = prompt('Deleting this person will remove their active user identity and access from the operational system. Historical records will be preserved. You must choose how historical ownership will be handled.\n\nType PRESERVE to keep “Originally performed by: ' + user.full_name + '”.\nType TRANSFER to set current ownership to the Main Admin and keep the original employee.');
+    if (modePick == null) return;
+    const mode = String(modePick).trim().toUpperCase() === 'TRANSFER' ? 'transfer' : (String(modePick).trim().toUpperCase() === 'PRESERVE' ? 'preserve' : '');
+    if (!mode) return Utils.toast('Type PRESERVE or TRANSFER', 'error');
+    const reason = prompt('Reason');
+    if (!reason || !reason.trim()) return Utils.toast('A reason is required', 'error');
+    const password = prompt('Main Admin password');
+    if (!password) return;
+    const typed = prompt(`Type the username "${user.username}" to confirm`);
+    if (typed == null || typed.trim() !== user.username) return Utils.toast('Username did not match — cancelled', 'error');
+    return this.runCommand({
+      action: 'archive', userId: user.id, mode, reason: reason.trim(), password, confirmUsername: typed.trim()
+    }, mode === 'transfer' ? 'Archived. History transferred. Original employee kept.' : 'Archived. History kept under the original employee.', onDone);
+  },
+
+  async transferUser(user, onDone) {
+    const reason = prompt('Transfer historical ownership to the Main Admin? The original employee stays on every record.\n\nReason');
+    if (!reason || !reason.trim()) return;
+    const password = prompt('Main Admin password');
+    if (!password) return;
+    return this.runCommand({ action: 'transfer', userId: user.id, reason: reason.trim(), password }, 'Ownership transferred. Original employee kept.', onDone);
+  },
+
+  async showHistory(user) {
+    const r = await API.staffCommand({ action: 'profile', userId: user.id }, this.app.user);
+    if (!r.success) return Utils.toast(r.error || 'Could not load history', 'error');
+    const p = r.data?.user || user;
+    const events = r.data?.events || [];
+    const hist = p.history || {};
+    const histHtml = Object.entries(hist).map(([k, n]) => `<li>${Utils.escHtml(k.replace(/_/g, ' '))}: ${n}</li>`).join('');
+    const evHtml = events.map((e) => `<li>${Utils.escHtml(e.created_at || '')} — ${Utils.escHtml(e.action)} ${e.from_status ? `(${Utils.escHtml(e.from_status)} → ${Utils.escHtml(e.to_status || '')})` : ''} by ${Utils.escHtml(e.actor_name || '')}${e.reason ? ` — ${Utils.escHtml(e.reason)}` : ''}</li>`).join('');
+    const transfer = p.transfer;
+    Utils.showModal(`${p.full_name || 'Staff'} — ${p.staff_code || ''}`, `
+      <p><strong>Status:</strong> ${Utils.escHtml(p.access_status || '')}</p>
+      <p><strong>Role:</strong> ${Utils.escHtml(p.role || '')} · <strong>Branch:</strong> ${Utils.escHtml(p.branch_name || '—')} · <strong>POS:</strong> ${Utils.escHtml(p.pos_terminal || '—')}</p>
+      ${p.deleted_at ? `<p><strong>Deleted by:</strong> ${Utils.escHtml(p.deleted_by_name || '')} · ${Utils.escHtml(p.deleted_at)}<br>${Utils.escHtml(p.delete_reason || '')}</p>` : ''}
+      ${p.blocked_at ? `<p><strong>Blocked by:</strong> ${Utils.escHtml(p.blocked_by_name || '')} · ${Utils.escHtml(p.block_reason || '')}</p>` : ''}
+      ${transfer ? `<p><strong>Current owner:</strong> ${Utils.escHtml(transfer.to_name || '')}<br><strong>Originally performed by:</strong> ${Utils.escHtml(p.full_name || '')}<br>Transferred by ${Utils.escHtml(transfer.by_name || '')} · ${Utils.escHtml(transfer.at || '')}<br>${Utils.escHtml(transfer.reason || '')}</p>` : ''}
+      <h4>Historical activity</h4><ul>${histHtml || '<li>None</li>'}</ul>
+      <h4>Timeline</h4><ul>${evHtml || '<li>No status changes yet</li>'}</ul>`);
   },
 
   async showForm(user = null, onSaved) {
@@ -299,20 +422,7 @@ const UsersPage = {
   },
 
   async permanentlyDeleteUser(user, onDone) {
-    if (!user) return;
-    const msg = user.is_active
-      ? `PERMANENTLY DELETE "${user.full_name}" (${user.username})?\n\nThis removes the user completely and cannot be undone. Sales history is kept but will no longer show this cashier.\n\nType the username "${user.username}" to confirm:`
-      : `PERMANENTLY DELETE "${user.full_name}" (${user.username})?\n\nThis cannot be undone.\n\nType the username "${user.username}" to confirm:`;
-    const typed = prompt(msg);
-    if (typed === null) return;
-    if (typed.trim() !== user.username) {
-      Utils.toast('Username did not match — delete cancelled', 'error');
-      return;
-    }
-    const r = await API.permanentlyDeleteUser(user.id, typed.trim(), this.app.user);
-    if (!r.success) return Utils.toast(r.error || 'Permanent delete failed', 'error');
-    Utils.toast('User permanently deleted', 'success');
-    if (onDone) onDone();
+    return this.archiveUser(user, onDone);
   }
 };
 window.UsersPage = UsersPage;

@@ -110,6 +110,16 @@ function tryPosAdminLogin(username, password) {
     return null;
   }
   if (!user) return null;
+  try {
+    const denial = require('./staff-identity').denialMessage(user);
+    if (denial) {
+      const err = new Error(denial);
+      err.code = 'ACCOUNT_BLOCKED';
+      throw err;
+    }
+  } catch (err) {
+    if (err?.code === 'ACCOUNT_BLOCKED') throw err;
+  }
   const active = user.is_active !== 0 && user.is_active !== '0' && user.status !== 'inactive';
   if (!active) return null;
   const role = String(user.role || '').toLowerCase();
@@ -181,6 +191,15 @@ function portalLoginWithPosFallback({
 }) {
   const u = String(username || '').trim();
   const pass = String(password || '');
+  try {
+    const pos = dbGet('SELECT * FROM users WHERE lower(username) = lower(?)', [u]);
+    if (pos) {
+      const denial = require('./staff-identity').denialMessage(pos);
+      if (denial) throw new Error(denial);
+    }
+  } catch (err) {
+    if (/ACCOUNT BLOCKED|deactivated|frozen/i.test(String(err?.message || ''))) throw err;
+  }
   let user = typeof findPortalUser === 'function'
     ? findPortalUser(u)
     : dbGet(`SELECT * FROM ${usersTable} WHERE lower(username) = lower(?) AND is_active = 1`, [u]);

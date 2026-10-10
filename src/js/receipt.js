@@ -83,6 +83,9 @@ const Receipt = {
       <div><strong>Date:</strong> ${Utils.formatDateTime(sale.sale_datetime || sale.created_at || new Date().toISOString())}${Number(sale.is_backdated) ? ' <em>(backdated)</em>' : ''}</div>
       ${Number(sale.is_backdated) && sale.created_at ? `<div class="meta">Entered: ${Utils.formatDateTime(sale.created_at)}</div>` : ''}
       ${(ps.print_cashier !== false) ? `<div><strong>Cashier:</strong> ${sale.cashier_name || '—'}</div>` : ''}
+      ${sale.ownership_transferred ? `<div><strong>Originally performed by:</strong> ${sale.original_staff_name || sale.cashier_name || '—'}</div>
+      <div><strong>Current ownership:</strong> ${sale.current_owner_name || 'Main Admin'}</div>
+      <div class="meta">Transferred by ${sale.transferred_by_name || 'Main Admin'}${sale.transferred_at ? ` · ${Utils.formatDateTime(sale.transferred_at)}` : ''}${sale.transfer_reason ? ` · ${sale.transfer_reason}` : ''}</div>` : ''}
       ${sale.order_type ? `<div><strong>Order:</strong> ${{ delivery: 'Delivery', takeaway: 'Takeaway', sit_in: 'Sit-in', online: 'Online Order' }[sale.order_type] || sale.order_type}</div>` : ''}
       ${sale.table_name ? `<div><strong>Table:</strong> ${sale.table_name}</div>` : ''}
       ${sale.delivery_address ? `<div><strong>Deliver to:</strong> ${sale.delivery_address}</div>` : ''}
@@ -245,6 +248,7 @@ const Receipt = {
       <div><strong>Receipt:</strong> ${sale.receipt_number}</div>
       <div><strong>Time:</strong> ${Utils.formatDateTime(sale.created_at || new Date().toISOString())}</div>
       <div><strong>Cashier:</strong> ${sale.cashier_name || '—'}</div>
+      ${sale.ownership_transferred ? `<div><strong>Originally performed by:</strong> ${sale.original_staff_name || sale.cashier_name || '—'}</div><div><strong>Current ownership:</strong> ${sale.current_owner_name || 'Main Admin'}</div>` : ''}
       ${sale.customer_name ? `<div><strong>Customer:</strong> ${sale.customer_name}</div>` : ''}
       ${sale.order_type === 'delivery' && sale.delivery_address ? `<div><strong>Deliver to:</strong> ${sale.delivery_address}</div>` : ''}
       <hr>${lines || '<p>No food items</p>'}
@@ -371,6 +375,10 @@ const Receipt = {
     if (sale.tax_amount) rows.push(['', '', 'Tax', fmt(sale.tax_amount)]);
     rows.push(['', '', 'TOTAL', fmt(sale.total)]);
     if (sale.cashier_name) rows.push(['', '', 'Cashier', sale.cashier_name]);
+    if (sale.ownership_transferred) {
+      rows.push(['', '', 'Originally performed by', sale.original_staff_name || sale.cashier_name || '']);
+      rows.push(['', '', 'Current ownership', sale.current_owner_name || 'Main Admin']);
+    }
     if (sale.customer_name) rows.push(['', '', 'Customer', sale.customer_name]);
     if (sale.order_type) rows.push(['', '', 'Order type', ({ delivery: 'Delivery', takeaway: 'Takeaway', sit_in: 'Sit-in' })[sale.order_type] || sale.order_type]);
     if (sale.delivery_address) rows.push(['', '', 'Deliver to', sale.delivery_address]);

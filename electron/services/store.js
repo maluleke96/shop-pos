@@ -278,10 +278,16 @@ function nextPONumber() {
 
 function userAccountIsActive(user) {
   if (!user) return false;
-  if (String(user.role || '') === 'owner') return true;
-  const v = user.is_active;
-  if (v === false || v === 0 || v === '0' || v === 'f' || v === 'false' || v === 'n') return false;
-  return true;
+  try {
+    const identity = require('./staff-identity');
+    identity.ensureStaffIdentity();
+    return !identity.denialMessage(user);
+  } catch (_) {
+    if (String(user.role || '') === 'owner') return true;
+    const v = user.is_active;
+    if (v === false || v === 0 || v === '0' || v === 'f' || v === 'false' || v === 'n') return false;
+    return true;
+  }
 }
 
 function login(username, password, pin) {
@@ -320,7 +326,9 @@ function login(username, password, pin) {
   } catch (_) { /* referral module optional */ }
   if (!userAccountIsActive(userAny)) {
     session.clearAll();
-    return { success: false, error: 'Account deactivated — system access is frozen. Contact the administrator.' };
+    let error = 'Account deactivated — system access is frozen. Contact the administrator.';
+    try { error = require('./staff-identity').denialMessage(userAny) || error; } catch (_) { /* */ }
+    return { success: false, error };
   }
   const user = userAny;
 
@@ -763,7 +771,7 @@ async function factoryResetBusiness(recoverySecret, confirmText) {
 const VALID_USER_ROLES = ['owner', 'manager', 'assistant_manager', 'supervisor', 'cashier', 'delivery_manager', 'referral_agent'];
 
 function createUser(data, actorId, actorName) {
-  const actor = requireActor({ id: actorId }, ['owner', 'manager']);
+  const actor = requireActor({ id: actorId }, ['owner']);
   if (!VALID_USER_ROLES.includes(data.role)) throw new Error('Invalid role');
   if (data.role === 'owner' && actor.role !== 'owner') {
     throw new Error('Only the owner can create owner accounts');
@@ -793,8 +801,20 @@ function createUser(data, actorId, actorName) {
     INSERT INTO users (username, password_hash, pin, full_name, role, permissions, branch_id)
     VALUES (?, ?, ?, ?, ?, ?, ?)
   `).run(data.username, hash, pinHash, data.full_name, data.role, JSON.stringify(data.permissions || {}), branchId);
-  audit(actorId, actorName, 'create_user', 'user', result.lastInsertRowid, { username: data.username, role: data.role, branch_id: branchId });
-  return result.lastInsertRowid;
+  const newId = result.lastInsertRowid;
+  try {
+    const identity = require('./staff-identity');
+    const code = identity.assignStaffCode(newId);
+    const modules = Array.isArray(data.modules) ? data.modules : [];
+    if (modules.length || data.pos_terminal) {
+      getDb().prepare('UPDATE users SET modules_json = ?, pos_terminal = ?, access_status = ? WHERE id = ?')
+        .run(JSON.stringify(modules), data.pos_terminal || null, 'ACTIVE', newId);
+    }
+    audit(actorId, actorName, 'create_user', 'user', newId, { username: data.username, role: data.role, branch_id: branchId, staff_code: code });
+  } catch (_) {
+    audit(actorId, actorName, 'create_user', 'user', newId, { username: data.username, role: data.role, branch_id: branchId });
+  }
+  return newId;
 }
 
 function updateUser(id, data, actorId, actorName) {
@@ -901,63 +921,28 @@ function deleteUser(id, actorId, actorName) {
     const owners = getDb().prepare(`SELECT COUNT(*) AS c FROM users WHERE role = 'owner' AND is_active = 1 AND id != ?`).get(userId).c;
     if (owners < 1) throw new Error('Cannot deactivate the last active owner');
   }
-  getDb().prepare(`UPDATE users SET is_active = 0, updated_at = datetime('now') WHERE id = ?`).run(userId);
-  audit(actorId, actorName, 'delete_user', 'user', userId, null);
-  try { require('./studio-app-platform').revokeUserSessions(userId); } catch (_) { /* */ }
-  try { require('./radio-platform').revokeUserSessions(userId); } catch (_) { /* */ }
-  try { require('./expense-app-platform').revokeUserSessions(userId); } catch (_) { /* */ }
+  require('./staff-identity').command(
+    { id: actorId, role: actor.role, username: actorName },
+    { action: 'deactivate', userId, reason: 'Deactivated' }
+  );
   const sess = session.getUserSession?.();
   if (sess?.id && Number(sess.id) === Number(userId)) session.clearAll();
 }
 
 function permanentlyDeleteUser(id, confirmUsername, actorId, actorName) {
   const actor = actorRecord(actorId);
-  requireActor(actor, ['owner', 'manager']);
-  const userId = Number(id);
-  if (userId === actorId) throw new Error('You cannot permanently delete your own account');
-  const user = getDb().prepare('SELECT id, username, role, full_name FROM users WHERE id = ?').get(userId);
-  if (!user) throw new Error('User not found');
-  if ((confirmUsername || '').trim() !== user.username) {
-    throw new Error('Type the exact username to confirm permanent deletion');
-  }
-  if (user.role === 'owner' && actor.role !== 'owner') {
-    throw new Error('Only the owner can permanently delete an owner account');
-  }
-  if (user.role === 'owner') {
-    const owners = getDb().prepare(`SELECT COUNT(*) AS c FROM users WHERE role = 'owner' AND id != ?`).get(userId).c;
-    if (owners < 1) throw new Error('Cannot permanently delete the only owner account');
-  }
-  const db = getDb();
-  const unlink = (sql) => { try { db.prepare(sql).run(userId); } catch (_) {} };
-  const tx = db.transaction(() => {
-    try { db.prepare('DELETE FROM user_login_events WHERE user_id = ?').run(userId); } catch (_) {}
-    try { db.prepare('DELETE FROM held_orders WHERE user_id = ?').run(userId); } catch (_) {}
-    unlink('UPDATE sales SET user_id = NULL WHERE user_id = ?');
-    unlink('UPDATE returns SET user_id = NULL WHERE user_id = ?');
-    unlink('UPDATE expenses SET user_id = NULL WHERE user_id = ?');
-    unlink('UPDATE stock_movements SET user_id = NULL WHERE user_id = ?');
-    unlink('UPDATE purchase_orders SET user_id = NULL WHERE user_id = ?');
-    unlink('UPDATE audit_log SET user_id = NULL WHERE user_id = ?');
-    unlink('UPDATE employees SET user_id = NULL WHERE user_id = ?');
-    unlink('UPDATE shop_operating_log SET user_id = NULL WHERE user_id = ?');
-    unlink('UPDATE quotes SET user_id = NULL WHERE user_id = ?');
-    unlink('UPDATE laybyes SET user_id = NULL WHERE user_id = ?');
-    unlink('UPDATE layby_payments SET user_id = NULL WHERE user_id = ?');
-    unlink('UPDATE gift_card_transactions SET user_id = NULL WHERE user_id = ?');
-    unlink('UPDATE customer_credit_ledger SET user_id = NULL WHERE user_id = ?');
-    unlink('UPDATE exchanges SET user_id = NULL WHERE user_id = ?');
-    unlink('UPDATE supplier_payments SET user_id = NULL WHERE user_id = ?');
-    unlink('UPDATE po_receipts SET user_id = NULL WHERE user_id = ?');
-    unlink('UPDATE shifts SET user_id = NULL WHERE user_id = ?');
-    unlink('UPDATE company_rules SET created_by = NULL WHERE created_by = ?');
-    unlink('UPDATE employee_disciplinary SET created_by = NULL WHERE created_by = ?');
-    try { db.prepare('DELETE FROM studio_app_sessions WHERE user_id = ?').run(userId); } catch (_) {}
-    try { db.prepare('DELETE FROM radio_app_sessions WHERE user_id = ?').run(userId); } catch (_) {}
-    try { db.prepare('DELETE FROM expense_app_sessions WHERE user_id = ?').run(userId); } catch (_) {}
-    db.prepare('DELETE FROM users WHERE id = ?').run(userId);
-  });
-  tx();
-  audit(actorId, actorName, 'permanently_delete_user', 'user', userId, { username: user.username, full_name: user.full_name });
+  requireActor(actor, ['owner']);
+  return require('./staff-identity').command(
+    { id: actorId, role: actor.role, username: actorName },
+    {
+      action: 'archive',
+      userId: id,
+      mode: 'preserve',
+      reason: 'Employee archived',
+      confirmUsername,
+      password: null
+    }
+  );
 }
 
 function verifyUserSession(userId) {
@@ -972,7 +957,9 @@ function verifyUserSession(userId) {
   if (user && !userAccountIsActive(user)) {
     const sess = session.getUserSession();
     if (sess?.id && Number(sess.id) === Number(userId)) session.clearAll();
-    return { active: false, frozen: true, error: 'Account deactivated — system access is frozen.' };
+    let error = 'Account deactivated — system access is frozen.';
+    try { error = require('./staff-identity').denialMessage(user) || error; } catch (_) { /* */ }
+    return { active: false, frozen: true, error };
   }
   if (user && userAccountIsActive(user)) {
     const sess = session.getUserSession();
@@ -986,10 +973,20 @@ function verifyUserSession(userId) {
 }
 
 function getUsers() {
-  return getDb().prepare(`
-    SELECT id, username, full_name, role,
-      CASE WHEN pin IS NOT NULL AND pin != '' THEN 1 ELSE 0 END as has_pin,
-      is_active, permissions, branch_id, created_at FROM users`).all();
+  try { require('./staff-identity').ensureStaffIdentity(); } catch (_) { /* */ }
+  try {
+    return getDb().prepare(`
+      SELECT id, username, full_name, role, staff_code, access_status, pos_terminal, modules_json,
+        CASE WHEN pin IS NOT NULL AND pin != '' THEN 1 ELSE 0 END as has_pin,
+        is_active, permissions, branch_id, created_at, blocked_at, blocked_by_name, block_reason,
+        deleted_at, deleted_by_name, delete_reason, status_reason
+      FROM users`).all();
+  } catch (_) {
+    return getDb().prepare(`
+      SELECT id, username, full_name, role,
+        CASE WHEN pin IS NOT NULL AND pin != '' THEN 1 ELSE 0 END as has_pin,
+        is_active, permissions, branch_id, created_at FROM users`).all();
+  }
 }
 
 // ─── Shop Setup ─────────────────────────────────────────────────────────────
@@ -3386,6 +3383,7 @@ function getSale(id, opts = {}) {
     .filter(p => p.payment_type === 'giftcard')
     .reduce((s, p) => s + Number(p.amount), 0);
   if (!opts.skipEditHistory) attachSaleEditHistory(sale, id);
+  try { require('./staff-identity').decorateRecord(sale, 'user_id'); } catch (_) { /* */ }
   return sale;
 }
 

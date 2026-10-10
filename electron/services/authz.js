@@ -3,9 +3,16 @@ const session = require('./session');
 
 function loadUserById(id) {
   if (id == null) return null;
-  return getDb().prepare(
-    'SELECT id, username, full_name, role, is_active, permissions, branch_id FROM users WHERE id = ?'
-  ).get(id);
+  try { require('./staff-identity').ensureStaffIdentity(); } catch (_) { /* */ }
+  try {
+    return getDb().prepare(
+      'SELECT id, username, full_name, role, is_active, permissions, branch_id, access_status, session_epoch, staff_code FROM users WHERE id = ?'
+    ).get(id);
+  } catch (_) {
+    return getDb().prepare(
+      'SELECT id, username, full_name, role, is_active, permissions, branch_id FROM users WHERE id = ?'
+    ).get(id);
+  }
 }
 
 /**
@@ -34,12 +41,11 @@ function assertUserActor(actor, allowedRoles = []) {
   if (!userId) throw new Error('Authentication required');
 
   const user = loadUserById(userId);
-  const inactive = user && (user.is_active === false || user.is_active === 0 || user.is_active === '0' || user.is_active === 'f');
-  if (user && String(user.role || '') === 'owner') {
-    /* owners are never frozen by a bad is_active flag */
-  } else if (!user || inactive) {
+  let denial = null;
+  try { denial = require('./staff-identity').denialMessage(user); } catch (_) { denial = null; }
+  if (!user || denial) {
     session.clearAll();
-    throw new Error('Account deactivated — system access is frozen. Contact the administrator.');
+    throw new Error(denial || 'Account deactivated — system access is frozen. Contact the administrator.');
   }
   if (allowedRoles?.length && !allowedRoles.includes(user.role)) {
     throw new Error('You do not have permission for this action');

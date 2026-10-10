@@ -173,14 +173,16 @@ function assertEmployeeLinkedUserActive(employeeRow) {
   }
   const uid = employeeRow?.user_id;
   if (!uid) return;
-  const u = getDb().prepare('SELECT id, role, is_active FROM users WHERE id = ?').get(uid);
-  if (!u) return;
-  if (String(u.role || '') === 'owner') return;
-  const v = u.is_active;
-  const inactive = v === false || v === 0 || v === '0' || v === 'f' || v === 'false' || v === 'n';
-  if (inactive) {
-    throw new Error('Linked shop login is deactivated — staff portal access is frozen. Contact the administrator.');
+  let u = null;
+  try {
+    u = getDb().prepare('SELECT id, role, is_active, access_status FROM users WHERE id = ?').get(uid);
+  } catch (_) {
+    u = getDb().prepare('SELECT id, role, is_active FROM users WHERE id = ?').get(uid);
   }
+  if (!u) return;
+  let denial = null;
+  try { denial = require('./staff-identity').denialMessage(u); } catch (_) { denial = null; }
+  if (denial) throw new Error(denial);
 }
 
 function verifyEmployeePin(employeeId, pin) {

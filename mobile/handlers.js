@@ -189,7 +189,7 @@ function buildHandlers(store) {
     return s.getUsers();
   }));
   add('auth:createUser', wrapSync((d, a) => {
-    s.requireActor(a, ['owner', 'manager']);
+    s.requireActor(a, ['owner']);
     return s.createUser(d, a.id, a.username);
   }));
   add('auth:updateUser', wrapSync((id, d, a) => {
@@ -203,8 +203,12 @@ function buildHandlers(store) {
     return true;
   }));
   add('auth:permanentlyDeleteUser', wrapSync((id, confirm, a) => {
-    s.requireActor(a, ['owner', 'manager']);
+    s.requireActor(a, ['owner']);
     return s.permanentlyDeleteUser(id, confirm, a.id, a.username);
+  }));
+  add('auth:staffCommand', wrapSync((payload, a) => {
+    s.requireActor(a, ['owner', 'manager']);
+    return require('../electron/services/staff-identity').command(a, payload || {});
   }));
   add('auth:verifySession', wrapSync(userId => s.verifyUserSession(userId)));
   add('auth:session', wrapSync(() => {

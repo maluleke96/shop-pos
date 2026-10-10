@@ -204,6 +204,7 @@ const API = {
   updateUser: (id, data, actor) => invoke('auth:updateUser', id, data, actor),
   deleteUser: (id, actor) => invoke('auth:deleteUser', id, actor),
   permanentlyDeleteUser: (id, confirmUsername, actor) => invoke('auth:permanentlyDeleteUser', id, confirmUsername, actor),
+  staffCommand: (payload, actor) => invoke('auth:staffCommand', payload, actor),
   verifyUserSession: (userId) => invoke('auth:verifySession', userId),
   getSession: () => invoke('auth:session'),
 
