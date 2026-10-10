@@ -11,7 +11,9 @@ const USER_PERM_KEYS = [
   'studio_menu_builder', 'studio_promo_video',
   'radio_studio_access', 'radio_dashboard', 'radio_live_mic', 'radio_music', 'radio_playlists',
   'radio_announcements', 'radio_mixer', 'radio_sfx', 'radio_calls', 'radio_audience',
-  'radio_broadcast', 'radio_social', 'radio_schedule', 'radio_promotions', 'radio_analytics', 'radio_settings'
+  'radio_broadcast', 'radio_social', 'radio_schedule', 'radio_promotions', 'radio_analytics', 'radio_settings',
+  'games.view', 'games.play', 'games.manage', 'games.prizes.manage', 'games.rules.manage',
+  'games.analytics', 'games.devices.manage', 'games.rewards.redeem', 'games.online.toggle', 'games.pos.access'
 ];
 const USER_PERM_LABELS = {
   sell: 'Make sales on POS', void_sales: 'Void sales (with supervisor code)', refunds: 'Process returns',
@@ -62,7 +64,17 @@ const USER_PERM_LABELS = {
   radio_schedule: 'Radio — Schedule',
   radio_promotions: 'Radio — Promotions',
   radio_analytics: 'Radio — Analytics',
-  radio_settings: 'Radio — Settings'
+  radio_settings: 'Radio — Settings',
+  'games.view': 'Games — View',
+  'games.play': 'Games — Play for a customer',
+  'games.manage': 'Games — Manage games',
+  'games.prizes.manage': 'Games — Manage prizes',
+  'games.rules.manage': 'Games — Manage rules',
+  'games.analytics': 'Games — Analytics',
+  'games.devices.manage': 'Games — Devices',
+  'games.rewards.redeem': 'Games — Redeem rewards',
+  'games.online.toggle': 'Games — Website button on/off',
+  'games.pos.access': 'Games — POS access'
 };
 
 const STUDIO_PERM_KEYS = ['studio_menu_builder', 'studio_promo_video'];

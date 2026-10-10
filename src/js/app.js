@@ -97,7 +97,7 @@ const App = {
   /** Page script bundles ? Android loads these on first open (Windows index still preloads most). */
   _pageBundles: {
     dashboard: ['js/pages/dashboard.js'],
-    pos: ['js/pages/pos.js'],
+    pos: ['js/pages/pos.js', 'js/games-pos.js'],
     staff: ['js/pages/staff.js', 'js/pages/staff-owner-salary.js', 'js/pages/admin-recruitment.js'],
     products: ['js/pages/products.js'],
     categories: ['js/pages/categories.js'],

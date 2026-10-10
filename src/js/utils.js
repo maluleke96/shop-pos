@@ -568,7 +568,7 @@ const Utils = {
     'quotes', 'approvals', 'recipe', 'tax', 'tax-hub', 'cashiers', 'branches',
     'mobile-app', 'business-manager', 'business-modules', 'digital-signage', 'online-orders', 'hr-workspace', 'hr-approvals', 'accounting-workspace',
     'delivery-dept', 'referral-dept', 'loyalty', 'discounts', 'payments', 'inventory', 'shifts', 'operating',     'cashdrawer', 'customize', 'onaccount', 'taken-orders', 'backdated-orders',
-    'printer', 'receipt', 'security', 'permissions', 'sales-targets', 'top-customers',
+    'printer', 'receipt', 'security', 'permissions', 'sales-targets', 'top-customers', 'games',
     'salesmgmt', 'pos-menu', 'saleexplorer', 'soldproducts', 'returnsmgmt', 'activity', 'exceptions', 'alerts', 'dailyclose', 'discount-report'
   ]),
 

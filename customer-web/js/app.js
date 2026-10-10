@@ -1220,6 +1220,10 @@ const OrderApp = {
     if (savedSearch) this.search = savedSearch;
     try {
       this.settings = await OrderAPI.getSettings();
+      try {
+        const games = await OrderAPI.call('games:publicConfig');
+        this.gamesNav = !!(games && games.show_button);
+      } catch (_) { this.gamesNav = false; }
       const shopName = String(this.settings?.shop_name || '').trim() || 'Order Online';
       document.title = `${shopName} | Online Ordering`;
       try {
@@ -2426,6 +2430,7 @@ const OrderApp = {
         <button type="button" data-act="nav" data-view="home" class="${this.view === 'home' ? 'active' : ''}">Home</button>
         <button type="button" data-act="nav" data-view="menu" class="${this.view === 'menu' ? 'active' : ''}">Menu</button>
         <button type="button" data-act="nav" data-view="orders" class="${this.view === 'orders' || this.view === 'order-detail' ? 'active' : ''}">Orders</button>
+        ${this.gamesNav ? '<a href="/games/" class="games-nav-link">🎮 Games</a>' : ''}
         <button type="button" data-act="nav" data-view="account" class="${this.view === 'account' ? 'active' : ''}">Account</button>
       </nav></div>`;
   },
@@ -2923,6 +2928,7 @@ const OrderApp = {
           ${window.PanelNotify ? PanelNotify.soundToggleHtml('online', { id: 'order-notify-sound', label: 'Order update alerts' }) : ''}
         </div>
         <div class="account-actions">
+          ${this.gamesNav ? '<a class="btn-outline btn-block" href="/games/">🎮 Games</a>' : ''}
           <button type="button" class="btn-outline btn-block" data-act="logout">Logout</button>
           <button type="button" class="btn-danger btn-block" data-act="delete-account">Delete online account</button>
         </div>

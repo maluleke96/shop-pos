@@ -1389,6 +1389,10 @@ const POSPage = {
                 <span class="pos-action-chip-label">Held</span>
                 <span id="pos-held-count" class="pos-action-badge hidden">0</span>
               </button>
+              <button type="button" class="pos-action-chip" id="pos-games" title="Games and rewards">
+                <span class="pos-action-chip-icon">🎮</span>
+                <span class="pos-action-chip-label">Games</span>
+              </button>
               <button type="button" class="pos-action-chip" id="pos-online-orders" title="Online orders">
                 <span class="pos-action-chip-icon"><svg viewBox="0 0 24 24"><circle cx="9" cy="20" r="1"/><circle cx="17" cy="20" r="1"/><path d="M2 3h2l2.4 12.4a2 2 0 002 1.6h9.8a2 2 0 002-1.6L22 7H6"/></svg></span>
                 <span class="pos-action-chip-label">Online</span>
@@ -3458,6 +3462,7 @@ const POSPage = {
     document.getElementById('pos-hold').addEventListener('click', () => this.holdOrder());
     document.getElementById('pos-held').addEventListener('click', () => this.showHeldOrders());
     document.getElementById('pos-online-orders')?.addEventListener('click', () => this.openOnlineOrdersPanel('pending'));
+    document.getElementById('pos-games')?.addEventListener('click', () => window.GamesPos?.open(this));
     document.getElementById('pos-quote')?.addEventListener('click', () => this.saveCartAsQuote());
     document.getElementById('pos-save-quote')?.addEventListener('click', () => this.saveCartAsQuote());
     document.getElementById('pos-scanner')?.addEventListener('click', () => this.showScannerSettings());

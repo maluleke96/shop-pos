@@ -1,0 +1,11 @@
+{
+  "appId": "com.shoppos.games",
+  "appName": "Chisanyama Play & Win",
+  "webDir": "www",
+  "server": {
+    "url": "https://shoppos-lab-production.up.railway.app/games/?kiosk=1",
+    "androidScheme": "https",
+    "cleartext": false
+  },
+  "android": { "allowMixedContent": false }
+}

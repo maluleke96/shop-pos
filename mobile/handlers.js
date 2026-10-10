@@ -4283,6 +4283,38 @@ add('cc:permissions', wrapSync(() => { requireUserSession(['owner', 'manager']);
   add('mobile:listUsers', H.mobile_adminListUsers);
   add('hr:employees', H.staff_getEmployees);
 
+  const games = () => require('../electron/services/games-platform');
+  const gamesActor = (actor) => s.getUserSession?.() || actor;
+  add('games:publicConfig', wrapSync(() => games().publicConfig()));
+  add('games:catalog', wrapSync((token, channel) => games().catalog(token, channel)));
+  add('games:home', wrapSync((token) => games().home(token)));
+  add('games:play', wrapSync((token, body) => games().play(token, body || {})));
+  add('games:history', wrapSync((token) => games().history(token)));
+  add('games:leaderboard', wrapSync((period) => games().leaderboard(period)));
+  add('games:profile', wrapSync((token) => games().profile(token)));
+  add('games:registerDevice', wrapSync((body) => games().registerDevice(body || {})));
+  add('games:dashboard', wrapSync((actor) => games().dashboard(gamesActor(actor))));
+  add('games:adminGames', wrapSync((actor) => games().adminGames(gamesActor(actor))));
+  add('games:saveGame', wrapSync((body, actor) => games().saveGame(gamesActor(actor), body || {})));
+  add('games:archiveGame', wrapSync((id, actor) => games().archiveGame(gamesActor(actor), id)));
+  add('games:savePrize', wrapSync((body, actor) => games().savePrize(gamesActor(actor), body || {})));
+  add('games:inventory', wrapSync((actor) => games().listInventory(gamesActor(actor))));
+  add('games:rules', wrapSync((actor) => games().listRules(gamesActor(actor))));
+  add('games:saveRule', wrapSync((body, actor) => games().saveRule(gamesActor(actor), body || {})));
+  add('games:rewards', wrapSync((actor) => games().adminRewards(gamesActor(actor))));
+  add('games:plays', wrapSync((actor) => games().adminPlays(gamesActor(actor))));
+  add('games:audit', wrapSync((actor) => games().adminAudit(gamesActor(actor))));
+  add('games:devices', wrapSync((actor) => games().adminDevices(gamesActor(actor))));
+  add('games:updateDevice', wrapSync((body, actor) => games().updateDevice(gamesActor(actor), body || {})));
+  add('games:branches', wrapSync((actor) => { s.requireActor(gamesActor(actor), ['owner', 'manager', 'supervisor']); return games().listBranches(); }));
+  add('games:products', wrapSync((actor) => { s.requireActor(gamesActor(actor), ['owner', 'manager']); return games().listProducts(); }));
+  add('games:settings', wrapSync((actor) => { s.requireActor(gamesActor(actor), ['owner', 'manager']); return games().getSettings(); }));
+  add('games:saveSettings', wrapSync((body, actor) => games().saveSettings(body || {}, gamesActor(actor))));
+  add('games:posSearch', wrapSync((query, actor) => games().searchCustomers(gamesActor(actor), query)));
+  add('games:posCustomer', wrapSync((id, actor) => games().posCustomer(gamesActor(actor), id)));
+  add('games:posRedeem', wrapSync((code, extra, actor) => games().redeem(gamesActor(actor), code, extra || {})));
+  add('games:posEntry', wrapSync((id, actor) => games().posEntry(gamesActor(actor), id)));
+
   scheduleDailyBackup(store);
   return H;
 }

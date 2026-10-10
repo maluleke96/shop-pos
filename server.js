@@ -38,6 +38,8 @@ const SIGNAGE_PLAYER = path.join(ROOT, 'signage-player');
 const KIOSK_WEB = path.join(ROOT, 'kiosk-web');
 const DRIVE_THRU_WEB = path.join(ROOT, 'drive-thru-web');
 const PLATFORM_WEB = path.join(ROOT, 'platform-web');
+const GAMES_WEB = path.join(ROOT, 'games-web');
+const GAMES_ADMIN_WEB = path.join(ROOT, 'games-admin-web');
 const { loadProjectEnv } = require('./lib/load-env');
 loadProjectEnv(ROOT);
 
@@ -103,7 +105,8 @@ const MIME = {
   '.woff2': 'font/woff2',
   '.webp': 'image/webp',
   '.map': 'application/json',
-  '.txt': 'text/plain; charset=utf-8'
+  '.txt': 'text/plain; charset=utf-8',
+  '.webmanifest': 'application/manifest+json'
 };
 
 function corsHeaders() {
@@ -1641,6 +1644,14 @@ async function main() {
       return servePortalWeb(req, res, DRIVE_THRU_WEB, '/drive-thru');
     }
 
+    if (urlPath === '/games' || urlPath.startsWith('/games/')) {
+      return servePortalWeb(req, res, GAMES_WEB, '/games');
+    }
+
+    if (urlPath === '/games-admin' || urlPath.startsWith('/games-admin/')) {
+      return servePortalWeb(req, res, GAMES_ADMIN_WEB, '/games-admin');
+    }
+
     if (urlPath === '/platform' || urlPath.startsWith('/platform/')) {
       if (!platformControlEnabled()) {
         res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8', ...corsHeaders() });
@@ -1705,6 +1716,8 @@ async function main() {
     console.log(`  Player:   http://localhost:${PORT}/signage-player/`);
     console.log(`  Kiosk:    http://localhost:${PORT}/kiosk/`);
     console.log(`  Drive-Thru: http://localhost:${PORT}/drive-thru/`);
+    console.log(`  Games:    http://localhost:${PORT}/games/`);
+    console.log(`  Games Admin: http://localhost:${PORT}/games-admin/`);
     console.log(`  Platform: http://localhost:${PORT}/platform/`);
     console.log(`  Register: http://localhost:${PORT}/register-shop`);
     console.log(`  Track:    http://localhost:${PORT}/track/TOKEN`);

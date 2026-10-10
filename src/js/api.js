@@ -205,6 +205,11 @@ const API = {
   deleteUser: (id, actor) => invoke('auth:deleteUser', id, actor),
   permanentlyDeleteUser: (id, confirmUsername, actor) => invoke('auth:permanentlyDeleteUser', id, confirmUsername, actor),
   staffCommand: (payload, actor) => invoke('auth:staffCommand', payload, actor),
+  gamesPublicConfig: () => invoke('games:publicConfig'),
+  gamesPosSearch: (query, actor) => invoke('games:posSearch', query, actor),
+  gamesPosCustomer: (id, actor) => invoke('games:posCustomer', id, actor),
+  gamesPosRedeem: (code, extra, actor) => invoke('games:posRedeem', code, extra || {}, actor),
+  gamesPosEntry: (id, actor) => invoke('games:posEntry', id, actor),
   verifyUserSession: (userId) => invoke('auth:verifySession', userId),
   getSession: () => invoke('auth:session'),
 

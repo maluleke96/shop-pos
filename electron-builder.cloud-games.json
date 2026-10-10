@@ -1,0 +1,36 @@
+{
+  "appId": "com.shoppos.games",
+  "productName": "Chisanyama Play & Win",
+  "directories": {
+    "output": "dist\\cloud-apps\\games",
+    "buildResources": "build"
+  },
+  "files": [
+    "electron/live-url-shell.js",
+    "electron/cloud-shell-config-games.js",
+    "package.json"
+  ],
+  "extraMetadata": {
+    "main": "electron/cloud-shell-config-games.js",
+    "name": "com.shoppos.games"
+  },
+  "win": {
+    "target": [
+      {
+        "target": "nsis",
+        "arch": [
+          "x64"
+        ]
+      }
+    ]
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "artifactName": "Chisanyama-Games-Setup.${ext}",
+    "shortcutName": "Chisanyama Play & Win",
+    "uninstallDisplayName": "Chisanyama Play & Win"
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "name": "Chisanyama Play & Win",
+  "short_name": "Play & Win",
+  "start_url": "/games/?kiosk=1",
+  "display": "fullscreen",
+  "background_color": "#140800",
+  "theme_color": "#140800"
+}

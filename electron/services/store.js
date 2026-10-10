@@ -3351,6 +3351,17 @@ function runCompleteSalePostWork(ctx) {
   } catch (err) {
     console.warn('[sla] sale:', err.message);
   }
+  try {
+    require('./games-platform').grantPlaysForSale({
+      saleId: result.saleId,
+      customerId: saleData.customer_id,
+      total: saleTotal,
+      items: saleData.items || [],
+      branchId
+    });
+  } catch (err) {
+    console.warn('[games] plays:', err.message);
+  }
   if (saleData.customer_id) {
     try {
       customerRewardsSvc.processCustomerRewards(
@@ -3663,6 +3674,7 @@ function processReturn(data, actorId, actorName) {
     const loyaltyRatio = statusAfter === 'returned' ? 1
       : (loyaltyBase > 0 ? Math.min(1, (alreadyRefunded + totalRefund) / loyaltyBase) : refundRatio);
     try { features.reverseSaleBenefits(data.sale_id, actorId, refundRatio, loyaltyRatio); } catch (_) { /* best effort */ }
+    try { require('./games-platform').revokePlaysForSale(data.sale_id, refundRatio); } catch (_) { /* best effort */ }
     try { require('./referral-commission').reverseCommissionForSale(data.sale_id, refundRatio, 'return', { id: actorId, full_name: actorName }); } catch (_) { /* best effort */ }
   }
   audit(actorId, actorName, 'process_return', 'return', result.id, { ...data, total_refund: totalRefund, return_number: result.returnNumber });

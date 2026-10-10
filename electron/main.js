@@ -3660,6 +3660,15 @@ ipcMain.handle('web:adminAnalytics', wrap((filters, actor) => {
     requireUserSession(['owner', 'manager']);
     return mm.revokeMobileDevice(deviceId);
   }));
+  const gamesApi = () => require('./services/games-platform');
+  const gamesActor = (actor) => store.getUserSession?.() || actor;
+  ipcMain.handle('games:publicConfig', wrapSync(() => gamesApi().publicConfig()));
+  ipcMain.handle('games:posSearch', wrapSync((query, actor) => gamesApi().searchCustomers(gamesActor(actor), query)));
+  ipcMain.handle('games:posCustomer', wrapSync((id, actor) => gamesApi().posCustomer(gamesActor(actor), id)));
+  ipcMain.handle('games:posRedeem', wrapSync((code, extra, actor) => gamesApi().redeem(gamesActor(actor), code, extra || {})));
+  ipcMain.handle('games:posEntry', wrapSync((id, actor) => gamesApi().posEntry(gamesActor(actor), id)));
+  ipcMain.handle('games:dashboard', wrapSync((actor) => gamesApi().dashboard(gamesActor(actor))));
+  ipcMain.handle('games:saveSettings', wrapSync((body, actor) => gamesApi().saveSettings(body || {}, gamesActor(actor))));
 }
 
 app.whenReady().then(async () => {

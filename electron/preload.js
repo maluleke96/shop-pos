@@ -306,7 +306,11 @@ const channels = [
   'mobile:adminListUsers', 'mobile:adminGetUser', 'mobile:adminSaveUser', 'mobile:adminSetActive',
   'mobile:adminListDevices', 'mobile:adminRevokeDevice',
   'tables:delete', 'reports:orderTypes', 'store:runStartupTasks', 'settings:saveKdsSound',
-  'backup:getInfo'
+  'backup:getInfo',
+  'games:publicConfig', 'games:catalog', 'games:home', 'games:play', 'games:history', 'games:leaderboard', 'games:profile', 'games:registerDevice',
+  'games:dashboard', 'games:adminGames', 'games:saveGame', 'games:archiveGame', 'games:savePrize', 'games:inventory', 'games:rules', 'games:saveRule',
+  'games:rewards', 'games:plays', 'games:audit', 'games:devices', 'games:updateDevice', 'games:branches', 'games:products', 'games:settings', 'games:saveSettings',
+  'games:posSearch', 'games:posCustomer', 'games:posRedeem', 'games:posEntry'
 ];
 
 const api = {};

@@ -64,6 +64,7 @@ const AdminPage = {
     { id: 'customize', label: '🎨 Customization', icon: 'customize' },
     { id: 'branches', label: '🏢 Branches', icon: 'branches' },
     { id: 'online-orders', label: '🛒 Online Orders', icon: 'online' },
+    { id: 'games', label: '🎮 Games & Rewards', icon: 'online' },
     { id: 'referral-dept', label: 'Referral & Commission', icon: 'referral' },
     { id: 'customer-reports', label: '📣 Customer Reports', icon: 'online' },
     { id: 'business-modules', label: '🏢 Business Modules', icon: 'business' },
@@ -152,7 +153,7 @@ const AdminPage = {
       label: 'Online & Digital',
       icon: '🌐',
       accent: '#0284c7',
-      items: ['online-orders', 'digital-signage', 'radio']
+      items: ['online-orders', 'games', 'digital-signage', 'radio']
     },
     {
       id: 'marketing',
@@ -726,6 +727,14 @@ const AdminPage = {
       customize: () => this.renderCustomize(el),
       branches: () => this.renderBranchesSync(el),
       'online-orders': () => this.renderOnlineOrders(el),
+      games: () => {
+        el.innerHTML = `<div class="admin-section"><h3>🎮 Games &amp; Rewards</h3>
+          <p class="muted">Same customers, points, products and branches. Prizes, the website button, POS and kiosks are controlled here.</p>
+          <p><a class="btn btn-primary" href="/games-admin/" target="_blank" rel="noopener">Open Games Admin</a>
+          <a class="btn btn-ghost" href="/games/" target="_blank" rel="noopener">Open customer Play &amp; Win</a></p>
+          <iframe src="/games-admin/" title="Games Admin" style="width:100%;height:72vh;border:1px solid var(--border);border-radius:12px;background:#0f172a"></iframe>
+        </div>`;
+      },
       'customer-reports': () => this.renderCustomerReports(el),
       'mobile-app': () => this.renderMobileAppUsers(el),
       'business-modules': async () => tryModule(
