@@ -3,7 +3,7 @@
   "appName": "Chisanyama Play & Win",
   "webDir": "www",
   "server": {
-    "url": "https://shoppos-lab-production.up.railway.app/games/?kiosk=1",
+    "url": "https://chisafood.up.railway.app/games/?kiosk=1",
     "androidScheme": "https",
     "cleartext": false
   },

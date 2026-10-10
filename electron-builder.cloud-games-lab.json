@@ -1,0 +1,35 @@
+{
+  "appId": "com.shoppos.games.lab",
+  "productName": "Chisanyama Play & Win Lab",
+  "directories": {
+    "output": "dist\\cloud-apps\\games-lab",
+    "buildResources": "build"
+  },
+  "files": [
+    "electron/live-url-shell.js",
+    "electron/cloud-shell-config-games-lab.js",
+    "package.json"
+  ],
+  "extraMetadata": {
+    "main": "electron/cloud-shell-config-games-lab.js",
+    "name": "com.shoppos.games.lab"
+  },
+  "win": {
+    "target": [
+      {
+        "target": "nsis",
+        "arch": [
+          "x64"
+        ]
+      }
+    ]
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "artifactName": "Chisanyama-Games-Lab-Setup.${ext}",
+    "shortcutName": "Chisanyama Play & Win Lab"
+  }
+}

@@ -4,13 +4,20 @@ window.GamesPos = {
     const currency = pos.app?.settings?.currency || 'R';
     Utils.showModal('🎮 Games', `
       <div class="field"><label>Search customer</label>
-        <input id="games-q" placeholder="Phone, name, email or customer id"></div>
+        <input id="games-q" placeholder="Phone, name, email, customer id, or scanned QR"></div>
       <div id="games-results"></div>
+      <div class="field" style="margin-top:8px"><label>Reward code</label>
+        <div style="display:flex;gap:8px"><input id="games-code" placeholder="GAME-######"><button type="button" class="btn btn-primary btn-sm" id="games-redeem-code">Redeem</button></div></div>
       <div id="games-customer"></div>`, '<button class="btn btn-ghost" onclick="Utils.hideModal()">Close</button>');
     const box = document.getElementById('games-results');
     const card = document.getElementById('games-customer');
     const search = async () => {
-      const q = document.getElementById('games-q').value.trim();
+      const q = this.scanQuery(document.getElementById('games-q').value);
+      if (/^GAME-\d{6}$/i.test(q)) {
+        document.getElementById('games-code').value = q.toUpperCase();
+        box.innerHTML = '<p class="muted">That is a reward code. Use Redeem.</p>';
+        return;
+      }
       if (q.length < 2) { box.innerHTML = ''; return; }
       const res = await API.gamesPosSearch(q, actor);
       if (!res.success) { box.innerHTML = `<p class="error-msg">${Utils.escHtml(res.error || 'Search failed')}</p>`; return; }
@@ -19,6 +26,20 @@ window.GamesPos = {
       box.querySelectorAll('[data-id]').forEach((btn) => btn.addEventListener('click', () => this.show(btn.dataset.id, actor, card, currency)));
     };
     document.getElementById('games-q').addEventListener('input', search);
+    document.getElementById('games-redeem-code').onclick = async () => {
+      const code = document.getElementById('games-code').value.trim();
+      if (!code) return;
+      const done = await API.gamesPosRedeem(code, {}, actor);
+      if (!done.success) return Utils.toast(done.error || 'Could not redeem', 'error');
+      Utils.toast(`${done.data.prize_name} redeemed`, 'success');
+    };
+  },
+
+  scanQuery(raw) {
+    const text = String(raw || '').trim();
+    const fromLink = text.match(/[?&#](?:customer|customer_id|id)=(\d+)/i);
+    if (fromLink) return fromLink[1];
+    return text;
   },
 
   async show(id, actor, card, currency) {

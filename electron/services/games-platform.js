@@ -1069,6 +1069,15 @@ function dashboard(actor) {
   const devices = db().prepare(`SELECT COUNT(*) AS c FROM game_devices WHERE status = 'active'`).get();
   const topGame = db().prepare(`SELECT g.name, COUNT(*) AS c FROM game_plays p JOIN games g ON g.id = p.game_id
     WHERE p.status = 'completed' GROUP BY p.game_id ORDER BY c DESC LIMIT 1`).get();
+  let topBranch = null;
+  try {
+    const top = db().prepare(`SELECT branch_id, COUNT(*) AS c FROM game_plays
+      WHERE status = 'completed' AND branch_id IS NOT NULL
+      GROUP BY branch_id ORDER BY c DESC LIMIT 1`).get();
+    if (top?.branch_id) {
+      topBranch = db().prepare('SELECT name FROM branches WHERE id = ?').get(top.branch_id)?.name || null;
+    }
+  } catch (_) { topBranch = null; }
   const plays = num(today?.c);
   return {
     total_players: num(players?.c),
@@ -1079,7 +1088,7 @@ function dashboard(actor) {
     active_games: num(activeGames?.c),
     active_devices: num(devices?.c),
     top_game: topGame?.name || null,
-    top_branch: null,
+    top_branch: topBranch,
     insufficient: plays === 0,
     settings: getSettings()
   };

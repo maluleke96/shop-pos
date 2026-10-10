@@ -3663,12 +3663,43 @@ ipcMain.handle('web:adminAnalytics', wrap((filters, actor) => {
   const gamesApi = () => require('./services/games-platform');
   const gamesActor = (actor) => store.getUserSession?.() || actor;
   ipcMain.handle('games:publicConfig', wrapSync(() => gamesApi().publicConfig()));
+  ipcMain.handle('games:catalog', wrapSync((token, channel) => gamesApi().catalog(token, channel)));
+  ipcMain.handle('games:home', wrapSync((token) => gamesApi().home(token)));
+  ipcMain.handle('games:play', wrapSync((token, body) => gamesApi().play(token, body || {})));
+  ipcMain.handle('games:history', wrapSync((token) => gamesApi().history(token)));
+  ipcMain.handle('games:leaderboard', wrapSync((period) => gamesApi().leaderboard(period)));
+  ipcMain.handle('games:profile', wrapSync((token) => gamesApi().profile(token)));
+  ipcMain.handle('games:registerDevice', wrapSync((body) => gamesApi().registerDevice(body || {})));
+  ipcMain.handle('games:dashboard', wrapSync((actor) => gamesApi().dashboard(gamesActor(actor))));
+  ipcMain.handle('games:adminGames', wrapSync((actor) => gamesApi().adminGames(gamesActor(actor))));
+  ipcMain.handle('games:saveGame', wrapSync((body, actor) => gamesApi().saveGame(gamesActor(actor), body || {})));
+  ipcMain.handle('games:archiveGame', wrapSync((id, actor) => gamesApi().archiveGame(gamesActor(actor), id)));
+  ipcMain.handle('games:savePrize', wrapSync((body, actor) => gamesApi().savePrize(gamesActor(actor), body || {})));
+  ipcMain.handle('games:inventory', wrapSync((actor) => gamesApi().listInventory(gamesActor(actor))));
+  ipcMain.handle('games:rules', wrapSync((actor) => gamesApi().listRules(gamesActor(actor))));
+  ipcMain.handle('games:saveRule', wrapSync((body, actor) => gamesApi().saveRule(gamesActor(actor), body || {})));
+  ipcMain.handle('games:rewards', wrapSync((actor) => gamesApi().adminRewards(gamesActor(actor))));
+  ipcMain.handle('games:plays', wrapSync((actor) => gamesApi().adminPlays(gamesActor(actor))));
+  ipcMain.handle('games:audit', wrapSync((actor) => gamesApi().adminAudit(gamesActor(actor))));
+  ipcMain.handle('games:devices', wrapSync((actor) => gamesApi().adminDevices(gamesActor(actor))));
+  ipcMain.handle('games:updateDevice', wrapSync((body, actor) => gamesApi().updateDevice(gamesActor(actor), body || {})));
+  ipcMain.handle('games:branches', wrapSync(() => {
+    requireUserSession(['owner', 'manager', 'supervisor']);
+    return gamesApi().listBranches();
+  }));
+  ipcMain.handle('games:products', wrapSync(() => {
+    requireUserSession(['owner', 'manager']);
+    return gamesApi().listProducts();
+  }));
+  ipcMain.handle('games:settings', wrapSync(() => {
+    requireUserSession(['owner', 'manager']);
+    return gamesApi().getSettings();
+  }));
+  ipcMain.handle('games:saveSettings', wrapSync((body, actor) => gamesApi().saveSettings(body || {}, gamesActor(actor))));
   ipcMain.handle('games:posSearch', wrapSync((query, actor) => gamesApi().searchCustomers(gamesActor(actor), query)));
   ipcMain.handle('games:posCustomer', wrapSync((id, actor) => gamesApi().posCustomer(gamesActor(actor), id)));
   ipcMain.handle('games:posRedeem', wrapSync((code, extra, actor) => gamesApi().redeem(gamesActor(actor), code, extra || {})));
   ipcMain.handle('games:posEntry', wrapSync((id, actor) => gamesApi().posEntry(gamesActor(actor), id)));
-  ipcMain.handle('games:dashboard', wrapSync((actor) => gamesApi().dashboard(gamesActor(actor))));
-  ipcMain.handle('games:saveSettings', wrapSync((body, actor) => gamesApi().saveSettings(body || {}, gamesActor(actor))));
 }
 
 app.whenReady().then(async () => {
