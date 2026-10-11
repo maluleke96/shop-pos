@@ -3788,7 +3788,7 @@ const App = {
     this._autoLogoutEvents.forEach(ev => document.addEventListener(ev, this._autoLogoutReset, { passive: true }));
     this._autoLogoutInterval = setInterval(() => {
       if (Date.now() - this._lastActivity >= mins * 60000) {
-        Utils.toast('Session timed out ? please sign in again', 'error');
+        Utils.toast('Signed out because Admin was not used. Sign in again.', 'error');
         this.doLogout();
       }
     }, 30000);

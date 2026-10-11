@@ -980,10 +980,6 @@ function verifyUserSession(userId) {
     return { active: false, frozen: true, error };
   }
   if (user && userAccountIsActive(user)) {
-    const sess = session.getUserSession();
-    if (!sess?.id || Number(sess.id) !== Number(userId)) {
-      try { session.setUserSession(user); } catch (_) { /* ignore */ }
-    }
     try { enforceShiftCashoutDeadlines(); } catch (_) { /* ignore */ }
     return { active: true, user };
   }

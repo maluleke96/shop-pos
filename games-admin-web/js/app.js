@@ -10,7 +10,7 @@ const GamesAdmin = {
       this.actor = JSON.parse(sessionStorage.getItem('games_admin_user') || 'null');
     } catch (_) { this.actor = null; }
     if (this.actor) {
-      try { await this.load(); } catch (err) { this.error = err.message; this.actor = null; }
+      try { await this.load(); this.startIdle(); } catch (err) { this.error = err.message; this.actor = null; }
     }
     this.render();
   },
@@ -46,6 +46,7 @@ const GamesAdmin = {
       this.actor = result.user;
       sessionStorage.setItem('games_admin_user', JSON.stringify(this.actor));
       await this.load();
+      this.startIdle();
       this.render();
     } catch (err) {
       this.error = err.message;
@@ -54,11 +55,34 @@ const GamesAdmin = {
   },
 
   logout() {
+    this.stopIdle();
     this.actor = null;
     this.token = '';
     sessionStorage.removeItem('games_admin_token');
     sessionStorage.removeItem('games_admin_user');
     this.render();
+  },
+
+  startIdle() {
+    this.stopIdle();
+    this.lastUse = Date.now();
+    this.onUse = () => { this.lastUse = Date.now(); };
+    ['pointerdown', 'keydown'].forEach((event) => document.addEventListener(event, this.onUse));
+    this.rpc('settings:getParsed').then((settings) => {
+      const mins = parseInt(settings?.security_settings?.auto_logout_minutes, 10) || 0;
+      if (!mins || !this.actor) return;
+      this.idleMs = mins * 60000;
+      this.idleTimer = setInterval(() => {
+        if (this.actor && this.idleMs && Date.now() - this.lastUse >= this.idleMs) this.logout();
+      }, 15000);
+    }).catch(() => {});
+  },
+
+  stopIdle() {
+    if (this.idleTimer) clearInterval(this.idleTimer);
+    this.idleTimer = null;
+    if (this.onUse) ['pointerdown', 'keydown'].forEach((event) => document.removeEventListener(event, this.onUse));
+    this.onUse = null;
   },
 
   async load() {

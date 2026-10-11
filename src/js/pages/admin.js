@@ -1900,9 +1900,13 @@ const AdminPage = {
         <button type="button" class="btn btn-ghost btn-sm" id="mobile-apk-refresh" style="margin-top:12px">Refresh status</button>
       </div></div>` : ''}
       <div class="card" style="margin-top:16px"><div class="card-body"><div class="form-grid">
-        <div class="field"><label>Auto Logout (minutes)</label>
-          <input type="number" id="sec-logout" min="0" value="${sec.auto_logout_minutes||30}"></div>
-        <div class="field"><label><input type="checkbox" id="sec-lock" ${sec.lock_after_inactivity!==false?'checked':''}> Lock after inactivity</label></div>
+        <div class="field full"><label>Sign out when Admin is not in use</label>
+          <p class="muted" style="margin:4px 0 8px">If nobody clicks, types, or touches the screen for this long, Admin signs itself out. Set both to 0 to stay signed in until you tap Logout. Signing in on the till, your phone, or Games does not sign this screen out.</p>
+          <div style="display:flex;gap:12px;flex-wrap:wrap">
+            <label>Hours <input type="number" id="sec-logout-hours" min="0" max="72" value="${Math.floor((Number(sec.auto_logout_minutes) || 0) / 60)}" style="width:90px"></label>
+            <label>Minutes <input type="number" id="sec-logout-mins" min="0" max="59" value="${(Number(sec.auto_logout_minutes) || 0) % 60}" style="width:90px"></label>
+          </div>
+        </div>
         <div class="field full"><label><input type="checkbox" id="sec-refund" ${sec.require_approval_refunds!==false?'checked':''}> Require supervisor code for cashier returns</label></div>
         <div class="field"><label>Cashier return limit (R)</label><input type="number" id="sec-ret-cashier" step="0.01" value="${sec.return_cashier_max??100}"></div>
         <div class="field"><label>Manager return limit (R)</label><input type="number" id="sec-ret-manager" step="0.01" value="${sec.return_manager_max??1000}"></div>
@@ -2033,10 +2037,13 @@ const AdminPage = {
 
     document.getElementById('save-security').addEventListener('click', async () => {
       const existing = this.settings.security_settings || {};
+      const idleHours = Math.max(0, parseInt(document.getElementById('sec-logout-hours').value, 10) || 0);
+      const idleMins = Math.min(59, Math.max(0, parseInt(document.getElementById('sec-logout-mins').value, 10) || 0));
+      const idleTotal = idleHours * 60 + idleMins;
       await API.saveJsonSetting('security_settings', {
         ...existing,
-        auto_logout_minutes: parseInt(document.getElementById('sec-logout').value) || 30,
-        lock_after_inactivity: document.getElementById('sec-lock').checked,
+        auto_logout_minutes: idleTotal,
+        lock_after_inactivity: idleTotal > 0,
         require_approval_refunds: document.getElementById('sec-refund').checked,
         return_cashier_max: parseFloat(document.getElementById('sec-ret-cashier').value) || 100,
         return_manager_max: parseFloat(document.getElementById('sec-ret-manager').value) || 1000,
@@ -2050,12 +2057,17 @@ const AdminPage = {
       }, this.app.user);
       this.settings.security_settings = {
         ...(this.settings.security_settings || {}),
+        auto_logout_minutes: idleTotal,
+        lock_after_inactivity: idleTotal > 0,
         require_approval_discounts: document.getElementById('sec-discount').checked,
         allow_oversell: !!document.getElementById('sec-oversell')?.checked,
         require_approval_drawer: document.getElementById('sec-drawer').checked
       };
-      if (this.app) this.app.settings = { ...this.app.settings, security_settings: { ...(this.app.settings?.security_settings || {}), ...this.settings.security_settings } };
-      Utils.toast('Security settings saved', 'success');
+      if (this.app) {
+        this.app.settings = { ...this.app.settings, security_settings: { ...(this.app.settings?.security_settings || {}), ...this.settings.security_settings } };
+        this.app.startAutoLogoutTimer?.();
+      }
+      Utils.toast(idleTotal ? `Admin will sign out after ${idleHours ? idleHours + ' h ' : ''}${idleMins} min with no use` : 'Admin will stay signed in until you log out', 'success');
     });
 
     document.getElementById('save-bk-pass')?.addEventListener('click', async () => {
