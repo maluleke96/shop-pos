@@ -93,6 +93,7 @@ const AdminPage = {
     { id: 'taken-orders', label: '🥡 Taken / Unpaid Orders', icon: 'onaccount' },
     { id: 'backdated-orders', label: '⏱ Backdated Orders', icon: 'sales' },
     { id: 'hrcontracts', label: '📄 Contracts & Probation', icon: 'hrcontracts' },
+    { id: 'employee-documents', label: '✍️ Employee Documents', icon: 'hrcontracts' },
     { id: 'recruitment', label: '💼 Recruitment', icon: 'recruitment' },
     { id: 'delivery-dept', label: '🚚 Deliveries', icon: 'delivery' },
     { id: 'payroll', label: '💼 Payroll & Compliance', icon: 'payroll' },
@@ -189,7 +190,7 @@ const AdminPage = {
       icon: '👷',
       accent: '#7c3aed',
       items: [
-        'staffhr', 'hr-workspace', 'hr-approvals', 'staffportal', 'hrcontracts',
+        'staffhr', 'hr-workspace', 'hr-approvals', 'staffportal', 'hrcontracts', 'employee-documents',
         'recruitment', 'payroll', 'employee-of-month'
       ]
     },
@@ -638,7 +639,7 @@ const AdminPage = {
   async _renderSectionCore(el, gen) {
     if (this.section === 'deliveries') this.section = 'delivery-dept';
     const lazySections = new Set([
-      'hrcontracts', 'recruitment', 'employee-of-month', 'staffhr', 'hr-workspace', 'hr-approvals', 'staffportal', 'payroll',
+      'hrcontracts', 'employee-documents', 'recruitment', 'employee-of-month', 'staffhr', 'hr-workspace', 'hr-approvals', 'staffportal', 'payroll',
       'opscompliance', 'manager-ops', 'combos', 'recipe', 'quotes', 'menu-builder', 'promo-video-builder', 'radio', 'communication-center', 'marketing-center', 'financial-intelligence', 'order-sla',
       'salesmgmt', 'saleexplorer', 'soldproducts', 'returnsmgmt', 'activity',
       'exceptions', 'alerts', 'dailyclose', 'discount-report', 'delivery-dept', 'referral-dept', 'taken-orders', 'backdated-orders'
@@ -848,6 +849,11 @@ const AdminPage = {
         () => window.AdminHrPage,
         () => window.AdminHrPage.render(el, this),
         'Contracts & Probation'
+      ),
+      'employee-documents': async () => tryModule(
+        () => window.AdminHrDocumentsPage,
+        () => window.AdminHrDocumentsPage.render(el, this),
+        'Employee Documents'
       ),
       recruitment: async () => tryModule(
         () => window.AdminRecruitmentPage,
@@ -3927,7 +3933,7 @@ const AdminPage = {
       <div class="field full"><label><input type="checkbox" id="tc-ed-vip" ${c.is_vip ? 'checked' : ''}> VIP customer</label></div>
       <div class="field full"><label>Address</label><input id="tc-ed-address" value="${Utils.escHtml(c.address || '')}"></div>
       <div class="field full"><label>Notes</label><textarea id="tc-ed-notes" rows="2">${Utils.escHtml(c.notes || '')}</textarea></div>
-    </div>`, '<button class="btn btn-primary" id="tc-ed-save">Save Customer</button>');
+    </div>`, '<button type="button" class="btn btn-primary" id="tc-ed-save">Save Customer</button>');
     document.getElementById('tc-ed-save').addEventListener('click', async () => {
       const name = document.getElementById('tc-ed-name')?.value.trim();
       if (!name) return Utils.toast('Name is required', 'error');
@@ -3945,7 +3951,7 @@ const AdminPage = {
         is_vip: document.getElementById('tc-ed-vip')?.checked,
         credit_limit: limitVal !== '' ? parseFloat(limitVal) : null
       }, this.app.user);
-      if (!r.success) return Utils.toast(r.error || 'Could not save', 'error');
+      if (!r.success || r.offlineQueued) return Utils.toast(r.error || 'The customer was not saved. Try again.', 'error');
       Utils.hideModal();
       Utils.toast('Customer updated', 'success');
       window.DataCache?.invalidate?.('customers');
@@ -6391,6 +6397,7 @@ const AdminPage = {
       onaccount: ['on account', 'credit', 'debtor'],
       'taken-orders': ['unpaid', 'taken order', 'held account'],
       hrcontracts: ['contract', 'probation', 'employment'],
+      'employee-documents': ['employee document', 'e-sign', 'signature', 'form', 'acknowledgement'],
       recruitment: ['hire', 'recruit', 'cv', 'applicant'],
       'delivery-dept': ['delivery', 'driver', 'dispatch'],
       payroll: ['salary', 'uif', 'paye', 'payslip'],

@@ -4212,25 +4212,28 @@ function saveCustomer(data, actorId, actorName) {
     throw new Error(`A customer with this ${label} already exists: ${dup.customer.name}${dup.customer.phone ? ` (${dup.customer.phone})` : ''}`);
   }
   if (data.id) {
-    getDb().prepare(`UPDATE customers SET name=?, phone=?, email=?, address=?, balance=?, notes=?,
+    const id = Number(data.id);
+    if (!id) throw new Error('Customer not found');
+    const saved = getDb().prepare(`UPDATE customers SET name=?, phone=?, email=?, address=?, balance=?, notes=?,
       birthday=?, is_vip=?, allow_on_account=?, credit_limit=?, on_account_frozen=?, on_account_approved=?,
-      on_account_period_days=?, on_account_due_date=?, updated_at=datetime('now') WHERE id=?`)
-      .run(data.name, data.phone, data.email, data.address, data.balance || 0, data.notes || null,
+      on_account_period_days=?, on_account_due_date=?, updated_at=? WHERE id=?`)
+      .run(data.name, data.phone || null, data.email || null, data.address || null, data.balance || 0, data.notes || null,
         data.birthday || null, data.is_vip ? 1 : 0,
         data.allow_on_account ? 1 : 0, data.credit_limit != null ? data.credit_limit : null,
         data.on_account_frozen ? 1 : 0, data.on_account_approved ? 1 : 0,
         data.on_account_period_days != null ? data.on_account_period_days : null,
-        data.on_account_due_date || null, data.id);
+        data.on_account_due_date || null, new Date().toISOString(), id);
+    if (!saved.changes) throw new Error('Customer not found');
     try {
       const parts = String(data.name || '').trim().split(/\s+/);
       const first = parts[0] || data.name;
       const last = parts.slice(1).join(' ') || '';
-      getDb().prepare(`UPDATE web_customers SET first_name=?, last_name=?, email=?, phone=?, updated_at=datetime('now')
-        WHERE customer_id=? AND is_active=1`).run(first, last, data.email || null, data.phone || null, data.id);
+      getDb().prepare(`UPDATE web_customers SET first_name=?, last_name=?, email=?, phone=?, updated_at=?
+        WHERE customer_id=? AND is_active=1`).run(first, last, data.email || null, data.phone || null, new Date().toISOString(), id);
     } catch (_) { /* optional */ }
-    saveCustomerAnniversary(data.id, data);
-    audit(actorId, actorName, 'update_customer', 'customer', data.id, { name: data.name });
-    return getDb().prepare('SELECT * FROM customers WHERE id = ?').get(data.id);
+    saveCustomerAnniversary(id, data);
+    audit(actorId, actorName, 'update_customer', 'customer', id, { name: data.name, phone: data.phone || null });
+    return getDb().prepare('SELECT * FROM customers WHERE id = ?').get(id);
   }
   const r = getDb().prepare(`INSERT INTO customers (name, phone, email, address, balance, notes, birthday, is_vip,
     allow_on_account, credit_limit, on_account_frozen, on_account_approved, on_account_period_days, on_account_due_date)
@@ -4262,16 +4265,23 @@ function saveCustomerAnniversary(customerId, data) {
 
 function findDuplicateCustomer(data) {
   const db = getDb();
-  const excludeId = data.id || 0;
-  if (data.phone && data.phone.trim()) {
-    const withPhone = db.prepare('SELECT * FROM customers WHERE phone IS NOT NULL AND TRIM(phone) != \'\' AND id != ?').all(excludeId);
-    for (const c of withPhone) {
-      if (phonesMatch(data.phone, c.phone)) return { field: 'phone', customer: c };
+  const excludeId = Number(data.id) || 0;
+  if (data.phone && String(data.phone).trim()) {
+    const tail = normalizePhone(data.phone);
+    if (tail.length >= 9) {
+      const rows = db.prepare(`SELECT id, name, phone FROM customers
+        WHERE phone IS NOT NULL AND TRIM(phone) != '' AND phone LIKE ? AND id != ? LIMIT 40`)
+        .all(`%${tail.slice(-7)}`, excludeId);
+      for (const c of rows) {
+        if (Number(c.id) === excludeId) continue;
+        if (phonesMatch(data.phone, c.phone)) return { field: 'phone', customer: c };
+      }
     }
   }
-  if (data.email && data.email.trim()) {
-    const byEmail = db.prepare('SELECT * FROM customers WHERE LOWER(email) = LOWER(?) AND id != ?').get(data.email.trim(), excludeId);
-    if (byEmail) return { field: 'email', customer: byEmail };
+  if (data.email && String(data.email).trim()) {
+    const byEmail = db.prepare('SELECT id, name, phone FROM customers WHERE LOWER(email) = LOWER(?) AND id != ?')
+      .get(String(data.email).trim(), excludeId);
+    if (byEmail && Number(byEmail.id) !== excludeId) return { field: 'email', customer: byEmail };
   }
   return null;
 }

@@ -40,6 +40,7 @@ const DRIVE_THRU_WEB = path.join(ROOT, 'drive-thru-web');
 const PLATFORM_WEB = path.join(ROOT, 'platform-web');
 const GAMES_WEB = path.join(ROOT, 'games-web');
 const GAMES_ADMIN_WEB = path.join(ROOT, 'games-admin-web');
+const HR_SIGN_WEB = path.join(ROOT, 'hr-sign-web');
 const { loadProjectEnv } = require('./lib/load-env');
 loadProjectEnv(ROOT);
 
@@ -1642,6 +1643,10 @@ async function main() {
     if (urlPath === '/drive-thru' || urlPath.startsWith('/drive-thru/')) {
       if (denyIfNotEntitled(res, '/drive-thru')) return;
       return servePortalWeb(req, res, DRIVE_THRU_WEB, '/drive-thru');
+    }
+
+    if (urlPath === '/hr-sign' || urlPath.startsWith('/hr-sign/')) {
+      return servePortalWeb(req, res, HR_SIGN_WEB, '/hr-sign');
     }
 
     if (urlPath === '/games' || urlPath.startsWith('/games/')) {

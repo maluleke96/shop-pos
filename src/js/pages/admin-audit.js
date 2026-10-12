@@ -651,7 +651,7 @@
       <div class="field" style="margin-top:12px"><label>Notes</label><textarea id="se-notes" rows="2">${esc(s.notes || '')}</textarea></div>
       <div class="field"><label>Reason for this edit <span class="muted">(required when items, prices, discount, fee or payments change)</span></label><input id="se-reason" placeholder="e.g. Customer changed order, wrong price captured"></div>
       <p class="muted" style="margin:6px 0 0">Changes show on POS, Delivery, the Business Manager app and the customer's online order. The sale is marked as edited by <strong>${esc(this.app.user?.full_name || this.app.user?.username || 'you')}</strong>.</p></div>`,
-      '<button class="btn btn-primary" id="se-save">Save changes</button>', { wide: true });
+      '<button type="button" class="btn btn-primary" id="se-save">Save changes</button>', { wide: true });
 
     const body = document.getElementById('se-root');
     const recalc = () => {
@@ -745,7 +745,10 @@
       const r = await API.updateSale(saleId, patch, this.app.user);
       btn.disabled = false;
       btn.textContent = 'Save changes';
-      if (!r.success) return Utils.toast(r.error || 'Could not save', 'error');
+      if (!r.success) {
+        Utils.toast(r.error || 'Could not save', 'error');
+        return;
+      }
       Utils.hideModal();
       const loy = r.data?.loyalty;
       Utils.toast('Sale updated everywhere', 'success');

@@ -3274,6 +3274,15 @@ function registerIpc() {
   ipcMain.handle('hr:forms', hr((f, actor) => store.listForms(f || {}, hrA(actor))));
   ipcMain.handle('hr:saveForm', hr((data, actor) => store.saveForm(data || {}, hrA(actor))));
   ipcMain.handle('hr:createExternalLink', hr((data, actor) => store.createExternalLink(data || {}, hrA(actor))));
+  const docs = () => require('./services/hr-doc-centre');
+  ipcMain.handle('hr:docDashboard', wrap((f) => docs().dashboard(store.getUserSession(), f || {})));
+  ipcMain.handle('hr:docTemplates', wrap(() => docs().listTemplates(store.getUserSession())));
+  ipcMain.handle('hr:docEmployees', wrap(() => docs().listEmployees(store.getUserSession())));
+  ipcMain.handle('hr:docIssue', wrap((data) => docs().issue(store.getUserSession(), data || {})));
+  ipcMain.handle('hr:docRevoke', wrap((id) => docs().setStatus(store.getUserSession(), id, 'revoked')));
+  ipcMain.handle('hr:docResend', wrap((id) => docs().resend(store.getUserSession(), id)));
+  ipcMain.handle('hr:docComplete', wrap((id, data) => docs().staffComplete(store.getUserSession(), id, data || {})));
+  ipcMain.handle('hr:docDownload', wrap((id) => docs().pdfForStaff(store.getUserSession(), id)));
   ipcMain.handle('hr:requests', hr((f, actor) => store.listRequests(f || {}, hrA(actor))));
   ipcMain.handle('hr:saveRequest', hr((data, actor) => store.saveRequest(data || {}, hrA(actor))));
   ipcMain.handle('hr:decideRequest', hr((id, decision, notes, actor) => store.decideRequest(id, decision, notes, hrA(actor))));

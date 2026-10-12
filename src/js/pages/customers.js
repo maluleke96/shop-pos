@@ -452,7 +452,7 @@ const CustomersPage = {
         <div class="field full"><label>Notes</label><textarea id="cu-notes" rows="2" placeholder="Internal notes">${Utils.escHtml(c?.notes || '')}</textarea></div>
         ${pointsBlock}
       </div>`,
-      '<button class="btn btn-primary" id="save-cust">Save</button>');
+      '<button type="button" class="btn btn-primary" id="save-cust">Save</button>');
 
     let lastPointChange = { delta: 0, balance: points, expires_at: pointsSummary?.nearest_expiry, days_until_expiry: pointsSummary?.days_until_expiry };
 
@@ -525,7 +525,12 @@ const CustomersPage = {
         is_vip: document.getElementById('cu-vip')?.checked,
         credit_limit: limitVal !== '' ? parseFloat(limitVal) : null
       }, this.app.user);
-      if (!r.success) return Utils.toast(r.error || 'Could not save customer', 'error');
+      if (!r.success || r.offlineQueued) return Utils.toast(r.error || 'The customer was not saved. Try again.', 'error');
+      const savedPhone = String((r.data && r.data.phone) || '');
+      const wantedPhone = document.getElementById('cu-phone')?.value.trim() || '';
+      if (wantedPhone && savedPhone.replace(/\D/g, '') !== wantedPhone.replace(/\D/g, '')) {
+        return Utils.toast('The phone number was not stored. Try again.', 'error');
+      }
       Utils.hideModal();
       CustomersPage.render(this._host || document.querySelector('.page-host[data-page="customers"]') || document.querySelector('.page-host-active'), this.app);
       Utils.toast('Customer saved', 'success');

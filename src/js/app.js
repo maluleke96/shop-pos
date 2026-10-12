@@ -130,6 +130,7 @@ const App = {
     'hr-workspace': ['js/pages/admin-hr.js', 'js/pages/admin-staff.js'],
     'hr-approvals': ['js/pages/admin-hr.js', 'js/pages/admin-staff.js'],
     hrcontracts: ['js/pages/admin-hr.js'],
+    'employee-documents': ['js/pages/admin-hr-documents.js'],
     recruitment: ['js/pages/admin-recruitment.js'],
     'employee-of-month': ['js/pages/admin-employee-month.js'],
     payroll: ['js/pages/admin-payroll.js'],

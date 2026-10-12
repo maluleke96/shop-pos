@@ -128,6 +128,7 @@
   function rpcTimeoutMs(method) {
     const key = String(method || '');
     if (/^sales_complete$/i.test(key)) return 25000;
+    if (/^customers_save$/i.test(key) || /^audit_updateSale$/i.test(key)) return 45000;
     if (window.OfflineStore?.isReadMethod?.(key)) return 8000;
     if (/^auth_/.test(key)) return 10000;
     return 18000;

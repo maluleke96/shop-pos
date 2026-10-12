@@ -511,10 +511,17 @@ function syncEditedSaleEverywhere(saleId) {
   }
 }
 
+function asId(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 function updateSaleRecord(saleId, patch, actorId, actorName) {
   const db = getDb();
   ensureSalesListSchema();
   ensureSaleEditColumns();
+  saleId = asId(saleId);
+  if (!saleId) throw new Error('Sale not found');
   patch = patch || {};
   const sale = db.prepare('SELECT * FROM sales WHERE id = ?').get(saleId);
   if (!sale) throw new Error('Sale not found');
@@ -586,7 +593,7 @@ function updateSaleRecord(saleId, patch, actorId, actorName) {
         }
         const total = Math.max(0, round2(qty * price - (Number(old.discount) || 0)));
         lineTotals.push(total);
-        itemOps.update.push({ id: old.id, quantity: qty, unit_price: price, total });
+        itemOps.update.push({ id: asId(old.id), quantity: qty, unit_price: price, total });
         if (qty > oldQty && old.product_id && !old.combo_id) stockOps.push({ kind: 'deduct', item: old, qty: qty - oldQty });
         if (qty < oldQty) stockOps.push({ kind: 'restore', item: old, qty: oldQty - qty });
       } else {
@@ -644,7 +651,7 @@ function updateSaleRecord(saleId, patch, actorId, actorName) {
   let payOps = null;
   if (wantsPayments) {
     const rows = patch.payments.map((p) => ({
-      id: p.id ? Number(p.id) : null,
+      id: asId(p.id),
       payment_type: String(p.payment_type || '').trim().toLowerCase(),
       amount: round2(p.amount)
     })).filter((p) => p.amount > 0);
@@ -653,7 +660,7 @@ function updateSaleRecord(saleId, patch, actorId, actorName) {
     payOps = rows;
   } else if (wantsTotals && Math.abs(newTotal - (Number(sale.total) || 0)) > 0.001 && oldPays.length) {
     // Keep payments equal to the new total: move the difference onto the last non-gift-card payment
-    const rows = oldPays.map((p) => ({ id: p.id, payment_type: p.payment_type, amount: round2(p.amount) }));
+    const rows = oldPays.map((p) => ({ id: asId(p.id), payment_type: p.payment_type, amount: round2(p.amount) }));
     const target = [...rows].reverse().find((p) => String(p.payment_type).toLowerCase() !== 'giftcard') || rows[rows.length - 1];
     const others = round2(rows.filter((p) => p !== target).reduce((n, p) => n + p.amount, 0));
     target.amount = round2(newTotal - others);
@@ -680,10 +687,10 @@ function updateSaleRecord(saleId, patch, actorId, actorName) {
     for (const u of itemOps.update) {
       db.prepare('UPDATE sale_items SET quantity = ?, unit_price = ?, total = ? WHERE id = ?').run(u.quantity, u.unit_price, u.total, u.id);
     }
-    for (const r of itemOps.remove) db.prepare('DELETE FROM sale_items WHERE id = ?').run(r.id);
+    for (const r of itemOps.remove) db.prepare('DELETE FROM sale_items WHERE id = ?').run(asId(r.id));
     for (const n of itemOps.insert) {
       db.prepare(`INSERT INTO sale_items (sale_id, product_id, product_name, quantity, unit_price, buying_price, discount, total, modifiers_text)
-        VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)`).run(saleId, n.product_id, n.product_name, n.quantity, n.unit_price, n.buying_price, n.total, n.modifiers_text);
+        VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)`).run(saleId, asId(n.product_id), n.product_name, n.quantity, n.unit_price, n.buying_price, n.total, n.modifiers_text);
     }
     for (const op of stockOps) {
       if (op.kind === 'deduct') deductStockForEdit(op.item.product_id, op.qty, op.item.modifiers_text, note, actorId, saleId, sale.branch_id);
@@ -692,7 +699,7 @@ function updateSaleRecord(saleId, patch, actorId, actorName) {
     if (payOps) {
       const keep = new Set(payOps.filter((p) => p.id).map((p) => p.id));
       for (const old of oldPays) {
-        if (!keep.has(Number(old.id))) db.prepare('DELETE FROM sale_payments WHERE id = ?').run(old.id);
+        if (!keep.has(asId(old.id))) db.prepare('DELETE FROM sale_payments WHERE id = ?').run(asId(old.id));
       }
       for (const p of payOps) {
         if (p.id && oldPays.some((o) => Number(o.id) === p.id)) {
@@ -748,6 +755,7 @@ function updateSaleRecord(saleId, patch, actorId, actorName) {
 
   const changes = { ...updates };
   delete changes.edited_at; delete changes.edited_by_user_id; delete changes.edited_by_name;
+  try {
   db.prepare(`INSERT INTO audit_log (user_id, username, action, entity_type, entity_id, details) VALUES (?,?,?,?,?,?)`)
     .run(actorId, actorName, 'update_sale', 'sale', saleId, JSON.stringify({
       receipt_number: slip,
@@ -772,6 +780,9 @@ function updateSaleRecord(saleId, patch, actorId, actorName) {
         adjustment: loyalty.adjustment, applied: loyalty.applied, shortfall: loyalty.shortfall, message: loyalty.message
       } : undefined
     }));
+  } catch (err) {
+    console.warn('[updateSale] audit:', err.message || err);
+  }
   return { success: true, sale_id: saleId, total: newTotal, edited_at: nowIso, edited_by_name: actorName || null, loyalty };
 }
 
