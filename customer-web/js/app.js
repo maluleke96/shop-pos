@@ -1259,7 +1259,9 @@ const OrderApp = {
       }
       if (this.branch) this.loadCart();
       if (!this.token) {
-        if (this.guestViewAllowed?.('home')) this.view = this.branch ? 'home' : 'branches';
+        const startView = new URLSearchParams(location.search).get('view');
+        if (startView === 'register' || startView === 'forgot' || startView === 'login') this.view = startView;
+        else if (this.guestViewAllowed?.('home')) this.view = this.branch ? 'home' : 'branches';
         else this.view = 'login';
       } else if (!this.branch) {
         this.view = 'branches';
@@ -2832,7 +2834,7 @@ const OrderApp = {
     if (this.view === 'login') {
       app.innerHTML = this.shell(`<div class="auth-page"><form class="auth-card" data-form="login" novalidate>
         <h1>Sign in</h1>
-        <p class="muted auth-lead">Sign in with your email, or your full phone number (082… or +27…), then your password.</p>
+        <p class="muted auth-lead">This is the same sign-in as Chisanyama Connect. Use your email, or your full phone number (082… or +27…), then your password.</p>
         <label>Email or full phone number<input id="login-id" type="text" autocomplete="username" required placeholder="you@email.com or 082 123 4567"></label>
         <label>Password<input type="password" id="login-pass" autocomplete="current-password" required placeholder="Your password"></label>
         <button type="submit" class="btn-primary btn-block" data-act="login-submit">Sign in</button>
@@ -2877,7 +2879,7 @@ const OrderApp = {
     if (this.view === 'register') {
       app.innerHTML = this.shell(`<div class="auth-page"><form class="auth-card" data-form="register" novalidate>
         <h1>Create account</h1>
-        <p class="muted auth-lead">Register once — order faster next time. If you already shop with us in-store, we will link your loyalty points after WhatsApp verification.</p>
+        <p class="muted auth-lead">Register once. This same phone and password open online orders and Chisanyama Connect. If you already shop with us in-store, we will link your loyalty points after WhatsApp verification.</p>
         <label>First name<input id="reg-first" autocomplete="given-name" required></label>
         <label>Last name<input id="reg-last" autocomplete="family-name"></label>
         <label>Email<input id="reg-email" type="email" autocomplete="email" placeholder="you@email.com"></label>
@@ -2929,6 +2931,7 @@ const OrderApp = {
           ${window.PanelNotify ? PanelNotify.soundToggleHtml('online', { id: 'order-notify-sound', label: 'Order update alerts' }) : ''}
         </div>
         <div class="account-actions">
+          <a class="btn-outline btn-block" href="/connect/">Open Chisanyama Connect</a>
           ${this.gamesNav ? '<a class="btn-outline btn-block" href="/games/">🎮 Games</a>' : ''}
           <button type="button" class="btn-outline btn-block" data-act="logout">Logout</button>
           <button type="button" class="btn-danger btn-block" data-act="delete-account">Delete online account</button>

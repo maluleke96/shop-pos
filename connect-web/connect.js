@@ -1,8 +1,18 @@
 (function () {
   const app = document.getElementById('app');
   const params = new URLSearchParams(location.search);
+  function orderSessionToken() {
+    try {
+      return localStorage.getItem('order_token') || sessionStorage.getItem('order_token') || '';
+    } catch (_) {
+      return sessionStorage.getItem('order_token') || '';
+    }
+  }
+
+  const staffToken = params.get('s') || '';
   const state = {
-    token: params.get('s') || sessionStorage.getItem('connect_token') || localStorage.getItem('order_token') || '',
+    token: staffToken || orderSessionToken() || sessionStorage.getItem('connect_token') || '',
+    orderAccount: !staffToken,
     screen: 'chats',
     home: null,
     threads: [],
@@ -40,7 +50,13 @@
 
   function saveToken(token) {
     state.token = token;
-    sessionStorage.setItem('connect_token', token);
+    state.orderAccount = true;
+    try {
+      sessionStorage.setItem('connect_token', token);
+      sessionStorage.setItem('order_token', token);
+      localStorage.setItem('order_token', token);
+      localStorage.setItem('order_stay_signed_in', '1');
+    } catch (_) { /* private browsing */ }
   }
 
   function nav(active) {
@@ -67,16 +83,17 @@
     app.innerHTML = `<section class="welcome">
       <div class="brand"><div class="flame">🔥</div><h1>CHISANYAMA <span>CONNECT</span></h1><p>Food · People · Community</p></div>
       <h2>Chat · Call · Share</h2>
-      <p class="lead">Use the same Chisanyama account you already use for orders.</p>
+      <p class="lead">Sign in with the same phone or email and the same password you use for online orders. There is no separate Connect account.</p>
       <form id="signin">
-        <label for="login">Phone or email</label>
-        <input id="login" autocomplete="username" required>
-        <label for="password">Password</label>
+        <label for="login">Online order phone or email</label>
+        <input id="login" autocomplete="username" required placeholder="082… or you@email.com">
+        <label for="password">Online order password</label>
         <input id="password" type="password" autocomplete="current-password" required>
         <p class="err">${esc(state.error)}</p>
-        <button class="btn" type="submit">Sign In</button>
+        <button class="btn" type="submit">Sign in</button>
       </form>
-      <a class="btn ghost" href="/" style="display:block;text-align:center;text-decoration:none;">Back to orders</a>
+      <a class="btn ghost" href="/order/?view=register" style="display:block;text-align:center;text-decoration:none;">Create your online order account</a>
+      <a class="btn ghost" href="/order/?view=forgot" style="display:block;text-align:center;text-decoration:none;">Forgot password</a>
     </section>`;
     app.querySelector('#signin').onsubmit = async (event) => {
       event.preventDefault();
@@ -99,6 +116,13 @@
       state.home = await rpc('connect:home', [state.token]);
       await show(state.screen || 'chats');
     } catch (err) {
+      if (state.orderAccount && /no longer valid|sign in/i.test(err.message)) {
+        try {
+          sessionStorage.removeItem('order_token');
+          sessionStorage.removeItem('connect_token');
+          localStorage.removeItem('order_token');
+        } catch (_) { /* ignore */ }
+      }
       state.token = '';
       state.error = err.message;
       welcome();
