@@ -2430,6 +2430,7 @@ const OrderApp = {
         <button type="button" data-act="nav" data-view="home" class="${this.view === 'home' ? 'active' : ''}">Home</button>
         <button type="button" data-act="nav" data-view="menu" class="${this.view === 'menu' ? 'active' : ''}">Menu</button>
         <button type="button" data-act="nav" data-view="orders" class="${this.view === 'orders' || this.view === 'order-detail' ? 'active' : ''}">Orders</button>
+        <a href="/connect/">Chat</a>
         ${this.gamesNav ? '<a href="/games/" class="games-nav-link">🎮 Games</a>' : ''}
         <button type="button" data-act="nav" data-view="account" class="${this.view === 'account' ? 'active' : ''}">Account</button>
       </nav></div>`;

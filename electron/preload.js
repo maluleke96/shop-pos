@@ -263,6 +263,7 @@ const channels = [
   'hr:onboardingTemplates',
   'hr:onboardingProgress', 'hr:saveOnboardingProgress', 'hr:forms', 'hr:saveForm', 'hr:createExternalLink',
   'hr:docDashboard', 'hr:docTemplates', 'hr:docEmployees', 'hr:docIssue', 'hr:docRevoke', 'hr:docResend', 'hr:docComplete', 'hr:docDownload',
+  'connect:staffEnter',
   'hr:requests', 'hr:saveRequest', 'hr:decideRequest', 'hr:employerRecords', 'hr:saveEmployerRecord',
   'hr:salaryHistory', 'hr:saveSalaryChange', 'hr:saveOffboarding', 'hr:postPayrollAccounting',
   'acc:purchaseOrders', 'acc:payroll', 'acc:integrate', 'acc:flushIntegrations',

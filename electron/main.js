@@ -3283,6 +3283,7 @@ function registerIpc() {
   ipcMain.handle('hr:docResend', wrap((id) => docs().resend(store.getUserSession(), id)));
   ipcMain.handle('hr:docComplete', wrap((id, data) => docs().staffComplete(store.getUserSession(), id, data || {})));
   ipcMain.handle('hr:docDownload', wrap((id) => docs().pdfForStaff(store.getUserSession(), id)));
+  ipcMain.handle('connect:staffEnter', wrap(() => require('./services/connect-platform').staffEnter(store.getUserSession())));
   ipcMain.handle('hr:requests', hr((f, actor) => store.listRequests(f || {}, hrA(actor))));
   ipcMain.handle('hr:saveRequest', hr((data, actor) => store.saveRequest(data || {}, hrA(actor))));
   ipcMain.handle('hr:decideRequest', hr((id, decision, notes, actor) => store.decideRequest(id, decision, notes, hrA(actor))));

@@ -1369,6 +1369,7 @@ const API = {
   hrDocResend: (id, actor) => invoke('hr:docResend', id, actor),
   hrDocComplete: (id, data, actor) => invoke('hr:docComplete', id, data, actor),
   hrDocDownload: (id, actor) => invoke('hr:docDownload', id, actor),
+  connectStaffEnter: () => invoke('connect:staffEnter'),
   hrRequests: (f, actor) => invoke('hr:requests', f, actor),
   hrSaveRequest: (data, actor) => invoke('hr:saveRequest', data, actor),
   hrDecideRequest: (id, decision, notes, actor) => invoke('hr:decideRequest', id, decision, notes, actor),

@@ -80,6 +80,7 @@ const AdminPage = {
     { id: 'menu-builder', label: '📋 Menu Builder', icon: 'menu' },
     { id: 'promo-video-builder', label: '🎬 Promo Video Builder', icon: 'signage' },
     { id: 'communication-center', label: '📣 Communication Center', icon: 'signage' },
+    { id: 'chisanyama-connect', label: '🔥 Chisanyama Connect', icon: 'signage' },
     { id: 'marketing-center', label: '📈 Marketing', icon: 'analytics' },
     { id: 'financial-intelligence', label: '💰 Financial Intelligence', icon: 'analytics' },
     { id: 'radio', label: '📻 Radio', icon: 'signage' },
@@ -175,7 +176,7 @@ const AdminPage = {
       label: 'Communication & Marketing',
       icon: '📣',
       accent: '#db2777',
-      items: ['communication-center', 'promo-video-builder']
+      items: ['chisanyama-connect', 'communication-center', 'promo-video-builder']
     },
     {
       id: 'restaurant-ops',
@@ -1046,6 +1047,29 @@ const AdminPage = {
         }
         el.innerHTML = `<div class="admin-section"><h3>📻 Radio</h3>
           <p class="muted">Could not open Radio. Hard refresh (Ctrl+Shift+R) and try again.</p></div>`;
+      },
+      'chisanyama-connect': async () => {
+        el.innerHTML = `<div class="admin-section"><h3>🔥 Chisanyama Connect</h3>
+          <p>Chat, calls, groups and the community feed use this same staff account. Marketing campaigns stay in Communication Center.</p>
+          <button type="button" class="btn btn-primary" id="open-connect">Open Connect</button>
+          <p class="muted" id="connect-msg"></p></div>`;
+        const btn = el.querySelector('#open-connect');
+        const msg = el.querySelector('#connect-msg');
+        btn.onclick = async () => {
+          btn.disabled = true;
+          msg.textContent = '';
+          try {
+            const opened = await API.connectStaffEnter();
+            if (opened && opened.success === false) throw new Error(opened.error || 'Could not open Connect');
+            const token = opened && (opened.token || (opened.data && opened.data.token));
+            if (!token) throw new Error('Could not open Connect with this account');
+            window.open('/connect/?s=' + encodeURIComponent(token), '_blank');
+          } catch (err) {
+            msg.textContent = err.message || 'Could not open Connect';
+          } finally {
+            btn.disabled = false;
+          }
+        };
       },
       'communication-center': async () => {
         try {
@@ -6387,6 +6411,7 @@ const AdminPage = {
       'marketing-center': ['marketing', 'campaign', 'promotion', 'win back', 'segment', 'decision center', 'cross-sell', 'budget', 'roi', 'ai marketing'],
       'financial-intelligence': ['financial', 'finance', 'profit', 'allocation', 'break-even', 'break even', 'salary', 'afford', 'monthly performance', 'annual', 'product profitability', 'ai advisor', 'financial report'],
       'communication-center': ['communication', 'whatsapp', 'sms', 'email', 'notification', 'campaign', 'automation', 'share', 'publish', 'messaging', 'broadcast'],
+      'chisanyama-connect': ['chat', 'connect', 'video call', 'voice call', 'groups', 'stories', 'community'],
       radio: ['radio', 'live', 'studio', 'broadcast', 'dj', 'on air'],
       recipe: ['recipe', 'ingredient', 'production', 'kitchen recipe', 'bom', 'meal'],
       staffhr: ['staff', 'employee', 'leave', 'sleeve', 'attendance', 'hr', 'clock', 'shift schedule', 'payslip'],

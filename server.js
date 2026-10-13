@@ -41,6 +41,7 @@ const PLATFORM_WEB = path.join(ROOT, 'platform-web');
 const GAMES_WEB = path.join(ROOT, 'games-web');
 const GAMES_ADMIN_WEB = path.join(ROOT, 'games-admin-web');
 const HR_SIGN_WEB = path.join(ROOT, 'hr-sign-web');
+const CONNECT_WEB = path.join(ROOT, 'connect-web');
 const { loadProjectEnv } = require('./lib/load-env');
 loadProjectEnv(ROOT);
 
@@ -1647,6 +1648,10 @@ async function main() {
 
     if (urlPath === '/hr-sign' || urlPath.startsWith('/hr-sign/')) {
       return servePortalWeb(req, res, HR_SIGN_WEB, '/hr-sign');
+    }
+
+    if (urlPath === '/connect' || urlPath.startsWith('/connect/')) {
+      return servePortalWeb(req, res, CONNECT_WEB, '/connect');
     }
 
     if (urlPath === '/games' || urlPath.startsWith('/games/')) {
