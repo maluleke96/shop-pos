@@ -79,6 +79,41 @@ async function main() {
   const notices = connect.notices(owner.token);
   assert(notices.some((row) => /order/i.test(row.body) || /message/i.test(row.kind)), 'staff were not notified');
 
+  const mine = connect.home(token).profile;
+  const other = connect.home(otherToken).profile;
+  const ownerProfile = connect.home(owner.token).profile;
+  const cashierProfile = connect.home(cashier.token).profile;
+  assert(/^CC-\d{6}$/.test(mine.connectCode) && mine.connectCode !== other.connectCode, 'Connect numbers are missing or not unique');
+  assert(connect.home(token).profile.connectCode === mine.connectCode, 'Connect number changed');
+  assert(ownerProfile.canModerate && !mine.canModerate && !cashierProfile.canModerate, 'moderation is not limited to the owner or manager');
+  connect.addStory(token, 'Braai tonight');
+  assert(!connect.stories(otherToken).some((row) => row.body === 'Braai tonight'), 'a stranger saw the status');
+  const chat = connect.saveContact(otherToken, mine.connectCode);
+  connect.send(otherToken, chat.id, 'Hello privately');
+  assert(connect.messages(token, chat.id).messages.some((row) => row.body === 'Hello privately'), 'private chat did not arrive');
+  assert(connect.stories(otherToken).some((row) => row.body === 'Braai tonight'), 'a saved number could not see the status');
+  connect.publish(token, 'Short clip', 'data:video/mp4;base64,AAAA', 'video');
+  assert(connect.posts(otherToken).some((row) => row.mediaKind === 'video'), 'video post was not shared with the connection');
+  const staffChat = connect.saveContact(owner.token, cashierProfile.connectCode);
+  connect.send(owner.token, staffChat.id, 'Please open the till');
+  assert(connect.messages(cashier.token, staffChat.id).messages.some((row) => row.body === 'Please open the till'), 'owner could not message staff by Connect number');
+  connect.publish(token, 'this is porn');
+  const flagged = connect.adminFeed(owner.token).posts.find((row) => row.flagged && /porn/.test(row.body));
+  assert(flagged, 'admin did not see the reported post');
+  connect.adminHide(owner.token, 'post', flagged.id, true);
+  assert(!connect.posts(otherToken).some((row) => /porn/.test(row.body)), 'a hidden post was still visible');
+  let cashierBlocked = false;
+  try { connect.adminPeople(cashier.token); } catch (err) { cashierBlocked = /owner or manager/i.test(err.message); }
+  assert(cashierBlocked, 'cashier opened the monitor');
+  connect.adminPerson(owner.token, mine.connectCode, 'block');
+  let stopped = false;
+  try { connect.send(token, chat.id, 'again'); } catch (err) { stopped = /blocked/i.test(err.message); }
+  assert(stopped, 'a blocked person could still send');
+  assert(!connect.stories(otherToken).some((row) => row.body === 'Braai tonight'), 'a blocked person status stayed visible');
+  connect.adminPerson(owner.token, mine.connectCode, 'approve');
+  connect.send(token, chat.id, 'I am back');
+  assert(db.prepare('SELECT COUNT(*) AS n FROM customers').get().n === beforeCustomers, 'Connect numbers created another customer');
+
   console.log('CONNECT_PLATFORM_OK');
 }
 

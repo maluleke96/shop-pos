@@ -1,0 +1,11 @@
+{
+  "appId": "com.shoppos.connect",
+  "appName": "Chisanyama Connect",
+  "webDir": "www",
+  "server": {
+    "url": "https://chisafood.up.railway.app/connect/",
+    "androidScheme": "https",
+    "cleartext": false
+  },
+  "android": { "allowMixedContent": false }
+}

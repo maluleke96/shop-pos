@@ -1,0 +1,36 @@
+{
+  "appId": "com.shoppos.connect",
+  "productName": "Chisanyama Connect",
+  "directories": {
+    "output": "dist\\cloud-apps\\connect",
+    "buildResources": "build"
+  },
+  "files": [
+    "electron/live-url-shell.js",
+    "electron/cloud-shell-config-connect.js",
+    "package.json"
+  ],
+  "extraMetadata": {
+    "main": "electron/cloud-shell-config-connect.js",
+    "name": "com.shoppos.connect"
+  },
+  "win": {
+    "target": [
+      {
+        "target": "nsis",
+        "arch": [
+          "x64"
+        ]
+      }
+    ]
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "artifactName": "Chisanyama-Connect-Setup.${ext}",
+    "shortcutName": "Chisanyama Connect",
+    "uninstallDisplayName": "Chisanyama Connect"
+  }
+}

@@ -86,3 +86,4 @@ input, textarea {
 .call-stage { background: #071526; color: white; border-radius: 18px; min-height: 280px; padding: 16px; position: relative; }
 .call-actions { display: flex; justify-content: center; gap: 10px; margin-top: 12px; }
 .note { background: #fff7ed; border-radius: 12px; padding: 10px 12px; color: #7c2d12; font-size: 13px; }
+.code { font-size: 22px; letter-spacing: .08em; font-weight: 800; color: #9a3412; margin: 8px 0; }

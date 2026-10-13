@@ -113,12 +113,13 @@ function ensureWwwBootstrap(root, app, cloudUrl) {
  * Build one cloud-shell APK with distinct applicationId + live server.url.
  */
 function buildCloudShellApp(root, cloudUrl, app, destRoot, opts = {}) {
-  const live = resolveCapacitorServerUrl(app, cloudUrl);
+  const base = app.cloudUrl || cloudUrl;
+  const live = resolveCapacitorServerUrl(app, base);
   console.log(`\n========== Cloud shell: ${app.appName} → ${live} ==========`);
-  ensureWwwBootstrap(root, app, cloudUrl);
+  ensureWwwBootstrap(root, app, base);
   const cfgSrc = path.join(root, 'capacitor-apps', app.config);
   const cfg = JSON.parse(fs.readFileSync(cfgSrc, 'utf8'));
-  const host = cloudHost(cloudUrl);
+  const host = cloudHost(base);
   cfg.server = {
     url: live,
     cleartext: false,

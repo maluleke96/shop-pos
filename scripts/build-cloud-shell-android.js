@@ -56,7 +56,9 @@ Built: ${new Date().toISOString()}
   { id: 'radio', config: 'capacitor.radio.json', apkName: 'ShopPOS-Radio.apk', appName: 'Shop Radio', serverPath: '/radio-app.html' },
   { id: 'communication', config: 'capacitor.communication.json', apkName: 'ShopPOS-CommunicationCenter.apk', appName: 'Communication Center', serverPath: '/communication-center-app.html' },
   { id: 'marketing', config: 'capacitor.marketing.json', apkName: 'ShopPOS-MarketingCenter.apk', appName: 'Marketing Center', serverPath: '/marketing-center-app.html' },
-  { id: 'platform', config: 'capacitor.platform.json', apkName: 'ShopPOS-PlatformControl.apk', appName: 'Platform Control', serverPath: '/platform/' }
+  { id: 'platform', config: 'capacitor.platform.json', apkName: 'ShopPOS-PlatformControl.apk', appName: 'Platform Control', serverPath: '/platform/' },
+  { id: 'connect', config: 'capacitor.connect.json', apkName: 'Chisanyama-Connect.apk', appName: 'Chisanyama Connect', serverPath: '/connect/' },
+  { id: 'connect-lab', config: 'capacitor.connect-lab.json', apkName: 'Chisanyama-Connect-Lab.apk', appName: 'Chisanyama Connect Lab', serverPath: '/connect/', cloudUrl: 'https://shoppos-lab-production.up.railway.app' }
 ];
 
 function buildApp(app) {

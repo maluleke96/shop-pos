@@ -1973,6 +1973,13 @@ function buildHandlers(store) {
   add('connect:notices', wrapSync((token) => connect().notices(token)));
   add('connect:readNotice', wrapSync((token, id) => connect().readNotice(token, id)));
   add('connect:profile', wrapSync((token, about) => connect().saveProfile(token, about)));
+  add('connect:lookup', wrapSync((token, code) => connect().lookup(token, code)));
+  add('connect:saveContact', wrapSync((token, code) => connect().saveContact(token, code)));
+  add('connect:report', wrapSync((token, kind, id) => connect().report(token, kind, id)));
+  add('connect:adminPeople', wrapSync((token) => connect().adminPeople(token)));
+  add('connect:adminPerson', wrapSync((token, code, action) => connect().adminPerson(token, code, action)));
+  add('connect:adminFeed', wrapSync((token) => connect().adminFeed(token)));
+  add('connect:adminHide', wrapSync((token, kind, id, hidden) => connect().adminHide(token, kind, id, hidden)));
   add('connect:staffEnter', wrapSync(() => connect().staffEnter(s.getUserSession())));
   add('hr:requests', wrapSync((f, a) => s.listRequests(f || {}, hrPlatA(a))));
   add('hr:saveRequest', wrapSync((d, a) => s.saveRequest(d || {}, hrPlatA(a))));

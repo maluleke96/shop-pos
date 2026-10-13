@@ -1,0 +1,36 @@
+{
+  "appId": "com.shoppos.connect.lab",
+  "productName": "Chisanyama Connect Lab",
+  "directories": {
+    "output": "dist\\cloud-apps\\connect-lab",
+    "buildResources": "build"
+  },
+  "files": [
+    "electron/live-url-shell.js",
+    "electron/cloud-shell-config-connect-lab.js",
+    "package.json"
+  ],
+  "extraMetadata": {
+    "main": "electron/cloud-shell-config-connect-lab.js",
+    "name": "com.shoppos.connect.lab"
+  },
+  "win": {
+    "target": [
+      {
+        "target": "nsis",
+        "arch": [
+          "x64"
+        ]
+      }
+    ]
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "artifactName": "Chisanyama-Connect-Lab-Setup.${ext}",
+    "shortcutName": "Chisanyama Connect Lab",
+    "uninstallDisplayName": "Chisanyama Connect Lab"
+  }
+}

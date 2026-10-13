@@ -51,6 +51,7 @@
       ['discover', 'Discover'],
       ['profile', 'Profile']
     ];
+    if (state.home && state.home.profile && state.home.profile.canModerate) items.push(['monitor', 'Monitor']);
     return `<nav class="nav">${items.map(([id, label]) =>
       `<button type="button" data-go="${id}" class="${active === id ? 'active' : ''}">${label}</button>`).join('')}</nav>`;
   }
@@ -114,6 +115,7 @@
     if (screen === 'groups') return renderGroups();
     if (screen === 'discover') return renderDiscover();
     if (screen === 'profile') return renderProfile();
+    if (screen === 'monitor') return renderMonitor();
     if (screen === 'notices') return renderNotices();
     return renderChats();
   }
@@ -129,13 +131,26 @@
     state.orders = await rpc('connect:orders', [state.token]);
     const list = state.threads.map((row) => `<button class="row" data-thread="${row.id}">
       <span class="avatar">${esc((row.title || 'C').slice(0, 1))}</span>
-      <span><strong>${esc(row.title)}</strong><span class="muted">${esc(row.last || row.kind)}</span></span>
-    </button>`).join('') || '<p class="muted">No conversations yet. Open a branch or an order.</p>';
+      <span><strong>${esc(row.title)}</strong><span class="muted">${esc(row.code || row.last || row.kind)}</span></span>
+    </button>`).join('') || '<p class="muted">No conversations yet. Add a Connect number, or open a branch or an order.</p>';
     const orders = state.orders.map((row) => `<button class="row" data-order="${row.id}">
       <span class="avatar">#</span><span><strong>Order ${esc(row.orderNumber)}</strong>
       <span class="muted">${esc(row.status)}${row.driver ? ' · ' + esc(row.driver) : ''}</span></span></button>`).join('');
-    app.innerHTML = shell('Chats', `${orders}<h3>Conversations</h3>${list}`, 'chats');
+    app.innerHTML = shell('Chats', `<form class="card" id="add-number">
+      <label for="connect-code">Private chat</label>
+      <input id="connect-code" placeholder="Their Connect number, for example CC-123456" maxlength="12">
+      <button class="btn" type="submit">Start private chat</button>
+      <p class="err" id="add-err"></p></form>${orders}<h3>Conversations</h3>${list}`, 'chats');
     bind();
+    app.querySelector('#add-number').onsubmit = async (event) => {
+      event.preventDefault();
+      const err = app.querySelector('#add-err');
+      err.textContent = '';
+      try {
+        const opened = await rpc('connect:saveContact', [state.token, app.querySelector('#connect-code').value]);
+        openThread(opened.id);
+      } catch (error) { err.textContent = error.message; }
+    };
     app.querySelectorAll('[data-thread]').forEach((el) => {
       el.onclick = () => openThread(el.getAttribute('data-thread'));
     });
@@ -315,12 +330,19 @@
     state.stories = await rpc('connect:stories', [state.token]);
     state.posts = await rpc('connect:posts', [state.token]);
     const stories = state.stories.map((row) => `<button class="story" data-story="${row.id}"><span class="ring">${esc(row.name.slice(0, 1))}</span>${esc(row.name.split(' ')[0])}</button>`).join('');
-    const posts = state.posts.map((row) => `<article class="card post"><strong>${esc(row.name)}</strong><p>${esc(row.body)}</p>${row.media ? `<img alt="" src="${esc(row.media)}">` : ''}</article>`).join('')
-      || '<p class="muted">The community feed is empty.</p>';
+    const posts = state.posts.map((row) => `<article class="card post"><strong>${esc(row.name)}</strong>
+      <p>${esc(row.body)}</p>
+      ${row.media && row.mediaKind === 'video' ? `<video controls src="${esc(row.media)}"></video>` : ''}
+      ${row.media && row.mediaKind !== 'video' ? `<img alt="" src="${esc(row.media)}">` : ''}
+      ${row.mine ? '' : `<button class="btn small" type="button" data-report="post" data-id="${row.id}">Report</button>`}
+      </article>`).join('')
+      || '<p class="muted">Posts from people who saved your Connect number, and your own posts, show here.</p>';
     app.innerHTML = shell('Discover', `
+      <p class="note">Status and posts are visible to people who have saved your Connect number.</p>
       <div class="stories"><button class="story" id="add-story"><span class="ring">+</span>Status</button>${stories}</div>
-      <form class="card" id="post"><textarea id="post-text" maxlength="1000" placeholder="Share with the community"></textarea>
-        <input id="post-photo" type="file" accept="image/*"><button class="btn" type="submit">Post</button></form>
+      <form class="card" id="post"><textarea id="post-text" maxlength="1000" placeholder="Share a photo or a short video"></textarea>
+        <input id="post-file" type="file" accept="image/*,video/*"><button class="btn" type="submit">Post</button>
+        <p class="err" id="post-err"></p></form>
       ${posts}`, 'discover');
     bind();
     app.querySelectorAll('[data-story]').forEach((el) => {
@@ -335,13 +357,36 @@
       await rpc('connect:addStory', [state.token, text, '']);
       renderDiscover();
     };
+    app.querySelectorAll('[data-report]').forEach((el) => {
+      el.onclick = async () => {
+        await rpc('connect:report', [state.token, el.getAttribute('data-report'), Number(el.getAttribute('data-id'))]);
+        el.textContent = 'Reported';
+      };
+    });
     app.querySelector('#post').onsubmit = async (event) => {
       event.preventDefault();
-      const file = app.querySelector('#post-photo').files[0];
-      const media = file ? await readImage(file) : '';
-      await rpc('connect:post', [state.token, app.querySelector('#post-text').value, media]);
-      renderDiscover();
+      const err = app.querySelector('#post-err');
+      err.textContent = '';
+      try {
+        const file = app.querySelector('#post-file').files[0];
+        const packed = file ? await readMedia(file) : { data: '', kind: '' };
+        await rpc('connect:post', [state.token, app.querySelector('#post-text').value, packed.data, packed.kind]);
+        renderDiscover();
+      } catch (error) { err.textContent = error.message; }
     };
+  }
+
+  function readMedia(file) {
+    if (file.type && file.type.startsWith('video')) {
+      if (file.size > 900000) return Promise.reject(new Error('That video is too large. Use a clip under a minute.'));
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve({ data: reader.result, kind: 'video' });
+        reader.onerror = () => reject(new Error('Could not read that video'));
+        reader.readAsDataURL(file);
+      });
+    }
+    return readImage(file).then((data) => ({ data, kind: 'image' }));
   }
 
   function readImage(file) {
@@ -369,23 +414,71 @@
     const marketing = profile.marketingOptIn == null
       ? 'Marketing choices stay in the Marketing Centre.'
       : (profile.marketingOptIn ? 'Marketing is allowed on the main account. Chat will not send campaigns.' : 'Marketing is off on the main account. Chat will not change that.');
+    const held = profile.blocked ? 'This Connect account is blocked.' : (profile.approved ? '' : 'This Connect account is waiting for approval.');
     app.innerHTML = shell('Profile', `
       <div class="card"><span class="avatar">${esc(profile.name.slice(0, 1))}</span>
         <h2>${esc(profile.name)}</h2>
+        <p class="code">${esc(profile.connectCode || '')}</p>
+        <button class="btn small" type="button" id="copy-code">Copy my Connect number</button>
         <p class="muted">${esc(profile.role)} · ${esc(profile.shop)}</p>
         <p>${esc(profile.phone)} ${esc(profile.email)}</p>
-        <p class="note">This is your Chisanyama account. Name, phone and email come from the main profile. ${esc(marketing)}</p>
+        <p class="note">Give this number to someone on Chisanyama Connect to chat privately. ${esc(marketing)} ${esc(held)}</p>
       </div>
       <form class="card" id="about"><label for="about-text">About</label>
         <input id="about-text" maxlength="180" value="${esc(profile.about)}">
         <button class="btn" type="submit">Save</button></form>
       <a class="btn ghost" href="/" style="display:block;text-align:center;text-decoration:none;">Orders</a>`, 'profile');
     bind();
+    app.querySelector('#copy-code').onclick = async () => {
+      try { await navigator.clipboard.writeText(profile.connectCode || ''); } catch (_) {}
+      app.querySelector('#copy-code').textContent = 'Copied';
+    };
     app.querySelector('#about').onsubmit = async (event) => {
       event.preventDefault();
       state.home.profile = await rpc('connect:profile', [state.token, app.querySelector('#about-text').value]);
       renderProfile();
     };
+  }
+
+  async function renderMonitor() {
+    if (!state.home.profile.canModerate) return show('profile');
+    const people = await rpc('connect:adminPeople', [state.token]);
+    const feed = await rpc('connect:adminFeed', [state.token]);
+    const personRows = people.map((row) => `<div class="card"><strong>${esc(row.name)}</strong>
+      <p class="code">${esc(row.code)}</p>
+      <p class="muted">${esc(row.role)} ${row.blocked ? '· blocked' : ''} ${row.approved ? '' : '· waiting'}</p>
+      <button class="btn small" type="button" data-person="${esc(row.code)}" data-action="block">Block</button>
+      <button class="btn small" type="button" data-person="${esc(row.code)}" data-action="unblock">Unblock</button>
+      <button class="btn small" type="button" data-person="${esc(row.code)}" data-action="hold">Hold</button>
+      <button class="btn small" type="button" data-person="${esc(row.code)}" data-action="approve">Approve</button>
+      <button class="btn small" type="button" data-chat="${esc(row.code)}">Chat</button></div>`).join('');
+    const items = [...feed.posts, ...feed.stories, ...feed.messages];
+    const itemRows = items.map((row) => `<div class="card"><strong>${esc(row.kind)} · ${esc(row.name)} · ${esc(row.code)}</strong>
+      <p>${esc(row.body)}</p>
+      <p class="muted">${row.flagged ? 'Reported' : ''} ${row.hidden ? 'Hidden' : 'Visible to their connections'} ${esc(row.mediaKind)}</p>
+      <button class="btn small" type="button" data-hide-kind="${esc(row.kind)}" data-hide-id="${row.id}" data-hide="1">Hide</button>
+      <button class="btn small" type="button" data-hide-kind="${esc(row.kind)}" data-hide-id="${row.id}" data-hide="0">Show</button></div>`).join('')
+      || '<p class="muted">Nothing has been posted yet.</p>';
+    app.innerHTML = shell('Monitor', `<h3>People</h3>${personRows}<h3>Posts, status and messages</h3>${itemRows}`, 'monitor');
+    bind();
+    app.querySelectorAll('[data-person]').forEach((el) => {
+      el.onclick = async () => {
+        await rpc('connect:adminPerson', [state.token, el.getAttribute('data-person'), el.getAttribute('data-action')]);
+        renderMonitor();
+      };
+    });
+    app.querySelectorAll('[data-chat]').forEach((el) => {
+      el.onclick = async () => {
+        const opened = await rpc('connect:saveContact', [state.token, el.getAttribute('data-chat')]);
+        openThread(opened.id);
+      };
+    });
+    app.querySelectorAll('[data-hide-id]').forEach((el) => {
+      el.onclick = async () => {
+        await rpc('connect:adminHide', [state.token, el.getAttribute('data-hide-kind'), Number(el.getAttribute('data-hide-id')), el.getAttribute('data-hide') === '1']);
+        renderMonitor();
+      };
+    });
   }
 
   async function renderNotices() {

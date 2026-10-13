@@ -1,0 +1,11 @@
+{
+  "appId": "com.shoppos.connect.lab",
+  "appName": "Chisanyama Connect Lab",
+  "webDir": "www",
+  "server": {
+    "url": "https://shoppos-lab-production.up.railway.app/connect/",
+    "androidScheme": "https",
+    "cleartext": false
+  },
+  "android": { "allowMixedContent": false }
+}

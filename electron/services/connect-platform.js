@@ -99,7 +99,47 @@ function ensure() {
       created_at TEXT
     );
   `);
+  addColumn(db, 'connect_profiles', 'connect_code', 'TEXT');
+  addColumn(db, 'connect_profiles', 'blocked', 'INTEGER DEFAULT 0');
+  addColumn(db, 'connect_profiles', 'approved', 'INTEGER DEFAULT 1');
+  addColumn(db, 'connect_posts', 'media_kind', 'TEXT');
+  addColumn(db, 'connect_posts', 'hidden', 'INTEGER DEFAULT 0');
+  addColumn(db, 'connect_posts', 'flagged', 'INTEGER DEFAULT 0');
+  addColumn(db, 'connect_stories', 'media_kind', 'TEXT');
+  addColumn(db, 'connect_stories', 'hidden', 'INTEGER DEFAULT 0');
+  addColumn(db, 'connect_stories', 'flagged', 'INTEGER DEFAULT 0');
+  addColumn(db, 'connect_messages', 'hidden', 'INTEGER DEFAULT 0');
+  addColumn(db, 'connect_messages', 'flagged', 'INTEGER DEFAULT 0');
+  try { db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_connect_profiles_code ON connect_profiles(connect_code)'); } catch (_) {}
   return db;
+}
+
+function addColumn(db, table, column, type) {
+  try { db.prepare(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`).run(); } catch (_) {}
+}
+
+function assignCode(db, key) {
+  const row = db.prepare('SELECT connect_code FROM connect_profiles WHERE actor_key = ?').get(key);
+  if (row && row.connect_code) return row.connect_code;
+  for (let i = 0; i < 8; i++) {
+    const code = `CC-${crypto.randomInt(100000, 999999)}`;
+    const taken = db.prepare('SELECT 1 AS ok FROM connect_profiles WHERE connect_code = ?').get(code);
+    if (taken) continue;
+    try {
+      db.prepare('UPDATE connect_profiles SET connect_code = ? WHERE actor_key = ? AND (connect_code IS NULL OR connect_code = \'\')').run(code, key);
+    } catch (_) { continue; }
+    const saved = db.prepare('SELECT connect_code FROM connect_profiles WHERE actor_key = ?').get(key);
+    if (saved && saved.connect_code) return saved.connect_code;
+  }
+  throw new Error('Could not create a Connect number');
+}
+
+function normalizeCode(value) {
+  const raw = String(value || '').trim().toUpperCase().replace(/\s+/g, '');
+  if (!raw) return '';
+  if (/^CC-\d{6}$/.test(raw)) return raw;
+  if (/^\d{6}$/.test(raw)) return `CC-${raw}`;
+  return raw;
 }
 
 function shopName(db) {
@@ -130,6 +170,10 @@ function profileFor(db, actor) {
     about: (row && row.about) || '',
     shop: shopName(db),
     marketingOptIn: marketingChoice(db, actor),
+    connectCode: (row && row.connect_code) || '',
+    blocked: !!(row && Number(row.blocked) === 1),
+    approved: !(row && Number(row.approved) === 0),
+    canModerate: seesAllBranches(actor.role),
   };
 }
 
@@ -202,7 +246,26 @@ function actorFromToken(token) {
   const actor = staff || actorFromWeb(db, raw);
   if (!actor) throw new Error('This Chisanyama sign-in is no longer valid');
   touch(db, actor);
+  actor.connectCode = assignCode(db, actor.key);
   return { db, actor };
+}
+
+function requireActive(db, actor) {
+  const row = db.prepare('SELECT blocked, approved FROM connect_profiles WHERE actor_key = ?').get(actor.key);
+  if (row && Number(row.blocked) === 1) throw new Error('This Connect account is blocked');
+  if (row && Number(row.approved) === 0) throw new Error('This Connect account is waiting for approval');
+}
+
+function personByCode(db, code) {
+  return db.prepare('SELECT * FROM connect_profiles WHERE connect_code = ?').get(normalizeCode(code));
+}
+
+function linkedKeys(db, key) {
+  const rows = db.prepare(`SELECT m2.actor_key FROM connect_threads t
+    JOIN connect_members m1 ON m1.thread_id = t.id AND m1.actor_key = ?
+    JOIN connect_members m2 ON m2.thread_id = t.id AND m2.actor_key != ?
+    WHERE t.kind = 'direct'`).all(key, key);
+  return new Set(rows.map((row) => row.actor_key));
 }
 
 function seesAllBranches(role) {
@@ -263,15 +326,29 @@ function threads(token) {
     if (seesAllBranches(actor.role) || actor.role === 'customer') return true;
     return !actor.branchId || Number(row.branch_id) === Number(actor.branchId);
   });
-  return visible.map((row) => ({
-    id: row.id,
-    kind: row.kind,
-    title: row.title,
-    branchId: row.branch_id,
-    orderNumber: row.order_number || '',
-    last: row.last_body || '',
-    members: Number(row.members) || 0,
-  }));
+  return visible.map((row) => {
+    let title = row.title;
+    let code = '';
+    if (row.kind === 'direct') {
+      const other = db.prepare(`SELECT p.display_name, p.connect_code FROM connect_members m
+        LEFT JOIN connect_profiles p ON p.actor_key = m.actor_key
+        WHERE m.thread_id = ? AND m.actor_key != ? LIMIT 1`).get(row.id, actor.key);
+      if (other) {
+        title = other.display_name || 'Private chat';
+        code = other.connect_code || '';
+      }
+    }
+    return {
+      id: row.id,
+      kind: row.kind,
+      title,
+      code,
+      branchId: row.branch_id,
+      orderNumber: row.order_number || '',
+      last: row.last_body || '',
+      members: Number(row.members) || 0,
+    };
+  });
 }
 
 function openBranch(token, branchId) {
@@ -292,16 +369,23 @@ function messages(token, threadId) {
   const id = num(threadId);
   if (!memberOf(db, id, actor.key)) throw new Error('You are not in this conversation');
   const thread = db.prepare('SELECT * FROM connect_threads WHERE id = ?').get(id);
+  let title = thread ? thread.title : 'Chat';
+  if (thread && thread.kind === 'direct') {
+    const other = db.prepare(`SELECT p.display_name FROM connect_members m
+      LEFT JOIN connect_profiles p ON p.actor_key = m.actor_key
+      WHERE m.thread_id = ? AND m.actor_key != ? LIMIT 1`).get(id, actor.key);
+    if (other && other.display_name) title = other.display_name;
+  }
   const rows = db.prepare(`SELECT m.*, p.display_name FROM connect_messages m
     LEFT JOIN connect_profiles p ON p.actor_key = m.actor_key
     WHERE m.thread_id = ? ORDER BY m.id ASC LIMIT 200`).all(id);
   return {
-    thread: thread ? { id: thread.id, title: thread.title, kind: thread.kind, orderNumber: thread.order_number || '' } : null,
+    thread: thread ? { id: thread.id, title, kind: thread.kind, orderNumber: thread.order_number || '' } : null,
     messages: rows.map((row) => ({
       id: row.id,
       mine: row.actor_key === actor.key,
       name: row.display_name || 'Chisanyama',
-      body: row.body || '',
+      body: Number(row.hidden) === 1 ? 'Removed by the shop' : (row.body || ''),
       at: row.created_at,
     })),
   };
@@ -309,6 +393,7 @@ function messages(token, threadId) {
 
 function send(token, threadId, text) {
   const { db, actor } = actorFromToken(token);
+  requireActive(db, actor);
   const id = num(threadId);
   const body = String(text || '').trim().slice(0, 2000);
   if (!body) throw new Error('Type a message first');
@@ -375,49 +460,79 @@ function openOrder(token, orderId) {
   return { id: thread.id, title: thread.title || `Order ${order.orderNumber}`, orderNumber: order.orderNumber };
 }
 
+function visibleTo(db, actor, authorKey, hidden, authorBlocked) {
+  if (Number(hidden) === 1 || Number(authorBlocked) === 1) return false;
+  if (authorKey === actor.key) return true;
+  return linkedKeys(db, actor.key).has(authorKey);
+}
+
+function mediaOf(row) {
+  return {
+    media: row.media_data || '',
+    mediaKind: row.media_kind || (row.media_data ? 'image' : ''),
+  };
+}
+
 function posts(token) {
   const { db, actor } = actorFromToken(token);
-  const rows = db.prepare(`SELECT p.*, pr.display_name FROM connect_posts p
+  const rows = db.prepare(`SELECT p.*, pr.display_name, pr.blocked AS author_blocked, pr.connect_code FROM connect_posts p
     LEFT JOIN connect_profiles pr ON pr.actor_key = p.actor_key
-    ORDER BY p.id DESC LIMIT 40`).all();
-  return rows.map((row) => ({
+    ORDER BY p.id DESC LIMIT 80`).all();
+  return rows.filter((row) => visibleTo(db, actor, row.actor_key, row.hidden, row.author_blocked)).slice(0, 40).map((row) => ({
     id: row.id, mine: row.actor_key === actor.key, name: row.display_name || 'Chisanyama',
-    body: row.body || '', media: row.media_data || '', at: row.created_at,
+    code: row.connect_code || '', body: row.body || '', ...mediaOf(row), at: row.created_at,
   }));
 }
 
-function publish(token, text, media) {
-  const { db, actor } = actorFromToken(token);
-  const body = String(text || '').trim().slice(0, 1000);
+function storeMedia(media, kind) {
   const pic = String(media || '');
-  if (pic && pic.length > 180000) throw new Error('That photo is too large. Use a smaller one.');
-  if (!body && !pic) throw new Error('Write something or add a photo');
-  db.prepare('INSERT INTO connect_posts (actor_key, body, media_data, created_at) VALUES (?, ?, ?, ?)')
-    .run(actor.key, body, pic || null, now());
-  return { ok: true };
+  const mediaKind = kind === 'video' ? 'video' : (pic ? 'image' : '');
+  const limit = mediaKind === 'video' ? 1200000 : 180000;
+  if (pic && pic.length > limit) throw new Error(mediaKind === 'video' ? 'That video is too large. Use a shorter clip.' : 'That photo is too large. Use a smaller one.');
+  return { pic, mediaKind };
+}
+
+function reviewText(text) {
+  const low = String(text || '').toLowerCase();
+  return ['porn', 'xxx', 'nude', 'nudes'].some((word) => low.includes(word));
+}
+
+function publish(token, text, media, kind) {
+  const { db, actor } = actorFromToken(token);
+  requireActive(db, actor);
+  const body = String(text || '').trim().slice(0, 1000);
+  const stored = storeMedia(media, kind);
+  if (!body && !stored.pic) throw new Error('Write something or add a photo or video');
+  const flagged = reviewText(body) ? 1 : 0;
+  db.prepare('INSERT INTO connect_posts (actor_key, body, media_data, media_kind, flagged, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(actor.key, body, stored.pic || null, stored.mediaKind || null, flagged, now());
+  if (flagged) notifyModerators(db, 'Post needs a look', `${actor.name} posted something for review`);
+  return { ok: true, flagged: !!flagged };
 }
 
 function stories(token) {
   const { db, actor } = actorFromToken(token);
-  const rows = db.prepare(`SELECT s.*, p.display_name FROM connect_stories s
+  const rows = db.prepare(`SELECT s.*, p.display_name, p.blocked AS author_blocked, p.connect_code FROM connect_stories s
     LEFT JOIN connect_profiles p ON p.actor_key = s.actor_key
-    WHERE s.expires_at > ? ORDER BY s.id DESC LIMIT 40`).all(now());
-  return rows.map((row) => ({
+    WHERE s.expires_at > ? ORDER BY s.id DESC LIMIT 80`).all(now());
+  return rows.filter((row) => visibleTo(db, actor, row.actor_key, row.hidden, row.author_blocked)).slice(0, 40).map((row) => ({
     id: row.id, mine: row.actor_key === actor.key, name: row.display_name || 'Chisanyama',
-    body: row.body || '', media: row.media_data || '', at: row.created_at,
+    code: row.connect_code || '', body: row.body || '', ...mediaOf(row), at: row.created_at,
   }));
 }
 
-function addStory(token, text, media) {
+function addStory(token, text, media, kind) {
   const { db, actor } = actorFromToken(token);
+  requireActive(db, actor);
   const body = String(text || '').trim().slice(0, 280);
-  const pic = String(media || '');
-  if (pic && pic.length > 180000) throw new Error('That photo is too large. Use a smaller one.');
-  if (!body && !pic) throw new Error('Add a status first');
+  const stored = storeMedia(media, kind);
+  if (!body && !stored.pic) throw new Error('Add a status first');
+  const flagged = reviewText(body) ? 1 : 0;
   const expires = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
-  db.prepare('INSERT INTO connect_stories (actor_key, body, media_data, expires_at, created_at) VALUES (?, ?, ?, ?, ?)')
-    .run(actor.key, body, pic || null, expires, now());
-  return { ok: true };
+  db.prepare('INSERT INTO connect_stories (actor_key, body, media_data, media_kind, flagged, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .run(actor.key, body, stored.pic || null, stored.mediaKind || null, flagged, expires, now());
+  if (flagged) notifyModerators(db, 'Status needs a look', `${actor.name} added a status for review`);
+  return { ok: true, flagged: !!flagged };
 }
 
 function calls(token) {
@@ -433,6 +548,7 @@ function calls(token) {
 
 function startCall(token, threadId, kind) {
   const { db, actor } = actorFromToken(token);
+  requireActive(db, actor);
   const id = num(threadId);
   if (!memberOf(db, id, actor.key)) throw new Error('You are not in this conversation');
   const mode = kind === 'video' || kind === 'group' ? kind : 'voice';
@@ -504,17 +620,138 @@ function staffEnter(sessionUser) {
   const expires = new Date(Date.now() + 12 * 60 * 60 * 1000).toISOString();
   db.prepare('INSERT INTO connect_access (token_hash, actor_key, role, expires_at, created_at) VALUES (?, ?, ?, ?, ?)')
     .run(hash(token), `u:${sessionUser.id}`, role, expires, now());
+  const key = `u:${sessionUser.id}`;
   touch(db, {
-    key: `u:${sessionUser.id}`,
+    key,
     name: sessionUser.full_name || sessionUser.name || sessionUser.username || 'Staff',
     role,
     userId: sessionUser.id,
   });
-  return { token, url: '/connect/' };
+  return { token, url: '/connect/', connectCode: assignCode(db, key) };
+}
+
+function lookup(token, code) {
+  const { db, actor } = actorFromToken(token);
+  const person = personByCode(db, code);
+  if (!person || person.actor_key === actor.key) throw new Error('That Connect number was not found');
+  if (Number(person.blocked) === 1) throw new Error('That person is not available on Connect');
+  return { name: person.display_name || 'Chisanyama', code: person.connect_code, role: person.role || '' };
+}
+
+function saveContact(token, code) {
+  const { db, actor } = actorFromToken(token);
+  requireActive(db, actor);
+  const person = personByCode(db, code);
+  if (!person || person.actor_key === actor.key) throw new Error('That Connect number was not found');
+  if (Number(person.blocked) === 1) throw new Error('That person is not available on Connect');
+  let thread = db.prepare(`SELECT t.id, t.title FROM connect_threads t
+    JOIN connect_members a ON a.thread_id = t.id AND a.actor_key = ?
+    JOIN connect_members b ON b.thread_id = t.id AND b.actor_key = ?
+    WHERE t.kind = 'direct'`).get(actor.key, person.actor_key);
+  if (!thread) {
+    const info = db.prepare(`INSERT INTO connect_threads (kind, title, created_by, created_at) VALUES ('direct', 'Private', ?, ?)`)
+      .run(actor.key, now());
+    thread = { id: info.lastInsertRowid };
+    join(db, thread.id, actor);
+    join(db, thread.id, { key: person.actor_key, role: person.role });
+    notice(db, person.actor_key, 'contact', 'New private chat', `${actor.name} saved your Connect number ${actor.connectCode || ''}`);
+  }
+  return { id: thread.id, name: person.display_name || 'Private chat', code: person.connect_code };
+}
+
+function report(token, kind, id) {
+  const { db, actor } = actorFromToken(token);
+  const table = kind === 'story' ? 'connect_stories' : kind === 'message' ? 'connect_messages' : 'connect_posts';
+  const row = db.prepare(`SELECT id FROM ${table} WHERE id = ?`).get(num(id));
+  if (!row) throw new Error('That item was not found');
+  db.prepare(`UPDATE ${table} SET flagged = 1 WHERE id = ?`).run(row.id);
+  notifyModerators(db, 'Something was reported', `${actor.name} reported a ${kind || 'post'}`);
+  return { ok: true };
+}
+
+function notifyModerators(db, title, body) {
+  const mods = db.prepare("SELECT actor_key FROM connect_profiles WHERE lower(role) IN ('owner', 'manager', 'admin', 'administrator')").all();
+  for (const mod of mods) notice(db, mod.actor_key, 'moderation', title, body);
+}
+
+function assertMonitor(actor) {
+  if (!seesAllBranches(actor.role)) throw new Error('Only a Chisanyama owner or manager can monitor Connect');
+}
+
+function adminPeople(token) {
+  const { db, actor } = actorFromToken(token);
+  assertMonitor(actor);
+  try {
+    const users = db.prepare('SELECT id, full_name, username, role FROM users WHERE is_active = 1').all();
+    for (const user of users) {
+      const key = `u:${user.id}`;
+      touch(db, { key, name: user.full_name || user.username || 'Staff', role: user.role, userId: user.id });
+      assignCode(db, key);
+    }
+  } catch (_) {}
+  return db.prepare(`SELECT display_name, role, connect_code, blocked, approved FROM connect_profiles
+    ORDER BY display_name`).all().map((row) => ({
+    name: row.display_name || 'Chisanyama',
+    role: row.role || '',
+    code: row.connect_code || '',
+    blocked: Number(row.blocked) === 1,
+    approved: Number(row.approved) !== 0,
+  }));
+}
+
+function adminPerson(token, code, action) {
+  const { db, actor } = actorFromToken(token);
+  assertMonitor(actor);
+  const person = personByCode(db, code);
+  if (!person) throw new Error('That Connect number was not found');
+  if (person.actor_key === actor.key && action === 'block') throw new Error('You cannot block your own Connect number');
+  const next = { blocked: Number(person.blocked) === 1 ? 1 : 0, approved: Number(person.approved) === 0 ? 0 : 1 };
+  if (action === 'block') next.blocked = 1;
+  if (action === 'unblock') next.blocked = 0;
+  if (action === 'hold') next.approved = 0;
+  if (action === 'approve') { next.approved = 1; next.blocked = 0; }
+  db.prepare('UPDATE connect_profiles SET blocked = ?, approved = ?, updated_at = ? WHERE actor_key = ?')
+    .run(next.blocked, next.approved, now(), person.actor_key);
+  return { ok: true, code: person.connect_code, blocked: next.blocked === 1, approved: next.approved !== 0 };
+}
+
+function adminFeed(token) {
+  const { db, actor } = actorFromToken(token);
+  assertMonitor(actor);
+  const posts = db.prepare(`SELECT p.id, p.body, p.media_kind, p.hidden, p.flagged, p.created_at, pr.display_name, pr.connect_code
+    FROM connect_posts p LEFT JOIN connect_profiles pr ON pr.actor_key = p.actor_key
+    ORDER BY p.flagged DESC, p.id DESC LIMIT 30`).all();
+  const stories = db.prepare(`SELECT s.id, s.body, s.media_kind, s.hidden, s.flagged, s.created_at, pr.display_name, pr.connect_code
+    FROM connect_stories s LEFT JOIN connect_profiles pr ON pr.actor_key = s.actor_key
+    ORDER BY s.flagged DESC, s.id DESC LIMIT 30`).all();
+  const messages = db.prepare(`SELECT m.id, m.body, m.hidden, m.flagged, m.created_at, pr.display_name, pr.connect_code
+    FROM connect_messages m LEFT JOIN connect_profiles pr ON pr.actor_key = m.actor_key
+    ORDER BY m.flagged DESC, m.id DESC LIMIT 30`).all();
+  const map = (kind, row) => ({
+    kind, id: row.id, name: row.display_name || 'Chisanyama', code: row.connect_code || '',
+    body: String(row.body || '').slice(0, 280), mediaKind: row.media_kind || '',
+    hidden: Number(row.hidden) === 1, flagged: Number(row.flagged) === 1, at: row.created_at,
+  });
+  return {
+    posts: posts.map((row) => map('post', row)),
+    stories: stories.map((row) => map('story', row)),
+    messages: messages.map((row) => map('message', row)),
+  };
+}
+
+function adminHide(token, kind, id, hidden) {
+  const { db, actor } = actorFromToken(token);
+  assertMonitor(actor);
+  const table = kind === 'story' ? 'connect_stories' : kind === 'message' ? 'connect_messages' : 'connect_posts';
+  const row = db.prepare(`SELECT id FROM ${table} WHERE id = ?`).get(num(id));
+  if (!row) throw new Error('That item was not found');
+  db.prepare(`UPDATE ${table} SET hidden = ? WHERE id = ?`).run(hidden ? 1 : 0, row.id);
+  return { ok: true };
 }
 
 module.exports = {
   ensure, home, threads, openBranch, messages, send, orderContext, openOrder,
   posts, publish, stories, addStory, calls, startCall, signal, signals, setCall,
-  notices, readNotice, saveProfile, staffEnter,
+  notices, readNotice, saveProfile, staffEnter, lookup, saveContact, report,
+  adminPeople, adminPerson, adminFeed, adminHide,
 };
