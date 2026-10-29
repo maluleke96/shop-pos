@@ -35,9 +35,9 @@ Object.assign(window.AdminPage || (window.AdminPage = {}), {
 
       <div class="card" style="margin-top:16px"><div class="card-body">
         <h4 style="margin-top:0">🔎 Customer lookup</h4>
-        <p class="muted" style="margin-top:0">Search by name, phone number, customer ID or order/receipt number.</p>
+        <p class="muted" style="margin-top:0">Search by name, phone number, customer ID, order number, or delivery address.</p>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <input type="search" id="ca-search" placeholder="e.g. 0821234567, #152, R-000231, Thabo" style="flex:1;min-width:220px;padding:8px 12px;border:1.5px solid var(--border);border-radius:8px">
+          <input type="search" id="ca-search" placeholder="Name, phone, customer ID, order number, or delivery address" style="flex:1;min-width:220px;padding:8px 12px;border:1.5px solid var(--border);border-radius:8px">
           <button type="button" class="btn btn-primary" id="ca-search-btn">Search</button>
         </div>
         <div id="ca-results" style="margin-top:12px"></div>

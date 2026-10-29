@@ -351,7 +351,7 @@ const OrderApp = {
     if (el) {
       el.innerHTML = `
         <div>Subtotal <span>${this.money(q.subtotal)}</span></div>
-        ${q.discount ? `<div>Discount${q.coupon?.code ? ` (${this.esc(q.coupon.code)})` : ''}${q.loyalty_discount ? ` · Loyalty ${ptsUsed} pts` : ''} <span>-${this.money(q.discount)}</span></div>` : ''}
+        ${this.checkoutSavingRows(q, ptsUsed)}
         ${q.gift_card_amount ? `<div>Gift card <span>-${this.money(q.gift_card_amount)}</span></div>` : ''}
         ${q.delivery_fee != null && fulfillment === 'delivery' ? `<div>Delivery${q.delivery_place ? ` (${this.esc(q.delivery_place)})` : ''} <span>${this.money(q.delivery_fee)}</span></div>` : ''}
         ${q.service_fee != null && Number(q.service_fee) > 0
@@ -1136,6 +1136,31 @@ const OrderApp = {
     </div>`;
   },
 
+  checkoutSavingRows(q, ptsUsed, withCouponType) {
+    const firstOff = Number(q?.first_order_discount) || 0;
+    const otherOff = Math.max(0, (Number(q?.discount) || 0) - firstOff);
+    const coupon = q?.coupon?.code
+      ? ` (${this.esc(q.coupon.code)}${withCouponType && q.coupon.discount_type ? ` · ${this.esc(q.coupon.discount_type)}` : ''})`
+      : '';
+    const loyalty = q?.loyalty_discount ? ` · Loyalty ${ptsUsed} pts` : '';
+    return `${otherOff ? `<div>Discount${coupon}${loyalty} <span>-${this.money(otherOff)}</span></div>` : ''}
+      ${firstOff ? `<div class="first-order-line">First order saving <span>-${this.money(firstOff)}</span></div>` : ''}`;
+  },
+
+  firstOrderCheckoutHtml() {
+    const fo = this.quote?.first_order;
+    if (!fo?.eligible || !(Number(fo.amount) > 0)) return '';
+    const gift = fo.gift_possible && Number(fo.gift_amount) > 0
+      ? `<p>After this order is placed, you can also earn a ${this.money(fo.gift_amount)} gift if you are one of today's first online customers.</p>`
+      : '';
+    return `<div class="first-order-banner">
+      <p class="first-order-kicker">First-time customer</p>
+      <h2>This is your first online order</h2>
+      <p>You are a first-time customer. ${this.money(fo.amount)} has been taken off this order.</p>
+      ${gift}
+    </div>`;
+  },
+
   firstOnlineGiftHtml(gift) {
     if (!gift?.gift_card_code) return '';
     return `<div class="first-gift-banner">
@@ -1917,7 +1942,9 @@ const OrderApp = {
       if (act === 'checkout') {
         if (!this.isShopOpenNow()) { this.toast('We are closed for online orders right now', 'error'); this.render(); return; }
         if (!this.token) {
-          this.view = this.phoneAccessEnabled?.() ? 'phone-entry' : 'register';
+          const access = this.accessCfg?.() || {};
+          const phoneCheckout = access.mode === 'phone' || access.allow_guest_ordering === true;
+          this.view = phoneCheckout ? 'phone-entry' : 'register';
           this.authReturn = 'checkout';
           this.render();
           return;
@@ -2680,9 +2707,10 @@ const OrderApp = {
           <h3>Special instructions</h3>
           <textarea id="order-notes" rows="2" placeholder="Allergies, gate code, etc.">${this.esc(this.checkout.notes)}</textarea>
         </div>
+        ${this.firstOrderCheckoutHtml()}
         <div class="totals" id="checkout-totals">
           <div>Subtotal <span>${this.money(q.subtotal)}</span></div>
-          ${q.discount ? `<div>Discount${q.coupon?.code ? ` (${this.esc(q.coupon.code)}${q.coupon.discount_type ? ` · ${this.esc(q.coupon.discount_type)}` : ''})` : ''}${q.loyalty_discount ? ` · Loyalty ${ptsUsed} pts` : ''} <span>-${this.money(q.discount)}</span></div>` : ''}
+          ${this.checkoutSavingRows(q, ptsUsed, true)}
           ${q.gift_card_amount ? `<div>Gift card <span>-${this.money(q.gift_card_amount)}</span></div>` : ''}
           ${q.delivery_fee != null && fulfillment === 'delivery' ? `<div>Delivery${q.delivery_place ? ` (${this.esc(q.delivery_place)})` : ''} <span>${this.money(q.delivery_fee)}</span></div>` : ''}
           ${q.tax_amount ? `<div>Tax${this.settings?.tax_enabled && this.settings?.tax_rate ? ` (${this.settings.tax_rate}%)` : ''} <span>${this.money(q.tax_amount)}</span></div>` : (this.settings?.tax_enabled && this.settings?.tax_rate ? `<div class="muted" style="font-size:13px">Tax (${this.settings.tax_rate}%) calculated at checkout</div>` : '')}

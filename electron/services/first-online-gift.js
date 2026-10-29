@@ -33,7 +33,11 @@ function defaultCampaign() {
     end_date: null,
     expiry_days: 30,
     online_only: 1,
-    one_per_account: 1
+    one_per_account: 1,
+    first_discount_enabled: 0,
+    first_discount_amount: 0,
+    first_discount_start: null,
+    first_discount_end: null
   };
 }
 
@@ -106,6 +110,15 @@ function ensureFirstOnlineGiftSchema() {
       VALUES (1,?,?,0,?,?,?,?,?,?,1,1,?)`,
       [d.campaign_key, d.name, d.daily_limit, d.gift_amount, d.min_order_amount, d.start_date, d.end_date, d.expiry_days, nowIso()]);
   }
+  const extraCols = [
+    ['first_discount_enabled', 'INTEGER NOT NULL DEFAULT 0'],
+    ['first_discount_amount', 'REAL NOT NULL DEFAULT 0'],
+    ['first_discount_start', 'TEXT'],
+    ['first_discount_end', 'TEXT']
+  ];
+  for (const [name, type] of extraCols) {
+    try { dbRun(`ALTER TABLE first_online_gift_campaigns ADD COLUMN ${name} ${type}`); } catch (_) { /* already present */ }
+  }
 }
 
 function normalizeCampaign(row) {
@@ -124,6 +137,10 @@ function normalizeCampaign(row) {
     expiry_days: r.expiry_days != null && r.expiry_days !== '' ? Math.max(1, parseInt(r.expiry_days, 10) || 30) : null,
     online_only: true,
     one_per_account: true,
+    first_discount_enabled: Number(r.first_discount_enabled) === 1 || r.first_discount_enabled === true,
+    first_discount_amount: round2(r.first_discount_amount || 0),
+    first_discount_start: r.first_discount_start ? String(r.first_discount_start).slice(0, 10) : null,
+    first_discount_end: r.first_discount_end ? String(r.first_discount_end).slice(0, 10) : null,
     updated_at: r.updated_at || null
   };
 }
@@ -141,22 +158,95 @@ function saveCampaign(data, actor) {
   const { assertUserActor } = require('./authz');
   const user = assertUserActor(actor, ['owner', 'manager']);
   ensureFirstOnlineGiftSchema();
-  const next = normalizeCampaign({ ...getCampaign(), ...data });
+  const current = getCampaign();
+  const merged = { ...current };
+  Object.keys(data || {}).forEach((key) => {
+    if (data[key] !== undefined) merged[key] = data[key];
+  });
+  const next = normalizeCampaign(merged);
   if (!(next.gift_amount > 0)) throw new Error('Gift card value must be greater than zero');
   if (!(next.daily_limit > 0)) throw new Error('Daily winner limit must be at least 1');
   if (next.start_date && next.end_date && next.start_date > next.end_date) {
     throw new Error('End date must be on or after the start date');
   }
+  if (next.first_discount_enabled && !(next.first_discount_amount > 0)) {
+    throw new Error('First-order saving amount must be greater than zero');
+  }
+  if (next.first_discount_start && next.first_discount_end && next.first_discount_start > next.first_discount_end) {
+    throw new Error('First-order saving end date must be on or after the start date');
+  }
   dbRun(`UPDATE first_online_gift_campaigns SET
     enabled=?, daily_limit=?, gift_amount=?, min_order_amount=?, start_date=?, end_date=?,
-    expiry_days=?, updated_at=? WHERE id = 1`,
+    expiry_days=?, first_discount_enabled=?, first_discount_amount=?, first_discount_start=?,
+    first_discount_end=?, updated_at=? WHERE id = 1`,
     [next.enabled ? 1 : 0, next.daily_limit, next.gift_amount, next.min_order_amount,
-      next.start_date || null, next.end_date || null, next.expiry_days, nowIso()]);
+      next.start_date || null, next.end_date || null, next.expiry_days,
+      next.first_discount_enabled ? 1 : 0, next.first_discount_amount,
+      next.first_discount_start || null, next.first_discount_end || null, nowIso()]);
   try {
     require('./store').audit(user.id, user.username || user.full_name, 'save_first_online_gift',
       'first_online_gift_campaign', 1, next);
   } catch (_) { /* */ }
   return getCampaign();
+}
+
+function priorOnlineOrders(webCustomerId) {
+  const id = Number(webCustomerId);
+  if (!id) return 0;
+  try {
+    return Number(dbGet(`SELECT COUNT(*) AS n FROM online_orders_local
+      WHERE web_customer_id = ?
+        AND lower(COALESCE(status, '')) NOT IN ('rejected', 'cancelled', 'pending_payment')`, [id])?.n) || 0;
+  } catch (_) {
+    return 0;
+  }
+}
+
+function giftStillPossible(campaign, webCustomerId, day) {
+  if (!campaignIsLive(campaign, day) || !(Number(campaign.gift_amount) > 0)) return false;
+  const id = Number(webCustomerId);
+  if (id) {
+    const won = dbGet(`SELECT id FROM first_online_gift_awards
+      WHERE campaign_id = 1 AND web_customer_id = ? AND status = 'issued'`, [id]);
+    if (won) return false;
+  }
+  const issued = dbGet(`SELECT COUNT(*) AS n FROM first_online_gift_awards
+    WHERE campaign_id = 1 AND award_date = ? AND status = 'issued'`, [day]);
+  return (Number(issued?.n) || 0) < Number(campaign.daily_limit || 0);
+}
+
+/** Checkout preview: money off the first online order, plus whether the gift can still be earned after payment. */
+function previewFirstOrderOffer(webCustomerId, subtotal) {
+  ensureFirstOnlineGiftSchema();
+  const campaign = getCampaign();
+  const day = shopToday();
+  const empty = {
+    eligible: false,
+    discount: 0,
+    amount: 0,
+    message: '',
+    gift_possible: false,
+    gift_amount: 0
+  };
+  const id = Number(webCustomerId);
+  if (!id) return empty;
+  const firstTime = priorOnlineOrders(id) === 0;
+  const giftPossible = firstTime && giftStillPossible(campaign, id, day);
+  if (!campaign.first_discount_enabled || !(Number(campaign.first_discount_amount) > 0) || !firstTime) {
+    return empty;
+  }
+  if (campaign.first_discount_start && day < String(campaign.first_discount_start).slice(0, 10)) return empty;
+  if (campaign.first_discount_end && day > String(campaign.first_discount_end).slice(0, 10)) return empty;
+  const amount = Math.min(round2(campaign.first_discount_amount), Math.max(0, round2(subtotal)));
+  if (!(amount > 0)) return empty;
+  return {
+    eligible: true,
+    discount: amount,
+    amount,
+    message: 'You are a first-time customer. This saving is taken off your order.',
+    gift_possible: giftPossible,
+    gift_amount: giftPossible ? round2(campaign.gift_amount) : 0
+  };
 }
 
 function campaignIsLive(campaign, day) {
@@ -436,9 +526,12 @@ function runSelfTest(actor) {
     dbRun(`DELETE FROM first_online_gift_awards WHERE web_customer_id >= ?`, [TEST_CUSTOMER_FLOOR]);
     try {
       dbRun(`UPDATE first_online_gift_campaigns SET enabled=?, daily_limit=?, gift_amount=?, min_order_amount=?,
-        start_date=?, end_date=?, expiry_days=?, updated_at=? WHERE id=1`,
+        start_date=?, end_date=?, expiry_days=?, first_discount_enabled=?, first_discount_amount=?,
+        first_discount_start=?, first_discount_end=?, updated_at=? WHERE id=1`,
         [previous.enabled ? 1 : 0, previous.daily_limit, previous.gift_amount, previous.min_order_amount,
-          previous.start_date, previous.end_date, previous.expiry_days, nowIso()]);
+          previous.start_date, previous.end_date, previous.expiry_days,
+          previous.first_discount_enabled ? 1 : 0, previous.first_discount_amount || 0,
+          previous.first_discount_start || null, previous.first_discount_end || null, nowIso()]);
     } catch (_) { /* */ }
   };
   try {
@@ -545,6 +638,7 @@ module.exports = {
   getDashboard,
   listWinners,
   todayProgress,
+  previewFirstOrderOffer,
   tryAwardForOrder,
   maybeAwardFromSubmit,
   maybeRevokeFromStatus,

@@ -761,6 +761,17 @@ input:focus, textarea:focus, select:focus {
 .first-gift-banner h2 { margin: 0 0 8px; font-size: 22px; }
 .first-gift-banner p { margin: 6px 0; }
 .first-gift-code { display: inline-block; margin-top: 6px; font-size: 18px; letter-spacing: 1px; background: #fef3c7; color: #14532d; padding: 6px 10px; border-radius: 6px; }
+.first-order-banner {
+  background: #f8fafc; border: 1px solid #bbf7d0; border-left: 4px solid #166534;
+  border-radius: var(--radius); padding: 16px 18px; margin: 0 0 16px;
+}
+.first-order-banner .first-order-kicker {
+  margin: 0 0 4px; font-size: 12px; font-weight: 700; letter-spacing: 0.06em;
+  text-transform: uppercase; color: #166534;
+}
+.first-order-banner h2 { margin: 0 0 6px; font-size: 18px; color: #14532d; }
+.first-order-banner p { margin: 4px 0; color: #334155; }
+.first-order-line { color: #166534; font-weight: 700; }
 
 .product-card { cursor: pointer; }
 .product-card .btn-sm { position: relative; z-index: 1; }

@@ -86,8 +86,21 @@ function saveAccessSettings(data = {}) {
     try { dbRun('ALTER TABLE shop_settings ADD COLUMN online_settings_json TEXT'); } catch (__) { /* */ }
   }
   const online = { ...readOnlineJson(), customer_access: next, updated_at: nowIso() };
+  const existing = dbGet('SELECT id FROM shop_settings WHERE id = 1');
+  if (!existing) {
+    dbRun(`INSERT INTO shop_settings (id, shop_name, setup_complete) VALUES (1, 'My Shop', 1)`);
+  }
   dbRun('UPDATE shop_settings SET online_settings_json = ? WHERE id = 1', [JSON.stringify(online)]);
-  return getAccessSettings();
+  const saved = getAccessSettings();
+  const same = saved.mode === next.mode
+    && saved.phone_matching === next.phone_matching
+    && saved.require_otp === next.require_otp
+    && saved.allow_new_customers === next.allow_new_customers
+    && saved.allow_guest_ordering === next.allow_guest_ordering
+    && saved.allow_guest_browsing === next.allow_guest_browsing
+    && saved.otp_expiry_minutes === next.otp_expiry_minutes;
+  if (!same) throw new Error('Access settings did not save. Try again.');
+  return saved;
 }
 
 /** South African numbers: 0821234567 / 27821234567 / +27 82 123 4567 → +27821234567 */
@@ -111,22 +124,34 @@ function isActive(row) {
   return !!(row && row.is_active !== 0 && row.is_active !== false && row.is_active !== '0');
 }
 
-function customersByPhone(phone) {
+function samePhone(a, b, matching) {
+  if (matching === false) {
+    const da = String(a || '').replace(/\D/g, '');
+    const db = String(b || '').replace(/\D/g, '');
+    return !!da && da === db;
+  }
+  return web().phonesMatch(a, b);
+}
+
+function customersByPhone(phone, opts = {}) {
+  const matching = opts.matching !== undefined ? opts.matching !== false : getAccessSettings().phone_matching !== false;
   const core = web().phoneDigits(phone);
-  if (!core) return [];
+  const digits = String(phone || '').replace(/\D/g, '');
+  if (!core && !digits) return [];
   let rows = [];
   try {
     rows = dbAll("SELECT id, name, phone, email, loyalty_points FROM customers WHERE phone IS NOT NULL AND TRIM(phone) != ''");
   } catch (_) { rows = []; }
-  return rows.filter((c) => web().phonesMatch(phone, c.phone));
+  return rows.filter((c) => samePhone(phone, c.phone, matching));
 }
 
-function webRowsByPhone(phone) {
+function webRowsByPhone(phone, opts = {}) {
+  const matching = opts.matching !== undefined ? opts.matching !== false : getAccessSettings().phone_matching !== false;
   let rows = [];
   try {
     rows = dbAll("SELECT * FROM web_customers WHERE phone IS NOT NULL AND TRIM(phone) != ''");
   } catch (_) { rows = []; }
-  return rows.filter((r) => web().phonesMatch(phone, r.phone));
+  return rows.filter((r) => samePhone(phone, r.phone, matching));
 }
 
 /**
@@ -238,7 +263,8 @@ function signIn(customer, phone, existingWeb) {
 
 function assertPhoneModeEnabled() {
   const cfg = getAccessSettings();
-  if (cfg.mode === 'full') throw new Error('Phone access is not enabled — please sign in with your account');
+  const open = cfg.mode === 'phone' || cfg.mode === 'guest' || cfg.allow_guest_ordering === true;
+  if (!open) throw new Error('Phone access is not enabled — please sign in with your account');
   return cfg;
 }
 
@@ -268,8 +294,9 @@ function consumeOtp(phone, code) {
 }
 
 /** Recent verified code for this phone (used by create-profile after OTP). */
-function hasFreshVerification(phone) {
-  return require('./cc-otp').hasFreshVerification(OTP_PURPOSE, phone, 15);
+function hasFreshVerification(phone, minutes) {
+  const mins = Math.min(30, Math.max(3, Number(minutes) || getAccessSettings().otp_expiry_minutes || 10));
+  return require('./cc-otp').hasFreshVerification(OTP_PURPOSE, phone, mins);
 }
 
 /**
@@ -324,7 +351,7 @@ function createProfile(data = {}) {
   const phone = requirePhone(data.phone);
   const name = String(data.name || '').trim().replace(/\s+/g, ' ').slice(0, 80);
   if (!name) throw new Error('Please enter your name');
-  if (cfg.require_otp && !hasFreshVerification(phone)) {
+  if (cfg.require_otp && !hasFreshVerification(phone, cfg.otp_expiry_minutes)) {
     throw new Error('Please verify your number first');
   }
   const found = findCustomerByPhone(phone);
@@ -406,19 +433,38 @@ function adminSearch(q) {
     if (byId) ids.add(byId.id);
   }
   const phone = normalizePhone(term);
-  if (phone) customersByPhone(phone).forEach((c) => ids.add(c.id));
+  if (phone) customersByPhone(phone, { matching: true }).forEach((c) => ids.add(c.id));
+  const like = `%${term.toLowerCase()}%`;
+  const addOrderCustomer = (oo) => {
+    if (!oo) return;
+    if (oo.customer_id) ids.add(oo.customer_id);
+    else if (oo.web_customer_id) {
+      const w = dbGet('SELECT customer_id FROM web_customers WHERE id = ?', [oo.web_customer_id]);
+      if (w?.customer_id) ids.add(w.customer_id);
+    }
+  };
   try {
     const sale = dbGet('SELECT customer_id FROM sales WHERE receipt_number = ? AND customer_id IS NOT NULL', [term]);
     if (sale?.customer_id) ids.add(sale.customer_id);
   } catch (_) { /* */ }
   try {
-    const oo = dbGet('SELECT customer_id, web_customer_id FROM online_orders_local WHERE order_number = ?', [term]);
-    if (oo?.customer_id) ids.add(oo.customer_id);
-    else if (oo?.web_customer_id) {
-      const w = dbGet('SELECT customer_id FROM web_customers WHERE id = ?', [oo.web_customer_id]);
-      if (w?.customer_id) ids.add(w.customer_id);
-    }
+    addOrderCustomer(dbGet('SELECT customer_id, web_customer_id FROM online_orders_local WHERE order_number = ?', [term]));
   } catch (_) { /* */ }
+  if (term.length >= 3) {
+    try {
+      dbAll(`SELECT customer_id, web_customer_id FROM online_orders_local
+        WHERE lower(COALESCE(delivery_address, '')) LIKE ?
+           OR lower(COALESCE(order_number, '')) LIKE ?
+        LIMIT 40`, [like, like]).forEach(addOrderCustomer);
+    } catch (_) { /* */ }
+    try {
+      dbAll(`SELECT web_customer_id FROM web_customer_addresses
+        WHERE lower(COALESCE(line1, '')) LIKE ?
+           OR lower(COALESCE(suburb, '')) LIKE ?
+           OR lower(COALESCE(city, '')) LIKE ?
+        LIMIT 40`, [like, like, like]).forEach((row) => addOrderCustomer({ web_customer_id: row.web_customer_id }));
+    } catch (_) { /* */ }
+  }
   if (term.length >= 2 && ids.size < 30) {
     try {
       dbAll('SELECT id FROM customers WHERE LOWER(name) LIKE ? ORDER BY name LIMIT 30', [`%${term.toLowerCase()}%`])

@@ -22,7 +22,7 @@
   App.guestViewAllowed = function (view = this.view) {
     const cfg = this.accessCfg();
     const browse = cfg.allow_guest_browsing === true || (cfg.mode === 'guest' && cfg.allow_guest_browsing !== false);
-    return !!browse && this.phoneAccessEnabled() && GUEST_VIEWS.includes(view);
+    return !!browse && GUEST_VIEWS.includes(view);
   };
 
   const _origIsAuthView = App.isAuthView.bind(App);
@@ -110,7 +110,7 @@
       const o = this._paOtp || {};
       app.innerHTML = this.shell(`<div class="auth-page"><form class="auth-card pa-card" data-pa-form="otp" novalidate>
         <h1>Enter your code</h1>
-        <p class="pa-lead">We sent a 4-digit code${o.via === 'sms' ? ' by SMS' : (o.via === 'whatsapp' ? ' on WhatsApp' : '')} to ${this.esc(o.phone_masked || 'your phone')}</p>
+        <p class="pa-lead">We sent a 4-digit code${o.via === 'sms' ? ' by SMS' : (o.via === 'whatsapp' ? ' on WhatsApp' : '')} to ${this.esc(o.phone_masked || 'your phone')}. It expires in ${Number(o.expires_in_minutes) || Number(this.accessCfg().otp_expiry_minutes) || 10} minutes.</p>
         <input id="pa-code" class="pa-phone-input pa-code-input" inputmode="numeric" autocomplete="one-time-code"
           maxlength="4" placeholder="• • • •" required>
         <label class="pa-stay"><input type="checkbox" id="pa-stay" checked> Keep me signed in on this device</label>

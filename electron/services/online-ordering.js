@@ -1794,8 +1794,26 @@ function validateCart(branchId, cart = {}) {
     }
   }
 
+  let firstOrderDiscount = 0;
+  let firstOrderOffer = null;
+  try {
+    if (cart.web_customer_id) {
+      const preview = require('./first-online-gift').previewFirstOrderOffer(cart.web_customer_id, subtotal);
+      const room = Math.max(0, round2(subtotal - discount - loyaltyDiscount));
+      firstOrderDiscount = Math.min(round2(preview?.discount || 0), room);
+      if (firstOrderDiscount > 0) {
+        firstOrderOffer = {
+          ...preview,
+          eligible: true,
+          discount: firstOrderDiscount,
+          amount: firstOrderDiscount
+        };
+      }
+    }
+  } catch (_) { /* first-order saving is optional */ }
+
   const shop = getGlobalSettings();
-  const cartDiscount = round2(discount + loyaltyDiscount);
+  const cartDiscount = round2(discount + loyaltyDiscount + firstOrderDiscount);
   const taxTotals = calcOnlineTaxTotals(
     subtotal,
     cartDiscount,
@@ -1864,6 +1882,8 @@ function validateCart(branchId, cart = {}) {
     coupon: couponApplied,
     loyalty_points_used: pointsUsed,
     loyalty_discount: loyaltyDiscount,
+    first_order_discount: firstOrderDiscount,
+    first_order: firstOrderOffer,
     gift_card_code: giftCardCode,
     gift_card_amount: giftCardAmount,
     delivery_fee: deliveryFee,

@@ -5222,6 +5222,23 @@ const AdminPage = {
         <button type="button" class="btn btn-primary" id="fog-save" style="margin-top:12px">Save campaign settings</button>
       </div></div>
 
+      <div class="card" style="margin-bottom:16px"><div class="card-body">
+        <h4 style="margin-top:0">First-time checkout saving</h4>
+        <p class="muted" style="margin-top:0">This sits under the gift campaign and does not replace it. On a customer's first online order only, checkout takes this amount off the total and tells them they are a first-time customer. If the gift campaign above is on, they can still earn that gift after the order is placed.</p>
+        <div class="form-grid">
+          <div class="field"><label><input type="checkbox" id="fog-disc-on" ${c.first_discount_enabled ? 'checked' : ''}> Take this amount off the first online order</label></div>
+          <div class="field"><label>Amount off (${currency})</label>
+            <input type="number" id="fog-disc-amt" min="0" step="0.01" value="${c.first_discount_amount ?? 0}"></div>
+          <div class="field"><label>Saving starts</label>
+            <input type="date" id="fog-disc-start" value="${c.first_discount_start ? String(c.first_discount_start).slice(0, 10) : ''}">
+            <p class="muted" style="font-size:12px;margin:4px 0 0">Leave blank to start as soon as this saving is on.</p></div>
+          <div class="field"><label>Saving ends</label>
+            <input type="date" id="fog-disc-end" value="${c.first_discount_end ? String(c.first_discount_end).slice(0, 10) : ''}">
+            <p class="muted" style="font-size:12px;margin:4px 0 0">Leave blank to keep the saving until you turn it off.</p></div>
+        </div>
+        <p class="muted" style="margin:8px 0 0">Gift amount, daily winner limit, and gift expiry stay in the campaign settings above. Save once — both cards are stored together.</p>
+      </div></div>
+
       <div class="card"><div class="card-body">
         <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:end">
           <div>
@@ -5254,7 +5271,11 @@ const AdminPage = {
       min_order_amount: parseFloat(document.getElementById('fog-min').value) || 0,
       expiry_days: document.getElementById('fog-expiry').value ? parseInt(document.getElementById('fog-expiry').value, 10) : null,
       start_date: document.getElementById('fog-start').value || null,
-      end_date: document.getElementById('fog-end').value || null
+      end_date: document.getElementById('fog-end').value || null,
+      first_discount_enabled: !!document.getElementById('fog-disc-on')?.checked,
+      first_discount_amount: parseFloat(document.getElementById('fog-disc-amt')?.value) || 0,
+      first_discount_start: document.getElementById('fog-disc-start')?.value || null,
+      first_discount_end: document.getElementById('fog-disc-end')?.value || null
     });
     const save = async (data) => {
       const r = await API.saveFirstOnlineGift(data, this.app.user);
