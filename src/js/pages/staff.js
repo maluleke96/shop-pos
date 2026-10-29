@@ -1264,7 +1264,7 @@
     ]);
     if (!this._portalAlive(seq, el)) return;
     // Wave 2 — secondary (does not block first paint of wave-1 data)
-    const [discRes, policyRes, warnRes, hrSubRes, feedRes, hrDocRes, filesRes, penRes, mgrHrCasesRes] = await Promise.all([
+    const [discRes, policyRes, warnRes, hrSubRes, feedRes, hrDocRes, filesRes, penRes, mgrHrCasesRes, rewardRes] = await Promise.all([
       ps0.show_disciplinary === false ? empty : load(API.getStaffDisciplinary(empId), 'disciplinary', 3500),
       load(API.getStaffLeavePolicy(empId), 'leave_policy', 3500),
       ps0.show_routines === false ? empty : load(API.getStaffChecklistWarnings(this.app.user?.id || null, empId), 'checklist_warnings', 3000),
@@ -1273,7 +1273,10 @@
       ps0.show_hr_docs === false ? empty : load(API.getHrDocuments(empId, actor), 'hr_docs', 3000),
       ps0.show_my_files === false ? empty : load(API.getStaffDocuments(empId, actor), 'my_files', 3000),
       load(API.getAttendancePenalties({ employee_id: empId }, actor), 'penalties', 3000),
-      load(API.mgrHrListEmployeeCases({ ...(actor || {}), employee_id: empId, full_name: emp.full_name, role: actor?.role || 'employee' }), 'mgr_hr_cases', 4000)
+      load(API.mgrHrListEmployeeCases({ ...(actor || {}), employee_id: empId, full_name: emp.full_name, role: actor?.role || 'employee' }), 'mgr_hr_cases', 4000),
+      typeof API.listStaffRewards === 'function'
+        ? load(API.listStaffRewards({ employee_id: empId, from: histFrom, to: histTo }, actor), 'rewards', 3500)
+        : empty
     ]);
     if (!this._portalAlive(seq, el)) return;
     const att = attRes.success !== false ? (attRes.data || {}) : {};
@@ -1503,6 +1506,17 @@
           </p>
           ${(portalSettings.active_blackouts || []).length ? `<p class="muted" style="font-size:12px;color:var(--warning)">Blackout periods apply — only sick leave allowed on blocked dates.</p>` : ''}
           <button class="btn btn-primary btn-sm" id="staff-request-leave" style="margin-top:8px">Request Leave</button>
+        </div></div>` : ''}
+        ${(typeof API.listStaffRewards === 'function') ? `<div class="card" id="staff-rewards" style="margin-top:16px"><div class="card-body">
+          <h4 style="margin-top:0">My Rewards</h4>
+          <p class="muted" style="font-size:13px;margin-top:0">Performance rewards from daily sales targets. Approved rewards are added on payroll separately from your base salary.</p>
+          ${rewardRes?.success === false ? this._staffSectionFail(rewardRes, 'Rewards') : (() => {
+            const rewards = (rewardRes?.data || rewardRes || []).filter(r => r.status !== 'void').slice(0, 8);
+            return rewards.length ? rewards.map(r => `<div style="padding:6px 0;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap">
+              <span>${Utils.escHtml(r.reward_date)} · ${Utils.escHtml(r.tier_label || 'Target reward')}</span>
+              <span><strong>${Utils.formatMoney(r.reward_amount, currency)}</strong> · ${Utils.escHtml(r.status)}</span>
+            </div>`).join('') : '<p class="muted">No rewards in this period yet</p>';
+          })()}
         </div></div>` : ''}
         ${portalSettings.show_payslips !== false ? `<div class="card" id="staff-payslips"><div class="card-body"><h4>Recent Payslips</h4>
           ${payRes.success === false ? this._staffSectionFail(payRes, 'Payroll') : (payroll.length ? payroll.map(p => {

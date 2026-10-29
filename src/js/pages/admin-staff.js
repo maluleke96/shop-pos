@@ -313,7 +313,8 @@
     this.staffTab = this.staffTab || 'employees';
     const tabs = [
       ['employees', '👥 Employees'], ['attendance', '📋 Attendance'], ['leave', '🏖 Leave'],
-      ['payroll', '💰 Payroll'], ['shifts', '📅 Shifts'], ['hrdocs', '📄 HR Documents'],
+      ['payroll', '💰 Payroll'], ['shifts', '📅 Shift Generator'], ['staffing', '📊 Staffing & Busy Days'],
+      ['rewards', '🏅 Performance Rewards'], ['hrdocs', '📄 HR Documents'],
       ['selfies', '📸 Login Selfies'], ['logins', '🔐 Login Events'], ['disciplinary', '⚠ Disciplinary'],
       ['mgr-portal', '🛡 Mgr/Supervisor Portal'], ['mgr-cases', '📁 Manager Cases'], ['mgr-recordings', '🎙 Recordings'],
       ['recruitment', '🎯 Recruitment'], ['reports', '📊 Reports'], ['notifications', '🔔 Alerts']
@@ -379,6 +380,8 @@
       leave: () => this.renderStaffLeaveAdmin(content),
       payroll: () => this.renderStaffPayroll(content),
       shifts: () => this.renderStaffShifts(content),
+      staffing: () => this.renderStaffingRequirements(content),
+      rewards: () => this.renderStaffPerformanceRewards(content),
       hrdocs: () => this.renderStaffHrDocs(content),
       selfies: () => this.renderStaffSelfies(content),
       logins: () => this.renderStaffLoginEvents(content),
@@ -580,15 +583,25 @@
         <div class="field ws-daily hidden"><label>Daily Wage</label><input type="number" id="ws-daily" step="0.01" value="${ws.daily_wage || 0}"></div>
         <div class="field"><label>Expected Hours/Day</label><input type="number" id="ws-hours-day" step="0.5" value="${ws.expected_hours_per_day ?? 8}"></div>
         <div class="field"><label>Expected Days/Week</label><input type="number" id="ws-days-week" min="1" max="7" value="${ws.expected_days_per_week ?? 5}"></div>
-        <div class="field full"><label>Work days (for shift generate)</label>
+        <div class="field full"><label>Preferred work days (for shift generate)</label>
           <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:6px">${['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map((n, i) => {
             const days = Array.isArray(ws.work_days) && ws.work_days.length
               ? ws.work_days.map(Number)
               : Array.from({ length: Number(ws.expected_days_per_week) || 5 }, (_, d) => d);
             return `<label><input type="checkbox" class="ws-wday" value="${i}" ${days.includes(i) ? 'checked' : ''}> ${n}</label>`;
           }).join('')}</div>
-          <small class="muted">Unchecked days become Rest Day when you generate weekly / 4-week shifts.</small>
+          <small class="muted">Preferred days for this worker. The generator also respects staffing needs on busy days.</small>
         </div>
+        <div class="field full"><label>Unavailable days</label>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:6px">${['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map((n, i) => {
+            const days = Array.isArray(ws.unavailable_days) ? ws.unavailable_days.map(Number) : [];
+            return `<label><input type="checkbox" class="ws-unavail" value="${i}" ${days.includes(i) ? 'checked' : ''}> ${n}</label>`;
+          }).join('')}</div></div>
+        <div class="field"><label>Max working days / week</label>
+          <input type="number" id="ws-max-days" min="1" max="7" value="${ws.max_days_per_week ?? ws.expected_days_per_week ?? 5}"></div>
+        <div class="field"><label>Eligible duties (comma list)</label>
+          <input id="ws-duties" value="${Utils.escHtml((ws.eligible_duties || []).join(', '))}" placeholder="cook, braai, cashier"></div>
+        <div class="field full"><label><input type="checkbox" id="ws-can-ot" ${ws.can_overtime !== false ? 'checked' : ''}> Eligible for overtime shifts</label></div>
         <div class="field"><label>Hours Limit / Day</label><input type="number" id="ws-hpd" step="0.5" value="${ws.hours_per_day ?? ws.expected_hours_per_day ?? 8}"></div>
         <div class="field"><label>Hours Limit / Week</label><input type="number" id="ws-hpw" step="0.5" value="${ws.hours_per_week ?? 40}"></div>
         <div class="field"><label>Hours Limit / Month</label><input type="number" id="ws-hpm" step="0.5" value="${ws.hours_per_month ?? 173}"></div>
@@ -754,6 +767,10 @@
           expected_hours_per_day: parseFloat(document.getElementById('ws-hours-day').value) || 8,
           expected_days_per_week: parseInt(document.getElementById('ws-days-week').value, 10) || 5,
           work_days: [...document.querySelectorAll('.ws-wday:checked')].map(cb => parseInt(cb.value, 10)),
+          unavailable_days: [...document.querySelectorAll('.ws-unavail:checked')].map(cb => parseInt(cb.value, 10)),
+          max_days_per_week: parseInt(document.getElementById('ws-max-days')?.value, 10) || null,
+          eligible_duties: (document.getElementById('ws-duties')?.value || '').split(',').map(s => s.trim()).filter(Boolean),
+          can_overtime: document.getElementById('ws-can-ot')?.checked !== false,
           hours_per_day: parseFloat(document.getElementById('ws-hpd').value) || 8,
           hours_per_week: parseFloat(document.getElementById('ws-hpw').value) || 40,
           hours_per_month: parseFloat(document.getElementById('ws-hpm').value) || 173,
@@ -1500,6 +1517,167 @@
     });
   };
 
+  AdminPage.renderStaffingRequirements = async function (el) {
+    const dayNames = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+    const res = await API.getStaffingRequirements({}, this.app.user);
+    let rows = res?.data || res || [];
+    if (!Array.isArray(rows) || !rows.length) {
+      rows = dayNames.map((_, i) => ({
+        day_of_week: i, min_workers: 1, target_workers: i >= 3 && i <= 5 ? (i === 5 ? 4 : 3) : (i === 6 ? 2 : 1),
+        classification: i >= 3 && i <= 4 ? 'busy' : (i === 5 ? 'very_busy' : 'normal'),
+        role_requirements: {}
+      }));
+    }
+    const weekly = dayNames.map((_, i) => rows.find(r => Number(r.day_of_week) === i && !r.special_date) || {
+      day_of_week: i, min_workers: 1, target_workers: 1, classification: 'normal', role_requirements: {}
+    });
+    const dash = await API.workforceDashboard(this.app.user).catch(() => ({}));
+    const d = dash?.data || dash || {};
+    el.innerHTML = `<div>
+      <div class="card" style="margin-bottom:12px"><div class="card-body" style="display:flex;gap:16px;flex-wrap:wrap">
+        <div><strong>${d.active_employees || 0}</strong><div class="muted">Active staff</div></div>
+        <div><strong>${d.scheduled_today || 0}</strong><div class="muted">Scheduled today</div></div>
+        <div><strong>${d.required_today || 0}</strong><div class="muted">Required today</div></div>
+        <div><strong>${d.understaffed_today || 0}</strong><div class="muted">Understaffed</div></div>
+        <div><strong>${Utils.escHtml(String(d.today_classification || 'normal').replace('_', ' '))}</strong><div class="muted">Today</div></div>
+      </div></div>
+      <div class="card"><div class="card-body">
+        <h4 style="margin-top:0">Staffing Requirements &amp; Busy Days</h4>
+        <p class="muted">Set how many workers each weekday needs. Busy and very busy days get priority when generating shifts.</p>
+        <div class="table-wrap"><table><thead><tr>
+          <th>Day</th><th>Min</th><th>Target</th><th>Max</th><th>Classification</th><th>Role needs (e.g. cook:1,braai:1)</th>
+        </tr></thead><tbody>
+          ${weekly.map((r) => {
+            const roles = r.role_requirements && typeof r.role_requirements === 'object'
+              ? Object.entries(r.role_requirements).map(([k, v]) => `${k}:${v}`).join(',')
+              : '';
+            return `<tr data-dow="${r.day_of_week}">
+              <td><strong>${dayNames[r.day_of_week]}</strong></td>
+              <td><input type="number" class="sr-min" min="0" value="${Number(r.min_workers) || 0}" style="width:70px"></td>
+              <td><input type="number" class="sr-target" min="0" value="${Number(r.target_workers) || 1}" style="width:70px"></td>
+              <td><input type="number" class="sr-max" min="0" value="${r.max_workers != null ? r.max_workers : ''}" placeholder="—" style="width:70px"></td>
+              <td><select class="sr-class">
+                ${['normal', 'busy', 'very_busy'].map(c => `<option value="${c}" ${r.classification === c ? 'selected' : ''}>${c.replace('_', ' ')}</option>`).join('')}
+              </select></td>
+              <td><input class="sr-roles" value="${Utils.escHtml(roles)}" placeholder="cook:1, cashier:1" style="min-width:160px"></td>
+            </tr>`;
+          }).join('')}
+        </tbody></table></div>
+        <button type="button" class="btn btn-primary" id="sr-save" style="margin-top:12px">Save staffing requirements</button>
+      </div></div></div>`;
+    document.getElementById('sr-save')?.addEventListener('click', async () => {
+      const payload = [...el.querySelectorAll('tbody tr')].map((tr) => {
+        const roleStr = tr.querySelector('.sr-roles')?.value || '';
+        const role_requirements = {};
+        roleStr.split(',').map(s => s.trim()).filter(Boolean).forEach((pair) => {
+          const [k, v] = pair.split(':').map(x => x.trim());
+          if (k) role_requirements[k] = parseInt(v, 10) || 1;
+        });
+        const maxVal = tr.querySelector('.sr-max')?.value;
+        return {
+          day_of_week: parseInt(tr.dataset.dow, 10),
+          min_workers: parseInt(tr.querySelector('.sr-min').value, 10) || 0,
+          target_workers: parseInt(tr.querySelector('.sr-target').value, 10) || 1,
+          max_workers: maxVal === '' ? null : parseInt(maxVal, 10),
+          classification: tr.querySelector('.sr-class').value,
+          role_requirements
+        };
+      });
+      const r = await API.saveStaffingRequirements(payload, this.app.user);
+      if (r?.success === false) return Utils.toast(r.error || 'Save failed', 'error');
+      Utils.toast('Staffing requirements saved', 'success');
+      this.renderStaffingRequirements(el);
+    });
+  };
+
+  AdminPage.renderStaffPerformanceRewards = async function (el) {
+    const currency = this.settings.currency || 'R';
+    const rulesRes = await API.getStaffRewardRules(this.app.user);
+    const rules = rulesRes?.data || rulesRes || { enabled: false, target: 2000, tiers: [] };
+    const from = this._rewFrom || Utils.daysAgo(14);
+    const to = this._rewTo || Utils.today();
+    const listRes = await API.listStaffRewards({ from, to }, this.app.user);
+    const rows = listRes?.data || listRes || [];
+    const tiers = (rules.tiers || []).length ? rules.tiers : [
+      { min: 2000, max: 2999.99, amount: 20 },
+      { min: 3000, max: 3999.99, amount: 30 },
+      { min: 4000, max: null, amount: 50 }
+    ];
+    el.innerHTML = `<div>
+      <div class="card" style="margin-bottom:12px"><div class="card-body">
+        <h4 style="margin-top:0">Daily sales performance rewards</h4>
+        <p class="muted">Uses verified POS sales for the day. Rewards appear separately from base pay and can be approved into payroll.</p>
+        <div class="form-grid">
+          <div class="field full"><label><input type="checkbox" id="rew-on" ${rules.enabled ? 'checked' : ''}> Enable automatic daily rewards</label></div>
+          <div class="field"><label>Base daily target (${currency})</label>
+            <input type="number" id="rew-target" step="0.01" value="${rules.target ?? 2000}"></div>
+          <div class="field full"><label><input type="checkbox" id="rew-approve" ${rules.require_approval !== false ? 'checked' : ''}> Require manager approval before payroll</label></div>
+          <div class="field full"><label>Eligible roles (comma, blank = all scheduled/worked staff)</label>
+            <input id="rew-roles" value="${Utils.escHtml((rules.eligible_roles || []).join(', '))}" placeholder="cook, braai, cashier"></div>
+        </div>
+        <h5>Reward tiers</h5>
+        <div id="rew-tiers">${tiers.map((t, i) => `<div class="form-grid rew-tier" data-i="${i}" style="margin-bottom:8px">
+          <div class="field"><label>From</label><input type="number" class="rt-min" step="0.01" value="${t.min ?? 0}"></div>
+          <div class="field"><label>To (blank = no max)</label><input type="number" class="rt-max" step="0.01" value="${t.max ?? ''}"></div>
+          <div class="field"><label>Reward / worker</label><input type="number" class="rt-amt" step="0.01" value="${t.amount ?? 0}"></div>
+        </div>`).join('')}</div>
+        <button type="button" class="btn btn-primary" id="rew-save">Save reward rules</button>
+        <button type="button" class="btn btn-ghost" id="rew-calc" style="margin-left:8px">Calculate for today</button>
+      </div></div>
+      <div class="card"><div class="card-body">
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:end;margin-bottom:12px">
+          <div class="field" style="margin:0"><label>From</label><input type="date" id="rew-from" value="${from}"></div>
+          <div class="field" style="margin:0"><label>To</label><input type="date" id="rew-to" value="${to}"></div>
+          <button type="button" class="btn btn-ghost" id="rew-filter">Filter</button>
+        </div>
+        <div class="table-wrap"><table><thead><tr><th>Date</th><th>Employee</th><th>Sales</th><th>Reward</th><th>Status</th><th></th></tr></thead>
+          <tbody>${(Array.isArray(rows) ? rows : []).map(r => `<tr>
+            <td>${Utils.escHtml(r.reward_date)}</td>
+            <td>${Utils.escHtml(r.full_name || '')}</td>
+            <td>${Utils.formatMoney(r.sales_total, currency)}</td>
+            <td>${Utils.formatMoney(r.reward_amount, currency)}</td>
+            <td>${Utils.escHtml(r.status)}</td>
+            <td>${r.status === 'pending' ? `<button type="button" class="btn btn-sm btn-primary rew-approve" data-id="${r.id}">Approve</button>` : ''}</td>
+          </tr>`).join('') || '<tr><td colspan="6" class="muted">No rewards in this period</td></tr>'}
+        </tbody></table></div>
+      </div></div></div>`;
+    document.getElementById('rew-save')?.addEventListener('click', async () => {
+      const payload = {
+        enabled: document.getElementById('rew-on').checked,
+        require_approval: document.getElementById('rew-approve').checked,
+        target: parseFloat(document.getElementById('rew-target').value) || 0,
+        eligible_roles: (document.getElementById('rew-roles').value || '').split(',').map(s => s.trim()).filter(Boolean),
+        tiers: [...el.querySelectorAll('.rew-tier')].map((row) => ({
+          min: parseFloat(row.querySelector('.rt-min').value) || 0,
+          max: row.querySelector('.rt-max').value === '' ? null : parseFloat(row.querySelector('.rt-max').value),
+          amount: parseFloat(row.querySelector('.rt-amt').value) || 0
+        }))
+      };
+      const r = await API.saveStaffRewardRules(payload, this.app.user);
+      if (r?.success === false) return Utils.toast(r.error || 'Save failed', 'error');
+      Utils.toast('Reward rules saved', 'success');
+      this.renderStaffPerformanceRewards(el);
+    });
+    document.getElementById('rew-calc')?.addEventListener('click', async () => {
+      const r = await API.calculateStaffDayRewards(Utils.today(), {}, this.app.user);
+      if (r?.success === false) return Utils.toast(r.error || 'Calculate failed', 'error');
+      const data = r?.data || r || {};
+      Utils.toast(`Rewards for today: sales ${Utils.formatMoney(data.sales_total || 0, currency)}, ${(data.rewards || []).length} worker(s)`, 'success');
+      this.renderStaffPerformanceRewards(el);
+    });
+    document.getElementById('rew-filter')?.addEventListener('click', () => {
+      this._rewFrom = document.getElementById('rew-from').value;
+      this._rewTo = document.getElementById('rew-to').value;
+      this.renderStaffPerformanceRewards(el);
+    });
+    el.querySelectorAll('.rew-approve').forEach((btn) => btn.addEventListener('click', async () => {
+      const r = await API.approveStaffReward(parseInt(btn.dataset.id, 10), this.app.user);
+      if (r?.success === false) return Utils.toast(r.error || 'Approve failed', 'error');
+      Utils.toast('Reward approved', 'success');
+      this.renderStaffPerformanceRewards(el);
+    }));
+  };
+
   AdminPage.renderStaffShifts = async function (el) {
     const from = Utils.weekStart();
     const empsRes = await API.getEmployees({ status: 'Active' });
@@ -1564,14 +1742,28 @@
       <button class="btn btn-ghost" id="sh-print-a4">Print A4</button>
       <button class="btn btn-ghost" id="sh-pdf">Download Schedule PDF</button></div>
       <div class="card" style="margin-bottom:12px;padding:12px"><strong>Select workers for this shift</strong>
-        <p class="muted" style="font-size:13px">Click the people you want on the week or weekend, then press <strong>Generate shifts</strong> or <strong>Generate weekend</strong>. Only ticked workers are assigned. You can do the whole range at once.</p>
+        <p class="muted" style="font-size:13px">Tick workers, then generate. The engine uses each person's weekly day target, unavailable days, leave, and the <strong>Staffing &amp; Busy Days</strong> requirements. Locked shifts are kept on regenerate.</p>
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin:8px 0">
           <button type="button" class="btn btn-sm btn-ghost" id="sh-emp-all">Select all</button>
           <button type="button" class="btn btn-sm btn-ghost" id="sh-emp-none">Clear</button>
+          <button type="button" class="btn btn-sm btn-primary" id="sh-publish">Publish schedule to staff portal</button>
+          <button type="button" class="btn btn-sm btn-ghost" id="sh-forecast">Labour cost forecast</button>
         </div>
         <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px" id="sh-emp-picks">
-          ${emps.map(e => `<label style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;cursor:pointer"><input type="checkbox" class="sh-emp" value="${e.id}"> ${e.full_name}</label>`).join('') || '<span class="muted">No active employees</span>'}
-        </div></div>
+          ${emps.map(e => {
+            const ws = typeof e.work_schedule === 'object' && e.work_schedule ? e.work_schedule
+              : (() => { try { return JSON.parse(e.work_schedule || '{}'); } catch { return {}; } })();
+            const pay = ws.pay_type || 'monthly';
+            const days = ws.expected_days_per_week ?? 5;
+            return `<label style="display:inline-flex;flex-direction:column;gap:2px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;cursor:pointer;min-width:160px">
+              <span style="display:flex;align-items:center;gap:6px"><input type="checkbox" class="sh-emp" value="${e.id}"> <strong>${Utils.escHtml(e.full_name)}</strong></span>
+              <small class="muted">${Utils.escHtml(e.employee_code || '')} · ${Utils.escHtml(e.position || '—')} · ${Utils.escHtml(e.branch || '—')}</small>
+              <small class="muted">${days}d/wk · ${pay} · ${Utils.escHtml(e.status || '')}</small>
+            </label>`;
+          }).join('') || '<span class="muted">No active employees</span>'}
+        </div>
+        <div id="sh-conflicts" style="margin-top:10px"></div>
+      </div>
       <div class="card" style="margin-bottom:12px;padding:12px" id="sh-times-card">
         <strong>Worker shift times (before generate)</strong>
         <p class="muted" style="font-size:13px;margin:4px 0 8px">Adjust opening/closing times for selected workers. Save to profiles to persist, or generate directly with these times.</p>
@@ -1681,13 +1873,14 @@
     };
     const shiftRowHtml = (s) => `<tr class="${s.is_rest_day ? 'shift-rest-row' : ''}" data-shift-id="${s.id}">
       <td>${s.shift_date}</td><td><strong>${Utils.escHtml(s.full_name)}</strong></td>
-      <td>${Utils.escHtml(s.shift_name || 'Shift')}</td>
+      <td>${Utils.escHtml(s.shift_name || 'Shift')}${Number(s.is_locked) === 1 ? ' 🔒' : ''}${Number(s.is_published) === 0 ? ' <span class="tag">Draft</span>' : ''}</td>
       <td>${s.is_rest_day ? 'Rest day' : (s.start_time || '—')}</td>
       <td>${s.is_rest_day ? '—' : (s.end_time || '—')}</td>
       <td>${s.is_rest_day ? '—' : `${scheduledShiftHours(s)}h`}</td>
       <td style="white-space:nowrap">
         ${s.id ? `<button type="button" class="btn btn-sm btn-primary sh-review" data-id="${s.id}">Review</button>
           <button type="button" class="btn btn-sm btn-ghost sh-edit" data-id="${s.id}">Edit</button>
+          <button type="button" class="btn btn-sm btn-ghost sh-lock" data-id="${s.id}" data-locked="${Number(s.is_locked) === 1 ? 1 : 0}">${Number(s.is_locked) === 1 ? 'Unlock' : 'Lock'}</button>
           <button type="button" class="btn btn-sm btn-ghost sh-redo" data-id="${s.id}">Redo</button>
           <button type="button" class="btn btn-sm btn-danger sh-del" data-id="${s.id}">Delete</button>` : '<span class="muted">Default hours</span>'}
       </td></tr>`;
@@ -1841,6 +2034,13 @@
       const sched = loadedShiftRows.find(x => Number(x.id) === id);
       if (btn.classList.contains('sh-edit')) return openEditShift(sched);
       if (btn.classList.contains('sh-review')) return openReviewShift(sched);
+      if (btn.classList.contains('sh-lock')) {
+        const locked = btn.dataset.locked !== '1';
+        const r = await API.lockStaffShift(id, locked, this.app.user);
+        if (r?.success === false) return Utils.toast(r.error || 'Could not update lock', 'error');
+        Utils.toast(locked ? 'Shift locked' : 'Shift unlocked', 'success');
+        return loadShifts();
+      }
       if (btn.classList.contains('sh-del')) {
         if (!confirm('Delete this shift?')) return;
         const r = await API.deleteStaffSchedule(id, this.app.user);
@@ -1872,13 +2072,57 @@
       if (!ids.length) return Utils.toast('Select at least one worker', 'error');
       if (confirmRegen && !confirm(`Regenerate shifts for ${start} → ${end} (${days} days)? Existing shifts for selected workers in that range will be replaced.`)) return;
       const overrides = getOverrides();
-      const r = await API.autoGenerateStaffShifts(start, null, ids, overrides, this.app.user, { days, endDate: end, weekendOnly });
+      const r = await API.autoGenerateStaffShifts(start, null, ids, overrides, this.app.user, {
+        days, endDate: end, weekendOnly, publish: false
+      });
       if (!r.success) return Utils.toast(r.error, 'error');
+      const data = r.data || [];
+      const report = data.report || data;
+      const conflicts = data.conflicts || report.conflicts || [];
+      const box = document.getElementById('sh-conflicts');
+      if (box) {
+        box.innerHTML = conflicts.length
+          ? `<div style="padding:10px;border-radius:8px;border:1px solid #f59e0b;background:rgba(245,158,11,.08)">
+              <strong>Conflict report (${conflicts.length})</strong>
+              <ul style="margin:8px 0 0;padding-left:18px">${conflicts.slice(0, 12).map(c =>
+                `<li>${Utils.escHtml(c.date || '')}: ${Utils.escHtml(c.reason || c.type || '')}</li>`).join('')}</ul>
+              ${conflicts.length > 12 ? `<p class="muted">+${conflicts.length - 12} more</p>` : ''}
+            </div>`
+          : '<p class="muted" style="margin:0">No staffing conflicts reported.</p>';
+      }
       Utils.toast(weekendOnly
-        ? `Created ${(r.data || []).length} weekend shift(s) for assigned workers`
-        : `Created ${(r.data || []).length} generated shift(s) for ${start} → ${end}`, 'success');
+        ? `Created ${Array.isArray(data) ? data.length : (report.created || []).length} weekend shift(s) (draft — publish when ready)`
+        : `Created ${Array.isArray(data) ? data.length : (report.created || []).length} shift(s) for ${start} → ${end} (draft — publish when ready)`, 'success');
       loadShifts();
     };
+
+    document.getElementById('sh-publish')?.addEventListener('click', async () => {
+      const { start, end } = currentRange();
+      if (!confirm(`Publish shifts ${start} → ${end} to the staff portal?`)) return;
+      const r = await API.publishStaffSchedules(start, end, selectedIds(), this.app.user);
+      if (r?.success === false) return Utils.toast(r.error || 'Publish failed', 'error');
+      Utils.toast(`Published ${(r.data || r)?.updated || 0} shift(s)`, 'success');
+      loadShifts();
+    });
+    document.getElementById('sh-forecast')?.addEventListener('click', async () => {
+      const { start, end } = currentRange();
+      const r = await API.workforceLabourForecast(start, end, selectedIds(), this.app.user);
+      if (r?.success === false) return Utils.toast(r.error || 'Forecast failed', 'error');
+      const data = r.data || r || {};
+      const currency = this.settings?.currency || 'R';
+      Utils.showModal('Labour cost forecast', `
+        <p>Estimated labour for <strong>${Utils.escHtml(start)}</strong> → <strong>${Utils.escHtml(end)}</strong>:
+          <strong>${Utils.formatMoney(data.total_estimated || 0, currency)}</strong></p>
+        <p class="muted">Monthly salaries are shown as period allocations, not extra pay.</p>
+        <div class="table-wrap"><table><thead><tr><th>Employee</th><th>Type</th><th>Days</th><th>Hours</th><th>Estimate</th></tr></thead>
+          <tbody>${(data.employees || []).map(e => `<tr>
+            <td>${Utils.escHtml(e.full_name)}</td><td>${Utils.escHtml(e.pay_type)}</td>
+            <td>${e.scheduled_days}</td><td>${e.scheduled_hours}</td>
+            <td>${Utils.formatMoney(e.estimated_cost, currency)}${e.estimate_note ? `<br><small class="muted">${Utils.escHtml(e.estimate_note)}</small>` : ''}</td>
+          </tr>`).join('') || '<tr><td colspan="5" class="muted">No data</td></tr>'}</tbody></table></div>`,
+        '<button type="button" class="btn btn-ghost" id="fc-close">Close</button>');
+      document.getElementById('fc-close')?.addEventListener('click', () => Utils.hideModal());
+    });
 
     el.querySelectorAll('.sh-emp').forEach(cb => cb.addEventListener('change', renderTimesTable));
 

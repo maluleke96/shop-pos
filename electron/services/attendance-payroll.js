@@ -36,7 +36,13 @@ function defaultWorkSchedule() {
     holiday_rate_multiplier: 2,
     deduct_late: true,
     deduct_early_departure: true,
-    deduct_unpaid_absence: true
+    deduct_unpaid_absence: true,
+    unavailable_days: [],
+    max_days_per_week: null,
+    max_hours_per_week: 40,
+    min_rest_hours: 0,
+    can_overtime: true,
+    eligible_duties: []
   };
 }
 

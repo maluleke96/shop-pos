@@ -2015,21 +2015,73 @@ function registerIpc() {
       requireSession();
       return store.getSchedules(from, to, empId);
     }
-    if (empSess?.employee_id != null) return store.getSchedules(from, to, empSess.employee_id);
+    if (empSess?.employee_id != null) return store.getSchedules(from, to, empSess.employee_id, { publishedOnly: true });
     requireSession();
     return store.getSchedules(from, to, empId);
   }));
   ipcMain.handle('staff:saveSchedule', wrapF((data, actor) => {
-    store.requireActor(actor || store.getUserSession(), ['owner', 'manager', 'supervisor', 'assistant_manager']);
-    return store.saveSchedule(data);
+    const a = actor || store.getUserSession();
+    store.requireActor(a, ['owner', 'manager', 'supervisor', 'assistant_manager']);
+    return store.saveSchedule(data, a);
   }));
   ipcMain.handle('staff:deleteSchedule', wrapF((id, actor) => {
     store.requireActor(actor || store.getUserSession(), ['owner', 'manager', 'supervisor', 'assistant_manager']);
     return store.deleteSchedule(id);
   }));
   ipcMain.handle('staff:autoShifts', wrapF((weekStart, templates, employeeIds, employeeOverrides, actor, options) => {
+    const a = actor || store.getUserSession();
+    store.requireActor(a, ['owner', 'manager', 'supervisor', 'assistant_manager']);
+    return store.autoGenerateShifts(weekStart, templates, employeeIds, employeeOverrides, options || {}, a);
+  }));
+  ipcMain.handle('workforce:dashboard', wrapF((actor) => {
     store.requireActor(actor || store.getUserSession(), ['owner', 'manager', 'supervisor', 'assistant_manager']);
-    return store.autoGenerateShifts(weekStart, templates, employeeIds, employeeOverrides, options || {});
+    return require('./services/workforce-planning').workforceDashboard();
+  }));
+  ipcMain.handle('workforce:getStaffingRequirements', wrapF((filters, actor) => {
+    store.requireActor(actor || store.getUserSession(), ['owner', 'manager', 'supervisor', 'assistant_manager']);
+    return require('./services/workforce-planning').listStaffingRequirements(filters || {});
+  }));
+  ipcMain.handle('workforce:saveStaffingRequirements', wrapF((rows, actor) => {
+    const a = actor || store.getUserSession();
+    return require('./services/workforce-planning').saveStaffingRequirements(rows || [], a);
+  }));
+  ipcMain.handle('workforce:coverage', wrapF((from, to, branch, actor) => {
+    store.requireActor(actor || store.getUserSession(), ['owner', 'manager', 'supervisor', 'assistant_manager']);
+    return require('./services/workforce-planning').coverageReport(from, to, branch);
+  }));
+  ipcMain.handle('workforce:labourForecast', wrapF((from, to, ids, actor) => {
+    store.requireActor(actor || store.getUserSession(), ['owner', 'manager', 'supervisor', 'assistant_manager']);
+    return require('./services/workforce-planning').labourCostForecast(from, to, ids);
+  }));
+  ipcMain.handle('workforce:lockShift', wrapF((id, locked, actor) => {
+    return require('./services/workforce-planning').setScheduleLock(id, locked, actor || store.getUserSession());
+  }));
+  ipcMain.handle('workforce:publishSchedules', wrapF((from, to, ids, actor) => {
+    return require('./services/workforce-planning').publishSchedules(from, to, ids, actor || store.getUserSession());
+  }));
+  ipcMain.handle('workforce:getRewardRules', wrapF((actor) => {
+    store.requireActor(actor || store.getUserSession(), ['owner', 'manager', 'supervisor', 'assistant_manager']);
+    return require('./services/workforce-planning').getRewardRules();
+  }));
+  ipcMain.handle('workforce:saveRewardRules', wrapF((data, actor) => {
+    return require('./services/workforce-planning').saveRewardRules(data || {}, actor || store.getUserSession());
+  }));
+  ipcMain.handle('workforce:calculateDayRewards', wrapF((date, opts, actor) => {
+    const a = actor || store.getUserSession();
+    store.requireActor(a, ['owner', 'manager']);
+    return require('./services/workforce-planning').calculateDayRewards(date, a, opts || {});
+  }));
+  ipcMain.handle('workforce:listRewards', wrapF((filters, actor) => {
+    const empSess = store.getEmployeeSession?.();
+    const user = actor || store.getUserSession();
+    if (empSess?.employee_id != null && !['owner', 'manager', 'supervisor', 'assistant_manager'].includes(user?.role)) {
+      return require('./services/workforce-planning').listRewards({ ...(filters || {}), employee_id: empSess.employee_id });
+    }
+    store.requireActor(user, ['owner', 'manager', 'supervisor', 'assistant_manager']);
+    return require('./services/workforce-planning').listRewards(filters || {});
+  }));
+  ipcMain.handle('workforce:approveReward', wrapF((id, actor) => {
+    return require('./services/workforce-planning').approveReward(id, actor || store.getUserSession());
   }));
   ipcMain.handle('staff:getDocuments', wrapF((id, actor) => {
     const user = actor || store.getUserSession();

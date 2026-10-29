@@ -1502,6 +1502,11 @@ function generatePayroll(periodStart, periodEnd, employeeIds) {
           }
         }
       }
+      try {
+        require('./workforce-planning').applyApprovedRewardsToPayroll(emp.id, payrollId, periodStart, periodEnd);
+      } catch (err) {
+        console.warn('[generatePayroll] performance rewards:', err.message || err);
+      }
       results.push(getDb().prepare('SELECT * FROM employee_payroll WHERE id = ?').get(payrollId));
     } catch (err) {
       errors.push(`${emp.full_name || emp.id}: ${err.message || err}`);
@@ -1589,7 +1594,7 @@ function getEmployeeByUserId(userId) {
   return { ...emp, net_salary: calcNetSalary(emp) };
 }
 
-function getSchedules(from, to, employeeId) {
+function getSchedules(from, to, employeeId, opts = {}) {
   let sql = `SELECT s.*, e.full_name, e.employee_code FROM employee_schedules s JOIN employees e ON e.id = s.employee_id WHERE 1=1`;
   const params = [];
   if (from) { sql += ' AND s.shift_date >= ?'; params.push(from); }
@@ -1597,6 +1602,10 @@ function getSchedules(from, to, employeeId) {
   if (employeeId != null && employeeId !== '') {
     sql += ' AND s.employee_id = ?';
     params.push(parseInt(employeeId, 10));
+  }
+  // Staff portal: only published (legacy rows without the column still show via COALESCE)
+  if (opts.publishedOnly) {
+    sql += ' AND COALESCE(s.is_published, 1) = 1';
   }
   const rows = getDb().prepare(sql + ' ORDER BY s.shift_date, s.start_time').all(...params);
   if (employeeId == null || employeeId === '' || !from || !to) return rows;
@@ -1633,15 +1642,49 @@ function getSchedules(from, to, employeeId) {
   return rows;
 }
 
-function saveSchedule(data) {
+function saveSchedule(data, actor = null) {
+  try { require('./workforce-planning').ensureWorkforceSchema(); } catch (_) { /* */ }
+  const locked = data.is_locked != null ? (data.is_locked ? 1 : 0) : undefined;
+  const published = data.is_published != null ? (data.is_published ? 1 : 0) : undefined;
+  const status = data.schedule_status || (published === 0 ? 'draft' : 'published');
+  const jobRole = data.job_role != null ? data.job_role : null;
   if (data.id) {
-    getDb().prepare(`UPDATE employee_schedules SET employee_id=?, shift_name=?, shift_date=?, start_time=?, end_time=?, is_rest_day=?, branch=?, notes=? WHERE id=?`)
-      .run(data.employee_id, data.shift_name, data.shift_date, data.start_time, data.end_time, data.is_rest_day ? 1 : 0, data.branch, data.notes, data.id);
-    return getDb().prepare('SELECT * FROM employee_schedules WHERE id = ?').get(data.id);
+    const prev = getDb().prepare('SELECT * FROM employee_schedules WHERE id = ?').get(data.id);
+    if (prev && Number(prev.is_locked) === 1 && data.force_unlock !== true && locked !== 0 && data.unlock !== true) {
+      const changingCore = data.start_time !== undefined || data.end_time !== undefined
+        || data.is_rest_day !== undefined || data.shift_date || data.shift_name;
+      if (changingCore && locked === undefined) {
+        throw new Error('This shift is locked. Unlock it before changing times or the day.');
+      }
+    }
+    const nextLocked = locked != null ? locked : (prev?.is_locked != null ? Number(prev.is_locked) : 0);
+    const nextPublished = published != null ? published : (prev?.is_published != null ? Number(prev.is_published) : 1);
+    const nextStatus = data.schedule_status || prev?.schedule_status || (nextPublished ? 'published' : 'draft');
+    const nextRole = jobRole != null ? jobRole : (prev?.job_role || null);
+    const publishedAt = nextPublished
+      ? (prev?.published_at || new Date().toISOString())
+      : (prev?.published_at || null);
+    getDb().prepare(`UPDATE employee_schedules SET employee_id=?, shift_name=?, shift_date=?, start_time=?, end_time=?, is_rest_day=?, branch=?, notes=?,
+      is_locked=?, is_published=?, schedule_status=?, job_role=?, published_at=? WHERE id=?`)
+      .run(data.employee_id, data.shift_name, data.shift_date, data.start_time, data.end_time, data.is_rest_day ? 1 : 0, data.branch, data.notes,
+        nextLocked, nextPublished, nextStatus, nextRole, publishedAt, data.id);
+    const next = getDb().prepare('SELECT * FROM employee_schedules WHERE id = ?').get(data.id);
+    try { require('./workforce-planning').logScheduleHistory('update', prev, next, actor); } catch (_) { /* */ }
+    return next;
   }
-  const r = getDb().prepare(`INSERT INTO employee_schedules (employee_id, shift_name, shift_date, start_time, end_time, is_rest_day, branch, notes)
-    VALUES (?,?,?,?,?,?,?,?)`).run(data.employee_id, data.shift_name || 'Morning', data.shift_date, data.start_time, data.end_time, data.is_rest_day ? 1 : 0, data.branch, data.notes);
-  return getDb().prepare('SELECT * FROM employee_schedules WHERE id = ?').get(r.lastInsertRowid);
+  const r = getDb().prepare(`INSERT INTO employee_schedules (employee_id, shift_name, shift_date, start_time, end_time, is_rest_day, branch, notes,
+    is_locked, is_published, schedule_status, job_role, published_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    data.employee_id, data.shift_name || 'Morning', data.shift_date, data.start_time, data.end_time, data.is_rest_day ? 1 : 0, data.branch, data.notes,
+    locked != null ? locked : 0,
+    published != null ? published : 1,
+    status,
+    jobRole,
+    (published != null ? published : 1) ? new Date().toISOString() : null
+  );
+  const next = getDb().prepare('SELECT * FROM employee_schedules WHERE id = ?').get(r.lastInsertRowid);
+  try { require('./workforce-planning').logScheduleHistory('create', null, next, actor); } catch (_) { /* */ }
+  return next;
 }
 
 function deleteSchedule(id) {
@@ -1662,7 +1705,26 @@ function isEmployeeOnLeave(employeeId, date) {
     AND date(?) BETWEEN date(start_date) AND date(COALESCE(end_date, start_date))`).get(employeeId, date);
 }
 
-function autoGenerateShifts(weekStart, shiftTemplates, employeeIds, employeeOverrides = {}, options = {}) {
+function autoGenerateShifts(weekStart, shiftTemplates, employeeIds, employeeOverrides = {}, options = {}, actor = null) {
+  // Prefer coverage-aware engine; fall back to legacy per-employee calendar if it fails.
+  try {
+    const wf = require('./workforce-planning');
+    const result = wf.generateIntelligentShifts(weekStart, employeeIds, employeeOverrides, {
+      ...options,
+      publish: options.publish === true
+    }, actor);
+    // Keep array compatibility for older UI, attach report fields.
+    const rows = result.created || [];
+    rows.conflicts = result.conflicts || [];
+    rows.coverage = result.coverage || [];
+    rows.preserved_locked = result.preserved_locked || 0;
+    rows.period = result.period;
+    rows.ok = result.ok;
+    rows.report = result;
+    return rows;
+  } catch (err) {
+    console.warn('[staff] intelligent shift generator failed, using legacy:', err.message || err);
+  }
   let emps = getEmployees({ status: 'Active' });
   if (employeeIds?.length) {
     const want = new Set(employeeIds.map((id) => Number(id)).filter((id) => Number.isFinite(id)));
@@ -1684,16 +1746,17 @@ function autoGenerateShifts(weekStart, shiftTemplates, employeeIds, employeeOver
   const weekendOnly = !!options.weekendOnly;
   for (const emp of emps) {
     if (weekendOnly) {
-      const rows = getDb().prepare('SELECT id, shift_date FROM employee_schedules WHERE employee_id = ? AND shift_date >= ? AND shift_date <= ?')
+      const rows = getDb().prepare('SELECT id, shift_date, is_locked FROM employee_schedules WHERE employee_id = ? AND shift_date >= ? AND shift_date <= ?')
         .all(emp.id, start, weekEndDate);
       for (const row of rows) {
+        if (Number(row.is_locked) === 1) continue;
         const jsDay = new Date(`${row.shift_date}T12:00:00`).getDay();
         if (jsDay === 0 || jsDay === 6) {
           getDb().prepare('DELETE FROM employee_schedules WHERE id = ?').run(row.id);
         }
       }
     } else {
-      getDb().prepare('DELETE FROM employee_schedules WHERE employee_id = ? AND shift_date >= ? AND shift_date <= ?')
+      getDb().prepare('DELETE FROM employee_schedules WHERE employee_id = ? AND shift_date >= ? AND shift_date <= ? AND COALESCE(is_locked,0) = 0')
         .run(emp.id, start, weekEndDate);
     }
   }
@@ -1707,6 +1770,9 @@ function autoGenerateShifts(weekStart, shiftTemplates, employeeIds, employeeOver
     if (weekendOnly && !isWeekend) continue;
     const monDay = jsDayToMonBased(jsDay);
     for (const emp of emps) {
+      const locked = getDb().prepare('SELECT id FROM employee_schedules WHERE employee_id = ? AND shift_date = ? AND COALESCE(is_locked,0) = 1')
+        .get(emp.id, shiftDate);
+      if (locked) continue;
       if (isEmployeeOnLeave(emp.id, shiftDate)) continue;
       const schedule = attendancePayroll.getEmployeeWorkSchedule(emp);
       const overrides = employeeOverrides[emp.id] || employeeOverrides[String(emp.id)] || {};
@@ -1723,7 +1789,7 @@ function autoGenerateShifts(weekStart, shiftTemplates, employeeIds, employeeOver
         employee_id: emp.id, shift_name: shiftName, shift_date: shiftDate,
         start_time: isRest ? null : shiftStart, end_time: isRest ? null : shiftEnd,
         is_rest_day: isRest, branch: emp.branch
-      });
+      }, null);
       created.push(r);
     }
   }

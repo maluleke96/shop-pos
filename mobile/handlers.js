@@ -1627,21 +1627,77 @@ function buildHandlers(store) {
       requireSession();
       return s.getSchedules(f, t, e);
     }
-    if (empSess?.employee_id != null) return s.getSchedules(f, t, empSess.employee_id);
+    if (empSess?.employee_id != null) return s.getSchedules(f, t, empSess.employee_id, { publishedOnly: true });
     requireSession();
     return s.getSchedules(f, t, e);
   }));
   add('staff:saveSchedule', wrapSync((d, a) => {
-    s.requireActor(a || s.getUserSession?.(), ['owner', 'manager', 'supervisor', 'assistant_manager']);
-    return s.saveSchedule(d);
+    const actor = a || s.getUserSession?.();
+    s.requireActor(actor, ['owner', 'manager', 'supervisor', 'assistant_manager']);
+    return s.saveSchedule(d, actor);
   }));
   add('staff:deleteSchedule', wrapSync((id, a) => {
     s.requireActor(a || s.getUserSession?.(), ['owner', 'manager', 'supervisor', 'assistant_manager']);
     return s.deleteSchedule(id);
   }));
   add('staff:autoShifts', wrapSync((w, t, ids, overrides, a, options) => {
+    const actor = a || s.getUserSession?.();
+    s.requireActor(actor, ['owner', 'manager', 'supervisor', 'assistant_manager']);
+    return s.autoGenerateShifts(w, t, ids, overrides, options || {}, actor);
+  }));
+  add('workforce:dashboard', wrapSync((a) => {
     s.requireActor(a || s.getUserSession?.(), ['owner', 'manager', 'supervisor', 'assistant_manager']);
-    return s.autoGenerateShifts(w, t, ids, overrides, options || {});
+    return require('../electron/services/workforce-planning').workforceDashboard();
+  }));
+  add('workforce:getStaffingRequirements', wrapSync((f, a) => {
+    s.requireActor(a || s.getUserSession?.(), ['owner', 'manager', 'supervisor', 'assistant_manager']);
+    return require('../electron/services/workforce-planning').listStaffingRequirements(f || {});
+  }));
+  add('workforce:saveStaffingRequirements', wrapSync((rows, a) => {
+    const actor = a || s.getUserSession?.();
+    s.requireActor(actor, ['owner', 'manager']);
+    return require('../electron/services/workforce-planning').saveStaffingRequirements(rows || [], actor);
+  }));
+  add('workforce:coverage', wrapSync((from, to, branch, a) => {
+    s.requireActor(a || s.getUserSession?.(), ['owner', 'manager', 'supervisor', 'assistant_manager']);
+    return require('../electron/services/workforce-planning').coverageReport(from, to, branch);
+  }));
+  add('workforce:labourForecast', wrapSync((from, to, ids, a) => {
+    s.requireActor(a || s.getUserSession?.(), ['owner', 'manager', 'supervisor', 'assistant_manager']);
+    return require('../electron/services/workforce-planning').labourCostForecast(from, to, ids);
+  }));
+  add('workforce:lockShift', wrapSync((id, locked, a) => {
+    const actor = a || s.getUserSession?.();
+    return require('../electron/services/workforce-planning').setScheduleLock(id, locked, actor);
+  }));
+  add('workforce:publishSchedules', wrapSync((from, to, ids, a) => {
+    const actor = a || s.getUserSession?.();
+    return require('../electron/services/workforce-planning').publishSchedules(from, to, ids, actor);
+  }));
+  add('workforce:getRewardRules', wrapSync((a) => {
+    s.requireActor(a || s.getUserSession?.(), ['owner', 'manager', 'supervisor', 'assistant_manager']);
+    return require('../electron/services/workforce-planning').getRewardRules();
+  }));
+  add('workforce:saveRewardRules', wrapSync((data, a) => {
+    const actor = a || s.getUserSession?.();
+    return require('../electron/services/workforce-planning').saveRewardRules(data || {}, actor);
+  }));
+  add('workforce:calculateDayRewards', wrapSync((date, opts, a) => {
+    const actor = a || s.getUserSession?.();
+    s.requireActor(actor, ['owner', 'manager']);
+    return require('../electron/services/workforce-planning').calculateDayRewards(date, actor, opts || {});
+  }));
+  add('workforce:listRewards', wrapSync((f, a) => {
+    const empSess = s.getEmployeeSession?.();
+    if (empSess?.employee_id != null && !['owner', 'manager', 'supervisor', 'assistant_manager'].includes((a || s.getUserSession?.())?.role)) {
+      return require('../electron/services/workforce-planning').listRewards({ ...(f || {}), employee_id: empSess.employee_id });
+    }
+    s.requireActor(a || s.getUserSession?.(), ['owner', 'manager', 'supervisor', 'assistant_manager']);
+    return require('../electron/services/workforce-planning').listRewards(f || {});
+  }));
+  add('workforce:approveReward', wrapSync((id, a) => {
+    const actor = a || s.getUserSession?.();
+    return require('../electron/services/workforce-planning').approveReward(id, actor);
   }));
   add('staff:getDocuments', wrapSync((id, a) => {
     const user = a || s.getUserSession?.();
