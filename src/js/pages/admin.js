@@ -116,7 +116,8 @@ const AdminPage = {
       label: 'Overview & Monitoring',
       icon: '📊',
       accent: '#2563eb',
-      items: ['overview', 'order-sla', 'analytics', 'sales-targets', 'dailyclose', 'alerts', 'activity', 'exceptions']
+      // SLA section is listed only under Restaurant & Operations (avoid duplicate nav entry)
+      items: ['overview', 'analytics', 'sales-targets', 'dailyclose', 'alerts', 'activity', 'exceptions']
     },
     {
       id: 'sales-pos',
@@ -261,7 +262,8 @@ const AdminPage = {
       }
     });
     for (const g of (this.adminNavGroups || [])) {
-      const kids = (g.items || []).map((id) => byId[id]).filter(Boolean);
+      // Skip ids already placed in an earlier group (guards against accidental duplicate listings)
+      const kids = (g.items || []).map((id) => byId[id]).filter((s) => s && !placed.has(s.id));
       if (!kids.length) continue;
       kids.forEach((s) => placed.add(s.id));
       const open = this._isAdminGroupOpen(g.id);
@@ -1403,7 +1405,6 @@ const AdminPage = {
       }
       this.section = 'order-sla';
       this._setAdminGroupOpen('restaurant-ops', true);
-      this._setAdminGroupOpen('overview-monitoring', true);
       document.querySelectorAll('.admin-nav-btn').forEach((b) =>
         b.classList.toggle('active', b.dataset.section === 'order-sla'));
       this.renderSection(adminContent());

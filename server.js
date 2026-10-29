@@ -830,7 +830,9 @@ const APP_SHELLS = {
   '/referral-commission-app.html': { mode: 'referral-commission', hash: 'app=referral-commission' },
   '/communication-center-app.html': { mode: 'admin', hash: 'app=admin&page=admin&section=communication-center' },
   '/radio-app.html': { mode: 'admin', hash: 'app=admin&page=admin&section=radio' },
-  '/marketing-center-app.html': { mode: 'admin', hash: 'app=admin&page=admin&section=marketing-center' }
+  '/marketing-center-app.html': { mode: 'admin', hash: 'app=admin&page=admin&section=marketing-center' },
+  // Prefer real src/*-app.html boot files when present; these cover packaged deep-links
+  '/hr-app.html': { mode: 'hr', hash: 'app=hr' }
 };
 
 function serveAppShell(res, spec) {
@@ -1065,7 +1067,7 @@ async function main() {
 
     const urlPath = (req.url || '/').split('?')[0];
 
-    if (urlPath === '/health') {
+    if (urlPath === '/health' || urlPath === '/healthz') {
       const base = getPublicUrl();
       return writeJson(res, 200, {
         ok: true,
@@ -1073,11 +1075,48 @@ async function main() {
         backend: 'postgres',
         public_url: base,
         shop_key: process.env.SHOP_ENTITLEMENT_KEY || null,
+        deploy: readDeployVersion() || null,
         handlers: Object.keys(rpc.handlers).length,
         customer_ordering: `${base}/order/`,
         portals: `${base}/portals.html`,
         whatsapp_webhook: `${base}/api/webhooks/whatsapp`
       });
+    }
+
+    // Dedicated deploy marker (avoid SPA HTML false-200s on these paths)
+    if (
+      urlPath === '/deploy-version' ||
+      urlPath === '/deploy-version.txt' ||
+      urlPath === '/api/deploy-version'
+    ) {
+      const deploy = readDeployVersion() || '';
+      if (urlPath.endsWith('.txt')) {
+        res.writeHead(200, {
+          'Content-Type': 'text/plain; charset=utf-8',
+          'Cache-Control': 'no-cache',
+          ...corsHeaders()
+        });
+        return res.end(deploy || 'unknown');
+      }
+      return writeJson(res, 200, {
+        ok: true,
+        deploy: deploy || null,
+        handlers: Object.keys(rpc.handlers).length
+      });
+    }
+
+    // Canonical app aliases — stop SPA catch-all from serving Shop POS on these paths
+    const CANONICAL_REDIRECTS = {
+      '/staff': '/staff-app.html',
+      '/staff/': '/staff-app.html',
+      '/hr': '/hr-app.html',
+      '/hr/': '/hr-app.html',
+      '/hr-app': '/hr-app.html',
+      '/hr-app/': '/hr-app.html'
+    };
+    if (CANONICAL_REDIRECTS[urlPath]) {
+      res.writeHead(302, { Location: CANONICAL_REDIRECTS[urlPath], ...corsHeaders() });
+      return res.end();
     }
 
     // Meta WhatsApp Cloud API webhooks (GET verify + POST events)
