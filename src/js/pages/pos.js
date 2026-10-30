@@ -3284,13 +3284,21 @@ const POSPage = {
   async addToCart(product, config = {}) {
     if (!this.requireShift('adding items')) return;
     let substitutions = config.substitutions || null;
+    const opts = config.selectedOptions || [];
+    const extras = config.selectedExtras || [];
+    const isCustomisedLine =
+      this.productNeedsDialog(product) ||
+      opts.length > 0 ||
+      extras.length > 0 ||
+      !!(config.selectedRemovals && config.selectedRemovals.length);
+
     if (!this.allowOversell()) {
       const st = this.getStockInfo(product);
       if (st.left <= 0) {
-        // Customise items often have finished-goods stock 0 (sold via recipe/options).
-        // Only hard-block when meal production is actually enforced.
-        if (!st.isMeal && this.productNeedsDialog(product)) {
-          /* allow add — production / stock validated at sale when enforced */
+        // Customise / options lines must always reach the cart. Capacity is checked at Pay.
+        // (Previously isMeal + limiting blocked Add after the options dialog — felt "unclickable".)
+        if (isCustomisedLine) {
+          /* allow — validateSaleCapacity runs on completeSale */
         } else if (st.isMeal && product.limiting_ingredient_id) {
           const sub = await this.offerIngredientSubstitution(product, st);
           if (!sub) return Utils.toast(this.mealOosMessage(product, st), 'error');
@@ -3300,8 +3308,6 @@ const POSPage = {
         }
       }
     }
-    const opts = config.selectedOptions || [];
-    const extras = config.selectedExtras || [];
     const allMods = [...opts, ...extras];
     const extraTotal = allMods.reduce((s, m) => s + (Number(m.extra_price) || 0), 0);
     const modText = allMods.map(m => m.name).join(', ');
@@ -3312,7 +3318,7 @@ const POSPage = {
 
     const existing = this.cart.find(i => i.cart_key === cartKey);
     if (existing) {
-      if (!this.allowOversell() && !substitutions) {
+      if (!this.allowOversell() && !substitutions && !isCustomisedLine) {
         const st = this.getStockInfo(product);
         if (st.left <= 0) {
           return Utils.toast(
@@ -3425,9 +3431,12 @@ const POSPage = {
           return;
         }
         const product = (this.products || []).find((p) => String(p.id) === String(btn.dataset.id));
-        if (!product) return;
-        // Customise items always open options — never dead-click from false OOS
-        if (this.productNeedsDialog(product)) {
+        if (!product) {
+          Utils.toast('Product not loaded — pull to refresh or reopen POS', 'error');
+          return;
+        }
+        // Customise badge / options: always open dialog (class OR product flags)
+        if (btn.classList.contains('has-options') || this.productNeedsDialog(product)) {
           this.promptProductOptions(product);
           return;
         }
@@ -3484,7 +3493,8 @@ const POSPage = {
       if (btn.dataset.action === 'plus') {
         if (!this.allowOversell() && cartItem?.product_id) {
           const product = this.products.find(p => p.id === cartItem.product_id);
-          if (product) {
+          const customised = !!(cartItem.modifiers?.length || cartItem.modifiers_text || this.productNeedsDialog(product));
+          if (product && !customised) {
             const st = this.getStockInfo(product);
             if (st.left <= 0) {
               return Utils.toast(
