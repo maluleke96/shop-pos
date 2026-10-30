@@ -1696,9 +1696,11 @@ function getProducts(filters = {}) {
       min_stock: bs && bs.min_stock != null ? Number(bs.min_stock) : p.min_stock,
       branch_stock_id: branchForStock,
       modifiers: byProduct[p.id] || [],
-      options: (byProduct[p.id] || []).filter(m => m.modifier_type === 'option'),
-      extras: (byProduct[p.id] || []).filter(m => m.modifier_type === 'extra'),
-      removals: (byProduct[p.id] || []).filter(m => m.modifier_type === 'removal')
+      // Shallow-clone filtered rows so RPC encodeBinaryDeep shared-ref walks
+      // cannot null out options/extras/removals (same object as modifiers[i]).
+      options: (byProduct[p.id] || []).filter(m => m.modifier_type === 'option').map((m) => ({ ...m })),
+      extras: (byProduct[p.id] || []).filter(m => m.modifier_type === 'extra').map((m) => ({ ...m })),
+      removals: (byProduct[p.id] || []).filter(m => m.modifier_type === 'removal').map((m) => ({ ...m }))
     };
   });
   if (filters.omit_images) {
@@ -1871,9 +1873,9 @@ function getProduct(id) {
   const base = {
     ...p,
     modifiers: mods,
-    options: mods.filter(m => m.modifier_type === 'option'),
-    extras: mods.filter(m => m.modifier_type === 'extra'),
-    removals: mods.filter(m => m.modifier_type === 'removal'),
+    options: mods.filter(m => m.modifier_type === 'option').map((m) => ({ ...m })),
+    extras: mods.filter(m => m.modifier_type === 'extra').map((m) => ({ ...m })),
+    removals: mods.filter(m => m.modifier_type === 'removal').map((m) => ({ ...m })),
     conversions: inventory.getProductConversions(id),
     recipe,
     recipe_metrics: metrics

@@ -1989,7 +1989,7 @@ const POSPage = {
     let meta = [];
     try { meta = JSON.parse(product.option_groups_meta || '[]'); } catch { meta = []; }
     const groups = {};
-    for (const o of product.options || []) {
+    for (const o of (product.options || []).filter((x) => x && x.name)) {
       const g = o.option_group || 'Choose one';
       if (!groups[g]) groups[g] = [];
       groups[g].push(o);
@@ -2006,10 +2006,13 @@ const POSPage = {
   },
 
   productNeedsDialog(product) {
+    const realOpts = (product?.options || []).filter((o) => o && o.name);
+    const realExtras = (product?.extras || []).filter((o) => o && o.name);
+    const realRemovals = (product?.removals || []).filter((o) => o && o.name);
     return !!(
-      product?.options?.length ||
-      product?.extras?.length ||
-      product?.removals?.length ||
+      realOpts.length ||
+      realExtras.length ||
+      realRemovals.length ||
       product?.requires_options ||
       product?._hasOptions
     );
