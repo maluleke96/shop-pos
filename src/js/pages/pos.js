@@ -1780,22 +1780,27 @@ const POSPage = {
   },
 
   getStockInfo(product) {
-    // Recipe meals use Production Availability. Missing production_mode on a slim/cached row
-    // must NOT force meal/OOS — that made Customise cards unclickable (pointer-events: none).
+    // Recipe meals use Production Availability.
+    // production_capacity defaults to 0 in the DB — that alone must NOT mark Customise
+    // items OOS / unclickable. Only enforce when capacity was really calculated.
     const mode = String(product?.production_mode || '').trim();
-    const hasCap =
-      product?.available_meals != null ||
-      product?.production_capacity != null ||
-      product?.is_production_based === true;
+    const rawCap = product?.available_meals ?? product?.production_capacity;
+    const capNum = rawCap == null || rawCap === '' ? null : Number(rawCap);
+    const limiting = product?.limiting_ingredient_name || product?.limiting_ingredient || null;
+    const oosReason = product?.out_of_stock_reason || product?.production_oos_reason || null;
+    // Do NOT trust is_production_based alone — applyCapacity always sets it for has_recipe,
+    // even when production_capacity is still the DB default 0 (false OOS / unclickable Customise).
+    const enforced =
+      !!limiting ||
+      !!oosReason ||
+      (capNum != null && Number.isFinite(capNum) && capNum > 0);
     const isMeal = !!(
       product?.has_recipe &&
       mode !== 'make_to_stock' &&
-      (mode !== '' || hasCap)
+      enforced
     );
     const total = isMeal
-      ? Math.max(0, Math.floor(Number(
-        product.available_meals ?? product.production_capacity ?? product.stock_quantity
-      ) || 0))
+      ? Math.max(0, Math.floor(capNum || 0))
       : (Number(product.stock_quantity) || 0);
     const inCart = this.cart.filter(i => i.product_id === product.id).reduce((s, i) => s + i.quantity, 0);
     const left = Math.max(0, total - inCart);
@@ -1805,8 +1810,8 @@ const POSPage = {
       left,
       isMeal,
       unit: isMeal ? 'meals' : (product.stock_unit || product.unit || ''),
-      limiting: product.limiting_ingredient_name || product.limiting_ingredient || null,
-      oosReason: product.out_of_stock_reason || product.production_oos_reason || null
+      limiting,
+      oosReason
     };
   },
 
@@ -2683,12 +2688,18 @@ const POSPage = {
     const comboHtml = combosOnly ? combos.map(c => this.comboCardHtml(c, currency)).join('') : '';
     const productHtml = items.map(p => {
       const st = this.getStockInfo(p);
-      const hasOpts = this._productsNeedingOptions.has(String(p.id));
-      const stockClass = st.left <= 0 ? 'out-of-stock' : st.left <= (st.isMeal ? 5 : (p.min_stock || 5)) ? 'low-stock' : '';
+      const hasOpts = this._productsNeedingOptions.has(String(p.id)) || this.productNeedsDialog(p);
+      // Never grey-out Customise cards — they must open options even if meal capacity is unknown
+      const blockStock = st.left <= 0 && !hasOpts;
+      const stockClass = blockStock
+        ? 'out-of-stock'
+        : (st.left > 0 && st.left <= (st.isMeal ? 5 : (p.min_stock || 5)) ? 'low-stock' : '');
       const availLabel = st.left <= 0
-        ? (st.isMeal
-          ? `OUT OF STOCK${st.limiting ? ` · ${st.limiting}` : ''}`
-          : 'Out of stock')
+        ? (hasOpts
+          ? 'Tap to customise'
+          : (st.isMeal
+            ? `OUT OF STOCK${st.limiting ? ` · ${st.limiting}` : ''}`
+            : 'Out of stock'))
         : (st.isMeal
           ? `${st.left} meals left${st.limiting ? ` · limited by ${st.limiting}` : ''}`
           : `${st.left} ${st.unit || 'each'} left`);
@@ -2731,14 +2742,17 @@ const POSPage = {
       const product = this.products.find(p => p.id == card.dataset.id);
       if (!product) return;
       const st = this.getStockInfo(product);
+      const hasOpts = this._productsNeedingOptions?.has(String(product.id)) || this.productNeedsDialog(product);
       const meta = card.querySelector('.product-card-meta');
       if (meta) {
         meta.textContent = st.left <= 0
-          ? (st.isMeal ? `OUT OF STOCK${st.limiting ? ` · ${st.limiting}` : ''}` : 'Out of stock')
+          ? (hasOpts
+            ? 'Tap to customise'
+            : (st.isMeal ? `OUT OF STOCK${st.limiting ? ` · ${st.limiting}` : ''}` : 'Out of stock'))
           : (st.isMeal ? `${st.left} meals left${st.limiting ? ` · limited by ${st.limiting}` : ''}` : `${st.left} ${st.unit || 'each'} left`);
       }
       card.title = st.oosReason || (st.limiting ? `Limited by ${st.limiting}` : '');
-      card.classList.toggle('out-of-stock', st.left <= 0);
+      card.classList.toggle('out-of-stock', st.left <= 0 && !hasOpts);
       card.classList.toggle('low-stock', st.left > 0 && st.left <= (st.isMeal ? 5 : (product.min_stock || 5)));
     });
   },
@@ -3275,7 +3289,11 @@ const POSPage = {
     if (!this.allowOversell()) {
       const st = this.getStockInfo(product);
       if (st.left <= 0) {
-        if (st.isMeal && product.limiting_ingredient_id) {
+        // Customise items often have finished-goods stock 0 (sold via recipe/options).
+        // Only hard-block when meal production is actually enforced.
+        if (!st.isMeal && this.productNeedsDialog(product)) {
+          /* allow add — production / stock validated at sale when enforced */
+        } else if (st.isMeal && product.limiting_ingredient_id) {
           const sub = await this.offerIngredientSubstitution(product, st);
           if (!sub) return Utils.toast(this.mealOosMessage(product, st), 'error');
           substitutions = sub;
@@ -3398,20 +3416,28 @@ const POSPage = {
       grid.addEventListener('click', (e) => {
         const btn = e.target.closest('.product-card');
         if (!btn) return;
-        if (btn.disabled || btn.classList.contains('out-of-stock')) {
-          Utils.toast(btn.title || 'Out of stock', 'error');
-          return;
-        }
         // Combos use data-combo-id (no data-id) — handle here so clicks never silently no-op
         if (btn.dataset.comboId) {
+          if (btn.disabled || btn.classList.contains('out-of-stock')) {
+            Utils.toast(btn.title || 'Out of stock', 'error');
+            return;
+          }
           const combo = (this.combos || []).find((x) => String(x.id) === String(btn.dataset.comboId));
           if (combo) this.configureAndAddCombo(combo);
           return;
         }
         const product = (this.products || []).find((p) => String(p.id) === String(btn.dataset.id));
         if (!product) return;
-        if (this.productNeedsDialog(product)) this.promptProductOptions(product);
-        else this.addToCart(product);
+        // Customise items always open options — never dead-click from false OOS
+        if (this.productNeedsDialog(product)) {
+          this.promptProductOptions(product);
+          return;
+        }
+        if (btn.disabled || btn.classList.contains('out-of-stock')) {
+          Utils.toast(btn.title || 'Out of stock', 'error');
+          return;
+        }
+        this.addToCart(product);
       });
     }
 

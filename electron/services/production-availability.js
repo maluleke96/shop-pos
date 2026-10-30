@@ -507,9 +507,20 @@ function applyCapacityToProducts(products) {
       };
     }
     const capacity = Number(p.production_capacity);
-    const limiting = p.limiting_ingredient_name;
-    const reason = p.production_oos_reason;
+    const limiting = p.limiting_ingredient_name || null;
+    const reason = p.production_oos_reason || null;
     const meals = Math.max(0, Math.floor(capacity || 0));
+    // Default DB capacity is 0. Without a limiting ingredient / OOS reason this is
+    // "not calculated", not a hard out-of-stock — keep Customise / POS cards sellable.
+    if (meals <= 0 && !limiting && !reason) {
+      return {
+        ...p,
+        finished_stock_quantity: p.stock_quantity,
+        available_meals: null,
+        is_production_based: false,
+        production_display_unit: null
+      };
+    }
     return {
       ...p,
       finished_stock_quantity: p.stock_quantity,
@@ -615,6 +626,18 @@ function validateSaleCapacity(items, opts = {}) {
       if ((Number(product.stock_quantity) || 0) < need) {
         throw new Error(`Sale Blocked — ${product.name} finished stock is insufficient. Available: ${product.stock_quantity}`);
       }
+      continue;
+    }
+
+    // has_recipe flag with no BOM → Customise / menu item, not production-gated
+    let bomCount = 0;
+    try {
+      bomCount = Number(
+        db.prepare('SELECT COUNT(*) AS c FROM product_recipe_items WHERE product_id = ?').get(productId)?.c
+      ) || 0;
+    } catch (_) { bomCount = 0; }
+    if (!bomCount) {
+      lines.push({ product_id: productId, need, skipped_no_bom: true });
       continue;
     }
 
