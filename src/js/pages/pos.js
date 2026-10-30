@@ -1781,18 +1781,16 @@ const POSPage = {
 
   getStockInfo(product) {
     // Recipe meals use Production Availability.
-    // production_capacity defaults to 0 in the DB — that alone must NOT mark Customise
-    // items OOS / unclickable. Only enforce when capacity was really calculated.
+    // production_capacity defaults to 0; oos reason without a limiting ingredient is the
+    // old no-BOM retail fallback — that must NOT mark Customise items OOS / unclickable.
     const mode = String(product?.production_mode || '').trim();
     const rawCap = product?.available_meals ?? product?.production_capacity;
     const capNum = rawCap == null || rawCap === '' ? null : Number(rawCap);
     const limiting = product?.limiting_ingredient_name || product?.limiting_ingredient || null;
     const oosReason = product?.out_of_stock_reason || product?.production_oos_reason || null;
-    // Do NOT trust is_production_based alone — applyCapacity always sets it for has_recipe,
-    // even when production_capacity is still the DB default 0 (false OOS / unclickable Customise).
+    // Enforce only when a real BOM limit exists (limiting ingredient) or meals > 0.
     const enforced =
       !!limiting ||
-      !!oosReason ||
       (capNum != null && Number.isFinite(capNum) && capNum > 0);
     const isMeal = !!(
       product?.has_recipe &&

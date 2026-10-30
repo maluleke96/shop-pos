@@ -128,22 +128,22 @@ function calculateProductCapacity(productId, opts = {}) {
 
   const allItems = inventory.getProductRecipe(productId);
   if (!allItems.length) {
-    // No recipe — fall back to finished stock
-    const qty = Math.max(0, Math.floor(Number(product.stock_quantity) || 0));
+    // has_recipe flag / Customise item with no BOM — not production-gated.
+    // Do NOT fall back to finished-stock OOS (stock is often 0 for made-to-order).
     return {
       product_id: productId,
       product_name: product.name,
-      max_meals: qty,
-      available_meals: qty,
+      max_meals: null,
+      available_meals: null,
       limiting_ingredient_id: null,
       limiting_ingredient: null,
       limiting_ingredient_name: null,
-      out_of_stock: qty <= 0,
-      out_of_stock_reason: qty <= 0 ? `${product.name} is out of stock` : null,
+      out_of_stock: false,
+      out_of_stock_reason: null,
       breakdown: [],
       remaining_by_ingredient: [],
       restock_recommendation: null,
-      mode: 'retail'
+      mode: 'no_bom'
     };
   }
 
@@ -397,6 +397,9 @@ function buildRestockRecommendation(product, breakdown, currentMeals, targetExtr
 function persistCapacity(cap) {
   ensureSchema();
   const db = getDb();
+  // no_bom / null capacity → clear cached OOS so POS does not grey Customise cards
+  const maxMeals = cap.max_meals == null ? null : Math.max(0, Math.floor(Number(cap.max_meals) || 0));
+  const oos = maxMeals == null ? false : !!cap.out_of_stock;
   db.prepare(`
     UPDATE products SET
       production_capacity = ?,
@@ -409,14 +412,14 @@ function persistCapacity(cap) {
       updated_at = datetime('now')
     WHERE id = ?
   `).run(
-    cap.max_meals,
-    cap.limiting_ingredient_id,
-    cap.limiting_ingredient_name,
-    cap.out_of_stock ? 1 : 0,
-    cap.out_of_stock_reason,
+    maxMeals,
+    oos ? cap.limiting_ingredient_id : null,
+    oos ? cap.limiting_ingredient_name : null,
+    oos ? 1 : 0,
+    oos ? cap.out_of_stock_reason : null,
     JSON.stringify({
-      breakdown: cap.breakdown,
-      remaining_by_ingredient: cap.remaining_by_ingredient,
+      breakdown: cap.breakdown || [],
+      remaining_by_ingredient: cap.remaining_by_ingredient || [],
       restock_recommendation: cap.restock_recommendation,
       mode: cap.mode
     }),
@@ -506,19 +509,34 @@ function applyCapacityToProducts(products) {
         production_display_unit: 'meals'
       };
     }
-    const capacity = Number(p.production_capacity);
-    const limiting = p.limiting_ingredient_name || null;
-    const reason = p.production_oos_reason || null;
-    const meals = Math.max(0, Math.floor(capacity || 0));
-    // Default DB capacity is 0. Without a limiting ingredient / OOS reason this is
-    // "not calculated", not a hard out-of-stock — keep Customise / POS cards sellable.
-    if (meals <= 0 && !limiting && !reason) {
+    // Null capacity (no_bom) or default 0 without a limiting ingredient = not production-gated
+    if (p.production_capacity == null || p.production_capacity === '') {
       return {
         ...p,
         finished_stock_quantity: p.stock_quantity,
         available_meals: null,
         is_production_based: false,
-        production_display_unit: null
+        production_display_unit: null,
+        out_of_stock_reason: null,
+        production_oos_reason: null,
+        limiting_ingredient: null,
+        limiting_ingredient_name: null
+      };
+    }
+    const capacity = Number(p.production_capacity);
+    const limiting = p.limiting_ingredient_name || null;
+    const reason = p.production_oos_reason || null;
+    const meals = Math.max(0, Math.floor(Number.isFinite(capacity) ? capacity : 0));
+    // Default DB capacity is 0. Reason-without-limiting is the old retail-fallback false OOS.
+    if (meals <= 0 && !limiting) {
+      return {
+        ...p,
+        finished_stock_quantity: p.stock_quantity,
+        available_meals: null,
+        is_production_based: false,
+        production_display_unit: null,
+        out_of_stock_reason: null,
+        production_oos_reason: null
       };
     }
     return {
