@@ -47,6 +47,15 @@ function assertUserActor(actor, allowedRoles = []) {
     session.clearAll();
     throw new Error(denial || 'Account deactivated — system access is frozen. Contact the administrator.');
   }
+  // Force Logout bumps session_epoch — reject stale in-process / Electron sessions too
+  if (sess && Number(sess.id) === Number(user.id)) {
+    const liveEpoch = Number(user.session_epoch) || 0;
+    const sessEpoch = Number(sess.session_epoch) || 0;
+    if (liveEpoch > 0 && sessEpoch !== liveEpoch) {
+      session.clearAll();
+      throw new Error('You were signed out by the Main Admin.');
+    }
+  }
   if (allowedRoles?.length && !allowedRoles.includes(user.role)) {
     throw new Error('You do not have permission for this action');
   }
