@@ -1780,11 +1780,23 @@ const POSPage = {
   },
 
   getStockInfo(product) {
-    // Recipe meals: Production Availability Engine (meals that can be made), not raw stock
-    const isMeal = !!(product.has_recipe && product.production_mode !== 'make_to_stock');
+    // Recipe meals use Production Availability. Missing production_mode on a slim/cached row
+    // must NOT force meal/OOS — that made Customise cards unclickable (pointer-events: none).
+    const mode = String(product?.production_mode || '').trim();
+    const hasCap =
+      product?.available_meals != null ||
+      product?.production_capacity != null ||
+      product?.is_production_based === true;
+    const isMeal = !!(
+      product?.has_recipe &&
+      mode !== 'make_to_stock' &&
+      (mode !== '' || hasCap)
+    );
     const total = isMeal
-      ? Math.max(0, Math.floor(Number(product.available_meals ?? product.production_capacity ?? product.stock_quantity) || 0))
-      : (product.stock_quantity || 0);
+      ? Math.max(0, Math.floor(Number(
+        product.available_meals ?? product.production_capacity ?? product.stock_quantity
+      ) || 0))
+      : (Number(product.stock_quantity) || 0);
     const inCart = this.cart.filter(i => i.product_id === product.id).reduce((s, i) => s + i.quantity, 0);
     const left = Math.max(0, total - inCart);
     return {
@@ -1794,7 +1806,7 @@ const POSPage = {
       isMeal,
       unit: isMeal ? 'meals' : (product.stock_unit || product.unit || ''),
       limiting: product.limiting_ingredient_name || product.limiting_ingredient || null,
-      oosReason: product.out_of_stock_reason || null
+      oosReason: product.out_of_stock_reason || product.production_oos_reason || null
     };
   },
 
@@ -1814,8 +1826,8 @@ const POSPage = {
           const product = this.products.find((p) => Number(p.id) === Number(pid));
           if (!product) continue;
           const need = qty * (Number(ci.quantity) || 1);
-          const isMeal = !!(product.has_recipe && product.production_mode !== 'make_to_stock');
-          if (isMeal) {
+          const st = this.getStockInfo(product);
+          if (st.isMeal) {
             const cap = Math.max(0, Math.floor(Number(product.available_meals ?? product.production_capacity) || 0) - need);
             product.available_meals = cap;
             product.production_capacity = cap;
@@ -1829,8 +1841,8 @@ const POSPage = {
       if (!line?.product_id) continue;
       const product = this.products.find((p) => Number(p.id) === Number(line.product_id));
       if (!product) continue;
-      const isMeal = !!(product.has_recipe && product.production_mode !== 'make_to_stock');
-      if (isMeal) {
+      const stLine = this.getStockInfo(product);
+      if (stLine.isMeal) {
         const cap = Math.max(0, Math.floor(Number(product.available_meals ?? product.production_capacity) || 0) - qty);
         product.available_meals = cap;
         product.production_capacity = cap;
@@ -1991,7 +2003,13 @@ const POSPage = {
   },
 
   productNeedsDialog(product) {
-    return (product.options?.length || product.extras?.length || product.removals?.length || product.requires_options);
+    return !!(
+      product?.options?.length ||
+      product?.extras?.length ||
+      product?.removals?.length ||
+      product?.requires_options ||
+      product?._hasOptions
+    );
   },
 
   calcPromoUnitPrice(product, allMods) {
@@ -3374,14 +3392,28 @@ const POSPage = {
 
   bindEvents(el) {
     this.bindMobileDock();
-    document.getElementById('pos-grid').addEventListener('click', (e) => {
-      const btn = e.target.closest('.product-card');
-      if (!btn) return;
-      const product = this.products.find(p => p.id == btn.dataset.id);
-      if (!product) return;
-      if (this.productNeedsDialog(product)) this.promptProductOptions(product);
-      else this.addToCart(product);
-    });
+    const grid = document.getElementById('pos-grid');
+    if (grid && !grid.dataset.posClickBound) {
+      grid.dataset.posClickBound = '1';
+      grid.addEventListener('click', (e) => {
+        const btn = e.target.closest('.product-card');
+        if (!btn) return;
+        if (btn.disabled || btn.classList.contains('out-of-stock')) {
+          Utils.toast(btn.title || 'Out of stock', 'error');
+          return;
+        }
+        // Combos use data-combo-id (no data-id) — handle here so clicks never silently no-op
+        if (btn.dataset.comboId) {
+          const combo = (this.combos || []).find((x) => String(x.id) === String(btn.dataset.comboId));
+          if (combo) this.configureAndAddCombo(combo);
+          return;
+        }
+        const product = (this.products || []).find((p) => String(p.id) === String(btn.dataset.id));
+        if (!product) return;
+        if (this.productNeedsDialog(product)) this.promptProductOptions(product);
+        else this.addToCart(product);
+      });
+    }
 
     document.getElementById('pos-categories').addEventListener('click', (e) => {
       const tab = e.target.closest('.cat-tab');

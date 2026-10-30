@@ -1534,6 +1534,8 @@ function getProducts(filters = {}) {
       p.online_enabled, p.updated_at, p.item_type, p.branch_id, p.supplier_id,
       p.available_today, p.is_new_arrival, p.is_best_seller, p.new_arrival_until,
       p.requires_options, p.options_style, p.has_recipe,
+      p.production_mode, p.production_capacity, p.production_capacity_updated_at,
+      p.limiting_ingredient_name, p.production_oos_reason,
       CASE WHEN p.picture_path IS NOT NULL AND length(p.picture_path) > 4 THEN 1 ELSE 0 END AS has_picture,
       c.name as category_name FROM products p
     LEFT JOIN categories c ON p.category_id = c.id

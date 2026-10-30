@@ -1272,7 +1272,8 @@ body.pos-more-open { overflow: hidden; }
 .product-card.promo-active { border-color: color-mix(in srgb, #e11d48 40%, var(--border)); }
 .product-card-price.promo-price { color: #e11d48; font-weight: 700; }
 .product-card-price .was-price { color: var(--muted); font-weight: 400; font-size: 0.85em; margin-right: 4px; text-decoration: line-through; }
-.product-card.out-of-stock { opacity: .45; pointer-events: none; }
+/* Keep clicks enabled so cashiers get an Out of stock toast instead of a dead card */
+.product-card.out-of-stock { opacity: .45; cursor: not-allowed; }
 .product-card.low-stock { border-color: var(--warning, #e67e22); }
 .option-group-block { margin-bottom: 14px; }
 .option-group-block h4 { margin: 0 0 8px; font-size: 13px; }
