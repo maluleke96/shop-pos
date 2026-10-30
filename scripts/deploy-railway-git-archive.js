@@ -27,7 +27,7 @@ fs.mkdirSync(appDir);
 run('git', ['-C', root, 'archive', 'HEAD', '-o', zip]);
 run('powershell', ['-NoProfile', '-Command', `Expand-Archive -Path '${zip.replace(/'/g, "''")}' -DestinationPath '${appDir.replace(/'/g, "''")}' -Force`]);
 
-const stamp = `deploy-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-archive-v1`;
+const stamp = `deploy-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-customise-${spawnSync('git', ['-C', root, 'rev-parse', '--short', 'HEAD'], { encoding: 'utf8' }).stdout.trim() || 'local'}`;
 fs.writeFileSync(path.join(appDir, 'deploy-version.txt'), stamp, 'utf8');
 console.log('Deploy stamp:', stamp, 'from commit', spawnSync('git', ['-C', root, 'rev-parse', '--short', 'HEAD'], { encoding: 'utf8' }).stdout.trim());
 

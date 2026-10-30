@@ -689,6 +689,12 @@ function validateSaleCapacity(items, opts = {}) {
     }
     lines.push({ product_id: productId, need, ...cap });
     if (cap.max_meals < need) {
+      // Customise / modifier lines must still check out on POS. Hard-blocking here made
+      // options items feel unsellable when ingredient capacity was 0 / stale.
+      if ((modifiers || []).length > 0) {
+        lines[lines.length - 1].oversold_customise = true;
+        continue;
+      }
       const reason = cap.limiting_ingredient_name
         ? `${cap.limiting_ingredient_name} is Out of Stock`
         : 'Required ingredients are Out of Stock';
