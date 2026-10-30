@@ -199,6 +199,14 @@ const UsersPage = {
     }
     const board = res.data || {};
     this.users = board.users || [];
+    this.blocked = board.blocked || [];
+    this.archived = board.archived || [];
+    this.transfers = board.transfers || [];
+    // Lookup across all tabs so actions on Blocked / Archive still resolve the full profile
+    this._byId = new Map();
+    for (const u of [...this.users, ...this.blocked, ...this.archived]) {
+      if (u?.id != null) this._byId.set(Number(u.id), u);
+    }
     const branchId = this.branchFilter ? Number(this.branchFilter) : 0;
     const inBranch = (u) => !branchId || Number(u.branch_id) === branchId;
     const branchName = this.branchFilterName || this.users.find((u) => Number(u.branch_id) === branchId)?.branch_name || '';
@@ -305,22 +313,30 @@ const UsersPage = {
       this.render(el, app);
     }));
     el.querySelectorAll('[data-act]').forEach((b) => b.addEventListener('click', () => {
-      const user = this.users.find((u) => u.id == b.dataset.id) || { id: Number(b.dataset.id) };
+      const id = Number(b.dataset.id);
+      const user = this._byId?.get(id) || this.users.find((u) => u.id == id) || { id };
       this.onStaffAction(b.dataset.act, user, () => this.render(el, app));
     }));
   },
 
+  resolveUser(user) {
+    const id = Number(user?.id);
+    return this._byId?.get(id) || this.users.find((u) => Number(u.id) === id) || user;
+  },
+
   async onStaffAction(act, user, onDone) {
     if (!user?.id) return;
-    if (act === 'edit' || act === 'permissions') return this.showForm(this.users.find((u) => u.id == user.id) || user, onDone);
-    if (act === 'view' || act === 'history') return this.showHistory(user);
-    if (act === 'block') return this.blockUser(user, onDone);
-    if (act === 'terminate') return this.terminateUser(user, onDone);
-    if (act === 'unblock') return this.runCommand({ action: 'unblock', userId: user.id, reason: 'Restored by Main Admin' }, 'Access restored', onDone);
-    if (act === 'deactivate') return this.deactivateUser(user, onDone);
-    if (act === 'delete') return this.archiveUser(user, onDone);
-    if (act === 'transfer') return this.transferUser(user, onDone);
-    if (act === 'logout') return this.runCommand({ action: 'logout', userId: user.id }, 'Signed out on every device', onDone);
+    const full = this.resolveUser(user);
+    if (act === 'edit') return this.showForm(full, onDone);
+    if (act === 'permissions') return this.showForm(full, onDone, { focusPermissions: true });
+    if (act === 'view' || act === 'history') return this.showHistory(full);
+    if (act === 'block') return this.blockUser(full, onDone);
+    if (act === 'terminate') return this.terminateUser(full, onDone);
+    if (act === 'unblock') return this.runCommand({ action: 'unblock', userId: full.id, reason: 'Restored by Main Admin' }, 'Access restored', onDone);
+    if (act === 'deactivate') return this.deactivateUser(full, onDone);
+    if (act === 'delete') return this.archiveUser(full, onDone);
+    if (act === 'transfer') return this.transferUser(full, onDone);
+    if (act === 'logout') return this.runCommand({ action: 'logout', userId: full.id }, 'Signed out on every device', onDone);
   },
 
   async runCommand(payload, okText, onDone) {
@@ -400,7 +416,7 @@ const UsersPage = {
       <h4>Timeline</h4><ul>${evHtml || '<li>No status changes yet</li>'}</ul>`);
   },
 
-  async showForm(user = null, onSaved) {
+  async showForm(user = null, onSaved, opts = {}) {
     const app = this.app;
     const branchesRes = await API.getBranches();
     const branches = branchesRes.data || [];
@@ -420,7 +436,7 @@ const UsersPage = {
       } catch (_) { /* ignore */ }
     }
 
-    Utils.showModal(user ? `Edit User — ${user.full_name}` : 'Add User', `
+    Utils.showModal(user ? (opts.focusPermissions ? `Permissions — ${user.full_name}` : `Edit User — ${user.full_name}`) : 'Add User', `
       <div class="form-grid">
         <div class="field"><label>Full Name *</label><input id="uf-name" value="${user?.full_name || ''}"></div>
         <div class="field"><label>Username *</label><input id="uf-username" value="${user?.username || ''}" autocomplete="off"></div>
@@ -497,6 +513,16 @@ const UsersPage = {
     };
     document.getElementById('uf-role')?.addEventListener('change', syncRecipeGrantVisibility);
     syncRecipeGrantVisibility();
+    if (opts.focusPermissions) {
+      setTimeout(() => {
+        const wrap = document.getElementById('uf-perms-wrap');
+        if (wrap) {
+          wrap.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          wrap.style.outline = '2px solid var(--accent, #2563eb)';
+          wrap.style.outlineOffset = '4px';
+        }
+      }, 50);
+    }
 
     document.getElementById('delete-user')?.addEventListener('click', () => {
       this.permanentlyDeleteUser(user, () => {

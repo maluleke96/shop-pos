@@ -38,12 +38,15 @@ async function saveFileWeb(defaultName, buffer) {
 async function saveFile(defaultName, _filters, buffer) {
   try {
     const bytes = bufferToUint8Array(buffer);
+    if (!bytes || !bytes.byteLength) {
+      return { success: false, error: 'File was empty — nothing to save or share' };
+    }
     if (capFiles.isNative()) {
       return capFiles.saveAndShare(defaultName, bytes);
     }
     return saveFileWeb(defaultName, bytes);
   } catch (err) {
-    return { success: false, error: err.message };
+    return { success: false, error: err.message || 'Could not save file' };
   }
 }
 

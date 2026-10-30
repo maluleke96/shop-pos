@@ -947,9 +947,10 @@ function deleteUser(id, actorId, actorName) {
   if (sess?.id && Number(sess.id) === Number(userId)) session.clearAll();
 }
 
-function permanentlyDeleteUser(id, confirmUsername, actorId, actorName) {
+function permanentlyDeleteUser(id, confirmUsername, actorId, actorName, password) {
   const actor = actorRecord(actorId);
   requireActor(actor, ['owner']);
+  if (!password) throw new Error('Your password is required to archive this user');
   return require('./staff-identity').command(
     { id: actorId, role: actor.role, username: actorName },
     {
@@ -958,7 +959,7 @@ function permanentlyDeleteUser(id, confirmUsername, actorId, actorName) {
       mode: 'preserve',
       reason: 'Employee archived',
       confirmUsername,
-      password: null
+      password
     }
   );
 }
@@ -968,22 +969,42 @@ function verifyUserSession(userId) {
   let user = null;
   try {
     user = getDb().prepare(`
-      SELECT id, username, full_name, role, is_active, permissions, branch_id FROM users WHERE id = ?`).get(userId);
+      SELECT id, username, full_name, role, is_active, permissions, branch_id, access_status, session_epoch
+      FROM users WHERE id = ?`).get(userId);
   } catch (_) {
-    return { active: true, skipped: true };
+    try {
+      user = getDb().prepare(`
+        SELECT id, username, full_name, role, is_active, permissions, branch_id FROM users WHERE id = ?`).get(userId);
+    } catch (_) {
+      return { active: true, skipped: true };
+    }
   }
-  if (user && !userAccountIsActive(user)) {
-    const sess = session.getUserSession();
+  if (!user) return { active: false, frozen: true, error: 'Account not found', code: 'ACCOUNT_MISSING' };
+
+  const sess = session.getUserSession();
+  const liveEpoch = Number(user.session_epoch) || 0;
+  // Client still holding a pre-Force-Logout snapshot → kick them (cloud ALS or Electron)
+  if (sess?.id && Number(sess.id) === Number(userId)) {
+    const sessEpoch = Number(sess.session_epoch) || 0;
+    if (liveEpoch > 0 && sessEpoch !== liveEpoch) {
+      session.clearAll();
+      return {
+        active: false,
+        frozen: true,
+        error: 'You were signed out by the Main Admin.',
+        code: 'SESSION_REVOKED'
+      };
+    }
+  }
+
+  if (!userAccountIsActive(user)) {
     if (sess?.id && Number(sess.id) === Number(userId)) session.clearAll();
     let error = 'Account deactivated — system access is frozen.';
     try { error = require('./staff-identity').denialMessage(user) || error; } catch (_) { /* */ }
     return { active: false, frozen: true, error };
   }
-  if (user && userAccountIsActive(user)) {
-    try { enforceShiftCashoutDeadlines(); } catch (_) { /* ignore */ }
-    return { active: true, user };
-  }
-  return { active: true, skipped: true };
+  try { enforceShiftCashoutDeadlines(); } catch (_) { /* ignore */ }
+  return { active: true, user };
 }
 
 function getUsers() {

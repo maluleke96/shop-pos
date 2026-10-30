@@ -307,8 +307,9 @@ const DocumentHubPage = {
             ${this.customers.map(c => `<option value="${this.esc(c.phone)}">${this.esc(c.name)} (${this.esc(c.phone)})</option>`).join('')}
           </select>
         </div>
-        ${isFlyer ? `<div class="campaign-share-section"><h4>WhatsApp Status (1080×1920)</h4>
-          <button class="btn btn-ghost" id="dh-export-status">Export Status Size</button></div>` : ''}
+        ${isFlyer ? `<div class="campaign-share-section"><h4>Flyer file</h4>
+          <p class="muted" style="margin:0 0 8px">Opens the stored flyer so you can attach it to WhatsApp Status yourself.</p>
+          <button class="btn btn-ghost" id="dh-export-status">Open flyer to share</button></div>` : ''}
         <div class="campaign-share-section"><h4>Schedule or Send Now</h4>
           <div class="field"><label>Schedule (optional)</label>
             <input type="datetime-local" id="dh-share-schedule"></div>
@@ -327,9 +328,11 @@ const DocumentHubPage = {
     });
     document.getElementById('dh-export-status')?.addEventListener('click', async () => {
       const r = await API.exportDocumentStatus(docId, this.app.user);
-      if (!r.success) return Utils.toast(r.error || 'Export not available yet', 'error');
-      if (r.data?.path) await API.openPath(r.data.path);
-      Utils.toast('WhatsApp Status export ready — attach in Status', 'success');
+      if (!r.success) return Utils.toast(r.error || 'No flyer file to open', 'error');
+      const filePath = r.data?.path || r.path;
+      if (!filePath) return Utils.toast('No flyer file to open', 'error');
+      await API.openPath(filePath);
+      Utils.toast('Flyer opened — attach it in WhatsApp Status', 'success');
     });
     document.getElementById('dh-share-instant')?.addEventListener('click', async () => {
       const phones = this.selectedPhones();

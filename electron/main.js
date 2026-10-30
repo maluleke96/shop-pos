@@ -1071,14 +1071,22 @@ function registerIpc() {
 
   // Save file (for general exports from renderer)
   ipcMain.handle('file:save', async (_e, defaultName, filters, buffer) => {
+    const { toUint8 } = require('./services/pdf-bytes');
+    let bytes;
+    try {
+      bytes = toUint8(buffer);
+    } catch (err) {
+      return { success: false, error: err.message || 'Invalid file data' };
+    }
+    if (!bytes?.byteLength) return { success: false, error: 'File was empty — nothing to save' };
     const { filePath } = await dialog.showSaveDialog(mainWindow, {
       defaultPath: defaultName,
       filters
     });
     if (!filePath) return { success: false, cancelled: true };
-    fs.writeFileSync(filePath, Buffer.from(buffer));
+    fs.writeFileSync(filePath, Buffer.from(bytes));
     shell.showItemInFolder(filePath);
-    return { success: true, path: filePath };
+    return { success: true, path: filePath, bytes: bytes.byteLength };
   });
 
   ipcMain.handle('file:selectDocument', async (_e, prefix = 'document') => {

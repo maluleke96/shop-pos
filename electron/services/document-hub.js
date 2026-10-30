@@ -53,7 +53,31 @@ function fileExists(filePath) {
   if (!filePath) return false;
   const p = String(filePath);
   if (p.startsWith('mobile://') || p.startsWith('mobile-doc://')) return true;
+  if (p.startsWith('data:')) return /;base64,.+/.test(p);
   return fs.existsSync(filePath);
+}
+
+/** Persist browser data: URLs (cloud Document Hub picks) onto disk so share/open works. */
+function materializeUploadPath(filePath, titleHint) {
+  const p = String(filePath || '');
+  if (!p.startsWith('data:')) return p;
+  const m = p.match(/^data:([^;]+);base64,(.+)$/i);
+  if (!m) throw new Error('Invalid uploaded file data');
+  const mime = String(m[1] || '').toLowerCase();
+  const buf = Buffer.from(m[2], 'base64');
+  if (!buf.length) throw new Error('Uploaded file was empty');
+  let ext = '.bin';
+  if (mime.includes('pdf')) ext = '.pdf';
+  else if (mime.includes('png')) ext = '.png';
+  else if (mime.includes('jpeg') || mime.includes('jpg')) ext = '.jpg';
+  else if (mime.includes('webp')) ext = '.webp';
+  else if (mime.includes('gif')) ext = '.gif';
+  else if (mime.includes('msword')) ext = '.doc';
+  else if (mime.includes('wordprocessingml') || mime.includes('docx')) ext = '.docx';
+  const safe = String(titleHint || 'document').replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 40) || 'document';
+  const dest = path.join(getAssetsDir(), `${Date.now()}-${safe}${ext}`);
+  fs.writeFileSync(dest, buf);
+  return dest;
 }
 
 function extOf(filePath) {
@@ -114,6 +138,8 @@ function saveDocument(data, actor) {
   requireHubRole(actor);
   if (!data.title?.trim()) throw new Error('Title is required');
   if (!data.file_path?.trim()) throw new Error('File is required');
+  data.file_path = materializeUploadPath(data.file_path, data.title);
+  if (data.thumbnail_path) data.thumbnail_path = materializeUploadPath(data.thumbnail_path, `${data.title}-thumb`);
   if (!fileExists(data.file_path)) throw new Error('File not found on disk');
 
   const db = getDb();
@@ -327,7 +353,13 @@ function processScheduledDocuments(actor = null) {
 
 function exportDocumentStatus(id, actor) {
   requireHubRole(actor);
-  throw new Error('Status export is no longer available');
+  const doc = getDocument(id);
+  if (!doc) throw new Error('Document not found');
+  // Status-size canvas export was removed; open/share the stored file instead.
+  if (!doc.file_path || !fileExists(doc.file_path)) {
+    throw new Error('No file on this document to export — re-upload the flyer first');
+  }
+  return { path: doc.file_path, title: doc.title, mime_hint: isImagePath(doc.file_path) ? 'image' : 'file' };
 }
 
 module.exports = {

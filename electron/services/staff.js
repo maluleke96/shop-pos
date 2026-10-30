@@ -221,6 +221,12 @@ function adminOpenEmployeePortal(employeeId, actor) {
   assertUserActor(actor, ['owner', 'manager', 'supervisor', 'assistant_manager']);
   const emp = getEmployee(employeeId);
   if (!emp) throw new Error('Employee not found');
+  // Blocked / suspended / terminated staff must not be active in the portal anywhere
+  try {
+    assertEmployeeLinkedUserActive(emp);
+  } catch (err) {
+    throw new Error(`Cannot open staff portal — ${err.message || 'account is locked'}`);
+  }
   const session = require('./session');
   session.setEmployeeSession({
     employee_id: emp.id,
@@ -402,12 +408,34 @@ function syncLinkedUserFromEmployee(emp) {
   if (!emp?.user_id) return;
   const blocked = String(emp.status || '').trim() !== 'Active';
   try {
-    getDb().prepare('UPDATE users SET is_active = ?, updated_at = datetime(\'now\') WHERE id = ? AND role != ?')
-      .run(blocked ? 0 : 1, emp.user_id, 'owner');
+    try { require('./staff-identity').ensureStaffIdentity(); } catch (_) { /* */ }
+    let current = null;
+    try {
+      current = getDb().prepare('SELECT id, role, access_status, is_active FROM users WHERE id = ?').get(emp.user_id);
+    } catch (_) {
+      current = getDb().prepare('SELECT id, role, is_active FROM users WHERE id = ?').get(emp.user_id);
+    }
+    if (!current || String(current.role || '') === 'owner') return;
+    const st = String(current.access_status || '').trim().toUpperCase();
+    // Never unwind BLOCKED / TERMINATED / DELETED from an HR employee-status sync
+    if (['BLOCKED', 'TERMINATED', 'DELETED'].includes(st)) {
+      if (!Number(current.is_active)) return;
+      getDb().prepare('UPDATE users SET is_active = 0, updated_at = datetime(\'now\') WHERE id = ?').run(emp.user_id);
+      return;
+    }
     if (blocked) {
+      getDb().prepare(`UPDATE users SET is_active = 0, access_status = 'INACTIVE',
+        status_changed_at = datetime('now'), status_reason = ?,
+        session_epoch = COALESCE(session_epoch, 0) + 1, updated_at = datetime('now')
+        WHERE id = ?`)
+        .run(`Synced from employee status: ${emp.status || 'Inactive'}`, emp.user_id);
       try { require('./studio-app-platform').revokeUserSessions(emp.user_id); } catch (_) { /* */ }
       try { require('./radio-platform').revokeUserSessions(emp.user_id); } catch (_) { /* */ }
       try { require('./expense-app-platform').revokeUserSessions(emp.user_id); } catch (_) { /* */ }
+    } else if (st === 'INACTIVE' || !Number(current.is_active)) {
+      getDb().prepare(`UPDATE users SET is_active = 1, access_status = 'ACTIVE',
+        status_changed_at = datetime('now'), status_reason = NULL, updated_at = datetime('now')
+        WHERE id = ?`).run(emp.user_id);
     }
   } catch (err) {
     console.warn('[staff] sync linked user:', err.message || err);
@@ -1168,19 +1196,27 @@ function approveLeave(id, approvedBy, approve = true, approverName, actor) {
 }
 
 function buildLeavePdf(leaveId) {
+  const { toUint8 } = require('./pdf-bytes');
   const row = getDb().prepare(`
     SELECT l.*, e.full_name, e.employee_code FROM employee_leave l
     JOIN employees e ON e.id = l.employee_id WHERE l.id = ?`).get(leaveId);
   if (!row) throw new Error('Leave request not found');
   if (row.pdf_path && fs.existsSync(row.pdf_path)) {
-    return fs.readFileSync(row.pdf_path);
+    try {
+      const disk = fs.readFileSync(row.pdf_path);
+      if (disk && disk.length) return toUint8(disk);
+      try { fs.unlinkSync(row.pdf_path); } catch (_) { /* ignore empty/corrupt cache */ }
+    } catch (_) { /* regenerate below */ }
   }
   if (row.status !== 'approved') throw new Error('Leave PDF is only available for approved leave');
   const shop = hrPdf.getShopPdfSettings();
   const approver = row.approved_by
     ? getDb().prepare('SELECT full_name, username FROM users WHERE id = ?').get(row.approved_by)
     : null;
-  return hrPdf.buildLeaveApprovalPdf(row, shop, approver?.full_name || approver?.username || 'Management');
+  const built = hrPdf.buildLeaveApprovalPdf(row, shop, approver?.full_name || approver?.username || 'Management');
+  const bytes = toUint8(built);
+  if (!bytes.byteLength) throw new Error('Leave PDF was empty — could not generate file');
+  return bytes;
 }
 
 function submitLeaveProof(leaveId, employeeId, imageData) {

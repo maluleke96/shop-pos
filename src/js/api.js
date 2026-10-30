@@ -5,15 +5,61 @@ function decodeRpcValue(value) {
       const bin = atob(value.__shoppos_b64);
       const bytes = new Uint8Array(bin.length);
       for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      if (!bytes.byteLength) throw new Error('Decoded file was empty');
       return bytes;
-    } catch (_) {
-      return new Uint8Array(0);
+    } catch (err) {
+      throw new Error(err?.message || 'Could not decode exported file data');
     }
   }
   if (Array.isArray(value)) return value.map(decodeRpcValue);
   const out = {};
   for (const k of Object.keys(value)) out[k] = decodeRpcValue(value[k]);
   return out;
+}
+
+/** Normalize any RPC/IPC file payload to Uint8Array without silently inventing empty files. */
+function normalizeFileBytes(bytes) {
+  if (bytes == null) throw new Error('File was empty — nothing to save');
+  if (bytes instanceof Uint8Array) {
+    if (!bytes.byteLength) throw new Error('File was empty — nothing to save');
+    return bytes;
+  }
+  if (bytes instanceof ArrayBuffer) {
+    const u8 = new Uint8Array(bytes);
+    if (!u8.byteLength) throw new Error('File was empty — nothing to save');
+    return u8;
+  }
+  if (typeof bytes === 'string' && bytes.startsWith('data:') && bytes.includes(';base64,')) {
+    const b64 = bytes.split(';base64,')[1] || '';
+    const bin = atob(b64);
+    const u8 = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+    if (!u8.byteLength) throw new Error('File was empty — nothing to save');
+    return u8;
+  }
+  if (typeof bytes === 'object') {
+    if (typeof bytes.__shoppos_b64 === 'string') return normalizeFileBytes(decodeRpcValue(bytes));
+    if (bytes.type === 'Buffer' && Array.isArray(bytes.data)) {
+      const u8 = new Uint8Array(bytes.data);
+      if (!u8.byteLength) throw new Error('File was empty — nothing to save');
+      return u8;
+    }
+    if (bytes.data != null && bytes.data !== bytes) return normalizeFileBytes(bytes.data);
+    if (Array.isArray(bytes)) {
+      const u8 = new Uint8Array(bytes);
+      if (!u8.byteLength) throw new Error('File was empty — nothing to save');
+      return u8;
+    }
+    const keys = Object.keys(bytes);
+    if (keys.length && keys.every((k) => /^\d+$/.test(k))) {
+      const len = Math.max(...keys.map(Number)) + 1;
+      const u8 = new Uint8Array(len);
+      for (const k of keys) u8[Number(k)] = Number(bytes[k]) & 255;
+      if (!u8.byteLength) throw new Error('File was empty — nothing to save');
+      return u8;
+    }
+  }
+  throw new Error('Unrecognized file data — export failed');
 }
 
 function isLocalInstaller() {
@@ -86,7 +132,12 @@ const invoke = async (channel, ...args) => {
         window.ShopPosConnection.set?.('online');
       }
     } catch (_) { /* */ }
-    const decoded = result && typeof result === 'object' ? decodeRpcValue(result) : result;
+    let decoded = result;
+    try {
+      decoded = result && typeof result === 'object' ? decodeRpcValue(result) : result;
+    } catch (decodeErr) {
+      return { success: false, error: decodeErr.message || 'Could not decode server file data' };
+    }
     // Cloud RPC often wraps as { success, data }. Login may be { success, user }.
     if (decoded && typeof decoded === 'object' && Object.prototype.hasOwnProperty.call(decoded, 'success')) {
       if (window.__SHOP_POS_CLOUD__) return decoded;
@@ -110,14 +161,7 @@ function isCloudBrowser() {
 }
 
 function downloadBlob(filename, bytes, mime) {
-  let buf = bytes;
-  if (buf instanceof ArrayBuffer) buf = new Uint8Array(buf);
-  else if (buf?.type === 'Buffer' && Array.isArray(buf.data)) buf = new Uint8Array(buf.data);
-  else if (Array.isArray(buf)) buf = new Uint8Array(buf);
-  else if (!(buf instanceof Uint8Array) && buf != null) {
-    try { buf = new Uint8Array(buf); } catch (_) { buf = new Uint8Array(0); }
-  }
-  if (!buf || !buf.byteLength) throw new Error('File was empty — nothing to save');
+  const buf = normalizeFileBytes(bytes);
   const blob = new Blob([buf], { type: mime || 'application/octet-stream' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -127,7 +171,7 @@ function downloadBlob(filename, bytes, mime) {
   document.body.appendChild(a);
   a.click();
   setTimeout(() => { a.remove(); URL.revokeObjectURL(url); }, 1000);
-  return { success: true, path: filename };
+  return { success: true, path: filename, bytes: buf.byteLength };
 }
 
 function isMobileBrowser() {
@@ -182,6 +226,7 @@ function pickFileBrowser(accept) {
 }
 
 const API = {
+  normalizeFileBytes,
   quitApp: () => invoke('app:quit'),
   onAppCloseBlocked: (cb) => whenPosAPIReady(() => window.posAPI.onAppCloseBlocked(cb)),
   login: (u, p, pin) => invoke('auth:login', u, p, pin),
@@ -544,15 +589,22 @@ const API = {
   },
   exportPDF: async (filename, title, headers, rows, company) => {
     const r = await invoke('export:pdf', filename, title, headers, rows, company);
-    if (isCloudBrowser() && r?.success !== false && (r?.data instanceof Uint8Array || r?.data?.byteLength)) {
+    if (r?.success === false) return r;
+    if (isCloudBrowser() && r?.data != null) {
       try { return downloadBlob(filename || 'report.pdf', r.data, 'application/pdf'); }
       catch (err) { return { success: false, error: err.message || String(err) }; }
     }
-    return r;
+    // Local/Electron may already have saved to disk — require a real path or bytes
+    if (r?.path || (r?.data != null && (() => { try { return normalizeFileBytes(r.data).byteLength > 0; } catch (_) { return false; } })())) {
+      return r;
+    }
+    if (r?.cancelled) return r;
+    return { success: false, error: r?.error || 'PDF export produced no file' };
   },
   exportExcel: async (filename, sheets) => {
     const r = await invoke('export:excel', filename, sheets);
-    if (isCloudBrowser() && r?.success !== false && (r?.data instanceof Uint8Array || r?.data?.byteLength)) {
+    if (r?.success === false) return r;
+    if (isCloudBrowser() && r?.data != null) {
       try {
         return downloadBlob(
           filename || 'export.xlsx',
@@ -561,7 +613,11 @@ const API = {
         );
       } catch (err) { return { success: false, error: err.message || String(err) }; }
     }
-    return r;
+    if (r?.path || (r?.data != null && (() => { try { return normalizeFileBytes(r.data).byteLength > 0; } catch (_) { return false; } })())) {
+      return r;
+    }
+    if (r?.cancelled) return r;
+    return { success: false, error: r?.error || 'Excel export produced no file' };
   },
   exportPrint: async (title, headers, rows, company) => {
     const r = await invoke('export:print', title, headers, rows, company);

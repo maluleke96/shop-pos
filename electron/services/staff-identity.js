@@ -447,6 +447,23 @@ function forceLogout({ userId, actorId }) {
   const user = loadUser(userId);
   bumpEpoch(user.id);
   revokeModuleSessions(user.id);
+  // Drop cloud RPC tokens for this user so Force Logout sticks across devices
+  try {
+    const rows = db().prepare('SELECT token_hash, payload_json FROM rpc_staff_sessions').all();
+    for (const row of rows) {
+      try {
+        const snap = JSON.parse(row.payload_json || '{}');
+        if (Number(snap?.userSession?.id) === Number(user.id)) {
+          db().prepare('DELETE FROM rpc_staff_sessions WHERE token_hash = ?').run(row.token_hash);
+        }
+      } catch (_) { /* skip bad row */ }
+    }
+  } catch (_) { /* table may not exist on pure Electron */ }
+  try {
+    const session = require('./session');
+    const sess = session.getUserSession?.();
+    if (sess?.id && Number(sess.id) === Number(user.id)) session.clearAll();
+  } catch (_) { /* */ }
   writeEvent(user.id, 'force_logout', statusOf(user), statusOf(user), actor, 'Force logout', null);
   audit(actor, 'staff_force_logout', user.id, { staff_code: user.staff_code, name: user.full_name });
   return { success: true };

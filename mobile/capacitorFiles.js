@@ -79,11 +79,14 @@ async function shareUri(uri, title) {
 }
 
 async function saveAndShare(filename, bytes, subdir = EXPORT_DIR) {
+  if (!bytes || !bytes.byteLength) {
+    throw new Error('File was empty — nothing to save or share');
+  }
   const safeName = safeFilename(filename);
   const relativePath = `${subdir}/${safeName}`;
   const written = await writeToDocuments(relativePath, bytes);
   await shareUri(written.uri, safeName);
-  return { success: true, path: written.displayPath, uri: written.uri };
+  return { success: true, path: written.displayPath, uri: written.uri, bytes: bytes.byteLength };
 }
 
 async function saveSilent(filename, bytes, subdir = BACKUP_DIR) {

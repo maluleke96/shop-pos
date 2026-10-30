@@ -828,15 +828,25 @@ const Utils = {
       Utils.toast(buf?.error || 'Could not build PDF', 'error');
       return false;
     }
-    let bytes = buf.data;
-    if (bytes && typeof bytes === 'object' && bytes.data && !(bytes instanceof Uint8Array) && !Array.isArray(bytes) && bytes.type !== 'Buffer') {
-      bytes = bytes.data;
-    }
+    let bytes;
     try {
-      if (bytes instanceof ArrayBuffer) bytes = new Uint8Array(bytes);
-      else if (bytes?.type === 'Buffer' && Array.isArray(bytes.data)) bytes = new Uint8Array(bytes.data);
-      else if (Array.isArray(bytes)) bytes = new Uint8Array(bytes);
-      else if (!(bytes instanceof Uint8Array) && bytes != null) bytes = new Uint8Array(bytes);
+      // Prefer shared normalizer used by cloud downloads (rejects empty / unknown shapes)
+      if (typeof window !== 'undefined' && window.API && typeof API.normalizeFileBytes === 'function') {
+        bytes = API.normalizeFileBytes(buf.data);
+      } else {
+        bytes = buf.data;
+        if (bytes && typeof bytes === 'object' && bytes.__shoppos_b64) {
+          const bin = atob(bytes.__shoppos_b64);
+          bytes = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        } else if (bytes && typeof bytes === 'object' && bytes.data && !(bytes instanceof Uint8Array) && !Array.isArray(bytes) && bytes.type !== 'Buffer') {
+          bytes = bytes.data;
+        }
+        if (bytes instanceof ArrayBuffer) bytes = new Uint8Array(bytes);
+        else if (bytes?.type === 'Buffer' && Array.isArray(bytes.data)) bytes = new Uint8Array(bytes.data);
+        else if (Array.isArray(bytes)) bytes = new Uint8Array(bytes);
+        else if (!(bytes instanceof Uint8Array) && bytes != null) bytes = new Uint8Array(bytes);
+      }
     } catch (err) {
       Utils.toast(err.message || 'Invalid PDF data', 'error');
       return false;

@@ -4035,15 +4035,21 @@ const App = {
     if (!this.user?.id) return true;
     try {
       const v = await API.verifyUserSession(this.user.id);
-      // Only freeze when the server explicitly says this account is deactivated.
-      // Missing/expired session tokens, Railway restarts, and network errors must never log the admin out.
-      if (v.success && v.data?.frozen === true && v.data?.active === false) {
-        Utils.toast(v.data?.error || 'Account deactivated ? system access is frozen.', 'error');
+      // Server may return { active, frozen, error } directly or wrapped as { success, data }.
+      // Missing/expired tokens and network blips must not log people out — only explicit freeze/revoke.
+      const payload = (v && v.data && typeof v.data === 'object' && ('frozen' in v.data || 'active' in v.data))
+        ? v.data
+        : v;
+      const frozen = payload?.frozen === true && payload?.active === false;
+      const revoked = payload?.code === 'SESSION_REVOKED' || /signed out by the main admin/i.test(String(payload?.error || ''));
+      const blocked = /ACCOUNT BLOCKED|deactivated|frozen/i.test(String(payload?.error || ''));
+      if (frozen || revoked || (payload?.active === false && (blocked || payload?.frozen))) {
+        Utils.toast(payload?.error || 'Account deactivated — system access is frozen.', 'error');
         document.body.classList.add('system-frozen');
         await this.doLogout();
         return false;
       }
-      if (v.success !== false) {
+      if (v?.success !== false && payload?.active !== false) {
         this.user.is_active = 1;
         document.body.classList.remove('system-frozen');
         return true;

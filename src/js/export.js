@@ -25,7 +25,8 @@ const Export = {
         : await window.posAPI.export_excel(filename, sheets);
       if (r?.success === false) Utils.toast(r.error || 'Excel export failed', 'error');
       else if (r?.cancelled) return r;
-      else Utils.toast(r?.path ? 'Excel saved' : 'Excel exported', 'success');
+      else if (r?.path || r?.bytes) Utils.toast(r?.path ? `Excel saved: ${r.path}` : 'Excel saved', 'success');
+      else Utils.toast('Excel export produced no file', 'error');
       return r;
     } catch (err) {
       Utils.toast(err.message || 'Excel export failed', 'error');
@@ -42,10 +43,11 @@ const Export = {
         : await window.posAPI.export_pdf(filename, title, safeHeaders, safeRows, company || {});
       if (r?.success === false) Utils.toast(r.error || 'PDF export failed', 'error');
       else if (r?.cancelled) return r;
+      else if (!(r?.path || r?.bytes)) Utils.toast('PDF export produced no file', 'error');
       else if (isMobileExport()) {
         Utils.toast(r?.path ? `PDF saved: ${r.path} — use share sheet to save to Downloads` : 'PDF saved — use share sheet to save to Downloads', 'success');
       } else {
-        Utils.toast(r?.path ? `PDF saved: ${r.path}` : 'PDF exported', 'success');
+        Utils.toast(r?.path ? `PDF saved: ${r.path}` : 'PDF saved', 'success');
       }
       return r;
     } catch (err) {
