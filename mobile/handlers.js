@@ -446,6 +446,27 @@ function buildHandlers(store) {
     return true;
   }));
 
+  add('tomorrowStock:list', wrapSync((f, a) => {
+    s.requireActor(a, ['owner', 'manager', 'cashier', 'supervisor', 'assistant_manager']);
+    return require('../electron/services/tomorrow-stock').listItems(f || {});
+  }));
+  add('tomorrowStock:add', wrapSync((d, a) => {
+    const user = s.requireActor(a, ['owner', 'manager', 'cashier', 'supervisor', 'assistant_manager']);
+    return require('../electron/services/tomorrow-stock').addItem(d || {}, user);
+  }));
+  add('tomorrowStock:update', wrapSync((id, d, a) => {
+    s.requireActor(a, ['owner', 'manager', 'cashier', 'supervisor', 'assistant_manager']);
+    return require('../electron/services/tomorrow-stock').updateItem(id, d || {});
+  }));
+  add('tomorrowStock:remove', wrapSync((id, a) => {
+    s.requireActor(a, ['owner', 'manager', 'cashier', 'supervisor', 'assistant_manager']);
+    return require('../electron/services/tomorrow-stock').removeItem(id);
+  }));
+  add('tomorrowStock:markBought', wrapSync((ids, expenseId, a) => {
+    s.requireActor(a, ['owner', 'manager', 'cashier', 'supervisor', 'assistant_manager']);
+    return require('../electron/services/tomorrow-stock').markBought(ids, expenseId);
+  }));
+
   add('returns:process', wrapSync((d, a) => {
     const user = s.requireActor(a, ['owner', 'manager', 'supervisor', 'assistant_manager', 'cashier']);
     const result = s.processReturn(d, user.id, user.full_name);

@@ -3917,24 +3917,27 @@ const App = {
     document.getElementById('admin-alert-flash')?.remove();
   },
 
-  _flashAdminAlert(n) {
+  _flashAdminAlert(n, extraCount = 0) {
     if (!n) return;
     let bar = document.getElementById('admin-alert-flash');
     if (!bar) {
       bar = document.createElement('div');
       bar.id = 'admin-alert-flash';
-      bar.style.cssText = 'position:fixed;top:12px;right:12px;z-index:10050;max-width:min(420px,calc(100vw - 24px));background:#111827;color:#fff;border-radius:12px;padding:14px 16px;box-shadow:0 12px 32px rgba(0,0,0,.35);';
+      bar.className = 'admin-alert-flash';
       document.body.appendChild(bar);
     }
+    const more = extraCount > 1 ? ` <span class="admin-alert-flash-more">+${extraCount - 1} more</span>` : '';
     const title = Utils.escHtml(n.title || 'New notification');
     const msg = Utils.escHtml(n.message || n.body || '');
-    bar.innerHTML = `<div style="font-weight:700;margin-bottom:4px">${title}</div>
-      ${msg ? `<div style="font-size:13px;opacity:.9">${msg}</div>` : ''}
-      <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+    bar.innerHTML = `<div class="admin-alert-flash-title">${title}${more}</div>
+      ${msg ? `<div class="admin-alert-flash-msg">${msg}</div>` : ''}
+      <div class="admin-alert-flash-actions">
         <button type="button" class="btn btn-sm btn-primary" id="admin-alert-open">Open</button>
-        <button type="button" class="btn btn-sm btn-ghost" id="admin-alert-dismiss" style="color:#fff">Dismiss</button>
+        <button type="button" class="btn btn-sm btn-ghost" id="admin-alert-dismiss">Dismiss</button>
       </div>`;
     bar.hidden = false;
+    clearTimeout(this._adminAlertFlashTimer);
+    this._adminAlertFlashTimer = setTimeout(() => this._dismissAdminAlertFlash(), 8000);
     bar.querySelector('#admin-alert-dismiss')?.addEventListener('click', () => this._dismissAdminAlertFlash());
     bar.querySelector('#admin-alert-open')?.addEventListener('click', () => {
       this._dismissAdminAlertFlash();
@@ -3953,7 +3956,7 @@ const App = {
       (buckets.alerts || []).forEach((n) => this._seenAdminAlertIds.add(String(n.id)));
       if (hadSeen && fresh.length) {
         const first = fresh[0];
-        this._flashAdminAlert(first);
+        this._flashAdminAlert(first, fresh.length);
         if (document.hidden) {
           PanelNotify?.notifyBrowser(first.title || 'New notification', first.message || first.body, `admin-${first.id}`);
         }

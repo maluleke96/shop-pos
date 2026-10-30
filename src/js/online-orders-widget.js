@@ -114,7 +114,7 @@ const OnlineOrdersWidget = {
 
       this.syncAlertSound(pending);
       if (newOnes.length) {
-        Utils.toast(`${newOnes.length} new online order(s)!`, 'info');
+        // Sticky popup is the primary alert — avoid a second toast stack on top.
         this.playAlert();
         this.showNewOrderPopup(newOnes[0]);
       } else {
@@ -190,9 +190,9 @@ const OnlineOrdersWidget = {
       if (this.isQuiet(id)) continue;
       if (this.orderAgeMs(order) >= limitMs) {
         this.snoozeOrder(id, this.reminderMinutes());
-        Utils.toast(`⏰ Reminder: ${order.order_number || 'Online order'} not attended (${this.reminderMinutes()} min)`, 'error');
         this.playAlert();
         if (!this._popupOpen) this.showNewOrderPopup(order, true);
+        else Utils.briefNotice(`Reminder: ${order.order_number || 'Online order'} still waiting`, 'info', 2200);
       }
     }
   },

@@ -1007,6 +1007,16 @@ body[data-active-screen="delivery-dept"] .sidebar-backdrop {
   border: 1px solid var(--border, #e2e8f0);
   border-radius: 6px;
   background: var(--bg-alt, #f8fafc);
+  position: sticky;
+  top: 0;
+  z-index: 6;
+}
+#sales-mgmt-scroll-top {
+  position: sticky;
+  top: 0;
+  z-index: 8;
+  background: var(--surface, #fff);
+  box-shadow: 0 1px 0 var(--border, #e2e8f0);
 }
 .table-scroll-top-inner { height: 1px; pointer-events: none; }
 .table-scroll-top::-webkit-scrollbar,
@@ -1461,12 +1471,37 @@ body.system-frozen::after {
 .modal-body { padding: 20px; overflow-y: auto; flex: 1; }
 .modal-footer { padding: 16px 20px; border-top: 1px solid var(--border); display: flex; gap: 8px; justify-content: flex-end; }
 
-/* Toast */
-#toast-container { position: fixed; bottom: 20px; right: 20px; z-index: 2000; display: flex; flex-direction: column; gap: 8px; }
-.toast { background: #1e293b; color: #fff; padding: 12px 20px; border-radius: 8px; box-shadow: var(--shadow-lg); animation: slideIn .2s; font-size: 14px; }
-.toast.success { background: var(--success); }
-.toast.error { background: var(--danger); }
-@keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: none; opacity: 1; } }
+/* Toast — single calm stack, capped in JS */
+#toast-container {
+  position: fixed; bottom: 20px; right: 20px; z-index: 2000;
+  display: flex; flex-direction: column-reverse; gap: 8px;
+  max-width: min(360px, calc(100vw - 24px));
+  pointer-events: none;
+}
+.toast {
+  pointer-events: auto;
+  background: #0f172a; color: #fff; padding: 12px 16px; border-radius: 10px;
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.28); animation: slideIn .2s; font-size: 13.5px;
+  line-height: 1.35; border: 1px solid rgba(255,255,255,.08);
+}
+.toast.success { background: #166534; }
+.toast.error { background: #991b1b; }
+.toast.fade-out { opacity: 0; transform: translateY(6px); transition: opacity .25s, transform .25s; }
+@keyframes slideIn { from { transform: translateY(8px); opacity: 0; } to { transform: none; opacity: 1; } }
+
+.admin-alert-flash {
+  position: fixed; top: 12px; right: 12px; z-index: 10050;
+  max-width: min(380px, calc(100vw - 24px));
+  background: #0f172a; color: #fff; border-radius: 12px;
+  padding: 14px 16px; box-shadow: 0 12px 32px rgba(0,0,0,.32);
+  border: 1px solid rgba(255,255,255,.08);
+  animation: slideIn .2s;
+}
+.admin-alert-flash-title { font-weight: 700; margin-bottom: 4px; font-size: 14px; }
+.admin-alert-flash-more { font-weight: 600; opacity: .75; font-size: 12px; }
+.admin-alert-flash-msg { font-size: 13px; opacity: .9; line-height: 1.35; }
+.admin-alert-flash-actions { margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap; }
+.admin-alert-flash-actions .btn-ghost { color: #fff; border-color: rgba(255,255,255,.25); }
 
 /* Tags */
 .tag { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; }

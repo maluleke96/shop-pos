@@ -209,34 +209,54 @@ const Utils = {
     };
   },
 
-  toast(msg, type = 'info') {
-    if (window.__SHOP_POS_APP_MODE__ === 'pos') {
-      Utils.briefNotice(msg, type);
-      return;
-    }
-    const el = document.createElement('div');
-    el.className = `toast ${type}`;
-    el.textContent = msg;
-    document.getElementById('toast-container').appendChild(el);
-    setTimeout(() => el.remove(), 3500);
+  _toastKey(msg, type) {
+    return `${type || 'info'}::${String(msg || '').trim().toLowerCase()}`;
   },
 
-  /** Short popup — works on POS too (2–3 s). */
-  briefNotice(msg, type = 'info', ms = 2600) {
+  _pushToast(msg, type = 'info', ms = 3200, opts = {}) {
     let container = document.getElementById('toast-container');
     if (!container) {
       container = document.createElement('div');
       container.id = 'toast-container';
       document.body.appendChild(container);
     }
+    const key = Utils._toastKey(msg, type);
+    const existing = [...container.querySelectorAll('.toast')].find((el) => el.dataset.toastKey === key);
+    if (existing) {
+      existing.classList.remove('fade-out');
+      clearTimeout(existing._toastTimer);
+      existing._toastTimer = setTimeout(() => {
+        existing.classList.add('fade-out');
+        setTimeout(() => existing.remove(), 280);
+      }, Math.max(1200, ms - 280));
+      return existing;
+    }
+    while (container.querySelectorAll('.toast').length >= 3) {
+      container.querySelector('.toast')?.remove();
+    }
     const el = document.createElement('div');
-    el.className = `toast brief-notice ${type}`;
+    el.className = `toast ${type}${opts.brief ? ' brief-notice' : ''}`;
+    el.dataset.toastKey = key;
     el.textContent = msg;
     container.appendChild(el);
-    setTimeout(() => {
+    el._toastTimer = setTimeout(() => {
       el.classList.add('fade-out');
       setTimeout(() => el.remove(), 280);
-    }, Math.max(1500, ms - 280));
+    }, Math.max(1200, ms - 280));
+    return el;
+  },
+
+  toast(msg, type = 'info') {
+    if (window.__SHOP_POS_APP_MODE__ === 'pos') {
+      Utils.briefNotice(msg, type);
+      return;
+    }
+    Utils._pushToast(msg, type, 3200);
+  },
+
+  /** Short popup — works on POS too (2–3 s). */
+  briefNotice(msg, type = 'info', ms = 2600) {
+    Utils._pushToast(msg, type, ms, { brief: true });
   },
 
   showModal(title, bodyHtml, footerHtml = '', options = {}) {

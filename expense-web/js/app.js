@@ -12,6 +12,9 @@ const ExpenseApp = {
     category: 'other',
     expense_date: '',
     notes: '',
+    entryMode: 'stock',
+    overheadName: '',
+    overheadAmount: '',
     lineItems: [{ _id: 1, name: '', qty: '1', price: '' }],
     invoicePreview: '',
     invoiceDataUrl: '',
@@ -444,6 +447,9 @@ const ExpenseApp = {
       category: 'other',
       expense_date: this.today(),
       notes: '',
+      entryMode: 'stock',
+      overheadName: '',
+      overheadAmount: '',
       lineItems: [{ _id: 1, name: '', qty: '1', price: '' }],
       invoicePreview: '',
       invoiceDataUrl: '',
@@ -1261,7 +1267,16 @@ const ExpenseApp = {
         <button type="button" class="qa-btn qa-withdraw" data-open-withdrawal>💸<span>Money withdrawal</span></button>
         <button type="button" class="qa-btn" data-goto-money>📊<span>Today's money</span></button>
       </div>` : ''}
-      <div class="form-card line-items-card">
+      <div class="form-card" style="margin-bottom:12px">
+        <p class="section-label" style="margin-top:0">Expense type</p>
+        <div class="fund-chip-row" id="exp-mode-chips">
+          <button type="button" class="fund-chip${this.form.entryMode !== 'overhead' ? ' active' : ''}" data-exp-mode="stock">📦 Stock / materials</button>
+          <button type="button" class="fund-chip${this.form.entryMode === 'overhead' ? ' active' : ''}" data-exp-mode="overhead">🏢 Bill / overhead</button>
+        </div>
+        <p class="muted" style="font-size:0.8rem;margin:8px 0 0;line-height:1.4">Use <strong>Bill / overhead</strong> for rent, electricity and other costs with no unit of measure.</p>
+      </div>
+
+      <div class="form-card line-items-card" id="exp-stock-block" style="${this.form.entryMode === 'overhead' ? 'display:none' : ''}">
         <div class="line-items-head">
           <p class="section-label" style="margin:0">Invoice line items</p>
           <span class="muted" id="exp-line-count">${validCount ? `${validCount} item${validCount === 1 ? '' : 's'}` : 'Add items below'}</span>
@@ -1272,10 +1287,21 @@ const ExpenseApp = {
         <button type="button" class="btn btn-add-line" id="exp-add-line">+ Add another item</button>
       </div>
 
+      <div class="form-card" id="exp-overhead-block" style="${this.form.entryMode === 'overhead' ? '' : 'display:none'}">
+        <div class="field">
+          <label for="exp-overhead-name">What is this bill for?</label>
+          <input id="exp-overhead-name" placeholder="e.g. Shop rent — October" value="${this.esc(this.form.overheadName || '')}">
+        </div>
+        <div class="field" style="margin-bottom:0">
+          <label for="exp-overhead-amount">Amount paid</label>
+          <input id="exp-overhead-amount" type="number" step="0.01" min="0" placeholder="0.00" value="${this.esc(this.form.overheadAmount || '')}">
+        </div>
+      </div>
+
       <div class="amount-hero amount-hero-total">
         <label>Invoice total</label>
-        <div class="amount-total-display" id="exp-total-display">${this.fmt(total)}</div>
-        <p class="muted amount-total-note">Sum of prices you entered (qty is not multiplied)</p>
+        <div class="amount-total-display" id="exp-total-display">${this.fmt(this.form.entryMode === 'overhead' ? (parseFloat(this.form.overheadAmount) || 0) : total)}</div>
+        <p class="muted amount-total-note">${this.form.entryMode === 'overhead' ? 'Bill amount (no qty / unit)' : 'Sum of prices you entered (qty is not multiplied)'}</p>
       </div>
 
       <p class="section-label">Category</p>
@@ -1949,6 +1975,17 @@ const ExpenseApp = {
       });
     });
 
+    document.getElementById('exp-mode-chips')?.addEventListener('click', (e) => {
+      const chip = e.target.closest('[data-exp-mode]');
+      if (!chip) return;
+      this.form.entryMode = chip.dataset.expMode === 'overhead' ? 'overhead' : 'stock';
+      if (this.form.entryMode === 'overhead') {
+        const rent = (this.categories || []).find((c) => /rent/i.test(c));
+        if (rent) this.form.category = rent;
+      }
+      this.paintBody();
+    });
+
     document.getElementById('exp-fund-chips')?.addEventListener('click', (e) => {
       const chip = e.target.closest('[data-fund]');
       if (!chip) return;
@@ -2362,13 +2399,24 @@ const ExpenseApp = {
   async saveExpense() {
     if (this._saving) return;
     this.syncLineItemsFromDom();
-    const line_items = this.validLineItems();
-    if (!line_items.length) return this.toast('Add at least one item with a name and price', 'error');
+    this.form.overheadName = document.getElementById('exp-overhead-name')?.value || this.form.overheadName || '';
+    this.form.overheadAmount = document.getElementById('exp-overhead-amount')?.value || this.form.overheadAmount || '';
+    let line_items = [];
+    let amount = 0;
+    let notes = (document.getElementById('exp-notes')?.value || this.form.notes || '').trim();
+    if (this.form.entryMode === 'overhead') {
+      amount = Math.round((parseFloat(this.form.overheadAmount) || 0) * 100) / 100;
+      if (!(amount > 0)) return this.toast('Enter the bill amount', 'error');
+      notes = String(this.form.overheadName || '').trim() || notes || this.form.category || 'Overhead';
+      line_items = [];
+    } else {
+      line_items = this.validLineItems();
+      if (!line_items.length) return this.toast('Add at least one item with a name and price', 'error');
+      amount = this.calcTotal();
+    }
 
     const category = this.form.category || 'other';
     const expense_date = document.getElementById('exp-date')?.value || this.today();
-    const notes = (document.getElementById('exp-notes')?.value || this.form.notes || '').trim();
-    const amount = this.calcTotal();
 
     this._saving = true;
     const btn = document.getElementById('exp-save-btn');

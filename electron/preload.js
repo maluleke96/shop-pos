@@ -34,6 +34,7 @@ const channels = [
   'products:saveOtherSell', 'products:suggestPrice',
   'stock:adjust', 'stock:recordAdjustment', 'stock:listAdjustments', 'stock:history',
   'sales:complete', 'sales:get', 'sales:getByReceipt', 'sales:hold', 'sales:getHeld', 'sales:deleteHeld',
+  'tomorrowStock:list', 'tomorrowStock:add', 'tomorrowStock:update', 'tomorrowStock:remove', 'tomorrowStock:markBought',
   'returns:process', 'returns:get',
   'expenses:get', 'expenses:dashboardStats', 'expenses:save', 'expenses:delete',
   'expenses:getOne', 'expenses:getCategories', 'expenses:saveCategories',

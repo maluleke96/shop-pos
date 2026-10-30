@@ -917,8 +917,11 @@ const ExpensesPage = {
     const enabled = (pm.enabled_methods || Utils.paymentTypes || ['cash', 'card', 'eft']).filter(Boolean);
     const payOptions = enabled.length ? enabled : ['cash', 'card', 'eft'];
     const editItems = editExpense ? this.parseLineItems(editExpense) : [];
+    const overheadCats = new Set(['rent', 'electricity', 'water', 'salaries', 'wages', 'insurance', 'internet', 'rates', 'municipal', 'bank_charges', 'bank charges', 'utilities', 'subscription', 'licenses']);
+    const inferredOverhead = !!(editExpense && (!editItems.length || overheadCats.has(String(editExpense.category || '').toLowerCase())));
     const state = {
       editId: editExpense?.id || null,
+      entryMode: inferredOverhead ? 'overhead' : 'stock',
       lineSeq: Math.max(2, (editItems.length || 0) + 1),
       lineItems: editItems.length
         ? editItems.map((r, i) => ({
@@ -928,6 +931,8 @@ const ExpensesPage = {
         }))
         : [{ _id: 1, name: '', qty: '1', unit: 'kg', price: '' }],
       category: editExpense?.category || cats[0] || 'other',
+      overheadAmount: editExpense && !editItems.length ? String(editExpense.amount || '') : '',
+      overheadName: editExpense && !editItems.length ? String(editExpense.description || editExpense.notes || '') : '',
       units: this._unitsCatalog || [],
       invoicePreview: '',
       invoiceDataUrl: '',
@@ -935,6 +940,8 @@ const ExpensesPage = {
       cash_source: 'today',
       payment_method: payOptions.includes('cash') ? 'cash' : payOptions[0],
       purchaseOrders: [],
+      buyList: [],
+      selectedBuyIds: new Set(),
       catalog: this._expCatalog || []
     };
 
@@ -1047,7 +1054,11 @@ const ExpensesPage = {
         if (el) el.textContent = lineHint(row);
       });
       const totalEl = document.getElementById('admin-ex-total');
-      if (totalEl) totalEl.textContent = Utils.formatMoney(calcTotal(), currency);
+      let total = calcTotal();
+      if (state.entryMode === 'overhead') {
+        total = Math.round(this._parseExpensePrice(document.getElementById('ex-overhead-amount')?.value || state.overheadAmount) * 100) / 100;
+      }
+      if (totalEl) totalEl.textContent = Utils.formatMoney(total, currency);
       const countEl = document.getElementById('admin-ex-line-count');
       if (countEl) {
         const n = validLineItems().length;
@@ -1055,9 +1066,67 @@ const ExpensesPage = {
       }
     };
 
+    const renderBuyList = () => {
+      const host = document.getElementById('admin-ex-buylist');
+      if (!host) return;
+      if (!state.buyList.length) {
+        host.innerHTML = '<span class="muted">No open buy-list items from POS.</span>';
+        return;
+      }
+      host.innerHTML = state.buyList.map((b) => {
+        const checked = state.selectedBuyIds.has(String(b.id)) ? 'checked' : '';
+        const qty = b.quantity != null ? b.quantity : 1;
+        const unit = b.unit ? ` ${Utils.escHtml(b.unit)}` : '';
+        return `<label style="display:flex;gap:8px;align-items:flex-start;margin:4px 0;cursor:pointer">
+          <input type="checkbox" class="ex-buylist-cb" data-buy-id="${b.id}" ${checked}>
+          <span><strong>${Utils.escHtml(b.name)}</strong> · ${qty}${unit}${b.for_date ? ` · for ${Utils.escHtml(b.for_date)}` : ''}${b.note ? `<br><span class="muted">${Utils.escHtml(b.note)}</span>` : ''}</span>
+        </label>`;
+      }).join('') + `<button type="button" class="btn btn-ghost btn-sm" id="ex-buylist-apply" style="margin-top:8px">Add selected to lines</button>`;
+      host.querySelectorAll('.ex-buylist-cb').forEach((cb) => {
+        cb.addEventListener('change', () => {
+          const id = String(cb.dataset.buyId);
+          if (cb.checked) state.selectedBuyIds.add(id);
+          else state.selectedBuyIds.delete(id);
+        });
+      });
+      host.querySelector('#ex-buylist-apply')?.addEventListener('click', () => {
+        syncLinesFromDom();
+        const picked = state.buyList.filter((b) => state.selectedBuyIds.has(String(b.id)));
+        if (!picked.length) return Utils.toast('Select buy-list items first', 'error');
+        for (const b of picked) {
+          state.lineItems.push({
+            _id: state.lineSeq++,
+            name: b.name,
+            qty: String(b.quantity != null ? b.quantity : 1),
+            unit: b.unit || 'each',
+            price: '',
+            product_id: b.product_id || null,
+            buy_list_id: b.id
+          });
+        }
+        if (state.lineItems.length > 1 && !String(state.lineItems[0].name || '').trim() && !state.lineItems[0].price) {
+          state.lineItems.shift();
+        }
+        state.entryMode = 'stock';
+        refreshForm();
+        Utils.toast(`${picked.length} buy-list item(s) added — enter prices then save`, 'success');
+      });
+    };
+
     const refreshForm = () => {
+      const stockBlock = document.getElementById('admin-ex-stock-block');
+      const overheadBlock = document.getElementById('admin-ex-overhead-block');
+      const buyWrap = document.getElementById('admin-ex-buylist-wrap');
+      if (stockBlock) stockBlock.style.display = state.entryMode === 'stock' ? '' : 'none';
+      if (overheadBlock) overheadBlock.style.display = state.entryMode === 'overhead' ? '' : 'none';
+      if (buyWrap) buyWrap.style.display = state.entryMode === 'stock' ? '' : 'none';
+      document.getElementById('ex-mode-stock')?.classList.toggle('btn-primary', state.entryMode === 'stock');
+      document.getElementById('ex-mode-stock')?.classList.toggle('btn-ghost', state.entryMode !== 'stock');
+      document.getElementById('ex-mode-overhead')?.classList.toggle('btn-primary', state.entryMode === 'overhead');
+      document.getElementById('ex-mode-overhead')?.classList.toggle('btn-ghost', state.entryMode !== 'overhead');
       const linesEl = document.getElementById('admin-ex-lines');
       if (linesEl) linesEl.innerHTML = renderLines();
+      renderBuyList();
       refreshTotals();
       const previewEl = document.getElementById('admin-ex-invoice-preview');
       if (previewEl) {
@@ -1123,13 +1192,25 @@ const ExpensesPage = {
 
     Utils.showModal('Add Expense', `
       <div class="form-grid" style="gap:12px">
+        <div class="field full">
+          <label>Expense type</label>
+          <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:6px">
+            <button type="button" class="btn btn-sm ${state.entryMode === 'stock' ? 'btn-primary' : 'btn-ghost'}" id="ex-mode-stock">📦 Stock / materials (with units)</button>
+            <button type="button" class="btn btn-sm ${state.entryMode === 'overhead' ? 'btn-primary' : 'btn-ghost'}" id="ex-mode-overhead">🏢 Bill / overhead (rent, electricity…)</button>
+          </div>
+          <p class="muted" style="font-size:12px;margin:6px 0 0">Use <strong>Bill / overhead</strong> for rent and other costs with no unit of measure. Stock purchases keep qty + unit.</p>
+        </div>
+        <div class="field full" id="admin-ex-buylist-wrap" style="${state.entryMode === 'stock' ? '' : 'display:none'}">
+          <label>Buy list from POS</label>
+          <div id="admin-ex-buylist" class="muted" style="font-size:13px;padding:8px;border:1px dashed var(--border);border-radius:8px">Loading…</div>
+        </div>
         <div class="field full" style="background:var(--bg-secondary,#f8fafc);padding:10px;border-radius:8px;border:1px solid var(--border)">
           <label>📸 Receipt capture + OCR</label>
           <p class="muted" style="margin:4px 0 8px;font-size:12px">Upload a till slip photo, then paste OCR / till text (or type key lines) to auto-fill amount, date and vendor.</p>
           <textarea id="ex-ocr-text" rows="3" placeholder="Paste till slip text here…" style="width:100%"></textarea>
           <button type="button" class="btn btn-ghost btn-sm" id="ex-ocr-parse" style="margin-top:8px">Extract amount &amp; vendor</button>
         </div>
-        <div class="field full">
+        <div class="field full" id="admin-ex-stock-block" style="${state.entryMode === 'stock' ? '' : 'display:none'}">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
             <label style="margin:0">Invoice line items</label>
             <span class="muted" id="admin-ex-line-count">Add items below</span>
@@ -1137,6 +1218,13 @@ const ExpensesPage = {
           <p class="muted" style="margin:0 0 8px;font-size:12px">Type a name or tap 🔍 to search products / ingredients and click to fill the line.</p>
           <div id="admin-ex-lines">${renderLines()}</div>
           <button type="button" class="btn btn-ghost btn-sm" id="admin-ex-add-line" style="margin-top:8px">+ Add another item</button>
+        </div>
+        <div class="field full" id="admin-ex-overhead-block" style="${state.entryMode === 'overhead' ? '' : 'display:none'}">
+          <label>What is this bill for?</label>
+          <input id="ex-overhead-name" placeholder="e.g. Shop rent — October" value="${Utils.escHtml(state.overheadName)}">
+          <label style="margin-top:10px;display:block">Amount paid</label>
+          <input type="number" id="ex-overhead-amount" step="0.01" min="0" placeholder="0.00" value="${Utils.escHtml(state.overheadAmount)}">
+          <p class="muted" style="font-size:12px;margin:6px 0 0">No quantity or unit needed. Pick category <strong>Rent</strong> / utilities below.</p>
         </div>
         <div class="field full" style="text-align:center;padding:12px;background:var(--card);border-radius:10px;border:1px solid var(--border)">
           <label class="muted" style="display:block;margin-bottom:4px">Invoice total</label>
@@ -1194,6 +1282,30 @@ const ExpensesPage = {
       }
     }).catch(() => {});
 
+    document.getElementById('ex-mode-stock')?.addEventListener('click', () => {
+      state.entryMode = 'stock';
+      refreshForm();
+    });
+    document.getElementById('ex-mode-overhead')?.addEventListener('click', () => {
+      state.entryMode = 'overhead';
+      if (!state.category || state.category === 'stock' || state.category === 'other') {
+        const rent = cats.find((c) => /rent/i.test(c));
+        if (rent) state.category = rent;
+      }
+      refreshForm();
+    });
+    document.getElementById('ex-overhead-amount')?.addEventListener('input', () => {
+      state.overheadAmount = document.getElementById('ex-overhead-amount')?.value || '';
+      refreshTotals();
+    });
+    API.tomorrowStockList?.({ status: 'open' }, this.app.user).then((res) => {
+      state.buyList = res?.success !== false ? (res.data || res || []) : [];
+      if (!Array.isArray(state.buyList)) state.buyList = [];
+      renderBuyList();
+    }).catch(() => {
+      state.buyList = [];
+      renderBuyList();
+    });
     document.getElementById('admin-ex-lines')?.addEventListener('input', () => refreshTotals());
     document.getElementById('admin-ex-lines')?.addEventListener('click', (e) => {
       const searchBtn = e.target.closest('[data-search-id]');
@@ -1241,9 +1353,20 @@ const ExpensesPage = {
 
     document.getElementById('save-exp').addEventListener('click', async () => {
       syncLinesFromDom();
-      const line_items = validLineItems();
-      if (!line_items.length) return Utils.toast('Add at least one item with a name and price', 'error');
-      const amount = calcTotal();
+      let line_items = [];
+      let amount = 0;
+      let description = document.getElementById('ex-desc').value.trim() || document.getElementById('ex-vendor')?.value.trim();
+      if (state.entryMode === 'overhead') {
+        const name = String(document.getElementById('ex-overhead-name')?.value || '').trim();
+        amount = Math.round(this._parseExpensePrice(document.getElementById('ex-overhead-amount')?.value) * 100) / 100;
+        if (!(amount > 0)) return Utils.toast('Enter the bill amount', 'error');
+        description = name || description || state.category || 'Overhead';
+        line_items = [];
+      } else {
+        line_items = validLineItems();
+        if (!line_items.length) return Utils.toast('Add at least one item with a name and price', 'error');
+        amount = calcTotal();
+      }
       const poVal = document.getElementById('ex-po')?.value;
       const r = await API.saveExpense({
         id: state.editId || undefined,
@@ -1251,7 +1374,7 @@ const ExpensesPage = {
         amount,
         expense_date: document.getElementById('ex-date').value,
         stock_edit_reason: state.editId ? (document.getElementById('ex-edit-reason')?.value || 'Admin correction') : undefined,
-        description: document.getElementById('ex-desc').value.trim() || document.getElementById('ex-vendor')?.value.trim(),
+        description,
         notes: document.getElementById('ex-desc').value.trim(),
         vendor_name: document.getElementById('ex-vendor')?.value.trim() || null,
         payment_method: document.getElementById('ex-pay')?.value || state.payment_method,
@@ -1263,6 +1386,11 @@ const ExpensesPage = {
         invoice_image: state.invoiceDataUrl || null
       }, this.app.user);
       if (!r.success) return Utils.toast(r.error, 'error');
+      const expenseId = r.data?.id || r.data?.expense_id || null;
+      const boughtIds = state.lineItems.map((row) => row.buy_list_id).filter(Boolean);
+      if (boughtIds.length && API.tomorrowStockMarkBought) {
+        await API.tomorrowStockMarkBought(boughtIds, expenseId, this.app.user).catch(() => null);
+      }
       Utils.hideModal();
       if (this.tab === 'dashboard') this.loadDashboard();
       else if (this.tab === 'funding') this.renderFundingPanel();

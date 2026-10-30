@@ -1406,6 +1406,11 @@ const POSPage = {
                 <span class="pos-action-chip-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span>
                 <span class="pos-action-chip-label">Missed</span>
               </button>
+              <button type="button" class="pos-action-chip" id="pos-buy-list" title="Tomorrow stock buy list">
+                <span class="pos-action-chip-icon"><svg viewBox="0 0 24 24"><path d="M6 6h15l-1.5 9h-12z"/><path d="M6 6L5 3H2"/><circle cx="9" cy="20" r="1"/><circle cx="18" cy="20" r="1"/></svg></span>
+                <span class="pos-action-chip-label">Buy list</span>
+                <span id="pos-buy-list-count" class="pos-action-badge hidden">0</span>
+              </button>
               <button type="button" class="pos-action-chip pos-action-chip--danger" id="pos-void" title="Void sale">
                 <span class="pos-action-chip-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M15 9l-6 6M9 9l6 6"/></svg></span>
                 <span class="pos-action-chip-label">Void</span>
@@ -3542,6 +3547,8 @@ const POSPage = {
     document.getElementById('pos-customer-display')?.addEventListener('click', () => this.openCustomerDisplay());
     document.getElementById('pos-void').addEventListener('click', () => this.showVoidSale());
     document.getElementById('pos-backdated')?.addEventListener('click', () => this.startBackdatedOrder());
+    document.getElementById('pos-buy-list')?.addEventListener('click', () => this.showBuyList());
+    this.refreshBuyListBadge?.();
     const bdBtn = document.getElementById('pos-backdated');
     if (bdBtn) {
       bdBtn.style.display = Utils.canRequestBackdatedOrder(this.app.user) ? '' : 'none';
@@ -4821,6 +4828,92 @@ const POSPage = {
     const banner = document.getElementById('pos-backdated-banner');
     if (banner) banner.remove();
     document.querySelector('.pos-till')?.classList.remove('has-backdated-banner');
+  },
+
+  async refreshBuyListBadge() {
+    const badge = document.getElementById('pos-buy-list-count');
+    if (!badge || !API.tomorrowStockList) return;
+    try {
+      const res = await API.tomorrowStockList({ status: 'open' }, this.app.user);
+      const list = res?.success !== false ? (res.data || []) : [];
+      const n = Array.isArray(list) ? list.length : 0;
+      if (n > 0) {
+        badge.textContent = n > 99 ? '99+' : String(n);
+        badge.classList.remove('hidden');
+      } else {
+        badge.classList.add('hidden');
+      }
+    } catch (_) {
+      badge.classList.add('hidden');
+    }
+  },
+
+  async showBuyList() {
+    if (!this.requireShift('buy list')) return;
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const forDate = tomorrow.toLocaleDateString('en-CA');
+    const currency = this.app.settings?.currency || 'R';
+    let items = [];
+    try {
+      const res = await API.tomorrowStockList({ status: 'open' }, this.app.user);
+      items = res?.success !== false ? (res.data || []) : [];
+      if (!Array.isArray(items)) items = [];
+    } catch (_) { items = []; }
+
+    const listHtml = items.length
+      ? `<div style="max-height:220px;overflow:auto;margin-bottom:12px;border:1px solid var(--border);border-radius:8px">
+          ${items.map((b) => `
+            <div style="display:flex;justify-content:space-between;gap:8px;padding:8px 10px;border-bottom:1px solid var(--border);align-items:center">
+              <div>
+                <strong>${Utils.escHtml(b.name)}</strong>
+                <div class="muted" style="font-size:12px">${b.quantity || 1}${b.unit ? ` ${Utils.escHtml(b.unit)}` : ''} · for ${Utils.escHtml(b.for_date || '')}${b.note ? ` · ${Utils.escHtml(b.note)}` : ''}</div>
+              </div>
+              <button type="button" class="btn btn-ghost btn-sm" data-buy-del="${b.id}" title="Remove">×</button>
+            </div>`).join('')}
+        </div>`
+      : '<p class="muted" style="margin-bottom:12px">No open buy-list items yet. Add what must be bought for tomorrow — Expenses will show them to confirm when stock arrives.</p>';
+
+    Utils.showModal('Tomorrow stock — Buy list', `
+      ${listHtml}
+      <div class="form-grid" style="gap:10px">
+        <div class="field full"><label>Item name</label><input id="buy-name" placeholder="e.g. Chicken, Pap, Cooking oil"></div>
+        <div class="field"><label>Qty</label><input type="number" id="buy-qty" step="any" min="0.0001" value="1"></div>
+        <div class="field"><label>Unit (optional)</label><input id="buy-unit" placeholder="kg, L, each…"></div>
+        <div class="field"><label>Needed for</label><input type="date" id="buy-date" value="${forDate}"></div>
+        <div class="field full"><label>Note</label><input id="buy-note" placeholder="Optional"></div>
+      </div>
+      <p class="muted" style="font-size:12px;margin-top:8px">When buying, open <strong>Expenses → Stock purchase</strong> and tick these lines to confirm and receive into stock.</p>`,
+      '<button class="btn btn-primary" id="buy-add">Add to buy list</button><button class="btn btn-ghost" id="buy-close">Close</button>');
+
+    document.getElementById('buy-close')?.addEventListener('click', () => {
+      Utils.hideModal();
+      this.refreshBuyListBadge();
+    });
+    document.querySelectorAll('[data-buy-del]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const id = btn.dataset.buyDel;
+        const r = await API.tomorrowStockRemove(id, this.app.user);
+        if (r?.success === false) return Utils.toast(r.error || 'Could not remove', 'error');
+        Utils.hideModal();
+        this.showBuyList();
+      });
+    });
+    document.getElementById('buy-add')?.addEventListener('click', async () => {
+      const name = document.getElementById('buy-name')?.value?.trim();
+      if (!name) return Utils.toast('Enter an item name', 'error');
+      const r = await API.tomorrowStockAdd({
+        name,
+        quantity: Number(document.getElementById('buy-qty')?.value) || 1,
+        unit: document.getElementById('buy-unit')?.value?.trim() || null,
+        for_date: document.getElementById('buy-date')?.value || forDate,
+        note: document.getElementById('buy-note')?.value?.trim() || null
+      }, this.app.user);
+      if (r?.success === false) return Utils.toast(r.error || 'Could not add', 'error');
+      Utils.toast(`Added ${name} to buy list`, 'success');
+      Utils.hideModal();
+      this.showBuyList();
+    });
   },
 
   startBackdatedOrder() {

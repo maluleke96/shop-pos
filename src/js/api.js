@@ -342,6 +342,12 @@ const API = {
   getHeldOrders: () => invoke('sales:getHeld'),
   deleteHeldOrder: (id, actor) => invoke('sales:deleteHeld', id, actor),
 
+  tomorrowStockList: (filters, actor) => invoke('tomorrowStock:list', filters || {}, actor),
+  tomorrowStockAdd: (data, actor) => invoke('tomorrowStock:add', data, actor),
+  tomorrowStockUpdate: (id, data, actor) => invoke('tomorrowStock:update', id, data, actor),
+  tomorrowStockRemove: (id, actor) => invoke('tomorrowStock:remove', id, actor),
+  tomorrowStockMarkBought: (ids, expenseId, actor) => invoke('tomorrowStock:markBought', ids, expenseId, actor),
+
   processReturn: (data, actor) => invoke('returns:process', data, actor),
   getReturns: (filters) => invoke('returns:get', filters),
 

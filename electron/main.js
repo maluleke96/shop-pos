@@ -441,6 +441,26 @@ function registerIpc() {
   ipcMain.handle('sales:get', wrapSync((id) => { requireSession(); return store.getSale(id); }));
   ipcMain.handle('sales:getByReceipt', wrapSync((num) => { requireSession(); return store.getSaleByReceipt(num); }));
   ipcMain.handle('sales:getHeld', wrapSync(() => { requireSession(); return store.getHeldOrders(); }));
+  ipcMain.handle('tomorrowStock:list', wrapSync((f, actor) => {
+    requireSession();
+    return require('./services/tomorrow-stock').listItems(f || {});
+  }));
+  ipcMain.handle('tomorrowStock:add', wrapSync((d, actor) => {
+    const user = store.requireActor(actor, ['owner', 'manager', 'cashier', 'supervisor', 'assistant_manager']);
+    return require('./services/tomorrow-stock').addItem(d || {}, user);
+  }));
+  ipcMain.handle('tomorrowStock:update', wrapSync((id, d, actor) => {
+    store.requireActor(actor, ['owner', 'manager', 'cashier', 'supervisor', 'assistant_manager']);
+    return require('./services/tomorrow-stock').updateItem(id, d || {});
+  }));
+  ipcMain.handle('tomorrowStock:remove', wrapSync((id, actor) => {
+    store.requireActor(actor, ['owner', 'manager', 'cashier', 'supervisor', 'assistant_manager']);
+    return require('./services/tomorrow-stock').removeItem(id);
+  }));
+  ipcMain.handle('tomorrowStock:markBought', wrapSync((ids, expenseId, actor) => {
+    store.requireActor(actor, ['owner', 'manager', 'cashier', 'supervisor', 'assistant_manager']);
+    return require('./services/tomorrow-stock').markBought(ids, expenseId);
+  }));
   ipcMain.handle('sales:deleteHeld', wrapSync((id, actor) => {
     store.requireActor(actor, ['owner', 'manager', 'cashier', 'supervisor', 'assistant_manager']);
     store.deleteHeldOrder(id);
